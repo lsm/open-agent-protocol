@@ -152,3 +152,55 @@ fn a_line_over_the_frame_limit_ends_serving_and_a_limit_below_the_floor_is_refus
 fn an_empty_input_ends_cleanly() {
     assert!(ok("").is_empty());
 }
+
+#[test]
+fn a_response_over_the_frame_limit_is_refused_and_serving_goes_on() {
+    let (lines, result) = run(
+        "{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adapters\",\"session_id\":\"none\"}\n",
+        StdioOptions { frame_limit: 1024 },
+    );
+    result.unwrap();
+    assert_eq!(lines[0]["id"], 1);
+    assert_eq!(lines[0]["error"]["code"], "response_too_large");
+    assert_eq!(lines[1]["error"]["code"], "invalid_request");
+}
+
+#[test]
+fn an_adapter_whose_descriptor_carries_no_revision_is_listed_with_an_error() {
+    let mut registry = Registry::default_registry();
+    registry
+        .register("bare", std::sync::Arc::new(Bare))
+        .unwrap();
+    let hub = Hub::new(registry);
+    let mut output = Vec::new();
+    serve(
+        &hub,
+        "{\"id\":1,\"op\":\"adapters\"}\n".as_bytes(),
+        &mut output,
+        &StdioOptions::default(),
+    )
+    .unwrap();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    let bare = &response["result"]["adapters"][0];
+    assert_eq!(bare["name"], "bare");
+    assert_eq!(
+        bare["error"],
+        "adapter descriptor carries no capability revision"
+    );
+    assert!(bare.get("capabilities").is_none());
+}
+
+struct Bare;
+
+impl oap_adapter::Adapter for Bare {
+    fn probe(&self) -> oap_adapter::BoxFuture<'_, oap_adapter::Descriptor> {
+        Box::pin(async { Ok(oap_adapter::Descriptor::default()) })
+    }
+
+    fn open(
+        &self,
+        _: oap_adapter::OpenRequest,
+    ) -> oap_adapter::BoxFuture<'_, Box<dyn oap_adapter::Session>> {
+        Box::pin(async { Err(oap_adapter::Error::SessionClosed) })
+    }
+}

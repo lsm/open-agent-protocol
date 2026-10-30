@@ -100,10 +100,9 @@ pub fn serve(
         };
         let request = decode_request(&frame).map_err(malformed)?;
         let answer = dispatch(hub, &request);
-        let line = response_line(request.id, answer)?;
-        if line.len() > options.frame_limit {
-            return Err(StdioError::LineTooLarge);
-        }
+        let Some(line) = fitted(request.id, answer, options.frame_limit)? else {
+            continue;
+        };
         output.write_all(&line)?;
         output.write_all(b"\n")?;
         output.flush()?;
@@ -311,6 +310,30 @@ fn adapters(hub: &Hub) -> Value {
         })
         .collect();
     serde_json::json!({ "adapters": listed })
+}
+
+fn fitted(id: i64, answer: Answer, limit: usize) -> Result<Option<Vec<u8>>, StdioError> {
+    let reduced = match &answer {
+        Err(error) => Some(WireError {
+            code: error.code,
+            message: trim(&error.message),
+        }),
+        Ok(_) => None,
+    };
+    let fallback = WireError {
+        code: "response_too_large",
+        message: "the encoded response exceeds the frame limit".into(),
+    };
+    for candidate in [Some(answer), reduced.map(Err), Some(Err(fallback))]
+        .into_iter()
+        .flatten()
+    {
+        let line = response_line(id, candidate)?;
+        if line.len() <= limit {
+            return Ok(Some(line));
+        }
+    }
+    Ok(None)
 }
 
 fn response_line(id: i64, answer: Answer) -> Result<Vec<u8>, StdioError> {

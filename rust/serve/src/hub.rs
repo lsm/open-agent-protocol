@@ -372,7 +372,16 @@ impl Hub {
         let mut statuses = Vec::new();
         for name in self.shared.registry.names() {
             if let Some(adapter) = self.shared.registry.lookup(&name) {
-                statuses.push((name, adapter.probe().await));
+                let probed = adapter.probe().await.and_then(|descriptor| {
+                    if descriptor.capability_revision.is_empty() {
+                        Err(Error::harness(
+                            "adapter descriptor carries no capability revision",
+                        ))
+                    } else {
+                        Ok(descriptor)
+                    }
+                });
+                statuses.push((name, probed));
             }
         }
         statuses
