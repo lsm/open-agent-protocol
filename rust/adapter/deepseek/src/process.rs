@@ -114,6 +114,8 @@ impl Process {
         };
         let params = serde_json::value::to_raw_value(&config.initialize)
             .map_err(|failure| error(Fault::Encode(failure.to_string())))?;
+        let mut inbound = process.client.inbound();
+        let mut done = process.client.done();
         let (reply, ready) = crossbeam_channel::bounded(1);
         let caller = process.client.clone();
         std::thread::spawn(move || {
@@ -122,8 +124,6 @@ impl Process {
                 .and_then(|raw| initialize_result(&raw));
             let _ = reply.send(outcome);
         });
-        let mut inbound = process.client.inbound();
-        let mut done = process.client.done();
         let expiry = deadline.map_or_else(crossbeam_channel::never, crossbeam_channel::at);
         let outcome: Result<InitializeResult, String> = loop {
             select! {
