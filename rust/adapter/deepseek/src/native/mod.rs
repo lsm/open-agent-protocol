@@ -1,3 +1,5 @@
+mod stream;
+
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
@@ -8,6 +10,10 @@ use oap_adapter::gojson::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
+
+pub use stream::{
+    stream_record, AssistantAttempt, AssistantMessageEvent, AssistantStreamRecord, INVALID,
+};
 
 pub const SERVER_NAME: &str = "deepseek-harness-sdk-runtime";
 pub const METHOD_INITIALIZE: &str = "initialize";
