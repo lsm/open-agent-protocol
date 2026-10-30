@@ -203,7 +203,12 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 Err(invalid(format!("field {key:?} has the wrong type")))
             }
         };
-        let parsed: Value = serde_json::from_str(value.get()).map_err(invalid)?;
+        let raw = matches!(key.as_str(), "after" | "request");
+        let parsed: Value = if raw {
+            Value::Null
+        } else {
+            serde_json::from_str(value.get()).map_err(invalid)?
+        };
         match key.as_str() {
             "id" => {
                 id = parsed.as_i64();

@@ -204,3 +204,9 @@ impl oap_adapter::Adapter for Bare {
         Box::pin(async { Err(oap_adapter::Error::SessionClosed) })
     }
 }
+
+#[test]
+fn a_raw_parameter_keeps_any_valid_json_number() {
+    let lines = ok("{\"id\":1,\"op\":\"bogus\",\"request\":1e400,\"after\":1e400}\n");
+    assert_eq!(lines[0]["error"]["code"], "unknown_op");
+}
