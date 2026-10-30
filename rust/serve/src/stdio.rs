@@ -205,17 +205,17 @@ struct Attached(Arc<std::sync::atomic::AtomicUsize>);
 impl Attached {
     fn claim(count: &Arc<std::sync::atomic::AtomicUsize>, cap: usize) -> Result<Self, WireError> {
         use std::sync::atomic::Ordering;
-        count
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
-                (held < cap).then_some(held + 1)
-            })
-            .map(|_| Attached(count.clone()))
-            .map_err(|_| {
-                wire(
-                    "busy",
-                    format!("the frontend is already serving {cap} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes \u{2014} send this request again once one has"),
-                )
-            })
+        let mut held = count.load(Ordering::SeqCst);
+        while held < cap {
+            match count.compare_exchange(held, held + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Ok(Attached(count.clone())),
+                Err(now) => held = now,
+            }
+        }
+        Err(wire(
+            "busy",
+            format!("the frontend is already serving {cap} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes \u{2014} send this request again once one has"),
+        ))
     }
 }
 
