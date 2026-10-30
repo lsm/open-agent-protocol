@@ -1,6 +1,6 @@
 use std::fmt;
 use std::io::{BufRead, Write};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -84,42 +84,68 @@ struct Response<'a> {
     error: Option<WireError>,
 }
 
+pub const WRITE_QUEUE: usize = 256;
+
+pub const SHUTDOWN_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+type Lines = std::sync::mpsc::SyncSender<Vec<u8>>;
+
 pub fn serve(
     hub: &Hub,
     input: impl BufRead,
-    output: impl Write + Send,
+    mut output: impl Write + Send + 'static,
     options: &StdioOptions,
 ) -> Result<(), StdioError> {
     if options.frame_limit < MIN_FRAME_LIMIT {
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
-    let writer = Mutex::new(output);
-    let mut cancellers = Vec::new();
-    std::thread::scope(|scope| {
-        let served = serve_lines(hub, input, &writer, options, |pump| {
-            cancellers.push(pump.subscription.canceller());
-            let writer = &writer;
-            let limit = options.frame_limit;
-            scope.spawn(move || pump.run(writer, limit));
-        });
-        for canceller in &cancellers {
-            canceller.cancel();
+    let (writer, queue) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    let (drained, written) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in queue {
+            let wrote = output
+                .write_all(&line)
+                .and_then(|()| output.write_all(b"\n"))
+                .and_then(|()| output.flush());
+            if wrote.is_err() {
+                break;
+            }
         }
-        served
-    })
+        let _ = drained.send(());
+    });
+    let mut pumps = Vec::new();
+    let served = serve_lines(hub, input, &writer, options, |pump| {
+        pumps.push((pump.subscription.canceller(), pump.attached()));
+        let writer = writer.clone();
+        let limit = options.frame_limit;
+        std::thread::spawn(move || pump.run(&writer, limit));
+    });
+    let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
+    for (canceller, _) in &pumps {
+        canceller.cancel();
+    }
+    while pumps
+        .iter()
+        .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    drop(writer);
+    let _ = written.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+    served
 }
 
-fn emit(writer: &Mutex<impl Write>, line: &[u8]) -> std::io::Result<()> {
-    let mut output = writer.lock().unwrap_or_else(PoisonError::into_inner);
-    output.write_all(line)?;
-    output.write_all(b"\n")?;
-    output.flush()
+fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
+    writer
+        .send(line.to_vec())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the output closed"))
 }
 
-fn serve_lines<W: Write>(
+fn serve_lines(
     hub: &Hub,
     mut input: impl BufRead,
-    writer: &Mutex<W>,
+    writer: &Lines,
     options: &StdioOptions,
     mut start: impl FnMut(Pump),
 ) -> Result<(), StdioError> {
@@ -315,8 +341,8 @@ struct Signal<'a> {
     id: i64,
     #[serde(skip_serializing_if = "str::is_empty")]
     session_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    run_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     sequence: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -335,7 +361,7 @@ impl Signal<'_> {
             event,
             id,
             session_id: "",
-            run_id: None,
+            run_id: "",
             sequence: None,
             last_sequence: None,
             joined_after: None,
@@ -346,13 +372,7 @@ impl Signal<'_> {
 }
 
 impl Pump {
-    fn send(
-        &self,
-        writer: &Mutex<impl Write>,
-        limit: usize,
-        full: &Signal,
-        minimal: &Signal,
-    ) -> bool {
+    fn send(&self, writer: &Lines, limit: usize, full: &Signal, minimal: &Signal) -> bool {
         for signal in [full, minimal] {
             if let Ok(line) = serde_json::to_vec(signal) {
                 if line.len() <= limit {
@@ -363,13 +383,17 @@ impl Pump {
         false
     }
 
-    fn run(mut self, writer: &Mutex<impl Write>, limit: usize) {
+    fn attached(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self._attached.0.clone()
+    }
+
+    fn run(mut self, writer: &Lines, limit: usize) {
         let id = self.id;
         let session = self.entry.id().to_string();
         if let Some((run, joined)) = self.subscription.joined_at() {
             let full = Signal {
                 session_id: &session,
-                run_id: Some(run.as_str()),
+                run_id: run.as_str(),
                 joined_after: Some(joined),
                 message: "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point",
                 ..Signal::bare("oap-subscribed", id)
@@ -403,7 +427,7 @@ impl Pump {
                         let at = sequence.unwrap_or(delivered);
                         let full = Signal {
                             session_id: &session,
-                            run_id: Some(run.as_str()),
+                            run_id: run.as_str(),
                             sequence: Some(at),
                             message: "envelope exceeds the frame limit; the subscription ended \u{2014} resume with a cursor after this sequence to continue past it",
                             ..Signal::bare("oap-frame-limit", id)
@@ -432,7 +456,7 @@ impl Pump {
                 })) => {
                     let full = Signal {
                         session_id: &session,
-                        run_id: Some(run_id.as_str()),
+                        run_id: run_id.as_str(),
                         last_sequence: Some(last_sequence),
                         message: "event stream consumer fell behind; resume with a cursor after this sequence",
                         ..Signal::bare("oap-overflow", id)
@@ -447,7 +471,7 @@ impl Pump {
                 Some(Err(_)) => {
                     let full = Signal {
                         session_id: &session,
-                        run_id: Some(delivered_run.as_str()),
+                        run_id: delivered_run.as_str(),
                         sequence: Some(delivered),
                         message: "the run's event stream failed; resume with a cursor after this sequence",
                         ..Signal::bare("oap-stream-failed", id)

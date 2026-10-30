@@ -1,3 +1,5 @@
+mod support;
+
 use std::sync::Arc;
 
 use futures::executor::block_on;
@@ -59,9 +61,9 @@ fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
 
 fn lines_with(hub: &Hub, input: &[&str], options: StdioOptions) -> Vec<Value> {
     let input: String = input.iter().map(|line| format!("{line}\n")).collect();
-    let mut output = Vec::new();
-    serve(hub, input.as_bytes(), &mut output, &options).unwrap();
-    String::from_utf8(output)
+    let output = support::Captured::default();
+    serve(hub, input.as_bytes(), output.clone(), &options).unwrap();
+    String::from_utf8(output.bytes())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -252,4 +254,30 @@ fn a_replay_gap_falls_back_to_its_minimal_line_under_a_tight_frame_limit() {
     assert!(gaps[0].get("session_id").is_none());
     assert!(gaps[0].get("message").is_none());
     assert_eq!(gaps[0]["requested_after"], 0);
+}
+
+struct Stalled;
+
+impl std::io::Write for Stalled {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        loop {
+            std::thread::park();
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window() {
+    let (hub, session) = opened(64);
+    started(&session);
+    let input = "{\"id\":1,\"op\":\"events\",\"session_id\":\"s\"}\n";
+    let began = std::time::Instant::now();
+    serve(&hub, input.as_bytes(), Stalled, &StdioOptions::default()).unwrap();
+    let took = began.elapsed();
+    assert!(took >= oap_serve::stdio::SHUTDOWN_WINDOW / 2, "{took:?}");
+    assert!(took < oap_serve::stdio::SHUTDOWN_WINDOW * 2, "{took:?}");
 }

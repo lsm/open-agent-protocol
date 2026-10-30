@@ -1,12 +1,14 @@
+mod support;
+
 use oap_serve::stdio::{serve, StdioError, StdioOptions};
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn run(input: &str, options: StdioOptions) -> (Vec<Value>, Result<(), StdioError>) {
     let hub = Hub::new(Registry::default_registry());
-    let mut output = Vec::new();
-    let result = serve(&hub, input.as_bytes(), &mut output, &options);
-    let lines = String::from_utf8(output)
+    let output = support::Captured::default();
+    let result = serve(&hub, input.as_bytes(), output.clone(), &options);
+    let lines = String::from_utf8(output.bytes())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -40,16 +42,16 @@ fn the_adapters_op_lists_the_registry() {
 #[test]
 fn a_response_line_carries_its_members_in_go_order() {
     let hub = Hub::new(Registry::default_registry());
-    let mut output = Vec::new();
+    let output = support::Captured::default();
     serve(
         &hub,
         "{\"id\":1,\"op\":\"bogus\"}\n".as_bytes(),
-        &mut output,
+        output.clone(),
         &StdioOptions::default(),
     )
     .unwrap();
     assert_eq!(
-        String::from_utf8(output).unwrap(),
+        String::from_utf8(output.bytes()).unwrap(),
         "{\"id\":1,\"ok\":false,\"result\":null,\"error\":{\"code\":\"unknown_op\",\"message\":\"no op \\\"bogus\\\"\"}}\n"
     );
 }
@@ -182,15 +184,15 @@ fn an_adapter_whose_descriptor_carries_no_revision_is_listed_with_an_error() {
         .register("bare", std::sync::Arc::new(Bare))
         .unwrap();
     let hub = Hub::new(registry);
-    let mut output = Vec::new();
+    let output = support::Captured::default();
     serve(
         &hub,
         "{\"id\":1,\"op\":\"adapters\"}\n".as_bytes(),
-        &mut output,
+        output.clone(),
         &StdioOptions::default(),
     )
     .unwrap();
-    let response: Value = serde_json::from_slice(&output).unwrap();
+    let response: Value = serde_json::from_slice(&output.bytes()).unwrap();
     let bare = &response["result"]["adapters"][0];
     assert_eq!(bare["name"], "bare");
     assert_eq!(
