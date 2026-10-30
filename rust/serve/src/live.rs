@@ -386,6 +386,34 @@ pub struct Subscription {
     positions: HashMap<RunId, u64>,
     source: Source,
     done: bool,
+    cancel: Arc<Cancel>,
+}
+
+#[derive(Default)]
+struct Cancel {
+    cancelled: std::sync::atomic::AtomicBool,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl Cancel {
+    fn cancelled(&self, context: &Context<'_>) -> bool {
+        *lock(&self.waker) = Some(context.waker().clone());
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[derive(Clone)]
+pub struct Canceller(Arc<Cancel>);
+
+impl Canceller {
+    pub fn cancel(&self) {
+        self.0
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(waker) = lock(&self.0.waker).take() {
+            waker.wake();
+        }
+    }
 }
 
 impl Subscription {
@@ -396,6 +424,7 @@ impl Subscription {
             joined: None,
             source: Source::Replay(stream),
             done: false,
+            cancel: Arc::default(),
         }
     }
 
@@ -410,7 +439,12 @@ impl Subscription {
             positions: HashMap::new(),
             source: Source::Live { sub, session },
             done: false,
+            cancel: Arc::default(),
         }
+    }
+
+    pub fn canceller(&self) -> Canceller {
+        Canceller(self.cancel.clone())
     }
 
     pub fn run_id(&self) -> &RunId {
@@ -467,9 +501,11 @@ impl Stream for Subscription {
             return Poll::Ready(None);
         }
         let replayed = self.run.clone();
+        let cancel = self.cancel.clone();
         let polled = match &mut self.source {
             Source::Replay(stream) => match stream.as_mut().poll_next(context) {
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending if !cancel.cancelled(context) => return Poll::Pending,
+                Poll::Pending => Polled::End,
                 Poll::Ready(None) => Polled::End,
                 Poll::Ready(Some(Ok(envelope))) => Polled::Item(Box::new(envelope)),
                 Poll::Ready(Some(Err(Error::EventStreamOverflow))) => Polled::Overflow(replayed),
@@ -486,6 +522,8 @@ impl Stream for Subscription {
                         Some(Terminal::Failed(err)) => Polled::Failed(err),
                         None => Polled::End,
                     }
+                } else if cancel.cancelled(context) {
+                    Polled::End
                 } else {
                     mailbox.waker = Some(context.waker().clone());
                     return Poll::Pending;

@@ -5,6 +5,7 @@ use std::rc::Rc;
 use oap_protocol::*;
 use serde_json::Value;
 
+use super::model_catalog::HeldModel;
 use super::queue::Window;
 use super::{os, payload, s, State};
 use crate::{codes, OutputSchema};
@@ -183,7 +184,7 @@ fn detail<'a>(err: &'a ProtocolError, name: &str) -> Option<&'a str> {
     err.details.get(name).and_then(Value::as_str)
 }
 
-fn describe_refusal(err: &ProtocolError) -> String {
+pub(super) fn describe_refusal(err: &ProtocolError) -> String {
     let mut description = err.code.clone();
     if let Some(reason) = detail(err, "reason") {
         description = format!("{description}/{reason}");
@@ -256,6 +257,9 @@ pub(super) struct PendingSubmit {
     pub(super) session: String,
     satisfiable: HashSet<String>,
     controls: Controls,
+    revision: String,
+    model_listed: bool,
+    model_unjudged: bool,
 }
 
 pub(super) fn duplicate_tool_name(catalog: &[String]) -> Option<&str> {
@@ -882,7 +886,10 @@ impl State {
         p: &MessageSubmitRequest,
         provided: &[String],
     ) {
-        let mut pending = PendingSubmit::default();
+        let mut pending = PendingSubmit {
+            revision: self.current_capability.clone(),
+            ..PendingSubmit::default()
+        };
         let mut expectations = Vec::new();
         let controls = [
             (FEATURE_MODEL_SELECTION, p.model_id.is_some()),
@@ -999,6 +1006,24 @@ impl State {
                             .to_owned(),
                     }));
                 }
+                let listing = self.catalog_lists(p.session_id.as_str(), &controls.model);
+                if listing == Some(false) {
+                    return Err(Box::new(Expectation {
+                        rung: RUNG_UNSATISFIABLE,
+                        limit: false,
+                        key: key.to_owned(),
+                        pointer: "/payload/model_id".to_owned(),
+                        code: MODEL_NOT_FOUND,
+                        reason: "",
+                        detail_name: "model_id",
+                        detail_value: controls.model.clone(),
+                        diagnostic: codes::MODEL_NOT_IN_CATALOG,
+                        message: "submission selects a model the catalog served under this revision does not list"
+                            .to_owned(),
+                    }));
+                }
+                pending.model_listed = listing == Some(true);
+                pending.model_unjudged = listing.is_none();
                 Ok(true)
             }
             FEATURE_INSTRUCTIONS => Ok(true),
@@ -1128,6 +1153,17 @@ impl State {
             return Controls::default();
         }
         let controls = pending.controls.clone();
+        if pending.model_unjudged {
+            let held = HeldModel {
+                at,
+                envelope: e.clone(),
+                model: controls.model.clone(),
+                revision: pending.revision.clone(),
+                admitted: true,
+            };
+            let session = pending.session.clone();
+            self.hold_model(&session, held);
+        }
         if controls.model_present && p.model_id != controls.model {
             self.add_expected(
                 codes::UNAPPLIED_CONTROL,
@@ -1232,6 +1268,12 @@ impl State {
             pending.satisfiable.clone(),
             pending.queue.clone(),
         );
+        let (session, revision, model) = (
+            pending.session.clone(),
+            pending.revision.clone(),
+            pending.controls.model.clone(),
+        );
+        let (listed, unjudged) = (pending.model_listed, pending.model_unjudged);
         let err = payload::<ErrorResponse>(e).error;
         let (discharged, speaker) = self.attribute(&reply, &err);
         if discharged {
@@ -1240,6 +1282,18 @@ impl State {
         if let Some(expectation) = expectation {
             self.refusal_misses(at, e, &expectation, &speaker, &err);
             return;
+        }
+        if unjudged {
+            let held = HeldModel {
+                at,
+                envelope: e.clone(),
+                model,
+                revision,
+                admitted: false,
+            };
+            self.hold_model(&session, held);
+        } else if listed {
+            self.false_model_miss(at, e, &model);
         }
         let feature = detail(&err, "feature").unwrap_or_default();
         if err.code == UNSUPPORTED_FEATURE && satisfiable.contains(feature) {

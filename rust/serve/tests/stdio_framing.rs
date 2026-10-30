@@ -1,12 +1,14 @@
+mod support;
+
 use oap_serve::stdio::{serve, StdioError, StdioOptions};
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn run(input: &str, options: StdioOptions) -> (Vec<Value>, Result<(), StdioError>) {
     let hub = Hub::new(Registry::default_registry());
-    let mut output = Vec::new();
-    let result = serve(&hub, input.as_bytes(), &mut output, &options);
-    let lines = String::from_utf8(output)
+    let output = support::Captured::default();
+    let result = serve(&hub, input.as_bytes(), output.clone(), &options);
+    let lines = String::from_utf8(output.bytes())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -40,16 +42,16 @@ fn the_adapters_op_lists_the_registry() {
 #[test]
 fn a_response_line_carries_its_members_in_go_order() {
     let hub = Hub::new(Registry::default_registry());
-    let mut output = Vec::new();
+    let output = support::Captured::default();
     serve(
         &hub,
         "{\"id\":1,\"op\":\"bogus\"}\n".as_bytes(),
-        &mut output,
+        output.clone(),
         &StdioOptions::default(),
     )
     .unwrap();
     assert_eq!(
-        String::from_utf8(output).unwrap(),
+        String::from_utf8(output.bytes()).unwrap(),
         "{\"id\":1,\"ok\":false,\"result\":null,\"error\":{\"code\":\"unknown_op\",\"message\":\"no op \\\"bogus\\\"\"}}\n"
     );
 }
@@ -120,12 +122,7 @@ fn a_malformed_line_ends_serving_after_the_lines_before_it_are_answered() {
     let mut invalid = b"{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"".to_vec();
     invalid.extend_from_slice(b"\xff\"}\n");
     let hub = Hub::new(Registry::default_registry());
-    let result = serve(
-        &hub,
-        &invalid[..],
-        &mut Vec::new(),
-        &StdioOptions::default(),
-    );
+    let result = serve(&hub, &invalid[..], Vec::new(), &StdioOptions::default());
     assert!(matches!(
         result,
         Err(StdioError::MalformedLine { line: 2, .. })
@@ -138,13 +135,25 @@ fn a_line_over_the_frame_limit_ends_serving_and_a_limit_below_the_floor_is_refus
         "{{\"id\":1,\"op\":\"adapters\"}}\n{{\"id\":2,\"op\":\"adapters\",\"pad\":\"{}\"}}\n",
         "x".repeat(7000)
     );
-    let (lines, result) = run(&padded, StdioOptions { frame_limit: 6000 });
+    let (lines, result) = run(
+        &padded,
+        StdioOptions {
+            frame_limit: 6000,
+            ..StdioOptions::default()
+        },
+    );
     assert_eq!(lines.len(), 1);
     assert!(matches!(
         result,
         Err(StdioError::MalformedLine { line: 2, .. })
     ));
-    let (_, result) = run("", StdioOptions { frame_limit: 255 });
+    let (_, result) = run(
+        "",
+        StdioOptions {
+            frame_limit: 255,
+            ..StdioOptions::default()
+        },
+    );
     assert!(matches!(result, Err(StdioError::FrameLimit(255))));
 }
 
@@ -157,7 +166,10 @@ fn an_empty_input_ends_cleanly() {
 fn a_response_over_the_frame_limit_is_refused_and_serving_goes_on() {
     let (lines, result) = run(
         "{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adapters\",\"session_id\":\"none\"}\n",
-        StdioOptions { frame_limit: 1024 },
+        StdioOptions {
+            frame_limit: 1024,
+            ..StdioOptions::default()
+        },
     );
     result.unwrap();
     assert_eq!(lines[0]["id"], 1);
@@ -172,15 +184,15 @@ fn an_adapter_whose_descriptor_carries_no_revision_is_listed_with_an_error() {
         .register("bare", std::sync::Arc::new(Bare))
         .unwrap();
     let hub = Hub::new(registry);
-    let mut output = Vec::new();
+    let output = support::Captured::default();
     serve(
         &hub,
         "{\"id\":1,\"op\":\"adapters\"}\n".as_bytes(),
-        &mut output,
+        output.clone(),
         &StdioOptions::default(),
     )
     .unwrap();
-    let response: Value = serde_json::from_slice(&output).unwrap();
+    let response: Value = serde_json::from_slice(&output.bytes()).unwrap();
     let bare = &response["result"]["adapters"][0];
     assert_eq!(bare["name"], "bare");
     assert_eq!(

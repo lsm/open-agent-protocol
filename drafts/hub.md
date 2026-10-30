@@ -2534,6 +2534,19 @@ closed` and `the sweep waits no longer than the window it was given`, all four i
 | **The fix** | Landed as described: the contract member, and the exposure set on `Subscription`. What remains is an adapter that reports its own stream failures by run, which is that adapter's change, not the hub's. |
 | **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 
+### D32 — the Rust stdio frontend answers requests one at a time
+
+`oap_serve::stdio` (Decision 0052) reads, serves and answers each request
+before reading the next, where Go serves each in its own goroutine under the
+in-flight bounds of [Bounds on the stdio pipe](#bounds-on-the-stdio-pipe). Its
+output goes through one writer thread fed by a queue of 256 lines, and a
+subscription's pump writes to the same queue, so a host that stops reading
+fills the queue and the request loop then waits on it instead of answering
+`busy`. Shutdown is bounded either way: at the end of input the pumps are
+cancelled and the writer is given the 5-second window before it is abandoned,
+pinned by `a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window`.
+Concurrent serving with the `busy` bounds closes this.
+
 ### Recorded, and not divergences
 
 Three places where the two trees will *look* different and none of them is a
