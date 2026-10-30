@@ -38,6 +38,8 @@ pub enum HubError {
     },
     #[error("the session has no run to replay")]
     NoRunToResume,
+    #[error("the open cites a capability revision that is no longer current")]
+    StaleRevision { expected: String, current: String },
     #[error("the session is closed")]
     SessionClosed(SessionId),
     #[error("serve: event stream overflowed behind sequence {last_sequence} (run {run_id}); resume with a cursor after it")]
