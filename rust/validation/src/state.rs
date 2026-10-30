@@ -68,6 +68,7 @@ pub(crate) struct State {
     provided: HashMap<String, Vec<ToolDefinition>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
     model_catalogs: HashMap<String, model_catalog::SessionCatalog>,
+    held_models: HashMap<String, Vec<model_catalog::HeldModel>>,
     session_models: HashMap<String, default_model::SessionModel>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
     snapshot_claims: Vec<snapshot_claims::Claim>,
@@ -343,6 +344,7 @@ impl State {
             provided: HashMap::new(),
             pending_controls: HashMap::new(),
             model_catalogs: HashMap::new(),
+            held_models: HashMap::new(),
             session_models: HashMap::new(),
             steer_snapshots: Vec::new(),
             snapshot_claims: Vec::new(),
@@ -477,7 +479,7 @@ impl State {
             self.models_response_shape(at, e);
             self.record_model_catalog(e);
         } else if e.envelope_type == EnvelopeType::SESSION_MODEL_SWITCH_RESPONSE {
-            self.switched_model(e);
+            self.switched_model(at, e);
         }
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
             self.snapshot_descriptor();

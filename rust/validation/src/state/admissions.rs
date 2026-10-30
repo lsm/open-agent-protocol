@@ -241,6 +241,7 @@ impl State {
                 request.session = s(&p.session_id);
             }
         }
+        self.bind_open_submission(&reply, p.session_id.as_str());
         let fresh: Vec<&ActiveRun> = p
             .active_runs
             .iter()
@@ -272,6 +273,26 @@ impl State {
             ..MessageSubmitResponse::default()
         };
         self.admit_submission(at, e, admitted);
+    }
+
+    fn bind_open_submission(&mut self, reply: &str, session: &str) {
+        let Some(pending) = self.pending_controls.get_mut(reply) else {
+            return;
+        };
+        if pending.session == session {
+            return;
+        }
+        let previous = std::mem::replace(&mut pending.session, session.to_owned());
+        if let Some(queue) = self.open_submits.get_mut(&previous) {
+            queue.retain(|id| id != reply);
+            if queue.is_empty() {
+                self.open_submits.remove(&previous);
+            }
+        }
+        self.open_submits
+            .entry(session.to_owned())
+            .or_default()
+            .push(reply.to_owned());
     }
 
     pub(super) fn state_document(&mut self, at: (usize, usize), e: &Envelope) {
