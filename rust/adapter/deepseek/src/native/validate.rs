@@ -26,11 +26,8 @@ fn has(object: &Object, keys: &[&str]) -> bool {
 }
 
 fn strict_array(data: &[u8]) -> Option<Vec<Box<RawValue>>> {
-    let text = std::str::from_utf8(data).ok()?;
-    if oap_adapter::gojson::reject_duplicate_keys(data).is_err() {
-        return None;
-    }
-    serde_json::from_str::<Option<Vec<Box<RawValue>>>>(text)
+    let text = super::stream::go_text(data)?;
+    serde_json::from_str::<Option<Vec<Box<RawValue>>>>(&text)
         .ok()
         .map(Option::unwrap_or_default)
 }
