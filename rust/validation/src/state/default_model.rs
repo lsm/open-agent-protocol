@@ -43,7 +43,7 @@ impl State {
         }
     }
 
-    pub(super) fn switched_model(&mut self, e: &Envelope) {
+    pub(super) fn switched_model(&mut self, at: (usize, usize), e: &Envelope) {
         let p: SessionModelSwitchResponse = payload(e);
         let Some(request) = self.requests.get(&os(&e.in_reply_to)) else {
             return;
@@ -51,6 +51,20 @@ impl State {
         let asked: SessionModelSwitchRequest = payload(&request.envelope);
         if asked.session_id != p.session_id || asked.model_id != p.model_id {
             return;
+        }
+        if self.catalog_lists(p.session_id.as_str(), &p.model_id) == Some(false) {
+            let message = "model switch accepted an id absent from the session catalog";
+            let reply = os(&e.in_reply_to);
+            self.add_expected(
+                codes::MODEL_NOT_IN_CATALOG,
+                at,
+                e,
+                "/payload/model_id",
+                message,
+                "a listed model id",
+                &p.model_id,
+                &[reply.as_str()],
+            );
         }
         let track = self.session_models.entry(s(&p.session_id)).or_default();
         track.current = Some(p.model_id);
