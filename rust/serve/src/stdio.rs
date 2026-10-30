@@ -57,6 +57,7 @@ pub enum StdioError {
 struct Request {
     id: i64,
     op: String,
+    session_id: String,
     present: Vec<String>,
 }
 
@@ -85,6 +86,7 @@ pub fn serve(
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
     let mut number = 0;
+    let mut ids = 0;
     loop {
         number += 1;
         let malformed = |detail: String| StdioError::MalformedLine {
@@ -99,7 +101,7 @@ pub fn serve(
             return Ok(());
         };
         let request = decode_request(&frame).map_err(malformed)?;
-        let answer = dispatch(hub, &request);
+        let answer = dispatch(hub, &request, &mut ids);
         let Some(line) = fitted(request.id, answer, options.frame_limit)? else {
             continue;
         };
@@ -220,6 +222,9 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
             }
             "adapter" | "session_id" | "run_id" | "cursor" => {
                 typed(parsed.is_string() || parsed.is_null())?;
+                if key == "session_id" {
+                    request.session_id = parsed.as_str().unwrap_or_default().to_owned();
+                }
             }
             "limit" => typed(parsed.is_i64() || parsed.is_null())?,
             "allow_degraded_features" => typed(match &parsed {
@@ -272,8 +277,111 @@ impl Request {
     }
 }
 
-fn dispatch(hub: &Hub, request: &Request) -> Answer {
+fn next_id(ids: &mut u64, kind: &str) -> String {
+    *ids += 1;
+    format!("oap-{kind}-{ids}")
+}
+
+fn session(hub: &Hub, id: &str) -> Result<std::sync::Arc<crate::HubSession>, WireError> {
+    hub.session(&id.into()).map_err(|err| WireError {
+        code: "unknown_session",
+        message: trim(&err.to_string()),
+    })
+}
+
+fn rfc3339(ms: i64) -> String {
+    let seconds = ms.div_euclid(1000);
+    let (days, rest) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let day_of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    )
+}
+
+fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
     match request.op.as_str() {
+        "sessions" => {
+            request.only(&[])?;
+            let listed: Vec<Value> = block_on(hub.session_statuses())
+                .into_iter()
+                .map(|status| {
+                    let mut info = serde_json::json!({
+                        "session_id": status.session_id,
+                        "adapter": status.adapter,
+                        "status": status.status,
+                        "created_at": rfc3339(status.created_ms),
+                    });
+                    if let Some(run) = status.active_run_id {
+                        info["active_run_id"] = serde_json::json!(run);
+                    }
+                    if !status.active_runs.is_empty() {
+                        info["active_runs"] = serde_json::json!(status.active_runs);
+                    }
+                    info
+                })
+                .collect();
+            Ok(serde_json::json!({ "sessions": listed }))
+        }
+        "state" => {
+            request.only(&["session_id"])?;
+            let entry = session(hub, &request.session_id)?;
+            let state = match block_on(entry.state()) {
+                Ok(state) => state,
+                Err(crate::HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
+                    oap_protocol::SessionState {
+                        session_id: entry.id().clone(),
+                        status: oap_protocol::SessionStatus::CLOSED,
+                        ..oap_protocol::SessionState::default()
+                    }
+                }
+                Err(err) => {
+                    return Err(WireError {
+                        code: "state_failed",
+                        message: trim(&err.to_string()),
+                    })
+                }
+            };
+            let mut envelope = oap_protocol::Envelope::new(
+                oap_protocol::EnvelopeType::SESSION_STATE_RESPONSE,
+                next_id(ids, "response"),
+                &state,
+            )
+            .map_err(|err| WireError {
+                code: "internal",
+                message: trim(&err.to_string()),
+            })?;
+            envelope.in_reply_to = Some(next_id(ids, "request").into());
+            envelope.session_id = Some(state.session_id.clone());
+            Ok(serde_json::to_value(&envelope).unwrap_or(Value::Null))
+        }
+        "close" => {
+            request.only(&["session_id"])?;
+            let entry = session(hub, &request.session_id)?;
+            block_on(entry.close()).map_err(|err| WireError {
+                code: match &err {
+                    crate::HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
+                    crate::HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    _ => "internal",
+                },
+                message: trim(&err.to_string()),
+            })?;
+            Ok(Value::Null)
+        }
         "adapters" => {
             request.only(&[])?;
             Ok(adapters(hub))
@@ -354,4 +462,19 @@ fn response_line(id: i64, answer: Answer) -> Result<Vec<u8>, StdioError> {
         error,
     })
     .map_err(|_| StdioError::LineTooLarge)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rfc3339_spells_utc_seconds_across_leap_days_and_centuries() {
+        for (ms, want) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (951_782_400_000, "2000-02-29T00:00:00Z"),
+            (1_761_782_400_123, "2025-10-30T00:00:00Z"),
+            (4_102_444_799_000, "2099-12-31T23:59:59Z"),
+        ] {
+            assert_eq!(super::rfc3339(ms), want);
+        }
+    }
 }
