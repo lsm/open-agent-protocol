@@ -8,7 +8,8 @@ harness SDK runtime's JSON-RPC on stdio, pinned by
 So far it holds the native handshake, prompt, notification and event payload
 types, including Go's `MessageSource` rules for closed source kinds and its
 assistant stream records with the chunk shapes they carry, Go's
-`Event.Validate` for every pinned event type, and Go's
+`Event.Validate` for every pinned event type, `DecodeNotification` and the
+handshake and prompt validators, and Go's
 `DecodeStrict`: a repeated key is refused, an unknown member is refused, a
 null reads as the zero value, a null array element reads as its zero value,
 each invalid UTF-8 byte and each unpaired surrogate escape reads as U+FFFD,
