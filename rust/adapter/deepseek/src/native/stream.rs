@@ -194,15 +194,22 @@ fn has(object: &Object, keys: &[&str]) -> bool {
     keys.iter().all(|key| object.contains_key(*key))
 }
 
+pub(crate) fn go_text(data: &[u8]) -> Option<String> {
+    let text = super::go_lossy(data);
+    reject_duplicate_keys(text.as_bytes()).ok()?;
+    Some(replace_lone_surrogates(&text).into_owned())
+}
+
+pub(crate) fn is_json_null(text: &str) -> bool {
+    text.trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n')) == "null"
+}
+
 pub(crate) fn strict_object(data: &[u8]) -> Option<Object> {
-    let text = std::str::from_utf8(data).ok()?;
-    if reject_duplicate_keys(data).is_err() {
-        return None;
-    }
-    if text.trim() == "null" {
+    let text = go_text(data)?;
+    if is_json_null(&text) {
         return Some(Object::new());
     }
-    serde_json::from_str(text).ok()
+    serde_json::from_str(&text).ok()
 }
 
 pub(crate) fn carries_into_a_trace(raw: &str) -> bool {

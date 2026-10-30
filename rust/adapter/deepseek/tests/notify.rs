@@ -149,3 +149,21 @@ fn the_handshake_and_prompt_follow_the_pin() {
         Err(refused("prompt contentBlocks are invalid"))
     );
 }
+
+#[test]
+fn the_last_assistant_message_is_checked_in_frames_carrying_lone_surrogates_or_invalid_utf8() {
+    let frame = |agent: &[u8]| {
+        let mut data = br#"{"provider":"p","agentId":""#.to_vec();
+        data.extend_from_slice(agent);
+        data.extend_from_slice(
+            br#"","parentSessionId":"p","childSessionId":"c","status":"ok","stopReason":"completed","lastAssistantMessage":[{"type":"text","id":"x"}]}"#,
+        );
+        data
+    };
+    for agent in [&br"a\ud800"[..], &[b'a', 0xff][..]] {
+        assert_eq!(
+            decode_notification("subagent.finished", &frame(agent)).unwrap_err(),
+            refused("invalid subagent.finished lastAssistantMessage")
+        );
+    }
+}
