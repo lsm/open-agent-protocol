@@ -217,12 +217,19 @@ pub(super) struct Controls {
     present: bool,
     model_present: bool,
     model: String,
+    scope: String,
     choice: Option<ToolChoice>,
     catalog: Vec<String>,
     catalog_known: bool,
     schema: Option<Rc<OutputSchema>>,
     fixed_result: Option<String>,
     calls: BTreeMap<String, (String, bool)>,
+}
+
+impl Controls {
+    pub(super) fn model_control(&self) -> Option<(&str, &str)> {
+        (self.present && self.model_present).then_some((self.scope.as_str(), self.model.as_str()))
+    }
 }
 
 pub(super) struct PendingOpenSettings {
@@ -885,6 +892,11 @@ impl State {
         ];
         if controls.iter().any(|(_, present)| *present) {
             pending.controls.present = true;
+            pending.controls.scope = self
+                .feature_supports
+                .get(FEATURE_MODEL_SELECTION)
+                .map(|support| support.scope.clone())
+                .unwrap_or_default();
             for (key, present) in controls {
                 if !present {
                     continue;
