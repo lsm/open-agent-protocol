@@ -6,6 +6,7 @@
     "ext-core-invalid-stays-invalid",
     "ext-member-undeclared-still-rejected",
     "ext-member-validated",
+    "models-catalog-in-the-announce-window",
     "provider-attach-stale-catalog-omits-attached",
     "queue-state-earlier-anchor-answers-the-entry",
     "queue-state-lead-places-itself-beyond-the-queue",
