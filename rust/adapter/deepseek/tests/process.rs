@@ -144,3 +144,18 @@ fn close_without_a_shutdown_answer_kills_at_the_timeout() {
     );
     assert!(started.elapsed() < Duration::from_secs(3));
 }
+
+#[test]
+fn an_unacknowledged_shutdown_is_a_timeout_even_when_the_server_exits_on_eof() {
+    let _serial = serial();
+    let script = format!("{}; read line; cat >/dev/null", answer(1, &server_info()));
+    let config = ProcessConfig {
+        shutdown_timeout: Some(Duration::from_millis(300)),
+        ..server(&script)
+    };
+    let process = Process::start(config, deadline()).unwrap();
+    assert_eq!(
+        process.close(),
+        Err("deepseek rpc: shutdown timed out".into())
+    );
+}

@@ -186,15 +186,14 @@ impl Process {
             }
         });
         let deadline = Instant::now() + self.timeout;
-        let acknowledged = self
-            .client
-            .call(METHOD_SHUTDOWN, None, Some(deadline))
-            .is_ok_and(|raw| matches!(raw.get().as_bytes().first(), Some(b'n' | b'{')));
-        if acknowledged {
+        let answer = self.client.call(METHOD_SHUTDOWN, None, Some(deadline));
+        let expired =
+            matches!(&answer, Err(failure) if matches!(failure.fault, Fault::DeadlineExceeded));
+        if answer.is_ok_and(|raw| matches!(raw.get().as_bytes().first(), Some(b'n' | b'{'))) {
             self.child.release_stdin();
         }
         let left = deadline.saturating_duration_since(Instant::now());
-        let outcome = if self.child.await_exit(left) {
+        let outcome = if !expired && self.child.await_exit(left) {
             match wait_error(self.child.exit_status()) {
                 Some(failure) => Err(failure),
                 None => Ok(()),
