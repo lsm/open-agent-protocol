@@ -1,4 +1,5 @@
 mod stream;
+mod validate;
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
