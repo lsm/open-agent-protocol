@@ -12,12 +12,12 @@ use oap_protocol::{
 };
 use oap_serve::{attachment_gate, election_gate, resolve_attachments, Hub, HubError, Registry};
 
-struct Advertising(BTreeMap<String, FeatureSupport>);
+struct Advertising(BTreeMap<String, FeatureSupport>, &'static str);
 
 impl Adapter for Advertising {
     fn probe(&self) -> BoxFuture<'_, Descriptor> {
         let descriptor = Descriptor {
-            capability_revision: "rev-1".into(),
+            capability_revision: self.1.into(),
             capabilities: CapabilityDescriptor {
                 features: self.0.clone(),
                 ..CapabilityDescriptor::default()
@@ -41,6 +41,10 @@ fn support(level: SupportLevel, modes: &[&str]) -> FeatureSupport {
 }
 
 fn hub(features: &[(&str, FeatureSupport)]) -> Hub {
+    hub_at(features, "rev-1")
+}
+
+fn hub_at(features: &[(&str, FeatureSupport)], revision: &'static str) -> Hub {
     let mut registry = Registry::new();
     registry
         .register(
@@ -50,6 +54,7 @@ fn hub(features: &[(&str, FeatureSupport)]) -> Hub {
                     .iter()
                     .map(|(key, support)| ((*key).to_owned(), support.clone()))
                     .collect(),
+                revision,
             )),
         )
         .unwrap();
@@ -246,4 +251,49 @@ fn attachments_resolve_to_the_operators_sources_and_refuse_what_the_wire_may_not
         assert!(refusal.reason.contains(reason), "{}", refusal.reason);
         assert!(refusal.to_string().starts_with("tool source \""));
     }
+}
+
+#[test]
+fn a_gate_refuses_an_adapter_whose_descriptor_carries_no_revision() {
+    let reopen = SessionOpenRequest {
+        reopen: true,
+        ..SessionOpenRequest::default()
+    };
+    let bare = hub_at(
+        &[(FEATURE_OPEN_REOPEN, support(SupportLevel::NATIVE, &[]))],
+        "",
+    );
+    match block_on(election_gate(&bare, "adv", "", &reopen)) {
+        Err(HubError::Adapter(Error::Harness(message))) => {
+            assert_eq!(message, "adapter descriptor carries no capability revision");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_attachment_gate_refuses_a_degraded_attach_without_the_opt_in() {
+    let attaching = SessionOpenRequest {
+        tool_sources: vec![ToolSourceAttachment {
+            id: "fs".into(),
+            ..ToolSourceAttachment::default()
+        }],
+        ..SessionOpenRequest::default()
+    };
+    let degraded = hub(&[(
+        FEATURE_TOOL_SOURCES_ATTACH,
+        support(SupportLevel::DEGRADED, &[MODE_SESSION_OPEN]),
+    )]);
+    assert!(matches!(
+        block_on(attachment_gate(&degraded, "adv", "", &attaching)),
+        Err(HubError::Adapter(Error::DegradedControl(feature))) if feature == FEATURE_TOOL_SOURCES_ATTACH
+    ));
+    let opted = SessionOpenRequest {
+        allow_degraded_features: vec![FEATURE_TOOL_SOURCES_ATTACH.into()],
+        ..attaching
+    };
+    assert_eq!(
+        block_on(attachment_gate(&degraded, "adv", "", &opted)).unwrap(),
+        "rev-1"
+    );
 }

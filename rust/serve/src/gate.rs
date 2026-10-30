@@ -21,11 +21,7 @@ fn unadvertised(feature: &str, field: &str) -> HubError {
 }
 
 async fn current(hub: &Hub, name: &str, revision: &str) -> Result<Descriptor, HubError> {
-    let adapter = hub
-        .registry()
-        .lookup(name)
-        .ok_or_else(|| HubError::UnknownAdapter(name.into()))?;
-    let descriptor = adapter.probe().await?;
+    let descriptor = hub.probe(name).await?;
     if !revision.is_empty() && revision != descriptor.capability_revision {
         return Err(HubError::StaleRevision {
             expected: descriptor.capability_revision,
