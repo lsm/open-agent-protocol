@@ -1,3 +1,5 @@
+mod support;
+
 use futures::executor::block_on;
 use oap_adapter::OpenRequest;
 use oap_serve::stdio::{serve, StdioOptions};
@@ -21,9 +23,15 @@ fn hub_with(ids: &[&str]) -> Hub {
 
 fn answers(hub: &Hub, lines: &[&str]) -> Vec<Value> {
     let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
-    let mut output = Vec::new();
-    serve(hub, input.as_bytes(), &mut output, &StdioOptions::default()).unwrap();
-    String::from_utf8(output)
+    let output = support::Captured::default();
+    serve(
+        hub,
+        input.as_bytes(),
+        output.clone(),
+        &StdioOptions::default(),
+    )
+    .unwrap();
+    String::from_utf8(output.bytes())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())

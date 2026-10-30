@@ -1,5 +1,6 @@
 use std::fmt;
 use std::io::{BufRead, Write};
+use std::sync::Arc;
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use serde_json::value::RawValue;
 use serde_json::Value;
 
 use crate::live::block_on;
-use crate::Hub;
+use crate::{Hub, HubError, HubSession, Subscription};
 
 pub const DEFAULT_FRAME_LIMIT: usize = (16 << 20) + (2 << 20);
 
@@ -29,12 +30,16 @@ const PARAMS: [&str; 8] = [
 #[derive(Clone, Debug)]
 pub struct StdioOptions {
     pub frame_limit: usize,
+    pub max_subscriptions: usize,
 }
+
+pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 64;
 
 impl Default for StdioOptions {
     fn default() -> Self {
         Self {
             frame_limit: DEFAULT_FRAME_LIMIT,
+            max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
         }
     }
 }
@@ -59,6 +64,8 @@ struct Request {
     op: String,
     session_id: String,
     request: Option<Box<RawValue>>,
+    run_id: String,
+    after: Option<Box<RawValue>>,
     present: Vec<String>,
 }
 
@@ -77,17 +84,78 @@ struct Response<'a> {
     error: Option<WireError>,
 }
 
+pub const WRITE_QUEUE: usize = 256;
+
+pub const SHUTDOWN_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+type Lines = std::sync::mpsc::SyncSender<Vec<u8>>;
+
 pub fn serve(
     hub: &Hub,
-    mut input: impl BufRead,
-    mut output: impl Write,
+    input: impl BufRead,
+    mut output: impl Write + Send + 'static,
     options: &StdioOptions,
 ) -> Result<(), StdioError> {
     if options.frame_limit < MIN_FRAME_LIMIT {
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
+    let (writer, queue) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    let (drained, written) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in queue {
+            let wrote = output
+                .write_all(&line)
+                .and_then(|()| output.write_all(b"\n"))
+                .and_then(|()| output.flush());
+            if wrote.is_err() {
+                break;
+            }
+        }
+        let _ = drained.send(());
+    });
+    let mut pumps = Vec::new();
+    let served = serve_lines(hub, input, &writer, options, |pump| {
+        pumps.push((pump.subscription.canceller(), pump.attached()));
+        let writer = writer.clone();
+        let limit = options.frame_limit;
+        std::thread::spawn(move || pump.run(&writer, limit));
+    });
+    let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
+    for (canceller, _) in &pumps {
+        canceller.cancel();
+    }
+    while pumps
+        .iter()
+        .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    drop(writer);
+    let _ = written.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+    served
+}
+
+fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
+    writer
+        .send(line.to_vec())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the output closed"))
+}
+
+fn serve_lines(
+    hub: &Hub,
+    mut input: impl BufRead,
+    writer: &Lines,
+    options: &StdioOptions,
+    mut start: impl FnMut(Pump),
+) -> Result<(), StdioError> {
     let mut number = 0;
     let mut ids = 0;
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cap = match options.max_subscriptions {
+        0 => DEFAULT_MAX_SUBSCRIPTIONS,
+        cap => cap,
+    };
     loop {
         number += 1;
         let malformed = |detail: String| StdioError::MalformedLine {
@@ -102,14 +170,346 @@ pub fn serve(
             return Ok(());
         };
         let request = decode_request(&frame).map_err(malformed)?;
-        let answer = dispatch(hub, &request, &mut ids);
-        let Some(line) = fitted(request.id, answer, options.frame_limit)? else {
-            continue;
+        let (answer, pump) = if request.op == "events" {
+            match events(hub, &request, Attached::claim(&attached, cap)) {
+                Ok(pump) => (Ok(Value::Null), Some(pump)),
+                Err(Subscribing::Refused(error)) => (Err(error), None),
+                Err(Subscribing::Gap(gap)) => {
+                    if let Some(line) = fitted(request.id, Ok(Value::Null), options.frame_limit)? {
+                        emit(writer, &line)?;
+                    }
+                    let full = GapLine {
+                        event: "oap-replay-gap",
+                        id: request.id,
+                        session_id: &request.session_id,
+                        requested_after: gap.requested_after,
+                        oldest_available: gap.oldest_available,
+                        latest_available: gap.latest_available,
+                        message: "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1",
+                    };
+                    let minimal = GapLine {
+                        session_id: "",
+                        message: "",
+                        ..full
+                    };
+                    let fitting = [&full, &minimal].into_iter().find_map(|gap| {
+                        serde_json::to_vec(gap)
+                            .ok()
+                            .filter(|line| line.len() <= options.frame_limit)
+                    });
+                    if let Some(line) = fitting {
+                        emit(writer, &line)?;
+                    }
+                    continue;
+                }
+            }
+        } else {
+            (dispatch(hub, &request, &mut ids), None)
         };
-        output.write_all(&line)?;
-        output.write_all(b"\n")?;
-        output.flush()?;
+        if let Some(line) = fitted(request.id, answer, options.frame_limit)? {
+            emit(writer, &line)?;
+        }
+        if let Some(pump) = pump {
+            start(pump);
+        }
     }
+}
+
+enum Subscribing {
+    Refused(WireError),
+    Gap(oap_adapter::ReplayGap),
+}
+
+impl From<WireError> for Subscribing {
+    fn from(error: WireError) -> Self {
+        Subscribing::Refused(error)
+    }
+}
+
+struct Attached(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Attached {
+    fn claim(count: &Arc<std::sync::atomic::AtomicUsize>, cap: usize) -> Result<Self, WireError> {
+        use std::sync::atomic::Ordering;
+        let mut held = count.load(Ordering::SeqCst);
+        while held < cap {
+            match count.compare_exchange(held, held + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Ok(Attached(count.clone())),
+                Err(now) => held = now,
+            }
+        }
+        Err(wire(
+            "busy",
+            format!("the frontend is already serving {cap} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes \u{2014} send this request again once one has"),
+        ))
+    }
+}
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct Pump {
+    _attached: Attached,
+    id: i64,
+    entry: Arc<HubSession>,
+    subscription: Subscription,
+    resume_from: u64,
+}
+
+fn events(
+    hub: &Hub,
+    request: &Request,
+    attached: Result<Attached, WireError>,
+) -> Result<Pump, Subscribing> {
+    request.only(&["session_id", "run_id", "after"])?;
+    let entry = session(hub, &request.session_id)?;
+    if entry.is_closed() {
+        return Err(wire("session_closed", "the session is closed").into());
+    }
+    let after = match request.after.as_deref().map(RawValue::get) {
+        Some(text) if text != "null" => Some(
+            text.parse::<u64>()
+                .ok()
+                .filter(|_| text.bytes().all(|byte| byte.is_ascii_digit()))
+                .ok_or_else(|| {
+                    wire(
+                        "invalid_cursor",
+                        format!("cursor {:?} is not an unsigned sequence", trim(text)),
+                    )
+                })?,
+        ),
+        _ if !request.run_id.is_empty() => {
+            return Err(wire(
+                "invalid_cursor",
+                "run_id names the run a cursor belongs to; it has no meaning without after",
+            )
+            .into())
+        }
+        _ => None,
+    };
+    let attached = attached?;
+    let subscribed = match after {
+        Some(after) => {
+            let run = (!request.run_id.is_empty()).then(|| request.run_id.as_str().into());
+            block_on(hub.subscribe_after(entry.id(), run, after))
+        }
+        None => hub.subscribe(entry.id()),
+    };
+    let subscription = subscribed.map_err(|err| match err {
+        HubError::Adapter(oap_adapter::Error::ReplayGap(gap)) => Subscribing::Gap(gap),
+        err => Subscribing::Refused(wire(
+            match &err {
+                HubError::Adapter(oap_adapter::Error::SessionClosed)
+                | HubError::SessionClosed(_) => "session_closed",
+                HubError::NoRunToResume => "no_run_to_resume",
+                HubError::Adapter(oap_adapter::Error::ReplayCursorFuture) => "replay_cursor_future",
+                HubError::Adapter(oap_adapter::Error::RunNotFound) => "run_not_found",
+                HubError::UnknownSession(_) => "unknown_session",
+                _ => "internal",
+            },
+            err,
+        )),
+    })?;
+    Ok(Pump {
+        id: request.id,
+        entry,
+        subscription,
+        resume_from: after.unwrap_or(0),
+        _attached: attached,
+    })
+}
+
+#[derive(Serialize)]
+struct GapLine<'a> {
+    event: &'static str,
+    id: i64,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    session_id: &'a str,
+    requested_after: u64,
+    oldest_available: u64,
+    latest_available: u64,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    message: &'static str,
+}
+
+#[derive(Serialize)]
+struct Signal<'a> {
+    event: &'static str,
+    id: i64,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    session_id: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    run_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    joined_after: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    envelope: Option<&'a Value>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    message: &'static str,
+}
+
+impl Signal<'_> {
+    fn bare(event: &'static str, id: i64) -> Self {
+        Signal {
+            event,
+            id,
+            session_id: "",
+            run_id: "",
+            sequence: None,
+            last_sequence: None,
+            joined_after: None,
+            envelope: None,
+            message: "",
+        }
+    }
+}
+
+impl Pump {
+    fn send(&self, writer: &Lines, limit: usize, full: &Signal, minimal: &Signal) -> bool {
+        for signal in [full, minimal] {
+            if let Ok(line) = serde_json::to_vec(signal) {
+                if line.len() <= limit {
+                    return emit(writer, &line).is_ok();
+                }
+            }
+        }
+        false
+    }
+
+    fn attached(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self._attached.0.clone()
+    }
+
+    fn run(mut self, writer: &Lines, limit: usize) {
+        let id = self.id;
+        let session = self.entry.id().to_string();
+        if let Some((run, joined)) = self.subscription.joined_at() {
+            let full = Signal {
+                session_id: &session,
+                run_id: run.as_str(),
+                joined_after: Some(joined),
+                message: "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point",
+                ..Signal::bare("oap-subscribed", id)
+            };
+            let minimal = Signal {
+                joined_after: Some(joined),
+                ..Signal::bare("oap-subscribed", id)
+            };
+            if !self.send(writer, limit, &full, &minimal) {
+                return;
+            }
+        }
+        let mut delivered_run = oap_protocol::RunId::default();
+        let mut delivered = self.resume_from;
+        loop {
+            match block_on(futures_next(&mut self.subscription)) {
+                Some(Ok(envelope)) => {
+                    let sequence = envelope.sequence;
+                    let run = envelope.run_id.clone().unwrap_or_default();
+                    let value = serde_json::to_value(&envelope).unwrap_or(Value::Null);
+                    let line = Signal {
+                        session_id: &session,
+                        sequence,
+                        envelope: Some(&value),
+                        ..Signal::bare("envelope", id)
+                    };
+                    let fits = serde_json::to_vec(&line)
+                        .ok()
+                        .filter(|line| line.len() <= limit);
+                    let Some(line) = fits else {
+                        let at = sequence.unwrap_or(delivered);
+                        let full = Signal {
+                            session_id: &session,
+                            run_id: run.as_str(),
+                            sequence: Some(at),
+                            message: "envelope exceeds the frame limit; the subscription ended \u{2014} resume with a cursor after this sequence to continue past it",
+                            ..Signal::bare("oap-frame-limit", id)
+                        };
+                        let minimal = Signal {
+                            sequence: Some(at),
+                            ..Signal::bare("oap-frame-limit", id)
+                        };
+                        self.send(writer, limit, &full, &minimal);
+                        return;
+                    };
+                    if emit(writer, &line).is_err() {
+                        return;
+                    }
+                    let next = sequence.unwrap_or(0);
+                    if run != delivered_run {
+                        delivered_run = run;
+                        delivered = next;
+                    } else {
+                        delivered = delivered.max(next);
+                    }
+                }
+                Some(Err(HubError::Overflow {
+                    run_id,
+                    last_sequence,
+                })) => {
+                    let full = Signal {
+                        session_id: &session,
+                        run_id: run_id.as_str(),
+                        last_sequence: Some(last_sequence),
+                        message: "event stream consumer fell behind; resume with a cursor after this sequence",
+                        ..Signal::bare("oap-overflow", id)
+                    };
+                    let minimal = Signal {
+                        last_sequence: Some(last_sequence),
+                        ..Signal::bare("oap-overflow", id)
+                    };
+                    self.send(writer, limit, &full, &minimal);
+                    return;
+                }
+                Some(Err(_)) => {
+                    let full = Signal {
+                        session_id: &session,
+                        run_id: delivered_run.as_str(),
+                        sequence: Some(delivered),
+                        message: "the run's event stream failed; resume with a cursor after this sequence",
+                        ..Signal::bare("oap-stream-failed", id)
+                    };
+                    let minimal = Signal {
+                        sequence: Some(delivered),
+                        ..Signal::bare("oap-stream-failed", id)
+                    };
+                    self.send(writer, limit, &full, &minimal);
+                    return;
+                }
+                None => {
+                    if self.entry.is_closed() {
+                        let full = Signal {
+                            session_id: &session,
+                            message: "the session is closed",
+                            ..Signal::bare("oap-session-closed", id)
+                        };
+                        self.send(
+                            writer,
+                            limit,
+                            &full,
+                            &Signal::bare("oap-session-closed", id),
+                        );
+                    }
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn futures_next(
+    subscription: &mut Subscription,
+) -> impl std::future::Future<Output = Option<Result<oap_protocol::Envelope, HubError>>> + '_ {
+    std::future::poll_fn(move |context| {
+        futures_core::Stream::poll_next(std::pin::Pin::new(&mut *subscription), context)
+    })
 }
 
 enum FrameError {
@@ -223,8 +623,11 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
             }
             "adapter" | "session_id" | "run_id" | "cursor" => {
                 typed(parsed.is_string() || parsed.is_null())?;
-                if key == "session_id" {
-                    request.session_id = parsed.as_str().unwrap_or_default().to_owned();
+                let text = parsed.as_str().unwrap_or_default().to_owned();
+                match key.as_str() {
+                    "session_id" => request.session_id = text,
+                    "run_id" => request.run_id = text,
+                    _ => {}
                 }
             }
             "limit" => typed(parsed.is_i64() || parsed.is_null())?,
@@ -234,7 +637,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 _ => false,
             })?,
             "request" => request.request = Some(value),
-            "after" => {}
+            "after" => request.after = Some(value),
             _ => {
                 return Err(invalid(format!(
                     "field {key:?} must use its exact protocol spelling"

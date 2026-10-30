@@ -1,3 +1,5 @@
+mod support;
+
 use std::sync::Arc;
 
 use futures::executor::block_on;
@@ -56,9 +58,15 @@ fn envelope(kind: EnvelopeType, payload: &impl serde::Serialize) -> String {
 
 fn answer(hub: &Hub, op: &str, request: &str) -> Value {
     let line = format!("{{\"id\":9,\"op\":\"{op}\",\"session_id\":\"s\",\"request\":{request}}}\n");
-    let mut output = Vec::new();
-    serve(hub, line.as_bytes(), &mut output, &StdioOptions::default()).unwrap();
-    serde_json::from_slice(&output).unwrap()
+    let output = support::Captured::default();
+    serve(
+        hub,
+        line.as_bytes(),
+        output.clone(),
+        &StdioOptions::default(),
+    )
+    .unwrap();
+    serde_json::from_slice(&output.bytes()).unwrap()
 }
 
 #[test]
