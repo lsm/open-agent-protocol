@@ -12,7 +12,7 @@ pub(super) struct SessionCatalog {
 impl State {
     pub(super) fn record_model_catalog(&mut self, e: &Envelope) {
         let revision = e.capability_revision.clone().unwrap_or_default();
-        if revision.is_empty() || revision != self.current_capability {
+        if revision.is_empty() || revision != self.current_capability || self.capabilities_stale {
             return;
         }
         let binding = matches!(
