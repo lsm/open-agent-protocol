@@ -58,6 +58,7 @@ struct Request {
     id: i64,
     op: String,
     session_id: String,
+    request: Option<Box<RawValue>>,
     present: Vec<String>,
 }
 
@@ -232,7 +233,8 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 Value::Null => true,
                 _ => false,
             })?,
-            "after" | "request" => {}
+            "request" => request.request = Some(value),
+            "after" => {}
             _ => {
                 return Err(invalid(format!(
                     "field {key:?} must use its exact protocol spelling"
@@ -287,6 +289,180 @@ fn session(hub: &Hub, id: &str) -> Result<std::sync::Arc<crate::HubSession>, Wir
         code: "unknown_session",
         message: trim(&err.to_string()),
     })
+}
+
+fn wire(code: &'static str, message: impl fmt::Display) -> WireError {
+    WireError {
+        code,
+        message: trim(&message.to_string()),
+    }
+}
+
+const MAX_ENVELOPE_BYTES: usize = 16 << 20;
+
+fn gate_request(
+    raw: Option<&RawValue>,
+    want: &[oap_protocol::EnvelopeType],
+) -> Result<oap_protocol::Envelope, WireError> {
+    let raw = raw
+        .map(RawValue::get)
+        .filter(|text| *text != "null")
+        .ok_or_else(|| wire("invalid_request", "the op requires a \"request\" envelope"))?;
+    if raw.len() > MAX_ENVELOPE_BYTES {
+        return Err(wire(
+            "request_too_large",
+            "request envelope exceeds the daemon limit",
+        ));
+    }
+    let value: Value = serde_json::from_str(raw).map_err(|err| wire("malformed_json", err))?;
+    if !value.is_object() {
+        return Err(wire(
+            "malformed_json",
+            "the request envelope is not an object",
+        ));
+    }
+    let validator = crate::schema::envelope_validator().map_err(|err| wire("internal", err))?;
+    validator
+        .validate(&value)
+        .map_err(|err| wire("schema_invalid", err))?;
+    let envelope =
+        oap_protocol::Envelope::parse(raw.as_bytes()).map_err(|err| wire("malformed_json", err))?;
+    if !want.contains(&envelope.envelope_type) {
+        let names: Vec<&str> = want.iter().map(|kind| kind.as_str()).collect();
+        return Err(wire(
+            "type_mismatch",
+            format!(
+                "op expects {}, got {}",
+                names.join(" or "),
+                envelope.envelope_type.as_str()
+            ),
+        ));
+    }
+    Ok(envelope)
+}
+
+fn payload<T: serde::de::DeserializeOwned>(
+    envelope: &oap_protocol::Envelope,
+) -> Result<T, WireError> {
+    envelope
+        .decode_payload()
+        .map_err(|err| wire("invalid_payload", err))
+}
+
+fn reply(
+    kind: oap_protocol::EnvelopeType,
+    request: &oap_protocol::Envelope,
+    session_id: oap_protocol::SessionId,
+    run_id: oap_protocol::RunId,
+    body: &impl Serialize,
+    ids: &mut u64,
+) -> Answer {
+    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), body)
+        .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(request.id.clone());
+    response.session_id = Some(session_id);
+    response.run_id = Some(run_id);
+    response.capability_revision = request.capability_revision.clone();
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
+}
+
+fn adapter_code(err: &crate::HubError) -> &'static str {
+    use oap_adapter::Error;
+    match err {
+        crate::HubError::ScopeMismatch { .. } => "scope_mismatch",
+        crate::HubError::Adapter(Error::SessionClosed) => "session_closed",
+        crate::HubError::Adapter(Error::RunNotFound) => "run_not_found",
+        crate::HubError::Adapter(Error::RunAlreadyTerminal { .. }) => "run_terminal",
+        crate::HubError::Adapter(
+            Error::InteractionNotFound
+            | Error::InteractionResolved
+            | Error::WrongResponder
+            | Error::InvalidResolution,
+        ) => "resolution_rejected",
+        _ => "internal",
+    }
+}
+
+fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[oap_protocol::EnvelopeType::RUN_CANCEL_REQUEST],
+    )?;
+    let asked: oap_protocol::RunCancelRequest = payload(&envelope)?;
+    let entry = session(hub, &request.session_id)?;
+    if &asked.session_id != entry.id() {
+        return Err(wire(
+            "scope_mismatch",
+            format!(
+                "payload session_id \"{}\" does not match the addressed session \"{}\"",
+                asked.session_id,
+                entry.id()
+            ),
+        ));
+    }
+    let ack = block_on(entry.cancel(asked.run_id)).map_err(|err| wire(adapter_code(&err), err))?;
+    reply(
+        oap_protocol::EnvelopeType::RUN_CANCEL_RESPONSE,
+        &envelope,
+        ack.session_id.clone(),
+        ack.run_id.clone(),
+        &ack,
+        ids,
+    )
+}
+
+fn resolve(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+    use oap_protocol::EnvelopeType;
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[
+            EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST,
+            EnvelopeType::USER_INPUT_RESOLVE_REQUEST,
+            EnvelopeType::ACTION_CALL_RESOLVE_REQUEST,
+        ],
+    )?;
+    let entry = session(hub, &request.session_id)?;
+    let mut resolution = oap_adapter::InteractionResolution::default();
+    let (kind, interaction, session_id, _) =
+        if envelope.envelope_type == EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST {
+            let asked: oap_protocol::PermissionResolveRequest = payload(&envelope)?;
+            let named = (
+                EnvelopeType::ACTION_PERMISSION_RESOLVE_RESPONSE,
+                asked.interaction_id.clone(),
+                asked.session_id.clone(),
+                asked.run_id.clone(),
+            );
+            resolution.run_id = asked.run_id.clone();
+            resolution.responded_by = asked.responded_by.clone();
+            resolution.permission = Some(asked);
+            named
+        } else if envelope.envelope_type == EnvelopeType::USER_INPUT_RESOLVE_REQUEST {
+            let asked: oap_protocol::UserInputResolveRequest = payload(&envelope)?;
+            let named = (
+                EnvelopeType::USER_INPUT_RESOLVE_RESPONSE,
+                asked.interaction_id.clone(),
+                asked.session_id.clone(),
+                asked.run_id.clone(),
+            );
+            resolution.run_id = asked.run_id.clone();
+            resolution.responded_by = asked.responded_by.clone();
+            resolution.input = Some(asked);
+            named
+        } else {
+            return Err(wire(
+                "unsupported_feature",
+                "the hub does not yet resolve provided-tool calls over stdio",
+            ));
+        };
+    let run = resolution.run_id.clone();
+    block_on(entry.resolve(resolution)).map_err(|err| wire(adapter_code(&err), err))?;
+    let body = oap_protocol::UserInputResolveResponse {
+        interaction_id: interaction,
+        session_id,
+        run_id: run.clone(),
+        accepted: true,
+    };
+    reply(kind, &envelope, entry.id().clone(), run, &body, ids)
 }
 
 fn rfc3339(ms: i64) -> String {
@@ -368,6 +544,14 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
             envelope.in_reply_to = Some(next_id(ids, "request").into());
             envelope.session_id = Some(state.session_id.clone());
             Ok(serde_json::to_value(&envelope).unwrap_or(Value::Null))
+        }
+        "cancel" => {
+            request.only(&["session_id", "request"])?;
+            cancel(hub, request, ids)
+        }
+        "resolve" => {
+            request.only(&["session_id", "request"])?;
+            resolve(hub, request, ids)
         }
         "close" => {
             request.only(&["session_id"])?;
