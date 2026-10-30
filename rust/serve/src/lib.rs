@@ -1,6 +1,7 @@
 mod hub;
 mod live;
 mod registry;
+mod schema;
 pub mod stdio;
 
 pub use hub::{Hub, HubError, HubOptions, HubSession, Opened, SessionListing, DEFAULT_PARTICIPANT};
