@@ -4,8 +4,11 @@ The Rust port of `go/adapter/hermes`: an OAP adapter over the Hermes TUI
 gateway's JSON-RPC on stdio, pinned by `harnesses/hermes.json` and judged by
 the corpus in `fixtures/adapters/hermes-v0.22.2`.
 
-So far it holds the gateway's event envelope and the payloads of its run
-events, decoded as Go's `DecodeStrict` does: unknown members refused, a null
+So far it holds the gateway's event envelope, the payloads of its run events,
+and its server requests (approval, clarify, sudo, secret) with Go's
+`DecodeServerRequest` and `RequestSessionID`. An approval request and
+`session.info` decode leniently, as Go's `json.Unmarshal` does; everything else
+decodes as Go's `DecodeStrict` does: unknown members refused, a null
 member read as its zero value, a trailing value refused, only JSON's four
 whitespace characters skipped, and an unpaired surrogate escape or invalid
 UTF-8 inside a string read as U+FFFD. Three of Go's `encoding/json` rules differ:

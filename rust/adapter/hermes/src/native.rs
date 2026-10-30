@@ -1,6 +1,15 @@
+mod requests;
+
 use oap_adapter::gojson::{raw, zero};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
+
+pub use requests::{
+    decode_server_request, request_session_id, ApprovalRequestParams, ApprovalResult,
+    ClarifyAnswersResult, ClarifyQuestion, ClarifyRequestParams, ErrorPayload,
+    RequestCancelPayload, SecretRequestParams, ServerRequest, SessionInfoPayload, SubagentPayload,
+    SudoRequestParams, TaskCompletePayload, ValueResult, INVALID,
+};
 
 pub const NOTIFY_EVENT: &str = "event";
 pub const METHOD_SESSION_CREATE: &str = "session.create";
