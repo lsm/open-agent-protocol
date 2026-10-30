@@ -26,3 +26,11 @@ prompt results decode leniently, as Go's client does. Three of Go's
 - A malformed document or a mistyped member is refused with the duplicate-key
   walker's `invalid JSON` or with serde_json's wording rather than Go's. A
   trailing value carries Go's `trailing JSON value`.
+
+`process::Process` is Go's launcher: it validates the `initialize` params,
+speaks the shared JSON-RPC client in its strict `deepseek` dialect with every
+notification checked by `decode_notification`, and takes the server info from
+the first `initialize` response, refusing any observation before it. A `null`
+result decodes as an empty one, as Go's does. It closes by asking for
+`shutdown`, releasing stdin only once the server acknowledges it, and kills the
+child at the shutdown timeout.
