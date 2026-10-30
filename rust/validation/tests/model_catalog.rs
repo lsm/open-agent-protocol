@@ -71,3 +71,8 @@ fn only_a_catalog_served_under_the_current_revision_and_binding_judges_a_selecti
     assert_eq!(catalog_misses("older-revision"), [admitted]);
     assert_eq!(catalog_misses("degraded-catalog"), []);
 }
+
+#[test]
+fn a_catalog_served_in_the_announce_window_binds_nothing() {
+    assert_eq!(catalog_misses("announce-window"), []);
+}
