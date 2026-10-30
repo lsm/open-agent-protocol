@@ -368,6 +368,25 @@ impl Hub {
         Ok(Subscription::replay(run, after, stream))
     }
 
+    pub async fn adapters(&self) -> Vec<(String, Result<oap_adapter::Descriptor, Error>)> {
+        let mut statuses = Vec::new();
+        for name in self.shared.registry.names() {
+            if let Some(adapter) = self.shared.registry.lookup(&name) {
+                let probed = adapter.probe().await.and_then(|descriptor| {
+                    if descriptor.capability_revision.is_empty() {
+                        Err(Error::harness(
+                            "adapter descriptor carries no capability revision",
+                        ))
+                    } else {
+                        Ok(descriptor)
+                    }
+                });
+                statuses.push((name, probed));
+            }
+        }
+        statuses
+    }
+
     pub fn subscribe(&self, id: &SessionId) -> Result<Subscription, HubError> {
         let entry = self.session(id)?;
         let (sub, joined) = entry
