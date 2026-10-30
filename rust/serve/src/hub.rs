@@ -21,7 +21,7 @@ pub const DEFAULT_PARTICIPANT: &str = "user";
 pub enum HubError {
     #[error("no adapter {0:?}")]
     UnknownAdapter(String),
-    #[error("unknown session {0:?}")]
+    #[error("no session \"{0}\"")]
     UnknownSession(SessionId),
     #[error("session {0:?} already exists")]
     SessionExists(SessionId),
@@ -269,6 +269,7 @@ impl Hub {
             options: self.shared.options.clone(),
             record,
             live: Mutex::default(),
+            created_ms: now_ms(),
         });
         let added = {
             let mut sessions = self.shared.sessions();
@@ -395,6 +396,29 @@ impl Hub {
         Ok(Subscription::live(entry, sub, joined))
     }
 
+    pub async fn session_statuses(&self) -> Vec<SessionListing> {
+        let mut statuses = Vec::new();
+        for entry in self.sessions() {
+            let state = entry.state().await;
+            if entry.is_closed() {
+                continue;
+            }
+            let (status, active_run_id, active_runs) = match state {
+                Ok(state) => (state.status, state.active_run_id, state.active_runs),
+                Err(_) => (SessionStatus::ERROR, None, Vec::new()),
+            };
+            statuses.push(SessionListing {
+                session_id: entry.id.clone(),
+                adapter: entry.adapter.clone(),
+                status,
+                active_run_id,
+                active_runs,
+                created_ms: entry.created_ms,
+            });
+        }
+        statuses
+    }
+
     pub fn sessions(&self) -> Vec<Arc<HubSession>> {
         self.shared.sessions().live.values().cloned().collect()
     }
@@ -419,11 +443,26 @@ pub struct HubSession {
     options: HubOptions,
     record: Record,
     live: Mutex<Live>,
+    created_ms: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionListing {
+    pub session_id: SessionId,
+    pub adapter: String,
+    pub status: SessionStatus,
+    pub active_run_id: Option<RunId>,
+    pub active_runs: Vec<oap_protocol::ActiveRun>,
+    pub created_ms: i64,
 }
 
 impl HubSession {
     pub fn id(&self) -> &SessionId {
         &self.id
+    }
+
+    pub fn created_ms(&self) -> i64 {
+        self.created_ms
     }
 
     pub fn adapter(&self) -> &str {
