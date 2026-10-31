@@ -24,7 +24,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapters: acp, claude, codex, deepseek, hermes, opencode, pi | done (shared corpora) | done (shared corpora) | missing |
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | missing |
-| Hub, stdio | done | done | partial: work verbs pending; requests served one at a time (`drafts/hub.md` D32) |
+| Hub, stdio | done | done | partial: requests served one at a time (`drafts/hub.md` D32) |
 | Hub, HTTP and SSE | done | done | missing |
 | `serve agent` endpoint | done | done | missing |
 | Conformance runner | partial: asks no `session.list` | done | missing |
@@ -44,7 +44,7 @@ missing; Rust 3 done, 4 partial, 12 missing.
 | --- | --- | --- | --- |
 | `fixtures/manifest.json`, 785 traces | gates judge 669; skip codes not yet implemented | all 785, exact codes | 68 decode and schema traces only |
 | Adapter corpora, byte for byte | yes | yes | no |
-| Hub differential (`goap` vs `oapx` stdio) | yes | yes | yes, against `oap-rust-hub`, but not the work-verb scenarios |
+| Hub differential (`goap` vs `oapx` stdio) | yes | yes | yes, against `oap-rust-hub`, every scenario |
 | Served backend parity (`TestBackendsMatchOapx`) | yes | yes | no |
 
 The Zig semantic gate skips any code Zig has not implemented, so a green Zig

@@ -74,11 +74,11 @@ struct Request {
 }
 
 #[derive(Serialize)]
-struct WireError {
-    code: &'static str,
-    message: String,
+pub(crate) struct WireError {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<Value>,
+    pub(crate) details: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -431,7 +431,11 @@ struct Pump {
     resume_from: u64,
 }
 
-fn detailed(code: &'static str, message: impl fmt::Display, details: Value) -> WireError {
+pub(crate) fn detailed(
+    code: &'static str,
+    message: impl fmt::Display,
+    details: Value,
+) -> WireError {
     WireError {
         code,
         message: trim(&message.to_string()),
@@ -439,7 +443,7 @@ fn detailed(code: &'static str, message: impl fmt::Display, details: Value) -> W
     }
 }
 
-fn refusal(err: &HubError) -> Option<WireError> {
+pub(crate) fn refusal(err: &HubError) -> Option<WireError> {
     use oap_adapter::Error;
     match err {
         HubError::StaleRevision { expected, current } => Some(detailed(
@@ -1107,7 +1111,7 @@ fn session(hub: &Hub, id: &str) -> Result<std::sync::Arc<crate::HubSession>, Wir
     })
 }
 
-fn wire(code: &'static str, message: impl fmt::Display) -> WireError {
+pub(crate) fn wire(code: &'static str, message: impl fmt::Display) -> WireError {
     WireError {
         code,
         message: trim(&message.to_string()),
@@ -1643,16 +1647,26 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
                 catalog.revision,
             )
         }
+        "work.start" => {
+            request.only(&["adapter", "request"])?;
+            crate::workwire::start(hub, &request.adapter, request.request.as_deref())
+        }
+        "work.send" => {
+            request.only(&["session_id", "request"])?;
+            crate::workwire::send(
+                hub,
+                &request.session_id.as_str().into(),
+                request.request.as_deref(),
+            )
+        }
         "work.list" => {
             request.only(&["request"])?;
             crate::workwire::parse_list(request.request.as_deref())
                 .and_then(|asked| crate::workwire::list(hub, asked))
-                .map_err(|refused| wire(refused.code, refused.message))
         }
         "work.capabilities" => {
             request.only(&[])?;
             crate::workwire::capabilities(hub)
-                .map_err(|refused| wire(refused.code, refused.message))
         }
         "work.status" | "work.stop" | "work.read" => {
             let id = oap_protocol::SessionId::from(request.session_id.as_str());
@@ -1677,7 +1691,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
                     crate::workwire::read(hub, &id, after, request.limit)
                 }
             };
-            answered.map_err(|refused| wire(refused.code, refused.message))
+            answered
         }
         "transcript" => {
             request.only(&["session_id", "cursor", "limit"])?;

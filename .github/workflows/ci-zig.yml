@@ -536,7 +536,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --quiet --manifest-path rust/Cargo.toml -p oap-serve --bin oap-rust-hub
-          OAP_RUST_HUB_BIN="$PWD/rust/target/debug/oap-rust-hub" go test ./go/cmd/goap/ -run 'TestHubStdio(AnswersGoapAndRustTheSame|RustSkips)' -v
+          OAP_RUST_HUB_BIN="$PWD/rust/target/debug/oap-rust-hub" go test ./go/cmd/goap/ -run 'TestHubStdioAnswersGoapAndRustTheSame' -v
 
       - name: Tests leave no credential store in the checkout
         if: always()
