@@ -1,6 +1,9 @@
 mod support;
 
-use oap_protocol::{Envelope, EnvelopeType, SessionOpenRequest, ToolSourceAttachment};
+use oap_protocol::{
+    Envelope, EnvelopeType, Message, MessageContent, MessageRole, OpenMessage,
+    RequestedDeliveryMode, SessionOpenRequest, ToolSourceAttachment,
+};
 use oap_serve::stdio::{serve, StdioOptions};
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
@@ -211,4 +214,95 @@ fn an_oversized_open_response_rolls_back_a_minted_session_and_keeps_a_named_one(
         .unwrap()
         .ends_with("the session is open under the session_id the request supplied"));
     assert!(hub.session(&"s".into()).is_ok());
+}
+
+fn carrying(delivery: RequestedDeliveryMode) -> SessionOpenRequest {
+    SessionOpenRequest {
+        message: Some(OpenMessage {
+            delivery,
+            messages: vec![Message {
+                role: MessageRole::USER,
+                content: MessageContent::from_text("run"),
+                ..Message::default()
+            }],
+            ..OpenMessage::default()
+        }),
+        ..opening("s")
+    }
+}
+
+#[test]
+fn an_open_carrying_a_message_reports_the_run_it_admitted_in_its_state() {
+    let hub = Hub::new(Registry::default_registry());
+    let answered = lines(
+        &hub,
+        &[open_line(
+            1,
+            "memory",
+            &request(&carrying(RequestedDeliveryMode::AUTO), None),
+        )],
+    );
+    let state = &answered[0]["result"]["payload"];
+    assert_eq!(state["status"], "running", "{}", answered[0]);
+    let run = &state["active_run_id"];
+    assert!(run.is_string());
+    let active = &state["active_runs"][0];
+    assert_eq!(&active["run_id"], run);
+    assert_eq!(active["relationship"], "primary");
+    assert_eq!(
+        active["admitted_submit_requests"],
+        serde_json::json!(["req-open"])
+    );
+}
+
+#[test]
+fn an_open_whose_message_is_refused_rolls_its_session_back() {
+    let hub = Hub::new(Registry::default_registry());
+    let answered = lines(
+        &hub,
+        &[open_line(
+            1,
+            "memory",
+            &request(&carrying(RequestedDeliveryMode::STEER), None),
+        )],
+    );
+    assert_eq!(
+        answered[0]["error"]["code"], "invalid_steer_target",
+        "{}",
+        answered[0]
+    );
+    assert!(hub.session(&"s".into()).is_err());
+    assert!(hub.sessions().is_empty());
+}
+
+#[test]
+fn an_oversized_open_response_rolls_back_a_named_session_whose_message_it_admitted() {
+    let hub = Hub::new(Registry::default_registry());
+    let line = open_line(
+        1,
+        "memory",
+        &request(&carrying(RequestedDeliveryMode::AUTO), None),
+    );
+    let answered = lines_within(
+        &hub,
+        std::slice::from_ref(&line),
+        &StdioOptions {
+            frame_limit: line.len() + 8,
+            ..StdioOptions::default()
+        },
+    );
+    assert_eq!(
+        answered[0]["error"]["code"], "response_too_large",
+        "{}",
+        answered[0]
+    );
+    assert!(
+        answered[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("the session was rolled back"),
+        "{}",
+        answered[0]
+    );
+    assert!(hub.session(&"s".into()).is_err());
 }
