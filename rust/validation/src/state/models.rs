@@ -38,6 +38,9 @@ impl State {
                 &[],
             );
         }
+        if !p.providers.is_empty() {
+            self.catalog_providers(at, e, &p);
+        }
         if !p.current_model_id.is_empty() && !ids.contains(p.current_model_id.as_str()) {
             self.add_expected(
                 codes::MODEL_NOT_IN_CATALOG,
@@ -48,6 +51,43 @@ impl State {
                 "one of the catalog's own ids",
                 &p.current_model_id,
                 &[],
+            );
+        }
+    }
+
+    fn catalog_providers(&mut self, at: (usize, usize), e: &Envelope, p: &ModelsResponse) {
+        let mut declared = HashSet::new();
+        for provider in &p.providers {
+            if !declared.insert(provider.id.as_str()) {
+                let message = "catalog lists two provider descriptors under one id, so a provider_id resolves to neither";
+                self.add_expected(
+                    codes::DUPLICATE_PROVIDER,
+                    at,
+                    e,
+                    "/payload/providers",
+                    message,
+                    "one descriptor per id",
+                    &provider.id,
+                    &[],
+                );
+            }
+        }
+        let mut reported = HashSet::new();
+        for model in &p.models {
+            let provider = model.provider_id.as_str();
+            if provider.is_empty() || declared.contains(provider) || !reported.insert(provider) {
+                continue;
+            }
+            let message = "a model attributes itself to a provider the catalog does not declare";
+            self.add_expected(
+                codes::UNMATCHED_PROVIDER,
+                at,
+                e,
+                "/payload/models",
+                message,
+                "a provider declared in providers",
+                provider,
+                &[model.id.as_str()],
             );
         }
     }
