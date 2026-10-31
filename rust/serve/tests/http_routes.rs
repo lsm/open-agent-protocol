@@ -173,3 +173,85 @@ fn a_connection_past_the_bound_is_closed_unanswered_and_serving_resumes_after() 
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(get(addr, "/adapters").status, 200);
 }
+
+fn read_within(stream: &mut TcpStream, wait: std::time::Duration) -> Vec<u8> {
+    stream.set_read_timeout(Some(wait)).unwrap();
+    let mut raw = Vec::new();
+    let _ = stream.read_to_end(&mut raw);
+    raw
+}
+
+#[test]
+fn a_peer_that_connects_and_says_nothing_is_given_up_on() {
+    let addr = started(
+        hub(),
+        HttpOptions {
+            max_connections: 1,
+            header_timeout: Some(std::time::Duration::from_millis(200)),
+            ..HttpOptions::default()
+        },
+    );
+    let mut silent = TcpStream::connect(addr).unwrap();
+    assert!(read_within(&mut silent, std::time::Duration::from_secs(5)).is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(get(addr, "/adapters").status, 200);
+}
+
+#[test]
+fn a_gate_answers_on_the_head_without_waiting_for_a_declared_body() {
+    let addr = started(hub(), HttpOptions::default());
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST /sessions HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://evil.test\r\nContent-Length: 4096\r\n\r\nhello"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let raw = read_within(&mut stream, std::time::Duration::from_secs(5));
+    assert!(
+        raw.starts_with(b"HTTP/1.1 403"),
+        "{}",
+        String::from_utf8_lossy(&raw)
+    );
+}
+
+#[test]
+fn a_head_past_its_budget_is_431_and_a_malformed_one_is_a_400_that_carries_its_body() {
+    let addr = started(hub(), HttpOptions::default());
+    let mut endless = TcpStream::connect(addr).unwrap();
+    let _ = endless.write_all(&vec![b'a'; 70 * 1024]);
+    let raw = read_within(&mut endless, std::time::Duration::from_secs(5));
+    assert!(
+        raw.starts_with(b"HTTP/1.1 431"),
+        "{}",
+        String::from_utf8_lossy(&raw)
+    );
+    let garbage = ask(addr, "GARBAGE\r\n\r\n");
+    assert_eq!(garbage.status, 400);
+    assert_eq!(garbage.body, b"400 Bad Request\n");
+}
+
+#[test]
+fn a_query_limit_is_read_only_by_the_route_that_takes_one_and_a_path_keeps_its_plus() {
+    let hub = hub();
+    block_on(hub.open(
+        "memory",
+        oap_adapter::OpenRequest {
+            session_id: "a+b".into(),
+            ..oap_adapter::OpenRequest::default()
+        },
+    ))
+    .unwrap();
+    let addr = started(hub, HttpOptions::default());
+    assert_eq!(get(addr, "/adapters?limit=ten").status, 200);
+    let state = get(addr, "/sessions/a+b/state");
+    assert_eq!(
+        state.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&state.body)
+    );
+    assert_eq!(state.json()["session_id"], "a+b");
+}

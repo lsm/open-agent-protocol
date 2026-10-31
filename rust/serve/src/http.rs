@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -12,10 +12,13 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:6270";
 pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
 const MAX_HEADER_BYTES: usize = 64 << 10;
 
+pub const DEFAULT_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Clone, Debug, Default)]
 pub struct HttpOptions {
     pub host_allowlist: Vec<String>,
     pub max_connections: usize,
+    pub header_timeout: Option<std::time::Duration>,
 }
 
 struct Served {
@@ -24,6 +27,7 @@ struct Served {
     ids: Ids,
     open: AtomicUsize,
     max: usize,
+    header_timeout: std::time::Duration,
 }
 
 pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> std::io::Result<()> {
@@ -40,6 +44,7 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
             0 => DEFAULT_MAX_CONNECTIONS,
             max => max,
         },
+        header_timeout: options.header_timeout.unwrap_or(DEFAULT_HEADER_TIMEOUT),
     });
     for stream in listener.incoming() {
         let stream = stream?;
@@ -86,7 +91,7 @@ pub(crate) struct Answer {
     pub(crate) body: Vec<u8>,
 }
 
-fn decode(text: &str) -> String {
+fn decode(text: &str, plus_is_space: bool) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;
@@ -100,7 +105,7 @@ fn decode(text: &str) -> String {
                 out.push(byte);
                 at += 3;
             }
-            (b'+', _) => {
+            (b'+', _) if plus_is_space => {
                 out.push(b' ');
                 at += 1;
             }
@@ -113,44 +118,77 @@ fn decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn read_head(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Vec<u8>>> {
+enum Head {
+    Read(Vec<u8>),
+    TooLarge,
+    Gone,
+}
+
+fn read_head(stream: &TcpStream, budget: std::time::Duration) -> std::io::Result<Head> {
+    let deadline = std::time::Instant::now() + budget;
     let mut head = Vec::new();
+    let mut chunk = [0u8; 4096];
     loop {
-        let read = reader.read_until(b'\n', &mut head)?;
-        if read == 0 {
-            return Ok(None);
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(Head::Gone);
         }
-        if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
-            return Ok(Some(head));
+        stream.set_read_timeout(Some(left))?;
+        let read = match (&*stream).read(&mut chunk) {
+            Ok(read) => read,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(Head::Gone)
+            }
+            Err(err) => return Err(err),
+        };
+        if read == 0 {
+            return Ok(Head::Gone);
+        }
+        head.extend_from_slice(&chunk[..read]);
+        if let Some(end) = head.windows(4).position(|window| window == b"\r\n\r\n") {
+            head.truncate(end + 4);
+            return Ok(Head::Read(head));
         }
         if head.len() > MAX_HEADER_BYTES {
-            return Ok(None);
+            return Ok(Head::TooLarge);
         }
     }
 }
 
 impl Served {
     fn connection(&self, stream: TcpStream) -> std::io::Result<()> {
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let Some(head) = read_head(&mut reader)? else {
-            return Ok(());
+        let head = match read_head(&stream, self.header_timeout)? {
+            Head::Read(head) => head,
+            Head::TooLarge => {
+                return respond(
+                    &stream,
+                    &plain(431, "431 Request Header Fields Too Large\n"),
+                    true,
+                )
+            }
+            Head::Gone => return Ok(()),
         };
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut parsed = httparse::Request::new(&mut headers);
         if !matches!(parsed.parse(&head), Ok(httparse::Status::Complete(_))) {
-            return respond(&stream, &plain(400, "400 Bad Request\n"), false);
+            return respond(&stream, &plain(400, "400 Bad Request\n"), true);
         }
         let target = parsed.path.unwrap_or("/");
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let asked = Asked {
             method: parsed.method.unwrap_or("GET").to_owned(),
-            path: decode(path),
+            path: decode(path, false),
             query: query
                 .split('&')
                 .filter(|pair| !pair.is_empty())
                 .map(|pair| {
                     let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-                    (decode(key), decode(value))
+                    (decode(key, true), decode(value, true))
                 })
                 .collect(),
             headers: parsed
@@ -164,17 +202,11 @@ impl Served {
                 })
                 .collect(),
         };
-        let length: usize = asked
-            .header("Content-Length")
-            .and_then(|length| length.trim().parse().ok())
-            .unwrap_or(0);
-        let mut body = Vec::new();
-        reader.by_ref().take(length as u64).read_to_end(&mut body)?;
-        let answer = self.answer(&asked, &body);
+        let answer = self.answer(&asked);
         respond(&stream, &answer, asked.method != "HEAD")
     }
 
-    fn answer(&self, asked: &Asked, _body: &[u8]) -> Answer {
+    fn answer(&self, asked: &Asked) -> Answer {
         if asked.header("Origin").is_some() {
             return self.refused(
                 403,
@@ -238,7 +270,7 @@ impl Served {
             cursor: asked.query("cursor").unwrap_or_default().to_owned(),
             ..stdio::Request::default()
         };
-        if let Some(limit) = asked.query("limit") {
+        if let Some(limit) = asked.query("limit").filter(|_| op == "history") {
             match limit.parse::<i64>() {
                 Ok(limit) => request.limit = Some(limit),
                 Err(_) => {
@@ -325,6 +357,7 @@ fn reason(status: u16) -> &'static str {
         405 => "Method Not Allowed",
         409 => "Conflict",
         413 => "Payload Too Large",
+        431 => "Request Header Fields Too Large",
         415 => "Unsupported Media Type",
         503 => "Service Unavailable",
         _ => "Internal Server Error",
