@@ -47,7 +47,17 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
         header_timeout: options.header_timeout.unwrap_or(DEFAULT_HEADER_TIMEOUT),
     });
     for stream in listener.incoming() {
-        let stream = stream?;
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(err) => match accepted(&err) {
+                Accept::Again => continue,
+                Accept::Later => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                Accept::Stop => return Err(err),
+            },
+        };
         if served.open.fetch_add(1, Ordering::SeqCst) >= served.max {
             served.open.fetch_sub(1, Ordering::SeqCst);
             continue;
@@ -59,6 +69,27 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
         });
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Accept {
+    Again,
+    Later,
+    Stop,
+}
+
+fn accepted(err: &std::io::Error) -> Accept {
+    use std::io::ErrorKind;
+    match err.kind() {
+        ErrorKind::ConnectionAborted
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionRefused
+        | ErrorKind::Interrupted
+        | ErrorKind::WouldBlock
+        | ErrorKind::TimedOut => Accept::Again,
+        _ if matches!(err.raw_os_error(), Some(23 | 24)) => Accept::Later,
+        _ => Accept::Stop,
+    }
 }
 
 pub(crate) struct Asked {
@@ -381,4 +412,26 @@ fn respond(mut stream: &TcpStream, answer: &Answer, with_body: bool) -> std::io:
         stream.write_all(&answer.body)?;
     }
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{accepted, Accept};
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn an_accept_a_peer_aborted_is_served_past_and_only_a_listener_failure_stops() {
+        for kind in [
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::Interrupted,
+        ] {
+            assert_eq!(accepted(&Error::from(kind)), Accept::Again, "{kind:?}");
+        }
+        assert_eq!(accepted(&Error::from_raw_os_error(24)), Accept::Later);
+        assert_eq!(
+            accepted(&Error::from(ErrorKind::InvalidInput)),
+            Accept::Stop
+        );
+    }
 }
