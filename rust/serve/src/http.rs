@@ -432,7 +432,18 @@ impl Served {
             .iter()
             .filter(|(key, _)| key.eq_ignore_ascii_case("Transfer-Encoding"))
             .count();
-        if codings > 1 || (codings == 1 && asked.header("Content-Length").is_some()) {
+        let lengths: Vec<&str> = asked
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case("Content-Length"))
+            .map(|(_, value)| value.trim())
+            .collect();
+        let unreadable_length = lengths.iter().any(|length| {
+            *length != lengths[0]
+                || length.is_empty()
+                || !length.bytes().all(|b| b.is_ascii_digit())
+        });
+        if codings > 1 || (codings == 1 && !lengths.is_empty()) || unreadable_length {
             respond(&stream, &plain(400, "400 Bad Request\n"), true)?;
             drain(&stream, DRAIN_BYTES);
             return Ok(());

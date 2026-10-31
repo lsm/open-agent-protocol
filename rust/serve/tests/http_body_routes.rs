@@ -255,11 +255,13 @@ fn a_media_parameter_list_go_refuses_is_refused_415_and_one_it_accepts_is_served
 }
 
 #[test]
-fn chunked_beside_a_length_or_twice_is_a_plain_400() {
+fn ambiguous_or_unreadable_body_framing_is_a_plain_400() {
     let (_, addr) = started();
     for framing in [
         "Transfer-Encoding: chunked\r\nContent-Length: 5\r\n",
         "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
+        "Content-Length: 2\r\nContent-Length: 9999\r\n",
+        "Content-Length: two\r\n",
     ] {
         let raw = format!(
             "POST /sessions/s/submit HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{framing}\r\n0\r\n\r\n"
