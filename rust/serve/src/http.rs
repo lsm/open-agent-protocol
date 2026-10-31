@@ -176,6 +176,115 @@ fn drain(stream: &TcpStream, cap: u64) {
     }
 }
 
+fn too_large() -> (u16, WireError) {
+    (
+        413,
+        stdio::wire("request_too_large", "request body exceeds the daemon limit"),
+    )
+}
+
+fn json_media(header: &str) -> bool {
+    let mut parts = header.split(';');
+    let media = parts.next().unwrap_or_default().trim();
+    if !media.eq_ignore_ascii_case("application/json") {
+        return false;
+    }
+    parts.all(|parameter| {
+        let parameter = parameter.trim();
+        parameter.is_empty()
+            || parameter
+                .split_once('=')
+                .is_some_and(|(key, value)| !key.trim().is_empty() && !value.trim().is_empty())
+    })
+}
+
+enum Refused {
+    TooLarge,
+    Unreadable,
+}
+
+struct Reading<'a> {
+    stream: &'a TcpStream,
+    held: Vec<u8>,
+    at: usize,
+    deadline: std::time::Instant,
+}
+
+impl Reading<'_> {
+    fn fill(&mut self) -> bool {
+        if self.at < self.held.len() {
+            return true;
+        }
+        let wait = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() || self.stream.set_read_timeout(Some(wait)).is_err() {
+            return false;
+        }
+        let mut chunk = [0u8; 8192];
+        match self.stream.read(&mut chunk) {
+            Ok(0) | Err(_) => false,
+            Ok(read) => {
+                self.held = chunk[..read].to_vec();
+                self.at = 0;
+                true
+            }
+        }
+    }
+
+    fn exact(&mut self, length: usize) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(length.min(1 << 20));
+        while out.len() < length {
+            if !self.fill() {
+                return None;
+            }
+            let take = (length - out.len()).min(self.held.len() - self.at);
+            out.extend_from_slice(&self.held[self.at..self.at + take]);
+            self.at += take;
+        }
+        Some(out)
+    }
+
+    fn line(&mut self) -> Option<Vec<u8>> {
+        let mut line = Vec::new();
+        loop {
+            if !self.fill() || line.len() > 4096 {
+                return None;
+            }
+            let byte = self.held[self.at];
+            self.at += 1;
+            if byte == b'\n' {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                return Some(line);
+            }
+            line.push(byte);
+        }
+    }
+
+    fn chunked(&mut self) -> Result<Vec<u8>, Refused> {
+        let mut body = Vec::new();
+        loop {
+            let line = self.line().ok_or(Refused::Unreadable)?;
+            let text = String::from_utf8_lossy(&line);
+            let size = text.split(';').next().unwrap_or_default().trim();
+            let size = u64::from_str_radix(size, 16).map_err(|_| Refused::Unreadable)?;
+            if size == 0 {
+                while !self.line().ok_or(Refused::Unreadable)?.is_empty() {}
+                return Ok(body);
+            }
+            if body.len() as u64 + size > MAX_BODY_BYTES {
+                return Err(Refused::TooLarge);
+            }
+            body.extend(self.exact(size as usize).ok_or(Refused::Unreadable)?);
+            if !self.line().ok_or(Refused::Unreadable)?.is_empty() {
+                return Err(Refused::Unreadable);
+            }
+        }
+    }
+}
+
 fn declared(asked: &Asked) -> u64 {
     asked
         .header("Content-Length")
@@ -342,6 +451,8 @@ impl Served {
             ["sessions"] => ("GET", "sessions", "", ""),
             ["sessions", "history"] => ("GET", "history", "", ""),
             ["sessions", id, "state"] => ("GET", "state", *id, ""),
+            ["sessions", id, "tools"] => ("GET", "tools", *id, ""),
+            ["sessions", id, "models"] => ("GET", "models", *id, ""),
             ["sessions", id, "submit"] => ("POST", "submit", *id, ""),
             ["sessions", id, "resolve"] => ("POST", "resolve", *id, ""),
             ["sessions", id, "cancel"] => ("POST", "cancel", *id, ""),
@@ -362,6 +473,14 @@ impl Served {
             cursor: asked.query("cursor").unwrap_or_default().to_owned(),
             ..stdio::Request::default()
         };
+        if matches!(op, "tools" | "models") {
+            request.allow_degraded_features = asked
+                .query
+                .iter()
+                .filter(|(key, _)| key == "allow_degraded")
+                .map(|(_, value)| value.clone())
+                .collect();
+        }
         let mut body = Vec::new();
         if matches!(op, "submit" | "resolve" | "cancel" | "settings") {
             body = match self.body(asked, stream, consumed) {
@@ -412,15 +531,7 @@ impl Served {
         stream: &TcpStream,
         consumed: &mut bool,
     ) -> Result<Vec<u8>, (u16, WireError)> {
-        let media = asked
-            .header("Content-Type")
-            .unwrap_or_default()
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        if media != "application/json" {
+        if !json_media(asked.header("Content-Type").unwrap_or_default()) {
             return Err((
                 415,
                 stdio::wire(
@@ -435,33 +546,29 @@ impl Served {
                 stdio::wire("request_read", "request body could not be read"),
             )
         };
-        if asked.header("Transfer-Encoding").is_some() {
-            return Err(unreadable());
+        let deadline = std::time::Instant::now() + self.header_timeout;
+        let mut reading = Reading {
+            stream,
+            held: asked.rest.clone(),
+            at: 0,
+            deadline,
+        };
+        if let Some(coding) = asked.header("Transfer-Encoding") {
+            if !coding.trim().eq_ignore_ascii_case("chunked") {
+                return Err(unreadable());
+            }
+            *consumed = true;
+            return reading.chunked().map_err(|refused| match refused {
+                Refused::TooLarge => too_large(),
+                Refused::Unreadable => unreadable(),
+            });
         }
         let length = declared(asked);
         if length > MAX_BODY_BYTES {
-            return Err((
-                413,
-                stdio::wire("request_too_large", "request body exceeds the daemon limit"),
-            ));
+            return Err(too_large());
         }
         *consumed = true;
-        let deadline = std::time::Instant::now() + self.header_timeout;
-        let mut body = asked.rest.clone();
-        body.truncate(length as usize);
-        let mut chunk = [0u8; 8192];
-        while (body.len() as u64) < length {
-            let wait = deadline.saturating_duration_since(std::time::Instant::now());
-            if wait.is_zero() || stream.set_read_timeout(Some(wait)).is_err() {
-                return Err(unreadable());
-            }
-            let want = chunk.len().min((length - body.len() as u64) as usize);
-            match (&*stream).read(&mut chunk[..want]) {
-                Ok(0) | Err(_) => return Err(unreadable()),
-                Ok(read) => body.extend_from_slice(&chunk[..read]),
-            }
-        }
-        Ok(body)
+        reading.exact(length as usize).ok_or_else(unreadable)
     }
 
     fn refused(

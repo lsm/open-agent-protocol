@@ -198,3 +198,57 @@ fn a_refusal_after_the_body_is_read_replies_to_the_request_envelope() {
     assert_eq!(envelope["in_reply_to"], "submit-1");
     assert_eq!(envelope["session_id"], "ghost");
 }
+
+#[test]
+fn a_chunked_body_is_served_as_if_it_had_declared_its_length() {
+    let (_, addr) = started();
+    let body = submit("s");
+    let (first, second) = body.split_at(body.len() / 2);
+    let raw = format!(
+        "POST /sessions/s/submit HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{first}\r\n{:x};ext=1\r\n{second}\r\n0\r\n\r\n",
+        first.len(),
+        second.len()
+    );
+    let admitted = send(addr, raw.as_bytes());
+    assert_eq!(
+        admitted.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&admitted.body)
+    );
+    assert_eq!(admitted.json()["type"], "session.message.submit.response");
+}
+
+#[test]
+fn a_media_parameter_with_no_value_is_refused_415() {
+    let (_, addr) = started();
+    let refused = post(
+        addr,
+        "/sessions/s/submit",
+        "application/json; charset",
+        &submit("s"),
+    );
+    assert_eq!(refused.status, 415);
+}
+
+#[test]
+fn the_catalog_routes_answer_the_sessions_tools_and_models() {
+    let (_, addr) = started();
+    let get = |path: &str| {
+        send(
+            addr,
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes(),
+        )
+    };
+    let tools = get("/sessions/s/tools?allow_degraded=x");
+    assert_eq!(
+        tools.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&tools.body)
+    );
+    assert_eq!(tools.json()["type"], "action.tools.list.response");
+    let models = get("/sessions/s/models");
+    assert_eq!(models.json()["type"], "models.response");
+    assert_eq!(get("/sessions/ghost/models").status, 404);
+}
