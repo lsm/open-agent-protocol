@@ -95,7 +95,7 @@ struct Shared {
     options: HubOptions,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
@@ -522,7 +522,7 @@ impl HubSession {
         self.closed.load(Ordering::SeqCst)
     }
 
-    fn mark_closed(&self) {
+    pub(crate) fn mark_closed(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
             live::finish(self.with_live(Live::close));
             match self.hub.upgrade() {
@@ -583,6 +583,7 @@ impl HubSession {
         }
         let mut reserved = Reserved(Some(self));
         self.with_live(Live::reserve);
+        let messages = submit.request.messages.clone();
         let (admission, stream) = match self.session.submit(submit).await {
             Ok(admitted) => admitted,
             Err(err) => {
@@ -590,6 +591,8 @@ impl HubSession {
                 return Err(err.into());
             }
         };
+        let at = now_ms();
+        self.with_live(|live| live.work.submitted(&messages, admission.run_id.clone(), at));
         if admission.admission == Admission::STEERED {
             return Ok(admission);
         }
