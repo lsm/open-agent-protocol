@@ -56,6 +56,10 @@ pub enum StdioError {
     MalformedLine { line: usize, detail: String },
     #[error("servestdio: encoded line exceeds the frame limit")]
     LineTooLarge,
+    #[error("servestdio: requests read before the host's end were dropped unserved")]
+    RequestsDropped,
+    #[error("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")]
+    ShutdownStalled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -96,7 +100,7 @@ pub const WRITE_QUEUE: usize = 256;
 
 pub const SHUTDOWN_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
-type Lines = std::sync::mpsc::SyncSender<Vec<u8>>;
+type Lines = std::sync::mpsc::SyncSender<(Vec<u8>, bool)>;
 
 pub fn serve(
     hub: &Hub,
@@ -107,16 +111,26 @@ pub fn serve(
     if options.frame_limit < MIN_FRAME_LIMIT {
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
-    let (writer, queue) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    let (writer, queue) = std::sync::mpsc::sync_channel::<(Vec<u8>, bool)>(WRITE_QUEUE);
     let (drained, written) = std::sync::mpsc::channel();
+    let tally = Arc::new(Tally::default());
+    let writing = tally.clone();
     std::thread::spawn(move || {
-        for line in queue {
+        for (line, refusal) in queue {
+            if writing.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             let wrote = output
                 .write_all(&line)
                 .and_then(|()| output.write_all(b"\n"))
                 .and_then(|()| output.flush());
             if wrote.is_err() {
                 break;
+            }
+            if refusal {
+                writing
+                    .delivered
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }
         let _ = drained.send(());
@@ -147,10 +161,12 @@ pub fn serve(
         stopping: Arc::default(),
         inflight: Arc::new(Inflight::new(options.max_ops)),
         broken: Arc::default(),
+        pending: Arc::default(),
+        tally: tally.clone(),
     };
     let served = serve_lines(&serving, &frames);
     let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
-    serving.inflight.settle(deadline);
+    let settled = serving.inflight.settle(deadline);
     let pumps = lock(&serving.pumps).take().unwrap_or_default();
     let served = match (served, lock(&serving.broken).take()) {
         (Ok(_), Some(err)) => Err(err),
@@ -172,9 +188,24 @@ pub fn serve(
     while streaming(&pumps) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    serving.flush_until(deadline);
     drop(serving);
-    let _ = written.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
-    served.map(|_| ())
+    let drained = written
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .is_ok();
+    if !drained {
+        tally
+            .abandoned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let ended = if tally.undelivered() > 0 {
+        Err(StdioError::RequestsDropped)
+    } else if !settled || !drained {
+        Err(StdioError::ShutdownStalled)
+    } else {
+        Ok(())
+    };
+    served.and(ended)
 }
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -234,12 +265,12 @@ impl Inflight {
         }
     }
 
-    fn settle(&self, deadline: std::time::Instant) {
+    fn settle(&self, deadline: std::time::Instant) -> bool {
         let mut held = lock(&self.held);
         while held.0 > 0 {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() {
-                return;
+                return false;
             }
             held = self
                 .settled
@@ -247,6 +278,7 @@ impl Inflight {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
+        true
     }
 }
 
@@ -264,6 +296,24 @@ struct Serving {
     stopping: Arc<std::sync::RwLock<Stopping>>,
     inflight: Arc<Inflight>,
     broken: Arc<std::sync::Mutex<Option<StdioError>>>,
+    pending: Arc<Held>,
+    tally: Arc<Tally>,
+}
+
+type Held = std::sync::Mutex<std::collections::VecDeque<(Vec<u8>, bool)>>;
+
+#[derive(Default)]
+struct Tally {
+    owed: std::sync::atomic::AtomicUsize,
+    delivered: std::sync::atomic::AtomicUsize,
+    abandoned: std::sync::atomic::AtomicBool,
+}
+
+impl Tally {
+    fn undelivered(&self) -> usize {
+        let owed = self.owed.load(std::sync::atomic::Ordering::SeqCst);
+        owed.saturating_sub(self.delivered.load(std::sync::atomic::Ordering::SeqCst))
+    }
 }
 
 type Frames = std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, FrameError>>;
@@ -290,30 +340,6 @@ impl Stopping {
             block_on(hub.cancel_queued(run));
         }
         runs.is_empty()
-    }
-
-    fn next(
-        stopping: &std::sync::RwLock<Stopping>,
-        hub: &Hub,
-        frames: &Frames,
-    ) -> Option<Result<Option<Vec<u8>>, FrameError>> {
-        let draining = stopping
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .draining;
-        if !draining {
-            return frames.recv().ok();
-        }
-        loop {
-            if Stopping::drained(hub) {
-                return Some(Ok(None));
-            }
-            match frames.recv_timeout(DRAIN_POLL) {
-                Ok(frame) => return Some(frame),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-        }
     }
 }
 
@@ -380,7 +406,7 @@ fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, b
 
 fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
     writer
-        .send(line.to_vec())
+        .send((line.to_vec(), false))
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the output closed"))
 }
 
@@ -395,7 +421,7 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             line: number,
             detail,
         };
-        let Some(frame) = Stopping::next(&serving.stopping, &serving.hub, frames) else {
+        let Some(frame) = serving.next_frame(frames) else {
             return Ok(false);
         };
         let Some(frame) = frame.map_err(|err| match err {
@@ -414,7 +440,7 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
         if let Err(why) = serving.inflight.offer(size) {
             let refused = wire("busy", format!("{why}; send this request again"));
             if let Some(line) = fitted(request.id, Err(refused), serving.frame_limit)? {
-                emit(&serving.writer, &line)?;
+                serving.queue(line, true)?;
             }
             continue;
         }
@@ -426,7 +452,7 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
             serving.inflight.release(size);
             if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
-                emit(&serving.writer, &line)?;
+                serving.queue(line, false)?;
             }
             if finished {
                 return Ok(stopping.draining && stopping.graceful());
@@ -444,6 +470,90 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
 }
 
 impl Serving {
+    fn queue(&self, line: Vec<u8>, refusal: bool) -> Result<(), StdioError> {
+        if refusal {
+            self.tally
+                .owed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let line = (line, refusal);
+        self.flush()?;
+        let mut pending = lock(&self.pending);
+        if pending.is_empty() {
+            match self.writer.try_send(line) {
+                Ok(()) => return Ok(()),
+                Err(std::sync::mpsc::TrySendError::Full(line)) => pending.push_back(line),
+                Err(std::sync::mpsc::TrySendError::Disconnected(line)) => {
+                    pending.push_back(line);
+                    return Err(StdioError::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "the output closed",
+                    )));
+                }
+            }
+        } else {
+            pending.push_back(line);
+        }
+        if pending.len() > WRITE_QUEUE {
+            return Err(StdioError::RequestsDropped);
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), StdioError> {
+        let mut pending = lock(&self.pending);
+        while let Some(line) = pending.pop_front() {
+            match self.writer.try_send(line) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(line)) => {
+                    pending.push_front(line);
+                    break;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(line)) => {
+                    pending.push_front(line);
+                    return Err(StdioError::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "the output closed",
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_until(&self, deadline: std::time::Instant) {
+        while self.flush().is_ok()
+            && !lock(&self.pending).is_empty()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn next_frame(&self, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
+        loop {
+            let draining = self
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .draining;
+            if draining && Stopping::drained(&self.hub) {
+                return Some(Ok(None));
+            }
+            let waiting = !lock(&self.pending).is_empty();
+            if !draining && !waiting {
+                return frames.recv().ok();
+            }
+            match frames.recv_timeout(DRAIN_POLL) {
+                Ok(frame) => return Some(frame),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = self.flush();
+                }
+            }
+        }
+    }
+
     fn start(&self, pump: Pump) {
         let mut pumps = lock(&self.pumps);
         let Some(pumps) = pumps.as_mut() else {
