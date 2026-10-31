@@ -138,7 +138,7 @@ fn a_graceful_shutdown_refuses_new_work_and_stops_once_its_runs_settle() {
 }
 
 #[test]
-fn a_graceful_drain_ends_serving_even_while_requests_keep_arriving() {
+fn a_graceful_drain_ends_serving_at_the_next_request_once_its_last_run_settles() {
     let (hub, run) = with_a_run();
     let cancel = format!(
         r#"{{"id":2,"op":"cancel","session_id":"s","request":{{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.cancel.request","id":"cancel-1","session_id":"s","run_id":"{run}","payload":{{"session_id":"s","run_id":"{run}"}}}}}}"#,
@@ -155,5 +155,8 @@ fn a_graceful_drain_ends_serving_even_while_requests_keep_arriving() {
         .iter()
         .filter(|line| line["id"].as_i64().is_some_and(|id| id >= 3))
         .count();
-    assert!(late < 197, "every request after the drain was still served");
+    assert!(
+        late <= 1,
+        "{late} requests after the drain were still served"
+    );
 }
