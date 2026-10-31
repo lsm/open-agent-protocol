@@ -414,6 +414,7 @@ fn open(
         },
         None => None,
     };
+    let mut admitted_run = None;
     let state = match &asked.message {
         Some(message) => {
             let submitted = block_on(opened.session.submit(oap_adapter::SubmitRequest {
@@ -421,11 +422,14 @@ fn open(
                 envelope_id: envelope.id.clone(),
             }));
             match submitted {
-                Ok(admission) => crate::compound::with_admitted_run(
-                    opened.state.clone(),
-                    &admission,
-                    &envelope.id,
-                ),
+                Ok(admission) => {
+                    admitted_run = admission.run_id.clone();
+                    crate::compound::with_admitted_run(
+                        opened.state.clone(),
+                        &admission,
+                        &envelope.id,
+                    )
+                }
                 Err(err) => {
                     drop(pump);
                     let _ = block_on(opened.session.rollback());
@@ -451,9 +455,13 @@ fn open(
     let answer = serde_json::to_value(&response).map_err(|err| wire("internal", err))?;
     let fits = response_line(request.id, Ok(answer.clone())).is_ok_and(|line| line.len() <= limit);
     if !fits {
-        let outcome = if named {
+        let outcome = if named && asked.message.is_none() {
             "the session is open under the session_id the request supplied"
         } else {
+            drop(pump);
+            if let Some(run) = &admitted_run {
+                let _ = rollback_run(hub, &opened.session, run);
+            }
             match block_on(opened.session.rollback()) {
                 Ok(()) | Err(HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
                     "the session was rolled back"

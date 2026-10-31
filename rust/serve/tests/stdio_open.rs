@@ -274,3 +274,35 @@ fn an_open_whose_message_is_refused_rolls_its_session_back() {
     assert!(hub.session(&"s".into()).is_err());
     assert!(hub.sessions().is_empty());
 }
+
+#[test]
+fn an_oversized_open_response_rolls_back_a_named_session_whose_message_it_admitted() {
+    let hub = Hub::new(Registry::default_registry());
+    let line = open_line(
+        1,
+        "memory",
+        &request(&carrying(RequestedDeliveryMode::AUTO), None),
+    );
+    let answered = lines_within(
+        &hub,
+        std::slice::from_ref(&line),
+        &StdioOptions {
+            frame_limit: line.len() + 8,
+            ..StdioOptions::default()
+        },
+    );
+    assert_eq!(
+        answered[0]["error"]["code"], "response_too_large",
+        "{}",
+        answered[0]
+    );
+    assert!(
+        answered[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("the session was rolled back"),
+        "{}",
+        answered[0]
+    );
+    assert!(hub.session(&"s".into()).is_err());
+}
