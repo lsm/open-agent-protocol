@@ -174,7 +174,13 @@ fn serve_lines(
         };
         let request = decode_request(&frame).map_err(malformed)?;
         let (answer, pump) = if request.op == "open" {
-            match open(hub, &request, &mut ids, Attached::claim(&attached, cap)) {
+            match open(
+                hub,
+                &request,
+                &mut ids,
+                || Attached::claim(&attached, cap),
+                options.frame_limit,
+            ) {
                 Ok((answer, pump)) => (Ok(answer), pump),
                 Err(error) => (Err(error), None),
             }
@@ -315,7 +321,8 @@ fn open(
     hub: &Hub,
     request: &Request,
     ids: &mut u64,
-    attached: Result<Attached, WireError>,
+    claim: impl FnOnce() -> Result<Attached, WireError>,
+    limit: usize,
 ) -> Result<(Value, Option<Pump>), WireError> {
     request.only(&["adapter", "request"])?;
     if request.adapter.is_empty() {
@@ -326,6 +333,7 @@ fn open(
         &[oap_protocol::EnvelopeType::SESSION_OPEN_REQUEST],
     )?;
     let asked: oap_protocol::SessionOpenRequest = payload(&envelope)?;
+    let attached = asked.subscribe.then(claim).transpose()?;
     if hub.registry().lookup(&request.adapter).is_none() {
         return Err(wire(
             "unknown_adapter",
@@ -386,36 +394,26 @@ fn open(
         compaction_policy: asked.compaction_policy.clone(),
         ..oap_adapter::OpenRequest::default()
     };
-    let opened = block_on(hub.open(&request.adapter, opening)).map_err(|err| {
-        refusal(&err).unwrap_or_else(|| {
-            wire(
-                match &err {
-                    HubError::UnknownAdapter(_) => "unknown_adapter",
-                    HubError::SessionExists(_) => "session_exists",
-                    HubError::UnknownSession(_) => "unknown_session",
-                    HubError::ClosedAtOpen(_)
-                    | HubError::SessionClosed(_)
-                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
-                    _ => "open_failed",
-                },
-                err,
-            )
-        })
-    })?;
-    let pump = if asked.subscribe {
-        let attached = attached?;
-        let subscription = hub
-            .subscribe(opened.session.id())
-            .map_err(|err| wire("internal", err))?;
-        Some(Pump {
-            id: request.id,
-            entry: opened.session.clone(),
-            subscription,
-            resume_from: 0,
-            _attached: attached,
-        })
-    } else {
-        None
+    let opened = block_on(hub.open(&request.adapter, opening)).map_err(open_refusal)?;
+    let named = asked
+        .session_id
+        .as_ref()
+        .is_some_and(|id| !id.as_str().is_empty());
+    let pump = match attached {
+        Some(attached) => match hub.subscribe(opened.session.id()) {
+            Ok(subscription) => Some(Pump {
+                id: request.id,
+                entry: opened.session.clone(),
+                subscription,
+                resume_from: 0,
+                _attached: attached,
+            }),
+            Err(err) => {
+                let _ = block_on(opened.session.rollback());
+                return Err(open_refusal(err));
+            }
+        },
+        None => None,
     };
     let mut response = oap_protocol::Envelope::new(
         oap_protocol::EnvelopeType::SESSION_OPEN_RESPONSE,
@@ -431,7 +429,43 @@ fn open(
         Some(gated)
     };
     let answer = serde_json::to_value(&response).map_err(|err| wire("internal", err))?;
+    let fits = response_line(request.id, Ok(answer.clone())).is_ok_and(|line| line.len() <= limit);
+    if !fits {
+        let outcome = if named {
+            "the session is open under the session_id the request supplied"
+        } else {
+            match block_on(opened.session.rollback()) {
+                Ok(()) | Err(HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
+                    "the session was rolled back"
+                }
+                Err(_) => "rolling the session back failed and it may still be live",
+            }
+        };
+        return Err(wire(
+            "response_too_large",
+            format!("the open response exceeds the frame limit; {outcome}"),
+        ));
+    }
     Ok((answer, pump))
+}
+
+fn open_refusal(err: HubError) -> WireError {
+    {
+        refusal(&err).unwrap_or_else(|| {
+            wire(
+                match &err {
+                    HubError::UnknownAdapter(_) => "unknown_adapter",
+                    HubError::SessionExists(_) => "session_exists",
+                    HubError::UnknownSession(_) => "unknown_session",
+                    HubError::ClosedAtOpen(_)
+                    | HubError::SessionClosed(_)
+                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    _ => "open_failed",
+                },
+                err,
+            )
+        })
+    }
 }
 
 fn events(

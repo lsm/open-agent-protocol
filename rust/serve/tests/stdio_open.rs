@@ -20,15 +20,13 @@ fn opening(id: &str) -> SessionOpenRequest {
 }
 
 fn lines(hub: &Hub, input: &[String]) -> Vec<Value> {
+    lines_within(hub, input, &StdioOptions::default())
+}
+
+fn lines_within(hub: &Hub, input: &[String], options: &StdioOptions) -> Vec<Value> {
     let input: String = input.iter().map(|line| format!("{line}\n")).collect();
     let output = support::Captured::default();
-    serve(
-        hub,
-        input.as_bytes(),
-        output.clone(),
-        &StdioOptions::default(),
-    )
-    .unwrap();
+    serve(hub, input.as_bytes(), output.clone(), options).unwrap();
     String::from_utf8(output.bytes())
         .unwrap()
         .lines()
@@ -150,4 +148,67 @@ fn a_subscribing_open_answers_and_then_streams_on_its_own_id() {
         .collect();
     assert_eq!(closed.len(), 1);
     assert_eq!(closed[0]["id"], 1);
+}
+
+#[test]
+fn a_subscribing_open_past_the_subscription_cap_is_busy_and_opens_nothing() {
+    let hub = Hub::new(Registry::default_registry());
+    let subscribing = |id: &str| SessionOpenRequest {
+        subscribe: true,
+        ..opening(id)
+    };
+    let answered = lines_within(
+        &hub,
+        &[
+            open_line(1, "memory", &request(&subscribing("s"), None)),
+            open_line(2, "memory", &request(&subscribing("t"), None)),
+        ],
+        &StdioOptions {
+            max_subscriptions: 1,
+            ..StdioOptions::default()
+        },
+    );
+    let refused = answered.iter().find(|line| line["id"] == 2).unwrap();
+    assert_eq!(refused["error"]["code"], "busy", "{refused}");
+    assert!(hub.session(&"t".into()).is_err());
+}
+
+#[test]
+fn an_oversized_open_response_rolls_back_a_minted_session_and_keeps_a_named_one() {
+    let options = StdioOptions {
+        frame_limit: 300,
+        ..StdioOptions::default()
+    };
+    let hub = Hub::new(Registry::default_registry());
+    let minted = lines_within(
+        &hub,
+        &[open_line(
+            1,
+            "memory",
+            &request(&SessionOpenRequest::default(), None),
+        )],
+        &options,
+    );
+    assert_eq!(
+        minted[0]["error"]["code"], "response_too_large",
+        "{}",
+        minted[0]
+    );
+    assert!(minted[0]["error"]["message"]
+        .as_str()
+        .unwrap()
+        .ends_with("the session was rolled back"));
+    assert!(hub.sessions().is_empty());
+
+    let named = lines_within(
+        &hub,
+        &[open_line(1, "memory", &request(&opening("s"), None))],
+        &options,
+    );
+    assert_eq!(named[0]["error"]["code"], "response_too_large");
+    assert!(named[0]["error"]["message"]
+        .as_str()
+        .unwrap()
+        .ends_with("the session is open under the session_id the request supplied"));
+    assert!(hub.session(&"s".into()).is_ok());
 }
