@@ -136,3 +136,26 @@ fn a_graceful_shutdown_refuses_new_work_and_stops_once_its_runs_settle() {
     assert_eq!(answer(&answered, 2)["error"]["code"], "shutting_down");
     assert_eq!(answer(&answered, 3)["ok"], true, "{}", answer(&answered, 3));
 }
+
+#[test]
+fn a_graceful_drain_ends_serving_even_while_requests_keep_arriving() {
+    let (hub, run) = with_a_run();
+    let cancel = format!(
+        r#"{{"id":2,"op":"cancel","session_id":"s","request":{{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.cancel.request","id":"cancel-1","session_id":"s","run_id":"{run}","payload":{{"session_id":"s","run_id":"{run}"}}}}}}"#,
+        run = run.as_str()
+    );
+    let mut lines = vec![
+        r#"{"id":1,"op":"shutdown","request":{"mode":"graceful"}}"#.to_owned(),
+        cancel,
+    ];
+    lines.extend((3..200).map(|id| format!(r#"{{"id":{id},"op":"sessions"}}"#)));
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let answered =
+        served_within(hub, held_open(&lines)).expect("serve kept reading after the drain");
+    assert_eq!(answer(&answered, 2)["ok"], true, "{}", answer(&answered, 2));
+    let late = answered
+        .iter()
+        .filter(|line| line["id"].as_i64().is_some_and(|id| id >= 3))
+        .count();
+    assert!(late < 197, "every request after the drain was still served");
+}

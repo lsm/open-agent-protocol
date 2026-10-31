@@ -195,12 +195,12 @@ impl Stopping {
             return frames.recv().ok();
         }
         loop {
+            if self.drained(hub) {
+                return Some(Ok(None));
+            }
             match frames.recv_timeout(DRAIN_POLL) {
                 Ok(frame) => return Some(frame),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if self.drained(hub) => {
-                    return Some(Ok(None))
-                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
