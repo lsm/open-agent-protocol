@@ -68,6 +68,7 @@ struct Request {
     adapter: String,
     cursor: String,
     limit: Option<i64>,
+    allow_degraded_features: Vec<String>,
     after: Option<Box<RawValue>>,
     present: Vec<String>,
 }
@@ -877,11 +878,19 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 typed(parsed.is_i64() || parsed.is_null())?;
                 request.limit = parsed.as_i64();
             }
-            "allow_degraded_features" => typed(match &parsed {
-                Value::Array(items) => items.iter().all(Value::is_string),
-                Value::Null => true,
-                _ => false,
-            })?,
+            "allow_degraded_features" => {
+                typed(match &parsed {
+                    Value::Array(items) => items.iter().all(Value::is_string),
+                    Value::Null => true,
+                    _ => false,
+                })?;
+                request.allow_degraded_features = parsed
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect();
+            }
             "request" => request.request = Some(value),
             "after" => request.after = Some(value),
             _ => {
@@ -1033,6 +1042,42 @@ fn adapter_code(err: &crate::HubError) -> &'static str {
         ) => "resolution_rejected",
         _ => "internal",
     }
+}
+
+fn catalog_refusal(err: HubError, otherwise: &'static str) -> WireError {
+    if let Some(refused) = refusal(&err) {
+        return refused;
+    }
+    match err {
+        HubError::Adapter(oap_adapter::Error::ToolCatalogUnavailable) => detailed(
+            "unsupported_feature",
+            &err,
+            serde_json::json!({
+                "feature": oap_protocol::FEATURE_TOOLS_LIST,
+                "reason": oap_adapter::CONTROL_UNADVERTISED,
+            }),
+        ),
+        HubError::ScopeMismatch { .. } => wire("scope_mismatch", err),
+        HubError::SessionClosed(_) | HubError::Adapter(oap_adapter::Error::SessionClosed) => {
+            wire("session_closed", err)
+        }
+        _ => wire(otherwise, err),
+    }
+}
+
+fn listing(
+    ids: &mut u64,
+    kind: oap_protocol::EnvelopeType,
+    payload: &impl Serialize,
+    session_id: &oap_protocol::SessionId,
+    revision: String,
+) -> Answer {
+    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), payload)
+        .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(next_id(ids, "request").into());
+    response.session_id = Some(session_id.clone());
+    response.capability_revision = Some(revision);
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
 }
 
 fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
@@ -1309,6 +1354,38 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
             response.in_reply_to = Some(correlation.into());
             response.capability_revision = Some(descriptor.capability_revision);
             serde_json::to_value(&response).map_err(|err| wire("internal", err))
+        }
+        "models" => {
+            request.only(&["session_id", "allow_degraded_features"])?;
+            let entry = session(hub, &request.session_id)?;
+            let catalog = block_on(entry.models(oap_protocol::ModelsRequest {
+                session_id: entry.id().clone(),
+                allow_degraded_features: request.allow_degraded_features.clone(),
+            }))
+            .map_err(|err| catalog_refusal(err, "internal"))?;
+            listing(
+                ids,
+                oap_protocol::EnvelopeType::MODELS_RESPONSE,
+                &catalog.models,
+                entry.id(),
+                catalog.revision,
+            )
+        }
+        "tools" => {
+            request.only(&["session_id", "allow_degraded_features"])?;
+            let entry = session(hub, &request.session_id)?;
+            let catalog = block_on(entry.tools(oap_protocol::ToolsListRequest {
+                session_id: Some(entry.id().clone()),
+                allow_degraded_features: request.allow_degraded_features.clone(),
+            }))
+            .map_err(|err| catalog_refusal(err, "tools_failed"))?;
+            listing(
+                ids,
+                oap_protocol::EnvelopeType::ACTION_TOOLS_LIST_RESPONSE,
+                &catalog.tools,
+                entry.id(),
+                catalog.revision,
+            )
         }
         "history" => {
             request.only(&["cursor", "limit"])?;
