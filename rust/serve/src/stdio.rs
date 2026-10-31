@@ -65,18 +65,18 @@ pub enum StdioError {
 }
 
 #[derive(Debug, Default)]
-struct Request {
-    id: i64,
-    op: String,
-    session_id: String,
-    request: Option<Box<RawValue>>,
-    run_id: String,
-    adapter: String,
-    cursor: String,
-    limit: Option<i64>,
-    allow_degraded_features: Vec<String>,
-    after: Option<Box<RawValue>>,
-    present: Vec<String>,
+pub(crate) struct Request {
+    pub(crate) id: i64,
+    pub(crate) op: String,
+    pub(crate) session_id: String,
+    pub(crate) request: Option<Box<RawValue>>,
+    pub(crate) run_id: String,
+    pub(crate) adapter: String,
+    pub(crate) cursor: String,
+    pub(crate) limit: Option<i64>,
+    pub(crate) allow_degraded_features: Vec<String>,
+    pub(crate) after: Option<Box<RawValue>>,
+    pub(crate) present: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -214,7 +214,7 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-type Ids = std::sync::atomic::AtomicU64;
+pub(crate) type Ids = std::sync::atomic::AtomicU64;
 
 pub const DEFAULT_MAX_OPS: usize = 16;
 
@@ -1859,7 +1859,7 @@ fn rfc3339(ms: i64) -> String {
     )
 }
 
-fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
+pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
     match request.op.as_str() {
         "capabilities" => {
             request.only(&["adapter"])?;
