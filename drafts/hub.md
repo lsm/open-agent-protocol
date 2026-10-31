@@ -2547,6 +2547,17 @@ cancelled and the writer is given the 5-second window before it is abandoned,
 pinned by `a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window`.
 Concurrent serving with the `busy` bounds closes this.
 
+### D33 — Go cancels the run a too-large steer acknowledgement names
+
+A steered submit admits no run of its own; its acknowledgement names the run it
+steered. When that acknowledgement does not fit the frame, Go's `submitOp`
+passes the named run to `rollbackRun` regardless, and cancels a run the caller
+started earlier and still expects to finish. Rust leaves the run running and
+says so (`the steered run was left running`), pinned by
+`an_unframable_steer_acknowledgement_leaves_the_run_it_steered_running`. Go is
+the wrong side here: checking `admission.Admission` for `steered` before rolling
+back closes this.
+
 ### Recorded, and not divergences
 
 Three places where the two trees will *look* different and none of them is a

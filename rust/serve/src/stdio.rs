@@ -218,7 +218,7 @@ fn serve_lines(
                 }
             }
         } else {
-            (dispatch(hub, &request, &mut ids), None)
+            (dispatch(hub, &request, &mut ids, options.frame_limit), None)
         };
         if let Some(line) = fitted(request.id, answer, options.frame_limit)? {
             emit(writer, &line)?;
@@ -307,6 +307,11 @@ fn refusal(err: &HubError) -> Option<WireError> {
             "capability_degraded",
             err,
             serde_json::json!({ "feature": feature }),
+        )),
+        HubError::Adapter(Error::InvalidSteerTarget { reason, .. }) => Some(detailed(
+            "invalid_steer_target",
+            err,
+            serde_json::json!({ "reason": reason }),
         )),
         HubError::Adapter(Error::ModelNotFound(model)) => Some(detailed(
             "model_not_found",
@@ -999,6 +1004,153 @@ fn adapter_code(err: &crate::HubError) -> &'static str {
     }
 }
 
+fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
+    use oap_protocol::EnvelopeType;
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[
+            EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST,
+            EnvelopeType::SESSION_COMPACT_REQUEST,
+        ],
+    )?;
+    let compacting = envelope.envelope_type == EnvelopeType::SESSION_COMPACT_REQUEST;
+    let (message, compaction) = if compacting {
+        (
+            None,
+            Some(payload::<oap_protocol::SessionCompactRequest>(&envelope)?),
+        )
+    } else {
+        (
+            Some(payload::<oap_protocol::MessageSubmitRequest>(&envelope)?),
+            None,
+        )
+    };
+    let entry = session(hub, &request.session_id)?;
+    let admitted = match (message, compaction) {
+        (Some(message), _) => block_on(entry.submit(oap_adapter::SubmitRequest {
+            request: message,
+            envelope_id: envelope.id.clone(),
+        }))
+        .map(|admission| {
+            let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
+            let steered = admission.admission == oap_protocol::Admission::STEERED;
+            (
+                EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE,
+                serde_json::to_value(&admission),
+                session,
+                run,
+                steered,
+            )
+        }),
+        (None, compaction) => block_on(entry.compact(oap_adapter::CompactRequest {
+            request: compaction.unwrap_or_default(),
+            envelope_id: envelope.id.clone(),
+        }))
+        .map(|admission| {
+            let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
+            let steered = admission.admission == oap_protocol::Admission::STEERED;
+            (
+                EnvelopeType::SESSION_COMPACT_RESPONSE,
+                serde_json::to_value(&admission),
+                session,
+                run,
+                steered,
+            )
+        }),
+    };
+    let (kind, admission, session_id, run_id, steered) = admitted.map_err(|err| {
+        refusal(&err).unwrap_or_else(|| {
+            wire(
+                match &err {
+                    HubError::ScopeMismatch { .. } => "scope_mismatch",
+                    HubError::SessionClosed(_)
+                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
+                    HubError::Adapter(
+                        oap_adapter::Error::InvalidSubmission
+                        | oap_adapter::Error::UnsupportedInput,
+                    ) => "invalid_submission",
+                    _ => "internal",
+                },
+                err,
+            )
+        })
+    })?;
+    let admission = admission.map_err(|err| wire("internal", err))?;
+    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), &admission)
+        .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(session_id);
+    response.run_id = run_id.clone();
+    response.capability_revision = envelope.capability_revision.clone();
+    let answer = serde_json::to_value(&response).map_err(|err| wire("internal", err))?;
+    if response_line(request.id, Ok(answer.clone())).is_ok_and(|line| line.len() <= limit) {
+        return Ok(answer);
+    }
+    let outcome = match run_id {
+        Some(_) if steered => "the steered run was left running".to_owned(),
+        Some(run) => match rollback_run(hub, &entry, &run) {
+            Ok(Some(settled)) if settled == EnvelopeType::RUN_CANCELLED => {
+                "the run was cancelled".to_owned()
+            }
+            Ok(Some(settled)) => format!("the run settled before the rollback ({settled})"),
+            Ok(None) => "the run's cancellation did not settle within the rollback window and may still be live".to_owned(),
+            Err(
+                HubError::Adapter(
+                    oap_adapter::Error::RunAlreadyTerminal { .. }
+                    | oap_adapter::Error::RunNotFound
+                    | oap_adapter::Error::SessionClosed,
+                )
+                | HubError::SessionClosed(_),
+            ) => "the run settled before the rollback".to_owned(),
+            Err(_) => "rolling the run back failed and the run may still be live".to_owned(),
+        },
+        None => "the run settled before the rollback".to_owned(),
+    };
+    Err(wire(
+        "response_too_large",
+        format!("the submit acknowledgement exceeds the frame limit; {outcome}"),
+    ))
+}
+
+fn rollback_run(
+    hub: &Hub,
+    entry: &HubSession,
+    run: &oap_protocol::RunId,
+) -> Result<Option<oap_protocol::EnvelopeType>, HubError> {
+    use oap_protocol::EnvelopeType;
+    let mut subscription = hub.subscribe(entry.id())?;
+    let canceller = subscription.canceller();
+    let (done, waiting) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if waiting.recv_timeout(SHUTDOWN_WINDOW) == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        {
+            canceller.cancel();
+        }
+    });
+    block_on(entry.cancel(run.clone()))?;
+    let settled = loop {
+        match block_on(futures_next(&mut subscription)) {
+            Some(Ok(envelope)) if envelope.run_id.as_ref() == Some(run) => {
+                let kind = envelope.envelope_type;
+                if [
+                    EnvelopeType::RUN_CANCELLED,
+                    EnvelopeType::RUN_COMPLETED,
+                    EnvelopeType::RUN_FAILED,
+                ]
+                .contains(&kind)
+                {
+                    break Some(kind);
+                }
+            }
+            Some(Ok(_)) => {}
+            _ => break None,
+        }
+    };
+    drop(done);
+    Ok(settled)
+}
+
 fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
     let envelope = gate_request(
         request.request.as_deref(),
@@ -1105,8 +1257,12 @@ fn rfc3339(ms: i64) -> String {
     )
 }
 
-fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
     match request.op.as_str() {
+        "submit" => {
+            request.only(&["session_id", "request"])?;
+            submit(hub, request, ids, limit)
+        }
         "sessions" => {
             request.only(&[])?;
             let listed: Vec<Value> = block_on(hub.session_statuses())
