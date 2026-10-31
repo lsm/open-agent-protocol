@@ -38,6 +38,8 @@ pub enum HubError {
     },
     #[error("the session has no run to replay")]
     NoRunToResume,
+    #[error("the open cites a capability revision that is no longer current")]
+    StaleRevision { expected: String, current: String },
     #[error("the session is closed")]
     SessionClosed(SessionId),
     #[error("serve: event stream overflowed behind sequence {last_sequence} (run {run_id}); resume with a cursor after it")]
@@ -369,21 +371,24 @@ impl Hub {
         Ok(Subscription::replay(run, after, stream))
     }
 
-    pub async fn adapters(&self) -> Vec<(String, Result<oap_adapter::Descriptor, Error>)> {
+    pub async fn probe(&self, name: &str) -> Result<oap_adapter::Descriptor, HubError> {
+        let adapter = self
+            .shared
+            .registry
+            .lookup(name)
+            .ok_or_else(|| HubError::UnknownAdapter(name.into()))?;
+        let descriptor = adapter.probe().await?;
+        if descriptor.capability_revision.is_empty() {
+            return Err(Error::harness("adapter descriptor carries no capability revision").into());
+        }
+        Ok(descriptor)
+    }
+
+    pub async fn adapters(&self) -> Vec<(String, Result<oap_adapter::Descriptor, HubError>)> {
         let mut statuses = Vec::new();
         for name in self.shared.registry.names() {
-            if let Some(adapter) = self.shared.registry.lookup(&name) {
-                let probed = adapter.probe().await.and_then(|descriptor| {
-                    if descriptor.capability_revision.is_empty() {
-                        Err(Error::harness(
-                            "adapter descriptor carries no capability revision",
-                        ))
-                    } else {
-                        Ok(descriptor)
-                    }
-                });
-                statuses.push((name, probed));
-            }
+            let probed = self.probe(&name).await;
+            statuses.push((name, probed));
         }
         statuses
     }
