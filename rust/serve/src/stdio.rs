@@ -98,7 +98,7 @@ type Lines = std::sync::mpsc::SyncSender<Vec<u8>>;
 
 pub fn serve(
     hub: &Hub,
-    input: impl BufRead,
+    input: impl BufRead + Send + 'static,
     mut output: impl Write + Send + 'static,
     options: &StdioOptions,
 ) -> Result<(), StdioError> {
@@ -119,14 +119,36 @@ pub fn serve(
         }
         let _ = drained.send(());
     });
+    let (read, frames) = std::sync::mpsc::sync_channel(0);
+    let limit = options.frame_limit;
+    std::thread::spawn(move || {
+        let mut input = input;
+        loop {
+            let frame = read_frame(&mut input, limit);
+            let more = matches!(frame, Ok(Some(_)));
+            if read.send(frame).is_err() || !more {
+                return;
+            }
+        }
+    });
     let mut pumps = Vec::new();
-    let served = serve_lines(hub, input, &writer, options, |pump| {
+    let served = serve_lines(hub, &frames, &writer, options, |pump| {
         pumps.push((pump.subscription.canceller(), pump.attached()));
         let writer = writer.clone();
         let limit = options.frame_limit;
         std::thread::spawn(move || pump.run(&writer, limit));
     });
     let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
+    let streaming = |pumps: &[(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)]| {
+        pumps
+            .iter()
+            .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
+    };
+    if matches!(served, Ok(true)) {
+        while streaming(&pumps) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     for (canceller, _) in &pumps {
         canceller.cancel();
     }
@@ -139,7 +161,111 @@ pub fn serve(
     }
     drop(writer);
     let _ = written.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
-    served
+    served.map(|_| ())
+}
+
+type Frames = std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, FrameError>>;
+
+const DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+#[derive(Default)]
+struct Stopping {
+    mode: Option<oap_protocol::ShutdownMode>,
+    draining: bool,
+}
+
+impl Stopping {
+    fn graceful(&self) -> bool {
+        self.mode == Some(oap_protocol::ShutdownMode::GRACEFUL)
+    }
+
+    fn drained(&self, hub: &Hub) -> bool {
+        let runs = block_on(hub.nonterminal_runs());
+        for run in runs
+            .iter()
+            .filter(|run| run.status == oap_protocol::RunStatus::QUEUED)
+        {
+            block_on(hub.cancel_queued(run));
+        }
+        runs.is_empty()
+    }
+
+    fn next(&self, hub: &Hub, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
+        if !self.draining {
+            return frames.recv().ok();
+        }
+        loop {
+            if self.drained(hub) {
+                return Some(Ok(None));
+            }
+            match frames.recv_timeout(DRAIN_POLL) {
+                Ok(frame) => return Some(frame),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+}
+
+fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, bool) {
+    use oap_protocol::{EndpointShutdownResponse, ShutdownMode, ShutdownOutcome};
+    if let Err(refused) = request.only(&["request"]) {
+        return (Err(refused), false);
+    }
+    let asked = match crate::asked_shutdown(request.request.as_deref()) {
+        Ok(asked) => asked,
+        Err(refused) => return (Err(wire("invalid_request", refused)), false),
+    };
+    let mut runs = block_on(hub.nonterminal_runs());
+    let mode = match asked.or_else(|| stopping.mode.clone()) {
+        Some(mode) => mode,
+        None if !runs.is_empty() => {
+            let choose = EndpointShutdownResponse {
+                outcome: ShutdownOutcome::CHOOSE,
+                active_runs: runs,
+                ..EndpointShutdownResponse::default()
+            };
+            return (
+                serde_json::to_value(&choose).map_err(|err| wire("internal", err)),
+                false,
+            );
+        }
+        None => ShutdownMode::GRACEFUL,
+    };
+    if stopping.mode != Some(ShutdownMode::FORCE) {
+        stopping.mode = Some(mode);
+    }
+    let mut lost = Vec::new();
+    if stopping.graceful() {
+        runs.retain(|run| {
+            let dropped =
+                run.status == oap_protocol::RunStatus::QUEUED && block_on(hub.cancel_queued(run));
+            if dropped {
+                lost.push(oap_protocol::ShutdownQueuedRun {
+                    session_id: run.session_id.clone(),
+                    run_id: run.run_id.clone(),
+                });
+            }
+            !dropped
+        });
+    }
+    let finished = !(stopping.graceful() && !runs.is_empty());
+    let outcome = if finished {
+        ShutdownOutcome::STOPPING
+    } else {
+        stopping.draining = true;
+        ShutdownOutcome::DRAINING
+    };
+    let answer = EndpointShutdownResponse {
+        outcome,
+        active_runs: runs,
+        lost,
+        ..EndpointShutdownResponse::default()
+    };
+    (
+        serde_json::to_value(&answer).map_err(|err| wire("internal", err)),
+        finished,
+    )
 }
 
 fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
@@ -150,11 +276,12 @@ fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
 
 fn serve_lines(
     hub: &Hub,
-    mut input: impl BufRead,
+    frames: &Frames,
     writer: &Lines,
     options: &StdioOptions,
     mut start: impl FnMut(Pump),
-) -> Result<(), StdioError> {
+) -> Result<bool, StdioError> {
+    let mut stopping = Stopping::default();
     let mut number = 0;
     let mut ids = 0;
     let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -168,14 +295,42 @@ fn serve_lines(
             line: number,
             detail,
         };
-        let Some(frame) = read_frame(&mut input, options.frame_limit).map_err(|err| match err {
+        let Some(frame) = stopping.next(hub, frames) else {
+            return Ok(false);
+        };
+        let Some(frame) = frame.map_err(|err| match err {
             FrameError::Defect(detail) => malformed(detail),
             FrameError::Io(err) => StdioError::Io(err),
         })?
         else {
-            return Ok(());
+            return Ok(stopping.draining && stopping.graceful());
         };
         let request = decode_request(&frame).map_err(malformed)?;
+        if stopping.mode.is_some()
+            && matches!(
+                request.op.as_str(),
+                "submit" | "open" | "work.start" | "work.send"
+            )
+        {
+            let refused = wire(
+                "shutting_down",
+                "the endpoint is shutting down and admits no new work",
+            );
+            if let Some(line) = fitted(request.id, Err(refused), options.frame_limit)? {
+                emit(writer, &line)?;
+            }
+            continue;
+        }
+        if request.op == "shutdown" {
+            let (answer, finished) = shutdown(hub, &request, &mut stopping);
+            if let Some(line) = fitted(request.id, answer, options.frame_limit)? {
+                emit(writer, &line)?;
+            }
+            if finished {
+                return Ok(stopping.draining && stopping.graceful());
+            }
+            continue;
+        }
         let (answer, pump) = if request.op == "open" {
             match open(
                 hub,

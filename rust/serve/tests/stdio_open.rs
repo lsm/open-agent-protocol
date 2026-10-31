@@ -29,7 +29,13 @@ fn lines(hub: &Hub, input: &[String]) -> Vec<Value> {
 fn lines_within(hub: &Hub, input: &[String], options: &StdioOptions) -> Vec<Value> {
     let input: String = input.iter().map(|line| format!("{line}\n")).collect();
     let output = support::Captured::default();
-    serve(hub, input.as_bytes(), output.clone(), options).unwrap();
+    serve(
+        hub,
+        std::io::Cursor::new(input.to_owned().into_bytes()),
+        output.clone(),
+        options,
+    )
+    .unwrap();
     String::from_utf8(output.bytes())
         .unwrap()
         .lines()

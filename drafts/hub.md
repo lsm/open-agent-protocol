@@ -436,7 +436,12 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Zig also serves it as
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`; Rust (`oap_serve::stdio`):
+`a_shutdown_with_nothing_running_stops_serving_with_input_still_open`,
+`a_shutdown_naming_no_mode_while_a_run_is_live_asks_the_host_to_choose`,
+`a_graceful_shutdown_refuses_new_work_and_stops_once_its_runs_settle`, with a
+queued run's loss pinned only at the hub
+(`cancel_queued_cancels_a_queued_run_and_reports_a_session_it_cannot_find`). Zig also serves it as
 `POST /shutdown`, whose body is the same `request` object or empty, answering
 `200` with the same object and refusing new work `503 shutting_down`; once
 the shutdown completes the daemon writes every answer it owes, and on graceful

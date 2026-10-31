@@ -7,7 +7,12 @@ use serde_json::Value;
 fn run(input: &str, options: StdioOptions) -> (Vec<Value>, Result<(), StdioError>) {
     let hub = Hub::new(Registry::default_registry());
     let output = support::Captured::default();
-    let result = serve(&hub, input.as_bytes(), output.clone(), &options);
+    let result = serve(
+        &hub,
+        std::io::Cursor::new(input.to_owned().into_bytes()),
+        output.clone(),
+        &options,
+    );
     let lines = String::from_utf8(output.bytes())
         .unwrap()
         .lines()
@@ -122,7 +127,12 @@ fn a_malformed_line_ends_serving_after_the_lines_before_it_are_answered() {
     let mut invalid = b"{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"".to_vec();
     invalid.extend_from_slice(b"\xff\"}\n");
     let hub = Hub::new(Registry::default_registry());
-    let result = serve(&hub, &invalid[..], Vec::new(), &StdioOptions::default());
+    let result = serve(
+        &hub,
+        std::io::Cursor::new(invalid),
+        Vec::new(),
+        &StdioOptions::default(),
+    );
     assert!(matches!(
         result,
         Err(StdioError::MalformedLine { line: 2, .. })
