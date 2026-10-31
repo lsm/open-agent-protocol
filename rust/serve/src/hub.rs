@@ -3,13 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use oap_adapter::{
-    Error, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest, UnsupportedControl,
-    CONTROL_UNSATISFIABLE,
+    CompactRequest, Error, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest,
+    UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
 use oap_binding::{Action, Entry, Record, Store};
 use oap_protocol::{
-    Admission, MessageSubmitResponse, RunCancelResponse, RunId, SessionId, SessionState,
-    SessionStatus, FEATURE_OPEN_REOPEN,
+    Admission, MessageSubmitResponse, RunCancelResponse, RunId, SessionCompactResponse, SessionId,
+    SessionState, SessionStatus, FEATURE_OPEN_REOPEN, FEATURE_SESSION_COMPACT,
 };
 
 use crate::live::{self, Live, Subscription, DEFAULT_STREAM_QUEUE};
@@ -549,6 +549,41 @@ impl HubSession {
         if admission.admission == Admission::STEERED {
             return Ok(admission);
         }
+        reserved.0 = None;
+        let current = admission.admission != Admission::QUEUED;
+        let run = admission.run_id.clone();
+        let serial = self.with_live(|live| live.start(run.as_ref(), current));
+        live::read_run(self.clone(), run, serial, current, stream);
+        Ok(admission)
+    }
+
+    pub async fn compact(
+        self: &Arc<Self>,
+        compact: CompactRequest,
+    ) -> Result<SessionCompactResponse, HubError> {
+        if compact.request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: compact.request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let Some(compactor) = self.session.compactor() else {
+            return Err(
+                Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                    FEATURE_SESSION_COMPACT,
+                )))
+                .into(),
+            );
+        };
+        let mut reserved = Reserved(Some(self));
+        self.with_live(Live::reserve);
+        let (admission, stream) = match compactor.compact(compact).await {
+            Ok(admitted) => admitted,
+            Err(err) => {
+                self.closed_by(&err);
+                return Err(err.into());
+            }
+        };
         reserved.0 = None;
         let current = admission.admission != Admission::QUEUED;
         let run = admission.run_id.clone();
