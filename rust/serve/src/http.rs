@@ -11,6 +11,8 @@ use crate::Hub;
 pub const DEFAULT_ADDR: &str = "127.0.0.1:6270";
 pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
 const MAX_HEADER_BYTES: usize = 64 << 10;
+const DRAIN_BYTES: u64 = 256 << 10;
+const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const DEFAULT_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -234,7 +236,18 @@ impl Served {
                 .collect(),
         };
         let answer = self.answer(&asked);
-        respond(&stream, &answer, asked.method != "HEAD")
+        stream.set_write_timeout(Some(self.header_timeout))?;
+        respond(&stream, &answer, asked.method != "HEAD")?;
+        let declared: u64 = asked
+            .header("Content-Length")
+            .and_then(|length| length.trim().parse().ok())
+            .unwrap_or(0);
+        stream.set_read_timeout(Some(DRAIN_WAIT))?;
+        let _ = std::io::copy(
+            &mut (&stream).take(declared.min(DRAIN_BYTES)),
+            &mut std::io::sink(),
+        );
+        Ok(())
     }
 
     fn answer(&self, asked: &Asked) -> Answer {
@@ -274,7 +287,15 @@ impl Served {
                 );
             }
         }
-        let segments: Vec<&str> = asked.path.trim_start_matches('/').split('/').collect();
+        let segments: Vec<&str> = asked
+            .path
+            .strip_prefix('/')
+            .unwrap_or_default()
+            .split('/')
+            .collect();
+        if !asked.path.starts_with('/') || segments.iter().any(|segment| segment.is_empty()) {
+            return plain(404, "404 page not found\n");
+        }
         let method = if asked.method == "HEAD" {
             "GET"
         } else {
@@ -354,8 +375,10 @@ impl Served {
 pub(crate) fn status_of(code: &str) -> u16 {
     match code {
         "unknown_session" | "unknown_adapter" | "run_not_found" => 404,
-        "session_closed" | "run_active" | "session_exists" | "run_terminal" => 409,
-        "internal" | "probe_failed" | "state_failed" | "history_failed" | "open_failed" => 500,
+        "session_closed" | "run_active" | "session_exists" | "run_terminal"
+        | "no_run_to_resume" => 409,
+        "open_failed" | "tools_failed" => 502,
+        "internal" | "probe_failed" | "state_failed" | "history_failed" => 500,
         _ => 400,
     }
 }
@@ -418,6 +441,20 @@ fn respond(mut stream: &TcpStream, answer: &Answer, with_body: bool) -> std::io:
 mod tests {
     use super::{accepted, Accept};
     use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn a_refusal_carries_the_status_go_answers_it_with() {
+        for (code, status) in [
+            ("unknown_session", 404),
+            ("no_run_to_resume", 409),
+            ("open_failed", 502),
+            ("tools_failed", 502),
+            ("probe_failed", 500),
+            ("invalid_request", 400),
+        ] {
+            assert_eq!(super::status_of(code), status, "{code}");
+        }
+    }
 
     #[test]
     fn an_accept_a_peer_aborted_is_served_past_and_only_a_listener_failure_stops() {

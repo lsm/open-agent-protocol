@@ -255,3 +255,18 @@ fn a_query_limit_is_read_only_by_the_route_that_takes_one_and_a_path_keeps_its_p
     );
     assert_eq!(state.json()["session_id"], "a+b");
 }
+
+#[test]
+fn a_path_with_an_empty_segment_matches_no_route() {
+    let addr = started(hub(), HttpOptions::default());
+    for path in [
+        "/adapters//capabilities",
+        "/sessions//state",
+        "//adapters",
+        "/adapters/",
+    ] {
+        let reply = get(addr, path);
+        assert_eq!(reply.status, 404, "{path}");
+        assert_eq!(reply.body, b"404 page not found\n", "{path}");
+    }
+}
