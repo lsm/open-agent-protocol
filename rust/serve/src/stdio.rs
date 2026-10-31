@@ -664,10 +664,13 @@ impl From<WireError> for Subscribing {
     }
 }
 
-struct Attached(Arc<std::sync::atomic::AtomicUsize>);
+pub(crate) struct Attached(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Attached {
-    fn claim(count: &Arc<std::sync::atomic::AtomicUsize>, cap: usize) -> Result<Self, WireError> {
+    pub(crate) fn claim(
+        count: &Arc<std::sync::atomic::AtomicUsize>,
+        cap: usize,
+    ) -> Result<Self, WireError> {
         use std::sync::atomic::Ordering;
         let mut held = count.load(Ordering::SeqCst);
         while held < cap {
@@ -689,11 +692,11 @@ impl Drop for Attached {
     }
 }
 
-struct Pump {
+pub(crate) struct Pump {
     _attached: Attached,
     id: i64,
     entry: Arc<HubSession>,
-    subscription: Subscription,
+    pub(crate) subscription: Subscription,
     resume_from: u64,
 }
 
@@ -750,7 +753,7 @@ pub(crate) fn refusal(err: &HubError) -> Option<WireError> {
     }
 }
 
-fn open(
+pub(crate) fn open(
     hub: &Hub,
     request: &Request,
     ids: &Ids,

@@ -25,7 +25,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | missing |
 | Hub, stdio | done | done | done |
-| Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, submit, resolve, cancel, settings, close and SSE events; open with its held subscription, transcript, the work routes and shutdown pending |
+| Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close and SSE events; transcript, the work routes and shutdown pending |
 | `serve agent` endpoint | done | done | missing |
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | missing |
