@@ -67,8 +67,8 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
         }
         let served = served.clone();
         std::thread::spawn(move || {
+            let _slot = Slot(&served.open);
             let _ = served.connection(stream);
-            served.open.fetch_sub(1, Ordering::SeqCst);
         });
     }
     Ok(())
@@ -92,6 +92,14 @@ fn accepted(err: &std::io::Error) -> Accept {
         | ErrorKind::TimedOut => Accept::Again,
         _ if matches!(err.raw_os_error(), Some(23 | 24)) => Accept::Later,
         _ => Accept::Stop,
+    }
+}
+
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -274,7 +282,10 @@ impl Reading<'_> {
                 while !self.line().ok_or(Refused::Unreadable)?.is_empty() {}
                 return Ok(body);
             }
-            if body.len() as u64 + size > MAX_BODY_BYTES {
+            if (body.len() as u64)
+                .checked_add(size)
+                .is_none_or(|total| total > MAX_BODY_BYTES)
+            {
                 return Err(Refused::TooLarge);
             }
             body.extend(self.exact(size as usize).ok_or(Refused::Unreadable)?);
@@ -620,7 +631,11 @@ impl Served {
 pub(crate) fn status_of(code: &str) -> u16 {
     match code {
         "unknown_session" | "unknown_adapter" | "run_not_found" => 404,
-        "session_closed" | "run_active" | "session_exists" | "run_terminal"
+        "session_closed"
+        | "run_active"
+        | "session_exists"
+        | "run_terminal"
+        | "resolution_rejected"
         | "no_run_to_resume" => 409,
         "open_failed" | "tools_failed" => 502,
         "internal" | "probe_failed" | "state_failed" | "history_failed" => 500,
@@ -696,6 +711,7 @@ mod tests {
             ("no_run_to_resume", 409),
             ("open_failed", 502),
             ("tools_failed", 502),
+            ("resolution_rejected", 409),
             ("probe_failed", 500),
             ("invalid_request", 400),
         ] {

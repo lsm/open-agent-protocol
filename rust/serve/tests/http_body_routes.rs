@@ -220,6 +220,16 @@ fn a_chunked_body_is_served_as_if_it_had_declared_its_length() {
 }
 
 #[test]
+fn chunk_sizes_that_overflow_their_sum_are_refused_as_too_large() {
+    let (_, addr) = started();
+    let raw = format!(
+        "POST /sessions/s/submit HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nA\r\nffffffffffffffff\r\n"
+    );
+    let refused = send(addr, raw.as_bytes());
+    assert_eq!(refused.status, 413);
+}
+
+#[test]
 fn a_media_parameter_with_no_value_is_refused_415() {
     let (_, addr) = started();
     let refused = post(
