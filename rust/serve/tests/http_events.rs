@@ -178,3 +178,16 @@ fn a_client_that_hangs_up_on_an_idle_stream_frees_its_connection() {
         String::from_utf8_lossy(&raw)
     );
 }
+
+#[test]
+fn a_stream_the_server_ends_closes_the_connection() {
+    let (hub, addr) = started();
+    let mut reader = open_stream(addr, "/sessions/s/events");
+    assert_eq!(status_and_headers(&mut reader).0, 200);
+    std::thread::sleep(Duration::from_millis(100));
+    block_on(hub.session(&"s".into()).unwrap().close()).unwrap();
+    let mut rest = Vec::new();
+    reader
+        .read_to_end(&mut rest)
+        .expect("the connection stayed open after the stream ended");
+}

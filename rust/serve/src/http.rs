@@ -96,6 +96,14 @@ fn accepted(err: &std::io::Error) -> Accept {
     }
 }
 
+struct Closing<'a>(&'a TcpStream);
+
+impl Drop for Closing<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 struct Slot<'a>(&'a AtomicUsize);
 
 impl Drop for Slot<'_> {
@@ -892,6 +900,7 @@ fn stream_events(mut stream: &TcpStream, events: Events, with_body: bool) -> std
     }
     let canceller = subscription.canceller();
     let watched = stream.try_clone()?;
+    let _closing = Closing(stream);
     std::thread::spawn(move || {
         let _ = watched.set_read_timeout(None);
         let mut sink = [0u8; 512];
