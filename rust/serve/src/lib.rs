@@ -1,5 +1,6 @@
 mod compound;
 mod gate;
+pub mod http;
 mod hub;
 mod live;
 mod registry;

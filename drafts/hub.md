@@ -762,8 +762,8 @@ concurrency and invents no code for having done so.
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
 | Accept poll | 10 ms at most; the loop wakes on any socket or child becoming ready and falls back on this bound for a session that has no handle to poll, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
 | Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
-| Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
-| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops polling the listener | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
+| Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own"; Rust chose 64 KiB, answered `431` past it, and reads the head within one 30 s deadline |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops polling the listener; Rust: 64 (`HttpOptions::max_connections`), a thread each, and a connection past the bound is closed unanswered | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
@@ -874,7 +874,8 @@ than waiting on a peer that sends nothing more. The bound is **both** a byte cap
 elapsed-time budget, and it is the *total* over the whole drain that bounds it: a per-round cap
 with an unbounded round count is not a bound. The Zig port reads in 64 KiB rounds, stops at
 **1 MiB in total**, and stops at **2500 ms elapsed from that drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
-for hours still drains. A drain that cannot read its own clock stops rather than draining without a
+for hours still drains. The Rust port reads in 4 KiB rounds and stops at **256 KiB in total** or
+**1 s elapsed from the drain's start**, whichever comes first. A drain that cannot read its own clock stops rather than draining without a
 bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
 than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
 silent-socket poll forever; `readHead` and `readBody` do the same; and the round deadline **reuses the

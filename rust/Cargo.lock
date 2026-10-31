@@ -1091,6 +1091,7 @@ dependencies = [
  "base64",
  "futures",
  "futures-core",
+ "httparse",
  "jsonschema",
  "oap-adapter",
  "oap-binding",

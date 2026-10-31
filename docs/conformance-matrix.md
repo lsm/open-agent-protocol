@@ -25,7 +25,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | missing |
 | Hub, stdio | done | done | done |
-| Hub, HTTP and SSE | done | done | missing |
+| Hub, HTTP and SSE | done | done | partial: the gates and read-only routes; body routes, SSE and the work routes pending |
 | `serve agent` endpoint | done | done | missing |
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | missing |
@@ -36,7 +36,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 
 Totals over the 19 rows that apply to all three trees (the SDK row does not
 apply to Zig): Zig 14 done, 5 partial, 0 missing; Go 15 done, 3 partial, 1
-missing; Rust 4 done, 3 partial, 12 missing.
+missing; Rust 4 done, 4 partial, 11 missing.
 
 ## What proves alignment today
 
