@@ -223,18 +223,20 @@ impl Hub {
                 return Err(err.into());
             }
         };
-        let mut record = Record::default();
-        if self.shared.options.bindings.is_some() {
-            let version = match implementation.probe().await {
-                Ok(descriptor) => descriptor.capabilities.endpoint.version,
-                Err(_) => String::new(),
+        let record = {
+            let version = match self.shared.options.bindings {
+                Some(_) => match implementation.probe().await {
+                    Ok(descriptor) => descriptor.capabilities.endpoint.version,
+                    Err(_) => String::new(),
+                },
+                None => String::new(),
             };
             let sources: Vec<String> = asked
                 .tool_sources
                 .iter()
                 .map(|source| source.id.clone())
                 .collect();
-            record = Record::from_open(
+            let mut record = Record::from_open(
                 state.session_id.as_str(),
                 adapter,
                 &version,
@@ -247,7 +249,8 @@ impl Hub {
             record.adopted = asked.adopted;
             record.compaction_policy = asked.compaction_policy.clone();
             record.native_session_id = session.native_session_id().unwrap_or_default();
-        }
+            record
+        };
         let began = if asked.reopen {
             Action::Reopened
         } else {
@@ -499,6 +502,10 @@ pub struct SessionListing {
 }
 
 impl HubSession {
+    pub(crate) fn record(&self) -> &Record {
+        &self.record
+    }
+
     pub fn id(&self) -> &SessionId {
         &self.id
     }

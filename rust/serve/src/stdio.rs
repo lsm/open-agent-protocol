@@ -1200,6 +1200,52 @@ fn adapter_code(err: &crate::HubError) -> &'static str {
     }
 }
 
+fn transcript(hub: &Hub, request: &Request) -> Answer {
+    use oap_protocol::{TRANSCRIPT_LOAD_DEFAULT_LIMIT, TRANSCRIPT_LOAD_MAX_LIMIT};
+    let limit = match request.limit {
+        None => TRANSCRIPT_LOAD_DEFAULT_LIMIT,
+        Some(limit) if (1..=TRANSCRIPT_LOAD_MAX_LIMIT).contains(&limit) => limit,
+        Some(_) => {
+            return Err(wire(
+                "invalid_request",
+                format!("transcript: limit must be from 1 to {TRANSCRIPT_LOAD_MAX_LIMIT}"),
+            ))
+        }
+    };
+    let id = oap_protocol::SessionId::from(request.session_id.as_str());
+    let native = match hub.held_native(&id) {
+        Some(native) => native,
+        None => hub
+            .recorded_native(&id)
+            .map_err(|_| wire("history_failed", "the session history could not be read"))?
+            .ok_or_else(|| {
+                wire(
+                    "unknown_session",
+                    format!("no session {:?}", request.session_id),
+                )
+            })?,
+    };
+    let page =
+        block_on(hub.transcript_page(&native, &request.cursor, limit as usize)).map_err(|err| {
+            match err {
+                HubError::Adapter(oap_adapter::Error::InvalidCursor) => wire("invalid_cursor", err),
+                _ => wire("internal", err),
+            }
+        })?;
+    let Some(mut page) = page else {
+        return Err(detailed(
+            "unsupported_feature",
+            "transcript: this session's adapter keeps no transcript it can read",
+            serde_json::json!({
+                "feature": oap_protocol::FEATURE_TRANSCRIPT_LOAD,
+                "reason": oap_adapter::CONTROL_UNADVERTISED,
+            }),
+        ));
+    };
+    page.session_id = id;
+    serde_json::to_value(&page).map_err(|err| wire("internal", err))
+}
+
 fn submit_refusal(err: HubError) -> WireError {
     refusal(&err).unwrap_or_else(|| {
         wire(
@@ -1596,6 +1642,10 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
                 entry.id(),
                 catalog.revision,
             )
+        }
+        "transcript" => {
+            request.only(&["session_id", "cursor", "limit"])?;
+            transcript(hub, request)
         }
         "history" => {
             request.only(&["cursor", "limit"])?;

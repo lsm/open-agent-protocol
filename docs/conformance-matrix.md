@@ -24,19 +24,19 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapters: acp, claude, codex, deepseek, hermes, opencode, pi | done (shared corpora) | done (shared corpora) | missing |
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | missing |
-| Hub, stdio | done | done | partial: work verbs and `transcript` pending; requests served one at a time (`drafts/hub.md` D32) |
+| Hub, stdio | done | done | partial: work verbs pending; requests served one at a time (`drafts/hub.md` D32) |
 | Hub, HTTP and SSE | done | done | missing |
 | `serve agent` endpoint | done | done | missing |
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | missing |
-| `transcript.load` (Decision 0051) | done | partial: hub route pending | missing |
+| `transcript.load` (Decision 0051) | done | partial: hub route pending | partial: the stdio op; no Rust adapter has a reader yet |
 | Shutdown (Decision 0050) | partial: signals and restart recovery pending | partial: same | partial: the stdio op; signals and restart recovery pending |
 | Client SDK | n/a (oapx is the runtime) | done | done (delegates to oapx) |
 | Agent loop and provider runtime | done | done | missing |
 
 Totals over the 19 rows that apply to all three trees (the SDK row does not
 apply to Zig): Zig 14 done, 5 partial, 0 missing; Go 15 done, 3 partial, 1
-missing; Rust 3 done, 3 partial, 13 missing.
+missing; Rust 3 done, 4 partial, 12 missing.
 
 ## What proves alignment today
 
@@ -44,7 +44,7 @@ missing; Rust 3 done, 3 partial, 13 missing.
 | --- | --- | --- | --- |
 | `fixtures/manifest.json`, 785 traces | gates judge 669; skip codes not yet implemented | all 785, exact codes | 68 decode and schema traces only |
 | Adapter corpora, byte for byte | yes | yes | no |
-| Hub differential (`goap` vs `oapx` stdio) | yes | yes | yes, against `oap-rust-hub`, but not the work-verb and `transcript` scenarios |
+| Hub differential (`goap` vs `oapx` stdio) | yes | yes | yes, against `oap-rust-hub`, but not the work-verb scenarios |
 | Served backend parity (`TestBackendsMatchOapx`) | yes | yes | no |
 
 The Zig semantic gate skips any code Zig has not implemented, so a green Zig
