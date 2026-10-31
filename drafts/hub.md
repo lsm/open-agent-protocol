@@ -1284,7 +1284,7 @@ under — the citation is checked, never required.
 | An open citing a stale revision is refused `stale_capabilities`, naming both revisions; an open citing none is admitted under the revision it was gated with | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP); `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` (the same comparison on the `subscribe` path, and the stdio op's own mapping of it) |
 | An open response that cannot be encoded rolls the session back and says so | `TestOpenRollsBackWhenItsResponseCannotEncode`, `TestAnOpenThatCannotEncodeIsRolledBack` |
 | An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which | `TestAnOpenTheHostNamedIsKeptAndSaidSo` |
-| A submit acknowledgement that will not frame rolls its run back and names the outcome | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement` |
+| A submit acknowledgement that will not frame rolls its run back and names the outcome; a steer, which admits no run of its own, leaves the run it steered running | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement`, `TestAnUnframableSteerAcknowledgementLeavesTheSteeredRunRunning` |
 
 ### The held subscription
 
