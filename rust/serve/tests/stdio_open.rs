@@ -4,7 +4,7 @@ use oap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, OpenMessage,
     RequestedDeliveryMode, SessionOpenRequest, ToolSourceAttachment,
 };
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::StdioOptions;
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
@@ -27,20 +27,7 @@ fn lines(hub: &Hub, input: &[String]) -> Vec<Value> {
 }
 
 fn lines_within(hub: &Hub, input: &[String], options: &StdioOptions) -> Vec<Value> {
-    let input: String = input.iter().map(|line| format!("{line}\n")).collect();
-    let output = support::Captured::default();
-    serve(
-        hub,
-        std::io::Cursor::new(input.to_owned().into_bytes()),
-        output.clone(),
-        options,
-    )
-    .unwrap();
-    String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    support::in_turn(hub, input, options)
 }
 
 fn open_line(id: i64, adapter: &str, request: &str) -> String {

@@ -13,11 +13,8 @@ fn run(input: &str, options: StdioOptions) -> (Vec<Value>, Result<(), StdioError
         output.clone(),
         &options,
     );
-    let lines = String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let mut lines = output.values();
+    lines.sort_by_key(|line| line["id"].as_i64());
     (lines, result)
 }
 

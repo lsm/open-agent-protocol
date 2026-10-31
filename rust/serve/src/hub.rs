@@ -119,6 +119,7 @@ impl Shared {
     }
 }
 
+#[derive(Clone)]
 pub struct Hub {
     shared: Arc<Shared>,
 }

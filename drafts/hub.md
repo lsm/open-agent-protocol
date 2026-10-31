@@ -385,8 +385,8 @@ and a subscribing `open` can reach.
 
 | bound | value | pinned by |
 | --- | --- | --- |
-| Concurrent ops in flight | 16 | `TestInFlightOpsAreBounded` |
-| Request bytes held in flight | 16 MiB, with one oversize request admitted so it can be refused | `TestAdmissionBudgetsRequestBytes`, `TestAdmissionAdmitsOneOversizeRequest` |
+| Concurrent ops in flight | 16 | `TestInFlightOpsAreBounded`; Rust: `a_request_past_the_in_flight_bound_is_refused_busy_naming_the_bound`, `pipelined_requests_are_served_at_once_rather_than_one_after_another` |
+| Request bytes held in flight | 16 MiB, with one oversize request admitted so it can be refused | `TestAdmissionBudgetsRequestBytes`, `TestAdmissionAdmitsOneOversizeRequest`; Rust: `the_byte_budget_admits_one_oversize_request_and_refuses_what_overfills_it` |
 | Concurrent subscriptions | 64 | `TestSubscriptionsAreBounded` |
 | Queued output lines before the writer is abandoned | 256 | `TestRefusalHeldThroughAFullQueueStillArrives` |
 | Frame limit | 16 MiB envelope + 2 MiB wrapper, floor 256 | `TestOversizedLineFailsClosed`, `TestFrameLimitFloorRejectsUnusableLimits` |
@@ -2543,18 +2543,17 @@ closed` and `the sweep waits no longer than the window it was given`, all four i
 | **The fix** | Landed as described: the contract member, and the exposure set on `Subscription`. What remains is an adapter that reports its own stream failures by run, which is that adapter's change, not the hub's. |
 | **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 
-### D32 — the Rust stdio frontend answers requests one at a time
+### D35 — the Rust stdio frontend waits on a full output queue instead of refusing
 
-`oap_serve::stdio` (Decision 0052) reads, serves and answers each request
-before reading the next, where Go serves each in its own goroutine under the
-in-flight bounds of [Bounds on the stdio pipe](#bounds-on-the-stdio-pipe). Its
-output goes through one writer thread fed by a queue of 256 lines, and a
-subscription's pump writes to the same queue, so a host that stops reading
-fills the queue and the request loop then waits on it instead of answering
-`busy`. Shutdown is bounded either way: at the end of input the pumps are
-cancelled and the writer is given the 5-second window before it is abandoned,
-pinned by `a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window`.
-Concurrent serving with the `busy` bounds closes this.
+`oap_serve::stdio` serves requests concurrently within the in-flight bounds of
+[Bounds on the stdio pipe](#bounds-on-the-stdio-pipe), but every line it writes,
+a `busy` refusal included, waits for room in the 256-line output queue. A host
+that stops reading therefore fills the queue and stalls the request loop
+instead of being answered `busy`, and the writer is not abandoned: serve ends
+only when the host closes its end or reads again. Go writes a refusal without
+waiting, counts the ones it could not deliver, and abandons a writer that
+outlives the shutdown window. A non-blocking refusal path and writer
+abandonment close this.
 
 ### D34 — Zig keeps a named compound open whose response will not frame
 

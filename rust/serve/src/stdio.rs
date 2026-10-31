@@ -31,6 +31,7 @@ const PARAMS: [&str; 8] = [
 pub struct StdioOptions {
     pub frame_limit: usize,
     pub max_subscriptions: usize,
+    pub max_ops: usize,
 }
 
 pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 64;
@@ -40,6 +41,7 @@ impl Default for StdioOptions {
         Self {
             frame_limit: DEFAULT_FRAME_LIMIT,
             max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
+            max_ops: DEFAULT_MAX_OPS,
         }
     }
 }
@@ -131,14 +133,29 @@ pub fn serve(
             }
         }
     });
-    let mut pumps = Vec::new();
-    let served = serve_lines(hub, &frames, &writer, options, |pump| {
-        pumps.push((pump.subscription.canceller(), pump.attached()));
-        let writer = writer.clone();
-        let limit = options.frame_limit;
-        std::thread::spawn(move || pump.run(&writer, limit));
-    });
+    let serving = Serving {
+        hub: hub.clone(),
+        writer,
+        frame_limit: options.frame_limit,
+        ids: Arc::default(),
+        attached: Arc::default(),
+        cap: match options.max_subscriptions {
+            0 => DEFAULT_MAX_SUBSCRIPTIONS,
+            cap => cap,
+        },
+        pumps: Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
+        stopping: Arc::default(),
+        inflight: Arc::new(Inflight::new(options.max_ops)),
+        broken: Arc::default(),
+    };
+    let served = serve_lines(&serving, &frames);
     let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
+    serving.inflight.settle(deadline);
+    let pumps = lock(&serving.pumps).take().unwrap_or_default();
+    let served = match (served, lock(&serving.broken).take()) {
+        (Ok(_), Some(err)) => Err(err),
+        (served, _) => served,
+    };
     let streaming = |pumps: &[(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)]| {
         pumps
             .iter()
@@ -152,16 +169,101 @@ pub fn serve(
     for (canceller, _) in &pumps {
         canceller.cancel();
     }
-    while pumps
-        .iter()
-        .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
-        && std::time::Instant::now() < deadline
-    {
+    while streaming(&pumps) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    drop(writer);
+    drop(serving);
     let _ = written.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
     served.map(|_| ())
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+type Ids = std::sync::atomic::AtomicU64;
+
+pub const DEFAULT_MAX_OPS: usize = 16;
+
+const ADMISSION_BYTES: usize = MAX_ENVELOPE_BYTES;
+
+struct Inflight {
+    held: std::sync::Mutex<(usize, usize)>,
+    settled: std::sync::Condvar,
+    max_ops: usize,
+}
+
+impl Inflight {
+    fn new(max_ops: usize) -> Self {
+        Self {
+            held: std::sync::Mutex::default(),
+            settled: std::sync::Condvar::new(),
+            max_ops: match max_ops {
+                0 => DEFAULT_MAX_OPS,
+                max => max,
+            },
+        }
+    }
+
+    fn offer(&self, size: usize) -> Result<(), String> {
+        let mut held = lock(&self.held);
+        let (ops, bytes) = *held;
+        if ops == 0 || (ops < self.max_ops && bytes + size <= ADMISSION_BYTES) {
+            *held = (ops + 1, bytes + size);
+            return Ok(());
+        }
+        if ops >= self.max_ops {
+            return Err(format!(
+                "the frontend is already running {} operations",
+                self.max_ops
+            ));
+        }
+        Err(format!(
+            "the requests already in flight fill the frontend's {ADMISSION_BYTES}-byte budget"
+        ))
+    }
+
+    fn release(&self, size: usize) {
+        let mut held = lock(&self.held);
+        held.0 -= 1;
+        held.1 -= size;
+        if held.0 == 0 {
+            self.settled.notify_all();
+        }
+    }
+
+    fn settle(&self, deadline: std::time::Instant) {
+        let mut held = lock(&self.held);
+        while held.0 > 0 {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            held = self
+                .settled
+                .wait_timeout(held, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+type Pumps = std::sync::Mutex<Option<Vec<(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)>>>;
+
+#[derive(Clone)]
+struct Serving {
+    hub: Hub,
+    writer: Lines,
+    frame_limit: usize,
+    ids: Arc<Ids>,
+    attached: Arc<std::sync::atomic::AtomicUsize>,
+    cap: usize,
+    pumps: Arc<Pumps>,
+    stopping: Arc<std::sync::RwLock<Stopping>>,
+    inflight: Arc<Inflight>,
+    broken: Arc<std::sync::Mutex<Option<StdioError>>>,
 }
 
 type Frames = std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, FrameError>>;
@@ -179,7 +281,7 @@ impl Stopping {
         self.mode == Some(oap_protocol::ShutdownMode::GRACEFUL)
     }
 
-    fn drained(&self, hub: &Hub) -> bool {
+    fn drained(hub: &Hub) -> bool {
         let runs = block_on(hub.nonterminal_runs());
         for run in runs
             .iter()
@@ -190,12 +292,20 @@ impl Stopping {
         runs.is_empty()
     }
 
-    fn next(&self, hub: &Hub, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
-        if !self.draining {
+    fn next(
+        stopping: &std::sync::RwLock<Stopping>,
+        hub: &Hub,
+        frames: &Frames,
+    ) -> Option<Result<Option<Vec<u8>>, FrameError>> {
+        let draining = stopping
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .draining;
+        if !draining {
             return frames.recv().ok();
         }
         loop {
-            if self.drained(hub) {
+            if Stopping::drained(hub) {
                 return Some(Ok(None));
             }
             match frames.recv_timeout(DRAIN_POLL) {
@@ -274,28 +384,18 @@ fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the output closed"))
 }
 
-fn serve_lines(
-    hub: &Hub,
-    frames: &Frames,
-    writer: &Lines,
-    options: &StdioOptions,
-    mut start: impl FnMut(Pump),
-) -> Result<bool, StdioError> {
-    let mut stopping = Stopping::default();
+fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
     let mut number = 0;
-    let mut ids = 0;
-    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let cap = match options.max_subscriptions {
-        0 => DEFAULT_MAX_SUBSCRIPTIONS,
-        cap => cap,
-    };
     loop {
+        if let Some(err) = lock(&serving.broken).take() {
+            return Err(err);
+        }
         number += 1;
         let malformed = |detail: String| StdioError::MalformedLine {
             line: number,
             detail,
         };
-        let Some(frame) = stopping.next(hub, frames) else {
+        let Some(frame) = Stopping::next(&serving.stopping, &serving.hub, frames) else {
             return Ok(false);
         };
         let Some(frame) = frame.map_err(|err| match err {
@@ -303,52 +403,104 @@ fn serve_lines(
             FrameError::Io(err) => StdioError::Io(err),
         })?
         else {
+            let stopping = serving
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             return Ok(stopping.draining && stopping.graceful());
         };
         let request = decode_request(&frame).map_err(malformed)?;
-        if stopping.mode.is_some()
-            && matches!(
-                request.op.as_str(),
-                "submit" | "open" | "work.start" | "work.send"
-            )
-        {
-            let refused = wire(
-                "shutting_down",
-                "the endpoint is shutting down and admits no new work",
-            );
-            if let Some(line) = fitted(request.id, Err(refused), options.frame_limit)? {
-                emit(writer, &line)?;
+        let size = frame.len();
+        if let Err(why) = serving.inflight.offer(size) {
+            let refused = wire("busy", format!("{why}; send this request again"));
+            if let Some(line) = fitted(request.id, Err(refused), serving.frame_limit)? {
+                emit(&serving.writer, &line)?;
             }
             continue;
         }
         if request.op == "shutdown" {
-            let (answer, finished) = shutdown(hub, &request, &mut stopping);
-            if let Some(line) = fitted(request.id, answer, options.frame_limit)? {
-                emit(writer, &line)?;
+            let mut stopping = serving
+                .stopping
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
+            serving.inflight.release(size);
+            if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
+                emit(&serving.writer, &line)?;
             }
             if finished {
                 return Ok(stopping.draining && stopping.graceful());
             }
             continue;
         }
+        let worker = serving.clone();
+        std::thread::spawn(move || {
+            if let Err(err) = worker.answer(&request) {
+                lock(&worker.broken).get_or_insert(err);
+            }
+            worker.inflight.release(size);
+        });
+    }
+}
+
+impl Serving {
+    fn start(&self, pump: Pump) {
+        let mut pumps = lock(&self.pumps);
+        let Some(pumps) = pumps.as_mut() else {
+            return;
+        };
+        pumps.push((pump.subscription.canceller(), pump.attached()));
+        let writer = self.writer.clone();
+        let limit = self.frame_limit;
+        std::thread::spawn(move || pump.run(&writer, limit));
+    }
+
+    fn answer(&self, request: &Request) -> Result<(), StdioError> {
+        let admits = matches!(
+            request.op.as_str(),
+            "submit" | "open" | "work.start" | "work.send"
+        );
+        let _admitted = if admits {
+            let stopping = self
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if stopping.mode.is_some() {
+                let refused = wire(
+                    "shutting_down",
+                    "the endpoint is shutting down and admits no new work",
+                );
+                if let Some(line) = fitted(request.id, Err(refused), self.frame_limit)? {
+                    emit(&self.writer, &line)?;
+                }
+                return Ok(());
+            }
+            Some(stopping)
+        } else {
+            None
+        };
         let (answer, pump) = if request.op == "open" {
             match open(
-                hub,
-                &request,
-                &mut ids,
-                || Attached::claim(&attached, cap),
-                options.frame_limit,
+                &self.hub,
+                request,
+                &self.ids,
+                || Attached::claim(&self.attached, self.cap),
+                self.frame_limit,
             ) {
                 Ok((answer, pump)) => (Ok(answer), pump),
                 Err(error) => (Err(error), None),
             }
         } else if request.op == "events" {
-            match events(hub, &request, Attached::claim(&attached, cap)) {
+            match events(
+                &self.hub,
+                request,
+                Attached::claim(&self.attached, self.cap),
+            ) {
                 Ok(pump) => (Ok(Value::Null), Some(pump)),
                 Err(Subscribing::Refused(error)) => (Err(error), None),
                 Err(Subscribing::Gap(gap)) => {
-                    if let Some(line) = fitted(request.id, Ok(Value::Null), options.frame_limit)? {
-                        emit(writer, &line)?;
+                    if let Some(line) = fitted(request.id, Ok(Value::Null), self.frame_limit)? {
+                        emit(&self.writer, &line)?;
                     }
                     let full = GapLine {
                         event: "oap-replay-gap",
@@ -367,23 +519,27 @@ fn serve_lines(
                     let fitting = [&full, &minimal].into_iter().find_map(|gap| {
                         serde_json::to_vec(gap)
                             .ok()
-                            .filter(|line| line.len() <= options.frame_limit)
+                            .filter(|line| line.len() <= self.frame_limit)
                     });
                     if let Some(line) = fitting {
-                        emit(writer, &line)?;
+                        emit(&self.writer, &line)?;
                     }
-                    continue;
+                    return Ok(());
                 }
             }
         } else {
-            (dispatch(hub, &request, &mut ids, options.frame_limit), None)
+            (
+                dispatch(&self.hub, request, &self.ids, self.frame_limit),
+                None,
+            )
         };
-        if let Some(line) = fitted(request.id, answer, options.frame_limit)? {
-            emit(writer, &line)?;
+        if let Some(line) = fitted(request.id, answer, self.frame_limit)? {
+            emit(&self.writer, &line)?;
         }
         if let Some(pump) = pump {
-            start(pump);
+            self.start(pump);
         }
+        Ok(())
     }
 }
 
@@ -487,7 +643,7 @@ pub(crate) fn refusal(err: &HubError) -> Option<WireError> {
 fn open(
     hub: &Hub,
     request: &Request,
-    ids: &mut u64,
+    ids: &Ids,
     claim: impl FnOnce() -> Result<Attached, WireError>,
     limit: usize,
 ) -> Result<(Value, Option<Pump>), WireError> {
@@ -1098,9 +1254,9 @@ impl Request {
     }
 }
 
-fn next_id(ids: &mut u64, kind: &str) -> String {
-    *ids += 1;
-    format!("oap-{kind}-{ids}")
+fn next_id(ids: &Ids, kind: &str) -> String {
+    let next = ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    format!("oap-{kind}-{next}")
 }
 
 fn session(hub: &Hub, id: &str) -> Result<std::sync::Arc<crate::HubSession>, WireError> {
@@ -1176,7 +1332,7 @@ fn reply(
     session_id: oap_protocol::SessionId,
     run_id: oap_protocol::RunId,
     body: &impl Serialize,
-    ids: &mut u64,
+    ids: &Ids,
 ) -> Answer {
     let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), body)
         .map_err(|err| wire("internal", err))?;
@@ -1268,7 +1424,7 @@ fn submit_refusal(err: HubError) -> WireError {
     })
 }
 
-fn settings(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+fn settings(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     let envelope = gate_request(
         request.request.as_deref(),
         &[oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST],
@@ -1310,7 +1466,7 @@ fn catalog_refusal(err: HubError, otherwise: &'static str) -> WireError {
 }
 
 fn listing(
-    ids: &mut u64,
+    ids: &Ids,
     kind: oap_protocol::EnvelopeType,
     payload: &impl Serialize,
     session_id: &oap_protocol::SessionId,
@@ -1324,7 +1480,7 @@ fn listing(
     serde_json::to_value(&response).map_err(|err| wire("internal", err))
 }
 
-fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
+fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
     use oap_protocol::EnvelopeType;
     let envelope = gate_request(
         request.request.as_deref(),
@@ -1454,7 +1610,7 @@ fn rollback_run(
     Ok(settled)
 }
 
-fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+fn cancel(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     let envelope = gate_request(
         request.request.as_deref(),
         &[oap_protocol::EnvelopeType::RUN_CANCEL_REQUEST],
@@ -1482,7 +1638,7 @@ fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
     )
 }
 
-fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &mut u64) -> Answer {
+fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &Ids) -> Answer {
     let asked: oap_protocol::ActionCallResolveRequest = payload(envelope)?;
     let run = asked.run_id.clone();
     let answer = block_on(entry.resolve_call(oap_adapter::CallResolution {
@@ -1518,7 +1674,7 @@ fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &mut
     serde_json::to_value(&response).map_err(|err| wire("internal", err))
 }
 
-fn resolve(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+fn resolve(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     use oap_protocol::EnvelopeType;
     let envelope = gate_request(
         request.request.as_deref(),
@@ -1593,7 +1749,7 @@ fn rfc3339(ms: i64) -> String {
     )
 }
 
-fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
+fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
     match request.op.as_str() {
         "capabilities" => {
             request.only(&["adapter"])?;
@@ -1899,6 +2055,22 @@ fn response_line(id: i64, answer: Answer) -> Result<Vec<u8>, StdioError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_byte_budget_admits_one_oversize_request_and_refuses_what_overfills_it() {
+        let inflight = super::Inflight::new(16);
+        assert!(inflight.offer(super::ADMISSION_BYTES + 1).is_ok());
+        assert_eq!(
+            inflight.offer(1),
+            Err(format!(
+                "the requests already in flight fill the frontend's {}-byte budget",
+                super::ADMISSION_BYTES
+            ))
+        );
+        inflight.release(super::ADMISSION_BYTES + 1);
+        assert!(inflight.offer(super::ADMISSION_BYTES).is_ok());
+        assert!(inflight.offer(1).is_err());
+    }
+
     #[test]
     fn rfc3339_spells_utc_seconds_across_leap_days_and_centuries() {
         for (ms, want) in [

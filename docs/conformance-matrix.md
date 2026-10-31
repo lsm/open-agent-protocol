@@ -24,7 +24,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapters: acp, claude, codex, deepseek, hermes, opencode, pi | done (shared corpora) | done (shared corpora) | missing |
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | missing |
-| Hub, stdio | done | done | partial: requests served one at a time (`drafts/hub.md` D32) |
+| Hub, stdio | done | done | partial: a full output queue stalls instead of answering `busy` (`drafts/hub.md` D35) |
 | Hub, HTTP and SSE | done | done | missing |
 | `serve agent` endpoint | done | done | missing |
 | Conformance runner | partial: asks no `session.list` | done | missing |

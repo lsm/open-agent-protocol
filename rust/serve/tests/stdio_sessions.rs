@@ -2,7 +2,7 @@ mod support;
 
 use futures::executor::block_on;
 use oap_adapter::OpenRequest;
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::StdioOptions;
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
@@ -22,20 +22,7 @@ fn hub_with(ids: &[&str]) -> Hub {
 }
 
 fn answers(hub: &Hub, lines: &[&str]) -> Vec<Value> {
-    let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
-    let output = support::Captured::default();
-    serve(
-        hub,
-        std::io::Cursor::new(input.to_owned().into_bytes()),
-        output.clone(),
-        &StdioOptions::default(),
-    )
-    .unwrap();
-    String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    support::in_turn(hub, lines, &StdioOptions::default())
 }
 
 #[test]
