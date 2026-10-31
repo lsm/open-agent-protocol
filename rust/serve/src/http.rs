@@ -380,12 +380,12 @@ impl Served {
         stream.set_write_timeout(Some(self.header_timeout))?;
         respond(&stream, &answer, asked.method != "HEAD")?;
         if !consumed {
-            drain(
-                &stream,
-                declared(&asked)
-                    .saturating_sub(asked.rest.len() as u64)
-                    .min(DRAIN_BYTES),
-            );
+            let left = if asked.header("Transfer-Encoding").is_some() {
+                DRAIN_BYTES
+            } else {
+                declared(&asked).saturating_sub(asked.rest.len() as u64)
+            };
+            drain(&stream, left.min(DRAIN_BYTES));
         }
         Ok(())
     }
@@ -557,18 +557,20 @@ impl Served {
             if !coding.trim().eq_ignore_ascii_case("chunked") {
                 return Err(unreadable());
             }
-            *consumed = true;
-            return reading.chunked().map_err(|refused| match refused {
+            let body = reading.chunked().map_err(|refused| match refused {
                 Refused::TooLarge => too_large(),
                 Refused::Unreadable => unreadable(),
-            });
+            })?;
+            *consumed = true;
+            return Ok(body);
         }
         let length = declared(asked);
         if length > MAX_BODY_BYTES {
             return Err(too_large());
         }
+        let body = reading.exact(length as usize).ok_or_else(unreadable)?;
         *consumed = true;
-        reading.exact(length as usize).ok_or_else(unreadable)
+        Ok(body)
     }
 
     fn refused(
