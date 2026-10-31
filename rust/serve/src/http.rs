@@ -196,15 +196,16 @@ fn json_media(header: &str) -> bool {
     if !media.trim().eq_ignore_ascii_case("application/json") {
         return false;
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashMap::new();
     loop {
         rest = rest.trim_start();
         if rest.is_empty() {
             return true;
         }
         match media_parameter(rest) {
-            Some((key, after)) => {
-                if !seen.insert(key.to_ascii_lowercase()) {
+            Some((key, value, after)) => {
+                let earlier = seen.insert(key.to_ascii_lowercase(), value.clone());
+                if earlier.is_some_and(|earlier| earlier != value) {
                     return false;
                 }
                 rest = after;
@@ -219,7 +220,7 @@ fn token_end(text: &str) -> usize {
         .unwrap_or(text.len())
 }
 
-fn media_parameter(text: &str) -> Option<(&str, &str)> {
+fn media_parameter(text: &str) -> Option<(&str, String, &str)> {
     let text = text.trim_start().strip_prefix(';')?.trim_start();
     let end = token_end(text);
     let (key, text) = text.split_at(end);
@@ -228,13 +229,17 @@ fn media_parameter(text: &str) -> Option<(&str, &str)> {
     }
     let text = text.trim_start().strip_prefix('=')?.trim_start();
     if let Some(quoted) = text.strip_prefix('"') {
+        let mut value = String::new();
         let mut escaped = false;
         for (at, c) in quoted.char_indices() {
             match c {
-                _ if escaped => escaped = false,
+                _ if escaped => {
+                    escaped = false;
+                    value.push(c);
+                }
                 '\\' => escaped = true,
-                '"' => return Some((key, &quoted[at + 1..])),
-                _ => {}
+                '"' => return Some((key, value, &quoted[at + 1..])),
+                _ => value.push(c),
             }
         }
         return None;
@@ -243,7 +248,7 @@ fn media_parameter(text: &str) -> Option<(&str, &str)> {
     if end == 0 {
         return None;
     }
-    Some((key, &text[end..]))
+    Some((key, text[..end].to_owned(), &text[end..]))
 }
 
 enum Refused {
@@ -444,7 +449,11 @@ impl Served {
                 || !length.bytes().all(|b| b.is_ascii_digit())
         });
         if codings > 1 || (codings == 1 && !lengths.is_empty()) || unreadable_length {
-            respond(&stream, &plain(400, "400 Bad Request\n"), true)?;
+            respond(
+                &stream,
+                &plain(400, "400 Bad Request\n"),
+                asked.method != "HEAD",
+            )?;
             drain(&stream, DRAIN_BYTES);
             return Ok(());
         }

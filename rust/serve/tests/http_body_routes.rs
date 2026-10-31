@@ -239,7 +239,6 @@ fn a_media_parameter_list_go_refuses_is_refused_415_and_one_it_accepts_is_served
         "application/json; x=\"unterminated",
         "application/json; charset=\"utf-8\" junk; x=1",
         "application/json; a=1; a=2",
-        "application/json; a=1; A=1",
     ] {
         let refused = post(addr, "/sessions/s/settings", media, "{}");
         assert_eq!(refused.status, 415, "{media}");
@@ -248,6 +247,8 @@ fn a_media_parameter_list_go_refuses_is_refused_415_and_one_it_accepts_is_served
         "application/json;",
         "Application/JSON; charset=\"utf-8\"",
         "application/json ; charset=utf-8 ; q=1",
+        "application/json; a=1; A=1",
+        "application/json; a=1; a=\"1\"",
     ] {
         let served = post(addr, "/sessions/s/settings", media, "{}");
         assert_ne!(served.status, 415, "{media}");
@@ -257,6 +258,12 @@ fn a_media_parameter_list_go_refuses_is_refused_415_and_one_it_accepts_is_served
 #[test]
 fn ambiguous_or_unreadable_body_framing_is_a_plain_400() {
     let (_, addr) = started();
+    let head = send(
+        addr,
+        format!("HEAD /adapters HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n").as_bytes(),
+    );
+    assert_eq!(head.status, 400);
+    assert!(head.body.is_empty());
     for framing in [
         "Transfer-Encoding: chunked\r\nContent-Length: 5\r\n",
         "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
