@@ -108,7 +108,14 @@ fn user_text(messages: &[Message]) -> String {
             }
         }
     }
-    texts.join("\n")
+    let mut joined = String::new();
+    for text in texts {
+        if !joined.is_empty() {
+            joined.push('\n');
+        }
+        joined.push_str(&text);
+    }
+    joined
 }
 
 fn reply_text(envelope: &Envelope) -> String {
@@ -364,6 +371,22 @@ mod tests {
         );
         assert_eq!(reply_text(&parts), "ab");
         assert_eq!(cut_at("aé", 2), "a");
+    }
+
+    #[test]
+    fn user_text_separates_only_after_something_was_written_as_go_does() {
+        let said = |texts: &[&str]| -> Vec<Message> {
+            texts
+                .iter()
+                .map(|text| Message {
+                    role: MessageRole::USER,
+                    content: oap_protocol::MessageContent::from_text(text),
+                    ..Message::default()
+                })
+                .collect()
+        };
+        assert_eq!(user_text(&said(&["", "next"])), "next");
+        assert_eq!(user_text(&said(&["a", "", "b"])), "a\n\nb");
     }
 
     #[test]
