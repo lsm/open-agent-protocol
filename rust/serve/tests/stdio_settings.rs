@@ -4,7 +4,7 @@ use futures::executor::block_on;
 use oap_protocol::{
     CompactionKind, CompactionPolicy, Envelope, EnvelopeType, SessionSettingsUpdateRequest,
 };
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::StdioOptions;
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
@@ -48,20 +48,7 @@ fn tokens(session: &str) -> SessionSettingsUpdateRequest {
 }
 
 fn lines(hub: &Hub, input: &[String]) -> Vec<Value> {
-    let input: String = input.iter().map(|line| format!("{line}\n")).collect();
-    let output = support::Captured::default();
-    serve(
-        hub,
-        std::io::Cursor::new(input.to_owned().into_bytes()),
-        output.clone(),
-        &StdioOptions::default(),
-    )
-    .unwrap();
-    String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    support::in_turn(hub, input, &StdioOptions::default())
 }
 
 #[test]

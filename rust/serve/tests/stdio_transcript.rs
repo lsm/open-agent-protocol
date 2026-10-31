@@ -11,7 +11,7 @@ use oap_binding::MemoryStore;
 use oap_protocol::{
     MessageSubmitResponse, RunCancelResponse, RunId, SessionState, TranscriptLoadResponse,
 };
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::StdioOptions;
 use oap_serve::{Hub, HubOptions, Registry};
 use serde_json::Value;
 
@@ -99,20 +99,7 @@ fn open(hub: &Hub, adapter: &str) {
 }
 
 fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
-    let input: String = input.iter().map(|line| format!("{line}\n")).collect();
-    let output = support::Captured::default();
-    serve(
-        hub,
-        std::io::Cursor::new(input.into_bytes()),
-        output.clone(),
-        &StdioOptions::default(),
-    )
-    .unwrap();
-    String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    support::in_turn(hub, input, &StdioOptions::default())
 }
 
 #[test]

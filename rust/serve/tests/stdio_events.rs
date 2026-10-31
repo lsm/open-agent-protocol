@@ -60,20 +60,7 @@ fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
 }
 
 fn lines_with(hub: &Hub, input: &[&str], options: StdioOptions) -> Vec<Value> {
-    let input: String = input.iter().map(|line| format!("{line}\n")).collect();
-    let output = support::Captured::default();
-    serve(
-        hub,
-        std::io::Cursor::new(input.to_owned().into_bytes()),
-        output.clone(),
-        &options,
-    )
-    .unwrap();
-    String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    support::in_turn(hub, input, &options)
 }
 
 fn signals<'a>(lines: &'a [Value], event: &str) -> Vec<&'a Value> {

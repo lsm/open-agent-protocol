@@ -149,9 +149,7 @@ fn a_graceful_drain_ends_serving_even_while_requests_keep_arriving() {
         cancel,
     ];
     lines.extend((3..200).map(|id| format!(r#"{{"id":{id},"op":"sessions"}}"#)));
-    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let answered =
-        served_within(hub, held_open(&lines)).expect("serve kept reading after the drain");
+    let answered = support::in_turn(&hub, &lines, &StdioOptions::default());
     assert_eq!(answer(&answered, 2)["ok"], true, "{}", answer(&answered, 2));
     let late = answered
         .iter()

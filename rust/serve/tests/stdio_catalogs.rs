@@ -8,7 +8,7 @@ use oap_adapter::{
     Session, SubmitRequest,
 };
 use oap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::StdioOptions;
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
@@ -78,20 +78,7 @@ fn unlisting() -> Hub {
 }
 
 fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
-    let input: String = input.iter().map(|line| format!("{line}\n")).collect();
-    let output = support::Captured::default();
-    serve(
-        hub,
-        std::io::Cursor::new(input.to_owned().into_bytes()),
-        output.clone(),
-        &StdioOptions::default(),
-    )
-    .unwrap();
-    String::from_utf8(output.bytes())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    support::in_turn(hub, input, &StdioOptions::default())
 }
 
 #[test]
