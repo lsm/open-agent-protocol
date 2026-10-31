@@ -90,13 +90,9 @@ fn every_verb_work_capabilities_advertises_is_an_op_the_frontend_serves() {
 #[test]
 fn a_verb_resting_on_a_withdrawn_feature_is_not_listed_and_an_unprobed_adapter_is_unavailable() {
     let mut registry = Registry::new();
-    let features = [
-        ("session.message.submit", level(SupportLevel::NATIVE)),
-        ("run.cancel", level(SupportLevel::UNAVAILABLE)),
-    ]
-    .into_iter()
-    .map(|(key, support)| (key.to_owned(), support))
-    .collect();
+    let features = [("run.cancel".to_owned(), level(SupportLevel::UNAVAILABLE))]
+        .into_iter()
+        .collect();
     registry
         .register("adv", Arc::new(Advertising(features, "rev-1")))
         .unwrap();
