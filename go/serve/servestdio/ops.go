@@ -587,7 +587,9 @@ func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMes
 		return nil, werr
 	}
 	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
-
+		if submitted, ok := admission.Payload.(protocol.MessageSubmitResponse); ok && submitted.Admission == protocol.AdmissionSteered {
+			return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the steered run was left running"}
+		}
 		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
 		outcome, err := s.rollbackRun(rollback, entry, admission.RunID)
 		cancelRollback()
