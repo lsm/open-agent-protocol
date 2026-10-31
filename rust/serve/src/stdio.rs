@@ -423,7 +423,10 @@ fn open(
             }));
             match submitted {
                 Ok(admission) => {
-                    admitted_run = admission.run_id.clone();
+                    admitted_run = admission
+                        .run_id
+                        .clone()
+                        .filter(|_| admission.admission != oap_protocol::Admission::STEERED);
                     crate::compound::with_admitted_run(
                         opened.state.clone(),
                         &admission,
