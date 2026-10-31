@@ -131,6 +131,14 @@ fn a_stream_is_refused_before_it_starts_for_an_unknown_session_or_a_bad_cursor()
         (400, "invalid_cursor".into())
     );
     assert_eq!(
+        refused("/sessions/s/events?after=5+"),
+        (400, "invalid_cursor".into())
+    );
+    assert_eq!(
+        refused("/sessions/s/events?after=+"),
+        (400, "invalid_cursor".into())
+    );
+    assert_eq!(
         refused("/sessions/s/events?run_id=r"),
         (400, "invalid_cursor".into())
     );

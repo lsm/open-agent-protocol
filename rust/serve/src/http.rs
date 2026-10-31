@@ -652,10 +652,9 @@ impl Served {
         let cursor = asked
             .query("after")
             .filter(|after| !after.is_empty())
-            .or_else(|| asked.header("Last-Event-ID"))
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| asked.header("Last-Event-ID").map(|id| id.trim().to_owned()))
+            .unwrap_or_default();
         let run = asked.query("run_id").unwrap_or_default().to_owned();
         let subscribed = if cursor.is_empty() {
             if !run.is_empty() {
