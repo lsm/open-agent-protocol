@@ -66,6 +66,8 @@ struct Request {
     request: Option<Box<RawValue>>,
     run_id: String,
     adapter: String,
+    cursor: String,
+    limit: Option<i64>,
     after: Option<Box<RawValue>>,
     present: Vec<String>,
 }
@@ -868,10 +870,13 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                     "session_id" => request.session_id = text,
                     "run_id" => request.run_id = text,
                     "adapter" => request.adapter = text,
-                    _ => {}
+                    _ => request.cursor = text,
                 }
             }
-            "limit" => typed(parsed.is_i64() || parsed.is_null())?,
+            "limit" => {
+                typed(parsed.is_i64() || parsed.is_null())?;
+                request.limit = parsed.as_i64();
+            }
             "allow_degraded_features" => typed(match &parsed {
                 Value::Array(items) => items.iter().all(Value::is_string),
                 Value::Null => true,
@@ -1285,6 +1290,55 @@ fn rfc3339(ms: i64) -> String {
 
 fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
     match request.op.as_str() {
+        "capabilities" => {
+            request.only(&["adapter"])?;
+            if request.adapter.is_empty() {
+                return Err(wire("invalid_request", "adapter is required"));
+            }
+            let correlation = next_id(ids, "request");
+            let descriptor = block_on(hub.probe(&request.adapter)).map_err(|err| match err {
+                HubError::UnknownAdapter(_) => wire("unknown_adapter", err),
+                _ => wire("probe_failed", err),
+            })?;
+            let mut response = oap_protocol::Envelope::new(
+                oap_protocol::EnvelopeType::CAPABILITIES_RESPONSE,
+                next_id(ids, "response"),
+                &descriptor.capabilities,
+            )
+            .map_err(|err| wire("internal", err))?;
+            response.in_reply_to = Some(correlation.into());
+            response.capability_revision = Some(descriptor.capability_revision);
+            serde_json::to_value(&response).map_err(|err| wire("internal", err))
+        }
+        "history" => {
+            request.only(&["cursor", "limit"])?;
+            if request
+                .limit
+                .is_some_and(|limit| !(1..=oap_binding::MAX_LIMIT as i64).contains(&limit))
+            {
+                return Err(wire("invalid_request", oap_binding::Error::InvalidLimit));
+            }
+            let page = hub
+                .session_history(&request.cursor, request.limit.unwrap_or(0))
+                .map_err(|err| match err {
+                    HubError::NoSessionHistory => detailed(
+                        "unsupported_feature",
+                        &err,
+                        serde_json::json!({
+                            "feature": oap_protocol::FEATURE_SESSION_LIST,
+                            "reason": oap_adapter::CONTROL_UNADVERTISED,
+                        }),
+                    ),
+                    HubError::Binding(oap_binding::Error::InvalidCursor) => {
+                        wire("invalid_cursor", oap_binding::Error::InvalidCursor)
+                    }
+                    HubError::Binding(oap_binding::Error::InvalidLimit) => {
+                        wire("invalid_request", oap_binding::Error::InvalidLimit)
+                    }
+                    _ => wire("history_failed", "the session history could not be read"),
+                })?;
+            serde_json::to_value(&page).map_err(|err| wire("internal", err))
+        }
         "submit" => {
             request.only(&["session_id", "request"])?;
             submit(hub, request, ids, limit)

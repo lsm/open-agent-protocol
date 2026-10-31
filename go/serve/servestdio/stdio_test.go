@@ -1587,6 +1587,73 @@ func TestSubmitRollsBackUnframableAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestAnUnframableSteerAcknowledgementLeavesTheSteeredRunRunning(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "steered")
+
+	first := `{"id":1,"op":"submit","session_id":"steered","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "steered", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "steered", "")) + `}`
+	steer := `{"id":2,"op":"submit","session_id":"steered","request":` + string(requestEnvelope(t, strings.Repeat("s", 400), protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "steered", Delivery: protocol.DeliverySteer,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}},
+	}, "steered", "")) + `}`
+	f := startFrontend(t, hub, Options{FrameLimit: len(steer) + 8})
+	f.send(first)
+	admitted := f.expectResponse(1)
+	requireOK(t, admitted)
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(admitted.Result, &envelope); err != nil {
+		t.Fatal(err)
+	}
+
+	f.send(steer)
+	response := f.expectResponse(2)
+	requireCode(t, response, "response_too_large")
+	if !strings.HasSuffix(response.Error.Message, "; the steered run was left running") {
+		t.Fatalf("refusal does not name the steered run: %s", response.Error.Message)
+	}
+	entry, err := hub.Session("steered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := entry.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ActiveRunID != envelope.RunID {
+		t.Fatalf("active run = %q, want the steered run %q still running", state.ActiveRunID, envelope.RunID)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+func TestAnOversizedCompoundOpenRollsBackTheNamedSessionWhoseMessageItAdmitted(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	line := `{"id":1,"op":"open","adapter":"memory","request":` + string(requestEnvelope(t, "req-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
+		SessionID: "compound",
+		Message: &protocol.OpenMessage{
+			Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+		},
+	}, "", "")) + `}`
+	f := startFrontend(t, hub, Options{FrameLimit: len(line) + 8})
+	f.send(line)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+	if !strings.HasSuffix(response.Error.Message, "; the session was rolled back") {
+		t.Fatalf("refusal does not report the rollback: %s", response.Error.Message)
+	}
+	if _, err := hub.Session("compound"); err == nil {
+		t.Fatal("the named session survived a refused compound open")
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 type noControlsAdapter struct{ inner base.Adapter }
 
 func (a noControlsAdapter) Probe(ctx context.Context) (base.Descriptor, error) {

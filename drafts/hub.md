@@ -1283,8 +1283,8 @@ under — the citation is checked, never required.
 | A degraded `subscribe` is refused without the opt-in, and admitted with it | `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
 | An open citing a stale revision is refused `stale_capabilities`, naming both revisions; an open citing none is admitted under the revision it was gated with | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP); `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` (the same comparison on the `subscribe` path, and the stdio op's own mapping of it) |
 | An open response that cannot be encoded rolls the session back and says so | `TestOpenRollsBackWhenItsResponseCannotEncode`, `TestAnOpenThatCannotEncodeIsRolledBack` |
-| An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which | `TestAnOpenTheHostNamedIsKeptAndSaidSo` |
-| A submit acknowledgement that will not frame rolls its run back and names the outcome | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement` |
+| An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which; a compound open that admitted a message is rolled back even so, its run cancelled first, because a refused compound open leaves nothing to clean up (Decision 0009) | `TestAnOpenTheHostNamedIsKeptAndSaidSo`, `TestAnOversizedCompoundOpenRollsBackTheNamedSessionWhoseMessageItAdmitted` |
+| A submit acknowledgement that will not frame rolls its run back and names the outcome; a steer, which admits no run of its own, leaves the run it steered running | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement`, `TestAnUnframableSteerAcknowledgementLeavesTheSteeredRunRunning` |
 
 ### The held subscription
 
@@ -2547,16 +2547,18 @@ cancelled and the writer is given the 5-second window before it is abandoned,
 pinned by `a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window`.
 Concurrent serving with the `busy` bounds closes this.
 
-### D33 — Go cancels the run a too-large steer acknowledgement names
+### D34 — Zig keeps a named compound open whose response will not frame
 
-A steered submit admits no run of its own; its acknowledgement names the run it
-steered. When that acknowledgement does not fit the frame, Go's `submitOp`
-passes the named run to `rollbackRun` regardless, and cancels a run the caller
-started earlier and still expects to finish. Rust leaves the run running and
-says so (`the steered run was left running`), pinned by
-`an_unframable_steer_acknowledgement_leaves_the_run_it_steered_running`. Go is
-the wrong side here: checking `admission.Admission` for `steered` before rolling
-back closes this.
+A compound open that admitted its message and whose response exceeds the frame
+must be rolled back whether or not the host named the session, its run
+cancelled first: the host received a refusal, and Decision 0009 says a refused
+compound open leaves no session and no run to clean up. Go
+(`TestAnOversizedCompoundOpenRollsBackTheNamedSessionWhoseMessageItAdmitted`)
+and Rust (`an_oversized_open_response_rolls_back_a_named_session_whose_message_it_admitted`)
+do. Zig's `oversizedOpen` in `zig/src/hub/stdio.zig` keeps every named
+session, so a named compound open leaves its session and run live behind
+`response_too_large`. Cancelling the admitted run and discarding the session
+when the open carried a message closes this.
 
 ### Recorded, and not divergences
 
