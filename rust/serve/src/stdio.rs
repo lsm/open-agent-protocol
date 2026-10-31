@@ -1643,6 +1643,12 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
                 catalog.revision,
             )
         }
+        "work.list" => {
+            request.only(&["request"])?;
+            crate::workwire::parse_list(request.request.as_deref())
+                .and_then(|asked| crate::workwire::list(hub, asked))
+                .map_err(|refused| wire(refused.code, refused.message))
+        }
         "work.capabilities" => {
             request.only(&[])?;
             crate::workwire::capabilities(hub)

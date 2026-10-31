@@ -59,7 +59,7 @@ fn work_capabilities_lists_each_adapters_verbs_and_native_reach() {
         json!({"adapters": [{
             "adapter": "memory",
             "any_directory": false,
-            "verbs": ["work.status", "work.stop", "work.read"],
+            "verbs": ["work.list", "work.status", "work.stop", "work.read"],
             "native": {"list": false, "read": false, "search": false},
         }]})
     );
@@ -102,7 +102,7 @@ fn a_verb_resting_on_a_withdrawn_feature_is_not_listed_and_an_unprobed_adapter_i
     let answer = capabilities(registry);
     assert_eq!(
         answer["adapters"][0]["verbs"],
-        json!(["work.status", "work.read"])
+        json!(["work.list", "work.status", "work.read"])
     );
     assert_eq!(
         answer["unavailable"],

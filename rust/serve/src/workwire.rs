@@ -47,6 +47,8 @@ struct WorkJson {
     work_ref: WorkRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     held: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native: Option<bool>,
     #[serde(skip_serializing_if = "String::is_empty")]
     status: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -74,6 +76,7 @@ fn held_work(found: Work) -> WorkJson {
             native_id: String::new(),
         },
         held: None,
+        native: None,
         status: found.status.as_str().to_owned(),
         state: String::new(),
         directory: found.directory,
@@ -99,6 +102,7 @@ fn unheld_work(entry: Entry) -> WorkJson {
             native_id: String::new(),
         },
         held: Some(false),
+        native: None,
         status: String::new(),
         state: if entry.action == Action::Closed {
             "closed"
@@ -271,7 +275,8 @@ fn native_turns(turns: &[NativeTurn], after: Option<u64>, bound: usize) -> Vec<T
         .collect()
 }
 
-const VERBS: [(&str, &str); 3] = [
+const VERBS: [(&str, &str); 4] = [
+    ("work.list", ""),
     ("work.status", ""),
     ("work.stop", "run.cancel"),
     ("work.read", ""),
@@ -325,6 +330,317 @@ pub(crate) fn capabilities(hub: &Hub) -> Result<Value, Refusal> {
     let mut answer = serde_json::json!({ "adapters": adapters });
     if !unavailable.is_empty() {
         answer["unavailable"] = Value::Array(unavailable);
+    }
+    Ok(answer)
+}
+
+const LIST_LIMIT_DEFAULT: i64 = 50;
+const LIST_LIMIT_MAX: i64 = 100;
+const NATIVE_DEPTH_MAX: usize = 500;
+
+fn native_work(adapter: &str, listing: &oap_adapter::NativeListing) -> WorkJson {
+    WorkJson {
+        work_ref: WorkRef {
+            adapter: adapter.to_owned(),
+            session_id: String::new(),
+            native_id: listing.native_id.clone(),
+        },
+        held: Some(false),
+        native: Some(true),
+        status: String::new(),
+        state: if listing.running { "running" } else { "idle" }.to_owned(),
+        directory: listing.directory.clone(),
+        title: listing.title.clone(),
+        link: listing.link.clone(),
+        run_id: String::new(),
+        last_reply: String::new(),
+        updated_at_ms: listing.updated_at_ms,
+        pending: None,
+    }
+}
+
+#[derive(Default, serde::Deserialize)]
+pub(crate) struct ListRequest {
+    directory: Option<String>,
+    adapters: Option<Vec<String>>,
+    include_closed: Option<bool>,
+    include_native: Option<bool>,
+    limit: Option<i64>,
+    cursor: Option<String>,
+    search: Option<String>,
+}
+
+pub(crate) fn parse_list(
+    raw: Option<&serde_json::value::RawValue>,
+) -> Result<ListRequest, Refusal> {
+    let Some(raw) = raw.filter(|raw| raw.get().trim() != "null") else {
+        return Ok(ListRequest::default());
+    };
+    let malformed = || {
+        refused(
+            "invalid_request",
+            "request is an object of directory, adapters, include_closed, include_native, limit, cursor and search",
+        )
+    };
+    match serde_json::from_str::<Value>(raw.get()) {
+        Ok(Value::Object(_)) => serde_json::from_str(raw.get()).map_err(|_| malformed()),
+        _ => Err(malformed()),
+    }
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct ListCursor {
+    at: i64,
+    key: String,
+    depth: usize,
+}
+
+struct Piece {
+    directory: String,
+    at: i64,
+    key: String,
+    value: WorkJson,
+}
+
+fn session_for_native(hub: &Hub, adapter: &str, native: &str) -> Option<SessionId> {
+    hub.sessions()
+        .into_iter()
+        .find(|entry| {
+            !native.is_empty()
+                && entry.adapter() == adapter
+                && entry.record().native_session_id == native
+        })
+        .map(|entry| entry.id().clone())
+}
+
+type Natives = (Vec<(String, oap_adapter::NativeListing)>, Vec<Value>);
+
+fn natives_for(
+    hub: &Hub,
+    known: &std::collections::HashSet<String>,
+    request: &ListRequest,
+    limit: usize,
+) -> Natives {
+    let search = request.search.clone().unwrap_or_default();
+    let mut found = Vec::new();
+    let mut failures = Vec::new();
+    for name in hub.registry().names() {
+        if request
+            .adapters
+            .as_ref()
+            .is_some_and(|adapters| !adapters.is_empty() && !adapters.contains(&name))
+        {
+            continue;
+        }
+        let Some(implementation) = hub.registry().lookup(&name) else {
+            continue;
+        };
+        let directory = hub.registry().working_directory(&name).to_owned();
+        let listed = if search.is_empty() {
+            let Some(lister) = implementation.native_lister() else {
+                continue;
+            };
+            block_on(lister.native_list(oap_adapter::NativeListRequest { directory, limit }))
+        } else {
+            let Some(searcher) = implementation.native_searcher() else {
+                continue;
+            };
+            block_on(searcher.native_search(oap_adapter::NativeSearchRequest {
+                directory,
+                limit,
+                term: search.clone(),
+            }))
+        };
+        match listed {
+            Err(err) => failures.push(serde_json::json!({
+                "adapter": name,
+                "message": err.to_string().trim(),
+            })),
+            Ok(listed) => {
+                for listing in listed {
+                    let bound = known.contains(&listing.native_id)
+                        || session_for_native(hub, &name, &listing.native_id).is_some();
+                    if search.is_empty() && bound {
+                        continue;
+                    }
+                    found.push((name.clone(), listing));
+                }
+            }
+        }
+    }
+    (found, failures)
+}
+
+pub(crate) fn list(hub: &Hub, request: ListRequest) -> Result<Value, Refusal> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let limit = match request.limit {
+        None => LIST_LIMIT_DEFAULT,
+        Some(limit) if (1..=LIST_LIMIT_MAX).contains(&limit) => limit,
+        Some(_) => return Err(refused("invalid_request", "limit is 1 to 100")),
+    } as usize;
+    let cursor = request.cursor.clone().unwrap_or_default();
+    let after = if cursor.is_empty() {
+        None
+    } else {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(&cursor)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<ListCursor>(&raw).ok())
+            .filter(|decoded| !decoded.key.is_empty() && decoded.depth >= 1);
+        Some(
+            decoded
+                .ok_or_else(|| refused("invalid_request", "cursor is not one this list issued"))?,
+        )
+    };
+    let directory = request.directory.clone().unwrap_or_default();
+    let adapters = request.adapters.clone().unwrap_or_default();
+    let wanted = |adapter: &str, place: &str| {
+        (adapters.is_empty() || adapters.iter().any(|named| named == adapter))
+            && (directory.is_empty() || place == directory)
+    };
+    let searching = request
+        .search
+        .as_deref()
+        .is_some_and(|search| !search.is_empty());
+    let mut pieces = Vec::new();
+    let mut held = std::collections::HashMap::new();
+    for found in block_on(hub.works()) {
+        if !searching && wanted(&found.adapter, &found.directory) {
+            pieces.push(Piece {
+                directory: found.directory.clone(),
+                at: found.updated_at_ms,
+                key: format!("s:{}", found.session_id.as_str()),
+                value: held_work(found.clone()),
+            });
+        }
+        held.insert(found.session_id.clone(), found);
+    }
+    let mut known = std::collections::HashSet::new();
+    let mut unheld = std::collections::HashMap::new();
+    let entries = match hub.bindings() {
+        None => Vec::new(),
+        Some(bindings) => {
+            oap_binding::sessions(&bindings.sessions().map_err(|_| history_unreadable())?)
+        }
+    };
+    for entry in entries {
+        let native = entry.record.native_session_id.clone();
+        if !native.is_empty() {
+            known.insert(native.clone());
+        }
+        if hub
+            .session(&entry.record.session_id.as_str().into())
+            .is_ok()
+            || (entry.action == Action::Closed && request.include_closed != Some(true))
+        {
+            continue;
+        }
+        if !native.is_empty() {
+            unheld.insert(format!("{}/{native}", entry.record.adapter), entry.clone());
+        }
+        if !searching && wanted(&entry.record.adapter, &entry.record.directory) {
+            pieces.push(Piece {
+                directory: entry.record.directory.clone(),
+                at: entry.time_ms,
+                key: format!("s:{}", entry.record.session_id),
+                value: unheld_work(entry),
+            });
+        }
+    }
+    let depth = after.as_ref().map_or(0, |after| after.depth);
+    let mut missing = Vec::new();
+    if request.include_native == Some(true) || searching {
+        let (found, failures) = natives_for(
+            hub,
+            &known,
+            &request,
+            (depth + limit + 1).min(NATIVE_DEPTH_MAX),
+        );
+        for (adapter, listing) in found {
+            if searching {
+                let bound = session_for_native(hub, &adapter, &listing.native_id)
+                    .and_then(|id| held.get(&id).cloned());
+                if let Some(session) = bound {
+                    if wanted(&session.adapter, &session.directory) {
+                        pieces.push(Piece {
+                            directory: session.directory.clone(),
+                            at: session.updated_at_ms,
+                            key: format!("s:{}", session.session_id.as_str()),
+                            value: held_work(session),
+                        });
+                    }
+                    continue;
+                }
+                if let Some(entry) = unheld.get(&format!("{adapter}/{}", listing.native_id)) {
+                    if wanted(&entry.record.adapter, &entry.record.directory) {
+                        pieces.push(Piece {
+                            directory: entry.record.directory.clone(),
+                            at: entry.time_ms,
+                            key: format!("s:{}", entry.record.session_id),
+                            value: unheld_work(entry.clone()),
+                        });
+                    }
+                    continue;
+                }
+                if known.contains(&listing.native_id) {
+                    continue;
+                }
+            }
+            if wanted(&adapter, &listing.directory) {
+                pieces.push(Piece {
+                    directory: listing.directory.clone(),
+                    at: listing.updated_at_ms,
+                    key: format!("n:{adapter}/{}", listing.native_id),
+                    value: native_work(&adapter, &listing),
+                });
+            }
+        }
+        missing = failures;
+    }
+    pieces.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.key.cmp(&b.key)));
+    if let Some(after) = &after {
+        pieces
+            .retain(|piece| piece.at < after.at || (piece.at == after.at && piece.key > after.key));
+    }
+    let mut next_cursor = String::new();
+    if pieces.len() > limit {
+        let last = &pieces[limit - 1];
+        let encoded = serde_json::to_vec(&ListCursor {
+            at: last.at,
+            key: last.key.clone(),
+            depth: depth + limit,
+        })
+        .map_err(|err| refused("internal", err.to_string()))?;
+        next_cursor = URL_SAFE_NO_PAD.encode(encoded);
+        pieces.truncate(limit);
+    }
+    let mut groups: Vec<Value> = Vec::new();
+    let mut at = std::collections::HashMap::new();
+    for piece in pieces {
+        let index = *at.entry(piece.directory.clone()).or_insert_with(|| {
+            groups.push(serde_json::json!({
+                "directory": piece.directory,
+                "last_activity_ms": piece.at,
+                "work": [],
+            }));
+            groups.len() - 1
+        });
+        let value = encoded(&piece.value)?;
+        if let Some(work) = groups[index]["work"].as_array_mut() {
+            work.push(value);
+        }
+    }
+    if !directory.is_empty() && after.is_none() && groups.is_empty() {
+        groups
+            .push(serde_json::json!({ "directory": directory, "last_activity_ms": 0, "work": [] }));
+    }
+    let mut answer = serde_json::json!({ "groups": groups });
+    if !next_cursor.is_empty() {
+        answer["next_cursor"] = Value::String(next_cursor);
+    }
+    if !missing.is_empty() {
+        answer["unavailable"] = Value::Array(missing);
     }
     Ok(answer)
 }
