@@ -650,6 +650,43 @@ impl HubSession {
         Ok(())
     }
 
+    pub async fn update_settings(
+        &self,
+        request: oap_protocol::SessionSettingsUpdateRequest,
+    ) -> Result<(oap_protocol::SessionSettingsUpdateResponse, SessionState), HubError> {
+        if request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let keys = oap_adapter::open_setting_keys(
+            &request.reasoning_level,
+            request.compaction_policy.as_ref(),
+        );
+        let Some(first) = keys.first().copied() else {
+            return Err(Error::InvalidSubmission.into());
+        };
+        let updater = self.session.settings_updater().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl {
+                field: oap_adapter::open_setting_field(first).to_owned(),
+                ..UnsupportedControl::unadvertised(first)
+            }))
+        })?;
+        let (response, state) = updater
+            .update_settings(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if response.session_id != self.id || state.session_id != self.id {
+            return Err(Error::Harness(format!(
+                "serve: adapter reported a settings update outside session {:?}",
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok((response, state))
+    }
+
     pub async fn cancel(&self, run: RunId) -> Result<RunCancelResponse, HubError> {
         Ok(self
             .session
