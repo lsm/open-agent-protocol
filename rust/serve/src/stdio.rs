@@ -1276,6 +1276,42 @@ fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
     )
 }
 
+fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &mut u64) -> Answer {
+    let asked: oap_protocol::ActionCallResolveRequest = payload(envelope)?;
+    let run = asked.run_id.clone();
+    let answer = block_on(entry.resolve_call(oap_adapter::CallResolution {
+        request_id: envelope.id.clone(),
+        request: asked,
+    }))
+    .map_err(|err| {
+        refusal(&err).unwrap_or_else(|| {
+            wire(
+                match &err {
+                    HubError::ScopeMismatch { .. } => "scope_mismatch",
+                    HubError::Adapter(oap_adapter::Error::UnsupportedInput) => {
+                        "unsupported_feature"
+                    }
+                    HubError::SessionClosed(_)
+                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    _ => "internal",
+                },
+                err,
+            )
+        })
+    })?;
+    let mut response = oap_protocol::Envelope::new(
+        oap_protocol::EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
+        next_id(ids, "response"),
+        &answer,
+    )
+    .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(entry.id().clone());
+    response.run_id = Some(run);
+    response.capability_revision = envelope.capability_revision.clone();
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
+}
+
 fn resolve(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
     use oap_protocol::EnvelopeType;
     let envelope = gate_request(
@@ -1314,10 +1350,7 @@ fn resolve(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
             resolution.input = Some(asked);
             named
         } else {
-            return Err(wire(
-                "unsupported_feature",
-                "the hub does not yet resolve provided-tool calls over stdio",
-            ));
+            return resolve_call(&entry, &envelope, ids);
         };
     let run = resolution.run_id.clone();
     block_on(entry.resolve(resolution)).map_err(|err| wire(adapter_code(&err), err))?;
