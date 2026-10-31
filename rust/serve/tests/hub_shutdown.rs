@@ -12,7 +12,7 @@ fn raw(text: &str) -> Box<RawValue> {
 }
 
 fn running(hub: &Hub, id: &str) -> oap_protocol::RunId {
-    let opened = block_on(hub.open(
+    block_on(hub.open(
         "memory",
         OpenRequest {
             session_id: id.into(),
@@ -20,7 +20,11 @@ fn running(hub: &Hub, id: &str) -> oap_protocol::RunId {
         },
     ))
     .unwrap();
-    block_on(opened.session.submit(SubmitRequest {
+    submitted(hub, id)
+}
+
+fn submitted(hub: &Hub, id: &str) -> oap_protocol::RunId {
+    block_on(hub.session(&id.into()).unwrap().submit(SubmitRequest {
         request: MessageSubmitRequest {
             session_id: id.into(),
             delivery: RequestedDeliveryMode::AUTO,
@@ -87,18 +91,24 @@ fn nonterminal_runs_names_every_sessions_unfinished_run_and_no_idle_one() {
 }
 
 #[test]
-fn cancel_queued_reports_whether_the_cancel_was_accepted() {
+fn cancel_queued_cancels_a_queued_run_and_reports_a_session_it_cannot_find() {
     let hub = Hub::new(Registry::default_registry());
-    let run = running(&hub, "busy");
-    let named = ShutdownRun {
-        session_id: "busy".into(),
-        run_id: run,
-        ..ShutdownRun::default()
-    };
-    assert!(block_on(hub.cancel_queued(&named)));
+    let first = running(&hub, "busy");
+    let second = submitted(&hub, "busy");
+    let queued = block_on(hub.nonterminal_runs())
+        .into_iter()
+        .find(|run| run.run_id == second)
+        .unwrap();
+    assert_eq!(queued.status, RunStatus::QUEUED);
+    assert!(block_on(hub.cancel_queued(&queued)));
+    let left: Vec<_> = block_on(hub.nonterminal_runs())
+        .into_iter()
+        .map(|run| run.run_id)
+        .collect();
+    assert_eq!(left, [first]);
     let ghost = ShutdownRun {
         session_id: "ghost".into(),
-        ..named
+        ..queued
     };
     assert!(!block_on(hub.cancel_queued(&ghost)));
 }
