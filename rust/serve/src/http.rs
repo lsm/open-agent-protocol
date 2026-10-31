@@ -433,7 +433,9 @@ impl Served {
             .filter(|(key, _)| key.eq_ignore_ascii_case("Transfer-Encoding"))
             .count();
         if codings > 1 || (codings == 1 && asked.header("Content-Length").is_some()) {
-            return respond(&stream, &plain(400, "400 Bad Request\n"), true);
+            respond(&stream, &plain(400, "400 Bad Request\n"), true)?;
+            drain(&stream, DRAIN_BYTES);
+            return Ok(());
         }
         let answer = self.answer(&asked, &stream, &mut consumed);
         stream.set_write_timeout(Some(self.header_timeout))?;
