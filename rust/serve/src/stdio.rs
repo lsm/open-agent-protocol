@@ -100,7 +100,7 @@ pub const WRITE_QUEUE: usize = 256;
 
 pub const SHUTDOWN_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
-type Lines = std::sync::mpsc::SyncSender<Vec<u8>>;
+type Lines = std::sync::mpsc::SyncSender<(Vec<u8>, bool)>;
 
 pub fn serve(
     hub: &Hub,
@@ -111,16 +111,26 @@ pub fn serve(
     if options.frame_limit < MIN_FRAME_LIMIT {
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
-    let (writer, queue) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    let (writer, queue) = std::sync::mpsc::sync_channel::<(Vec<u8>, bool)>(WRITE_QUEUE);
     let (drained, written) = std::sync::mpsc::channel();
+    let tally = Arc::new(Tally::default());
+    let writing = tally.clone();
     std::thread::spawn(move || {
-        for line in queue {
+        for (line, refusal) in queue {
+            if writing.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             let wrote = output
                 .write_all(&line)
                 .and_then(|()| output.write_all(b"\n"))
                 .and_then(|()| output.flush());
             if wrote.is_err() {
                 break;
+            }
+            if refusal {
+                writing
+                    .delivered
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }
         let _ = drained.send(());
@@ -152,6 +162,7 @@ pub fn serve(
         inflight: Arc::new(Inflight::new(options.max_ops)),
         broken: Arc::default(),
         pending: Arc::default(),
+        tally: tally.clone(),
     };
     let served = serve_lines(&serving, &frames);
     let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
@@ -177,12 +188,17 @@ pub fn serve(
     while streaming(&pumps) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    let delivered = serving.flush_until(deadline);
+    serving.flush_until(deadline);
     drop(serving);
     let drained = written
         .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
         .is_ok();
-    let ended = if !delivered {
+    if !drained {
+        tally
+            .abandoned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let ended = if tally.undelivered() > 0 {
         Err(StdioError::RequestsDropped)
     } else if !settled || !drained {
         Err(StdioError::ShutdownStalled)
@@ -280,7 +296,24 @@ struct Serving {
     stopping: Arc<std::sync::RwLock<Stopping>>,
     inflight: Arc<Inflight>,
     broken: Arc<std::sync::Mutex<Option<StdioError>>>,
-    pending: Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>,
+    pending: Arc<Held>,
+    tally: Arc<Tally>,
+}
+
+type Held = std::sync::Mutex<std::collections::VecDeque<(Vec<u8>, bool)>>;
+
+#[derive(Default)]
+struct Tally {
+    owed: std::sync::atomic::AtomicUsize,
+    delivered: std::sync::atomic::AtomicUsize,
+    abandoned: std::sync::atomic::AtomicBool,
+}
+
+impl Tally {
+    fn undelivered(&self) -> usize {
+        let owed = self.owed.load(std::sync::atomic::Ordering::SeqCst);
+        owed.saturating_sub(self.delivered.load(std::sync::atomic::Ordering::SeqCst))
+    }
 }
 
 type Frames = std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, FrameError>>;
@@ -373,7 +406,7 @@ fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, b
 
 fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
     writer
-        .send(line.to_vec())
+        .send((line.to_vec(), false))
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the output closed"))
 }
 
@@ -407,7 +440,7 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
         if let Err(why) = serving.inflight.offer(size) {
             let refused = wire("busy", format!("{why}; send this request again"));
             if let Some(line) = fitted(request.id, Err(refused), serving.frame_limit)? {
-                serving.queue(line)?;
+                serving.queue(line, true)?;
             }
             continue;
         }
@@ -419,7 +452,7 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
             serving.inflight.release(size);
             if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
-                serving.queue(line)?;
+                serving.queue(line, false)?;
             }
             if finished {
                 return Ok(stopping.draining && stopping.graceful());
@@ -437,18 +470,25 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
 }
 
 impl Serving {
-    fn queue(&self, line: Vec<u8>) -> Result<(), StdioError> {
+    fn queue(&self, line: Vec<u8>, refusal: bool) -> Result<(), StdioError> {
+        if refusal {
+            self.tally
+                .owed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let line = (line, refusal);
         self.flush()?;
         let mut pending = lock(&self.pending);
         if pending.is_empty() {
             match self.writer.try_send(line) {
                 Ok(()) => return Ok(()),
                 Err(std::sync::mpsc::TrySendError::Full(line)) => pending.push_back(line),
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(std::sync::mpsc::TrySendError::Disconnected(line)) => {
+                    pending.push_back(line);
                     return Err(StdioError::Io(std::io::Error::new(
                         std::io::ErrorKind::BrokenPipe,
                         "the output closed",
-                    )))
+                    )));
                 }
             }
         } else {
@@ -469,28 +509,23 @@ impl Serving {
                     pending.push_front(line);
                     break;
                 }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(std::sync::mpsc::TrySendError::Disconnected(line)) => {
+                    pending.push_front(line);
                     return Err(StdioError::Io(std::io::Error::new(
                         std::io::ErrorKind::BrokenPipe,
                         "the output closed",
-                    )))
+                    )));
                 }
             }
         }
         Ok(())
     }
 
-    fn flush_until(&self, deadline: std::time::Instant) -> bool {
-        loop {
-            if self.flush().is_err() {
-                return lock(&self.pending).is_empty();
-            }
-            if lock(&self.pending).is_empty() {
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
+    fn flush_until(&self, deadline: std::time::Instant) {
+        while self.flush().is_ok()
+            && !lock(&self.pending).is_empty()
+            && std::time::Instant::now() < deadline
+        {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }

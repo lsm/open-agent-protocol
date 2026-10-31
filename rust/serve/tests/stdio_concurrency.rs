@@ -135,3 +135,71 @@ fn a_shutdown_past_the_in_flight_bound_is_refused_busy_like_any_other_op() {
         "{answered:?}"
     );
 }
+
+struct Stalled;
+
+impl std::io::Write for Stalled {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        loop {
+            std::thread::park();
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_refusal_queued_behind_a_stalled_writer_is_reported_dropped_though_it_left_the_loop() {
+    let hub = hub(2, Duration::from_secs(1));
+    let input = concat!(
+        "{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"waiting\"}\n",
+        "{\"id\":2,\"op\":\"adapters\"}\n",
+        "{\"id\":3,\"op\":\"adapters\"}\n",
+    );
+    let served = serve(
+        &hub,
+        std::io::Cursor::new(input.as_bytes().to_vec()),
+        Stalled,
+        &StdioOptions {
+            max_ops: 1,
+            ..StdioOptions::default()
+        },
+    );
+    assert!(
+        matches!(served, Err(oap_serve::stdio::StdioError::RequestsDropped)),
+        "{served:?}"
+    );
+}
+
+struct Broken;
+
+impl std::io::Write for Broken {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_refusal_a_broken_output_never_wrote_is_not_reported_served() {
+    let hub = hub(2, Duration::from_secs(1));
+    let input = concat!(
+        "{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"waiting\"}\n",
+        "{\"id\":2,\"op\":\"adapters\"}\n",
+    );
+    let served = serve(
+        &hub,
+        std::io::Cursor::new(input.as_bytes().to_vec()),
+        Broken,
+        &StdioOptions {
+            max_ops: 1,
+            ..StdioOptions::default()
+        },
+    );
+    assert!(served.is_err(), "{served:?}");
+}
