@@ -26,7 +26,7 @@ fn answers(hub: &Hub, lines: &[&str]) -> Vec<Value> {
     let output = support::Captured::default();
     serve(
         hub,
-        input.as_bytes(),
+        std::io::Cursor::new(input.to_owned().into_bytes()),
         output.clone(),
         &StdioOptions::default(),
     )

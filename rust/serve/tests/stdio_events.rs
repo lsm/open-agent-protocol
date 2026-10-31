@@ -62,7 +62,13 @@ fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
 fn lines_with(hub: &Hub, input: &[&str], options: StdioOptions) -> Vec<Value> {
     let input: String = input.iter().map(|line| format!("{line}\n")).collect();
     let output = support::Captured::default();
-    serve(hub, input.as_bytes(), output.clone(), &options).unwrap();
+    serve(
+        hub,
+        std::io::Cursor::new(input.to_owned().into_bytes()),
+        output.clone(),
+        &options,
+    )
+    .unwrap();
     String::from_utf8(output.bytes())
         .unwrap()
         .lines()
@@ -276,7 +282,13 @@ fn a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window() {
     started(&session);
     let input = "{\"id\":1,\"op\":\"events\",\"session_id\":\"s\"}\n";
     let began = std::time::Instant::now();
-    serve(&hub, input.as_bytes(), Stalled, &StdioOptions::default()).unwrap();
+    serve(
+        &hub,
+        std::io::Cursor::new(input.to_owned().into_bytes()),
+        Stalled,
+        &StdioOptions::default(),
+    )
+    .unwrap();
     let took = began.elapsed();
     assert!(took >= oap_serve::stdio::SHUTDOWN_WINDOW / 2, "{took:?}");
     assert!(took < oap_serve::stdio::SHUTDOWN_WINDOW * 2, "{took:?}");
