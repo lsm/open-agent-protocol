@@ -271,10 +271,7 @@ fn native_turns(turns: &[NativeTurn], after: Option<u64>, bound: usize) -> Vec<T
         .collect()
 }
 
-const VERBS: [(&str, &str); 6] = [
-    ("work.list", ""),
-    ("work.start", "session.message.submit"),
-    ("work.send", "session.message.submit"),
+const VERBS: [(&str, &str); 3] = [
     ("work.status", ""),
     ("work.stop", "run.cancel"),
     ("work.read", ""),

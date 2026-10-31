@@ -59,18 +59,40 @@ fn work_capabilities_lists_each_adapters_verbs_and_native_reach() {
         json!({"adapters": [{
             "adapter": "memory",
             "any_directory": false,
-            "verbs": ["work.list", "work.start", "work.send", "work.status", "work.stop", "work.read"],
+            "verbs": ["work.status", "work.stop", "work.read"],
             "native": {"list": false, "read": false, "search": false},
         }]})
     );
 }
 
 #[test]
+fn every_verb_work_capabilities_advertises_is_an_op_the_frontend_serves() {
+    let answer = capabilities(Registry::default_registry());
+    let hub = Hub::new(Registry::default_registry());
+    for verb in answer["adapters"][0]["verbs"].as_array().unwrap() {
+        let line = format!("{{\"id\":1,\"op\":{verb},\"session_id\":\"absent\"}}\n");
+        let output = support::Captured::default();
+        serve(
+            &hub,
+            std::io::Cursor::new(line.into_bytes()),
+            output.clone(),
+            &StdioOptions::default(),
+        )
+        .unwrap();
+        let answered: Value = serde_json::from_slice(&output.bytes()).unwrap();
+        assert_ne!(
+            answered["error"]["code"], "unknown_op",
+            "{verb}: {answered}"
+        );
+    }
+}
+
+#[test]
 fn a_verb_resting_on_a_withdrawn_feature_is_not_listed_and_an_unprobed_adapter_is_unavailable() {
     let mut registry = Registry::new();
     let features = [
-        ("session.message.submit", level(SupportLevel::UNAVAILABLE)),
-        ("run.cancel", level(SupportLevel::NATIVE)),
+        ("session.message.submit", level(SupportLevel::NATIVE)),
+        ("run.cancel", level(SupportLevel::UNAVAILABLE)),
     ]
     .into_iter()
     .map(|(key, support)| (key.to_owned(), support))
@@ -84,7 +106,7 @@ fn a_verb_resting_on_a_withdrawn_feature_is_not_listed_and_an_unprobed_adapter_i
     let answer = capabilities(registry);
     assert_eq!(
         answer["adapters"][0]["verbs"],
-        json!(["work.list", "work.status", "work.stop", "work.read"])
+        json!(["work.status", "work.read"])
     );
     assert_eq!(
         answer["unavailable"],
