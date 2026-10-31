@@ -12,6 +12,7 @@ oap-adapter = { path = "../adapter" }
 oap-binding = { path = "../binding" }
 oap-protocol = { path = "../protocol" }
 oap-validation = { path = "../validation" }
+base64 = "0.22"
 jsonschema = { version = "=0.59.0", default-features = false, features = ["arbitrary-precision"] }
 futures-core = "0.3"
 serde = { version = "1", features = ["derive"] }
