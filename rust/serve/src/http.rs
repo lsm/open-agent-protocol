@@ -17,12 +17,14 @@ const CHUNK_EXCESS: u64 = 16 << 10;
 const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const DEFAULT_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const DEFAULT_SUBSCRIPTION_HOLD: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug, Default)]
 pub struct HttpOptions {
     pub host_allowlist: Vec<String>,
     pub max_connections: usize,
     pub header_timeout: Option<std::time::Duration>,
+    pub subscription_hold: Option<std::time::Duration>,
 }
 
 struct Served {
@@ -32,6 +34,40 @@ struct Served {
     open: AtomicUsize,
     max: usize,
     header_timeout: std::time::Duration,
+    hold_for: std::time::Duration,
+    held: Arc<Held>,
+    attached: Arc<AtomicUsize>,
+}
+
+type Held =
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, crate::Subscription)>>;
+
+fn reap(held: &std::sync::Weak<Held>, hold_for: std::time::Duration) {
+    loop {
+        let Some(held) = held.upgrade() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let mut holding = held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let expired: Vec<String> = holding
+            .iter()
+            .filter(|(_, (deadline, _))| *deadline <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let released: Vec<_> = expired.iter().filter_map(|id| holding.remove(id)).collect();
+        let wait = holding
+            .values()
+            .map(|(deadline, _)| deadline.saturating_duration_since(now))
+            .min()
+            .unwrap_or(hold_for)
+            .max(std::time::Duration::from_millis(1));
+        drop(holding);
+        drop(held);
+        drop(released);
+        std::thread::sleep(wait);
+    }
 }
 
 pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> std::io::Result<()> {
@@ -49,7 +85,14 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
             max => max,
         },
         header_timeout: options.header_timeout.unwrap_or(DEFAULT_HEADER_TIMEOUT),
+        hold_for: options
+            .subscription_hold
+            .unwrap_or(DEFAULT_SUBSCRIPTION_HOLD),
+        held: Arc::default(),
+        attached: Arc::default(),
     });
+    let (held, hold_for) = (Arc::downgrade(&served.held), served.hold_for);
+    std::thread::spawn(move || reap(&held, hold_for));
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -557,6 +600,7 @@ impl Served {
         let (allowed, op, session, adapter) = match segments.as_slice() {
             ["adapters"] => ("GET", "adapters", "", ""),
             ["adapters", name, "capabilities"] => ("GET", "capabilities", "", *name),
+            ["adapters", name, "sessions"] => ("POST", "open", "", *name),
             ["sessions"] => ("GET", "sessions", "", ""),
             ["sessions", "history"] => ("GET", "history", "", ""),
             ["sessions", id, "state"] => ("GET", "state", *id, ""),
@@ -595,7 +639,7 @@ impl Served {
                 .collect();
         }
         let mut body = Vec::new();
-        if matches!(op, "submit" | "resolve" | "cancel" | "settings") {
+        if matches!(op, "submit" | "resolve" | "cancel" | "settings" | "open") {
             body = match self.body(asked, stream, consumed) {
                 Ok(body) => body,
                 Err((status, error)) => return self.refused(status, error, session, None),
@@ -622,6 +666,27 @@ impl Served {
                 }
             }
         }
+        if op == "open" {
+            let opened = stdio::open(
+                &self.hub,
+                &request,
+                &self.ids,
+                || stdio::Attached::claim(&self.attached, usize::MAX),
+                usize::MAX,
+            );
+            return match opened {
+                Ok((value, pump)) => {
+                    if let (Some(pump), Some(id)) = (pump, value["session_id"].as_str()) {
+                        self.hold(id, pump.subscription);
+                    }
+                    json(200, &value)
+                }
+                Err(error) => {
+                    let status = status_of(error.code);
+                    self.refused(status, error, session, Some(body.as_slice()))
+                }
+            };
+        }
         match stdio::dispatch(&self.hub, &request, &self.ids, usize::MAX) {
             Ok(Value::Null) if op == "close" => Answer {
                 status: 204,
@@ -637,6 +702,24 @@ impl Served {
                 self.refused(status, error, session, correlated)
             }
         }
+    }
+
+    fn hold(&self, id: &str, subscription: crate::Subscription) {
+        let deadline = std::time::Instant::now() + self.hold_for;
+        let previous = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), (deadline, subscription));
+        drop(previous);
+    }
+
+    fn take_held(&self, id: &str) -> Option<crate::Subscription> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
+            .map(|(_, subscription)| subscription)
     }
 
     fn events(&self, asked: &Asked, session: &str) -> Answer {
@@ -664,6 +747,15 @@ impl Served {
                         .into(),
                 );
             }
+            if let Some(subscription) = self.take_held(session) {
+                return Answer {
+                    status: 200,
+                    content_type: "text/event-stream",
+                    allow: None,
+                    body: Vec::new(),
+                    events: Some(Events::Live(subscription)),
+                };
+            }
             self.hub.subscribe(entry.id())
         } else {
             let Some(after) = cursor
@@ -676,6 +768,7 @@ impl Served {
                     format!("cursor {cursor:?} is not an unsigned sequence"),
                 );
             };
+            drop(self.take_held(session));
             let run = (!run.is_empty()).then(|| run.as_str().into());
             crate::live::block_on(self.hub.subscribe_after(entry.id(), run, after))
         };
@@ -811,6 +904,7 @@ pub(crate) fn status_of(code: &str) -> u16 {
         | "run_active"
         | "session_exists"
         | "run_terminal"
+        | "stale_capabilities"
         | "resolution_rejected"
         | "no_run_to_resume" => 409,
         "open_failed" | "tools_failed" => 502,

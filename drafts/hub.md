@@ -1313,9 +1313,10 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 | rule | pinned by |
 | --- | --- |
-| A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest` |
+| A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest`; Rust: `the_first_uncursored_stream_after_a_subscribing_open_carries_the_run_the_open_started` |
 | A held subscription nothing adopts is released | `TestOpenSubscriptionNotAdoptedIsReleased` |
-| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release) |
+| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release); Rust: `a_held_subscription_expires_after_its_hold` |
+| An `events` request carrying a cursor releases the held subscription rather than adopting it | Rust: `a_cursored_stream_discards_the_held_subscription`; no Go test pins it |
 | The default hold is 30 s, and an explicit window still wins | `TestASubscriptionIsHeldForThirtySecondsByDefault` |
 
 ## The operations
