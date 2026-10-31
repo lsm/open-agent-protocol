@@ -180,7 +180,7 @@ fn index(segment: &str) -> Option<u64> {
     }))
 }
 
-fn detail<'a>(err: &'a ProtocolError, name: &str) -> Option<&'a str> {
+pub(super) fn detail<'a>(err: &'a ProtocolError, name: &str) -> Option<&'a str> {
     err.details.get(name).and_then(Value::as_str)
 }
 
@@ -591,6 +591,10 @@ impl State {
                 let provided: Vec<String> = p.tools.iter().map(|tool| tool.name.clone()).collect();
                 self.submit_controls(at, e, &submission, &provided);
             }
+        } else if *t == EnvelopeType::SESSION_PROVIDER_ATTACH_REQUEST {
+            self.provider_attach_request(at, e);
+        } else if *t == EnvelopeType::SESSION_PROVIDER_ATTACH_RESPONSE {
+            self.provider_attach_response(at, e);
         } else if *t == EnvelopeType::SESSION_COMPACT_REQUEST {
             let p: SessionCompactRequest = payload(e);
             let session = s(&p.session_id);
@@ -609,6 +613,7 @@ impl State {
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.tools_list_refusal(at, e);
             self.attach_refusal(at, e);
+            self.provider_attach_refusal(at, e);
             self.settle_control_refusal(at, e);
             self.settle_provide_refusal(at, e);
             self.steer_refusal(at, e);
@@ -759,6 +764,7 @@ impl State {
         self.catalog_known = publishes_catalog(e);
         self.catalog_ambiguous = duplicate_tool_name(&self.catalog).is_some();
         self.check_selection_modes(at, e, &p);
+        self.provider_attach_modes(at, e, &p);
     }
 
     fn check_selection_modes(

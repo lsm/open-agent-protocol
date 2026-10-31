@@ -1,0 +1,58 @@
+[
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "session.open.request",
+  "id": "open-request",
+  "session_id": "attach-session",
+  "payload": {
+   "session_id": "attach-session"
+  }
+ },
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "session.open.response",
+  "id": "open-response",
+  "in_reply_to": "open-request",
+  "session_id": "attach-session",
+  "payload": {
+   "session_id": "attach-session",
+   "status": "idle",
+   "current_model_id": "model-one"
+  }
+ },
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "session.provider.attach.request",
+  "id": "attach-request",
+  "session_id": "attach-session",
+  "payload": {
+   "session_id": "attach-session",
+   "provider": {
+    "id": "provider-two",
+    "provider_id": "upstream-two"
+   }
+  }
+ },
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "error.response",
+  "id": "attach-error",
+  "in_reply_to": "attach-request",
+  "session_id": "attach-session",
+  "payload": {
+   "error": {
+    "code": "internal_error",
+    "message": "refused",
+    "details": {}
+   }
+  }
+ }
+]
