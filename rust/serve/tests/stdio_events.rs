@@ -308,3 +308,21 @@ fn refusals_a_stalled_host_cannot_take_are_dropped_and_reported_rather_than_stal
         "{served:?}"
     );
 }
+
+#[test]
+fn refusals_still_held_at_a_stalled_teardown_are_reported_dropped_before_the_stall() {
+    let hub = Hub::new(Registry::default_registry());
+    let input: String = (1..=300)
+        .map(|id| format!("{{\"id\":{id},\"op\":\"adapters\"}}\n"))
+        .collect();
+    let served = serve(
+        &hub,
+        std::io::Cursor::new(input.into_bytes()),
+        Stalled,
+        &StdioOptions::default(),
+    );
+    assert!(
+        matches!(served, Err(oap_serve::stdio::StdioError::RequestsDropped)),
+        "{served:?}"
+    );
+}

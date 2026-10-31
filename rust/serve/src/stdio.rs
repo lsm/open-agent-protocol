@@ -182,10 +182,10 @@ pub fn serve(
     let drained = written
         .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
         .is_ok();
-    let ended = if !settled || !drained {
-        Err(StdioError::ShutdownStalled)
-    } else if !delivered {
+    let ended = if !delivered {
         Err(StdioError::RequestsDropped)
+    } else if !settled || !drained {
+        Err(StdioError::ShutdownStalled)
     } else {
         Ok(())
     };
