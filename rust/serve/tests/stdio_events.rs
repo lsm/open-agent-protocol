@@ -269,14 +269,42 @@ fn a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window() {
     started(&session);
     let input = "{\"id\":1,\"op\":\"events\",\"session_id\":\"s\"}\n";
     let began = std::time::Instant::now();
-    serve(
+    let served = serve(
         &hub,
         std::io::Cursor::new(input.to_owned().into_bytes()),
         Stalled,
         &StdioOptions::default(),
-    )
-    .unwrap();
+    );
     let took = began.elapsed();
+    assert!(
+        matches!(served, Err(oap_serve::stdio::StdioError::ShutdownStalled)),
+        "{served:?}"
+    );
     assert!(took >= oap_serve::stdio::SHUTDOWN_WINDOW / 2, "{took:?}");
     assert!(took < oap_serve::stdio::SHUTDOWN_WINDOW * 2, "{took:?}");
+}
+
+#[test]
+fn refusals_a_stalled_host_cannot_take_are_dropped_and_reported_rather_than_stalling_the_reader() {
+    let hub = Hub::new(Registry::default_registry());
+    let input: String = (1..=1200)
+        .map(|id| format!("{{\"id\":{id},\"op\":\"adapters\"}}\n"))
+        .collect();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let served = serve(
+            &hub,
+            std::io::Cursor::new(input.into_bytes()),
+            Stalled,
+            &StdioOptions::default(),
+        );
+        let _ = done.send(served);
+    });
+    let served = finished
+        .recv_timeout(oap_serve::stdio::SHUTDOWN_WINDOW * 3)
+        .expect("serve stalled on a full output queue");
+    assert!(
+        matches!(served, Err(oap_serve::stdio::StdioError::RequestsDropped)),
+        "{served:?}"
+    );
 }
