@@ -270,3 +270,61 @@ fn native_turns(turns: &[NativeTurn], after: Option<u64>, bound: usize) -> Vec<T
         })
         .collect()
 }
+
+const VERBS: [(&str, &str); 3] = [
+    ("work.status", ""),
+    ("work.stop", "run.cancel"),
+    ("work.read", ""),
+];
+
+pub(crate) fn capabilities(hub: &Hub) -> Result<Value, Refusal> {
+    let mut names = hub.registry().names();
+    names.sort();
+    let mut adapters = Vec::new();
+    let mut unavailable = Vec::new();
+    for name in names {
+        let Some(implementation) = hub.registry().lookup(&name) else {
+            continue;
+        };
+        let descriptor = match block_on(hub.probe(&name)) {
+            Ok(descriptor) => descriptor,
+            Err(err) => {
+                unavailable
+                    .push(serde_json::json!({ "adapter": name, "message": err.to_string() }));
+                continue;
+            }
+        };
+        let withdrawn = |key: &str| {
+            descriptor
+                .capabilities
+                .features
+                .get(key)
+                .is_none_or(|feature| feature.level == oap_protocol::SupportLevel::UNAVAILABLE)
+        };
+        let verbs: Vec<&str> = VERBS
+            .iter()
+            .filter(|(_, rests_on)| rests_on.is_empty() || !withdrawn(rests_on))
+            .map(|(verb, _)| *verb)
+            .collect();
+        let mut reach = serde_json::json!({
+            "adapter": name,
+            "any_directory": false,
+            "verbs": verbs,
+            "native": {
+                "list": implementation.native_lister().is_some(),
+                "read": implementation.native_reader().is_some(),
+                "search": implementation.native_searcher().is_some(),
+            },
+        });
+        let directory = hub.registry().working_directory(&name);
+        if !directory.is_empty() {
+            reach["directory"] = Value::String(directory.to_owned());
+        }
+        adapters.push(reach);
+    }
+    let mut answer = serde_json::json!({ "adapters": adapters });
+    if !unavailable.is_empty() {
+        answer["unavailable"] = Value::Array(unavailable);
+    }
+    Ok(answer)
+}

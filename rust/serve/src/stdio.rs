@@ -1643,6 +1643,11 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
                 catalog.revision,
             )
         }
+        "work.capabilities" => {
+            request.only(&[])?;
+            crate::workwire::capabilities(hub)
+                .map_err(|refused| wire(refused.code, refused.message))
+        }
         "work.status" | "work.stop" | "work.read" => {
             let id = oap_protocol::SessionId::from(request.session_id.as_str());
             let answered = match request.op.as_str() {
