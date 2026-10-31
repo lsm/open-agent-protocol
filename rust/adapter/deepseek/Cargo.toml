@@ -8,6 +8,7 @@ license = "CC0-1.0"
 publish = false
 
 [dependencies]
+crossbeam-channel = "0.5"
 oap-adapter = { path = ".." }
 oap-harness = { path = "../../harness" }
 serde = { version = "1", features = ["derive"] }
