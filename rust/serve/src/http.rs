@@ -35,9 +35,39 @@ struct Served {
     max: usize,
     header_timeout: std::time::Duration,
     hold_for: std::time::Duration,
-    held: Arc<std::sync::Mutex<std::collections::HashMap<String, (u64, crate::Subscription)>>>,
-    holds: std::sync::atomic::AtomicU64,
+    held: Arc<Held>,
     attached: Arc<AtomicUsize>,
+}
+
+type Held =
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, crate::Subscription)>>;
+
+fn reap(held: &std::sync::Weak<Held>, hold_for: std::time::Duration) {
+    loop {
+        let Some(held) = held.upgrade() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let mut holding = held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let expired: Vec<String> = holding
+            .iter()
+            .filter(|(_, (deadline, _))| *deadline <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let released: Vec<_> = expired.iter().filter_map(|id| holding.remove(id)).collect();
+        let wait = holding
+            .values()
+            .map(|(deadline, _)| deadline.saturating_duration_since(now))
+            .min()
+            .unwrap_or(hold_for)
+            .max(std::time::Duration::from_millis(1));
+        drop(holding);
+        drop(held);
+        drop(released);
+        std::thread::sleep(wait);
+    }
 }
 
 pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> std::io::Result<()> {
@@ -59,9 +89,10 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
             .subscription_hold
             .unwrap_or(DEFAULT_SUBSCRIPTION_HOLD),
         held: Arc::default(),
-        holds: std::sync::atomic::AtomicU64::new(0),
         attached: Arc::default(),
     });
+    let (held, hold_for) = (Arc::downgrade(&served.held), served.hold_for);
+    std::thread::spawn(move || reap(&held, hold_for));
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -674,25 +705,13 @@ impl Served {
     }
 
     fn hold(&self, id: &str, subscription: crate::Subscription) {
-        let generation = self.holds.fetch_add(1, Ordering::SeqCst);
-        self.held
+        let deadline = std::time::Instant::now() + self.hold_for;
+        let previous = self
+            .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.to_owned(), (generation, subscription));
-        let (held, hold_for) = (self.held.clone(), self.hold_for);
-        let id = id.to_owned();
-        std::thread::spawn(move || {
-            std::thread::sleep(hold_for);
-            let mut held = held
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if held
-                .get(&id)
-                .is_some_and(|(current, _)| *current == generation)
-            {
-                held.remove(&id);
-            }
-        });
+            .insert(id.to_owned(), (deadline, subscription));
+        drop(previous);
     }
 
     fn take_held(&self, id: &str) -> Option<crate::Subscription> {

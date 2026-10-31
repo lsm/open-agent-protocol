@@ -161,6 +161,10 @@ fn an_open_citing_a_stale_revision_is_a_409_naming_both_revisions() {
         "{refused}"
     );
     assert_eq!(error["details"]["current_revision"], "stale-rev");
+    assert_eq!(
+        error["details"]["expected_revision"],
+        oap_adapter::memory::CAPABILITY_REVISION
+    );
 }
 
 #[test]
