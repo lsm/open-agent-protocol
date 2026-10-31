@@ -19,6 +19,8 @@ pub const DEFAULT_PARTICIPANT: &str = "user";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HubError {
+    #[error("serve: this hub keeps no session history")]
+    NoSessionHistory,
     #[error("no adapter {0:?}")]
     UnknownAdapter(String),
     #[error("no session \"{0}\"")]
@@ -324,6 +326,41 @@ impl Hub {
         Ok(Reservation {
             shared: &self.shared,
             id: Some(id.clone()),
+        })
+    }
+
+    pub fn session_history(
+        &self,
+        cursor: &str,
+        limit: i64,
+    ) -> Result<oap_protocol::SessionListResponse, HubError> {
+        let bindings = self
+            .shared
+            .options
+            .bindings
+            .as_ref()
+            .ok_or(HubError::NoSessionHistory)?;
+        let page = oap_binding::list(&bindings.sessions()?, cursor, limit)?;
+        let sessions = page
+            .entries
+            .into_iter()
+            .map(|entry| oap_protocol::SessionListEntry {
+                state: if entry.live() {
+                    oap_protocol::SessionListState::LIVE
+                } else {
+                    oap_protocol::SessionListState::CLOSED
+                },
+                session_id: entry.record.session_id.as_str().into(),
+                adapter: entry.record.adapter,
+                harness_version: entry.record.harness_version,
+                updated_at_ms: entry.time_ms,
+                model: entry.record.model,
+                directory: entry.record.directory,
+            })
+            .collect();
+        Ok(oap_protocol::SessionListResponse {
+            sessions,
+            next_cursor: page.next_cursor,
         })
     }
 
