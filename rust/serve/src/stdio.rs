@@ -1044,6 +1044,44 @@ fn adapter_code(err: &crate::HubError) -> &'static str {
     }
 }
 
+fn submit_refusal(err: HubError) -> WireError {
+    refusal(&err).unwrap_or_else(|| {
+        wire(
+            match &err {
+                HubError::ScopeMismatch { .. } => "scope_mismatch",
+                HubError::SessionClosed(_)
+                | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
+                HubError::Adapter(
+                    oap_adapter::Error::InvalidSubmission | oap_adapter::Error::UnsupportedInput,
+                ) => "invalid_submission",
+                _ => "internal",
+            },
+            err,
+        )
+    })
+}
+
+fn settings(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST],
+    )?;
+    let asked: oap_protocol::SessionSettingsUpdateRequest = payload(&envelope)?;
+    let entry = session(hub, &request.session_id)?;
+    let (updated, _) = block_on(entry.update_settings(asked)).map_err(submit_refusal)?;
+    let mut response = oap_protocol::Envelope::new(
+        oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE,
+        next_id(ids, "response"),
+        &updated,
+    )
+    .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(updated.session_id.clone());
+    response.capability_revision = envelope.capability_revision.clone();
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
+}
+
 fn catalog_refusal(err: HubError, otherwise: &'static str) -> WireError {
     if let Some(refused) = refusal(&err) {
         return refused;
@@ -1134,24 +1172,7 @@ fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
             )
         }),
     };
-    let (kind, admission, session_id, run_id, steered) = admitted.map_err(|err| {
-        refusal(&err).unwrap_or_else(|| {
-            wire(
-                match &err {
-                    HubError::ScopeMismatch { .. } => "scope_mismatch",
-                    HubError::SessionClosed(_)
-                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
-                    HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
-                    HubError::Adapter(
-                        oap_adapter::Error::InvalidSubmission
-                        | oap_adapter::Error::UnsupportedInput,
-                    ) => "invalid_submission",
-                    _ => "internal",
-                },
-                err,
-            )
-        })
-    })?;
+    let (kind, admission, session_id, run_id, steered) = admitted.map_err(submit_refusal)?;
     let admission = admission.map_err(|err| wire("internal", err))?;
     let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), &admission)
         .map_err(|err| wire("internal", err))?;
@@ -1475,6 +1496,10 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
             envelope.in_reply_to = Some(next_id(ids, "request").into());
             envelope.session_id = Some(state.session_id.clone());
             Ok(serde_json::to_value(&envelope).unwrap_or(Value::Null))
+        }
+        "settings" => {
+            request.only(&["session_id", "request"])?;
+            settings(hub, request, ids)
         }
         "cancel" => {
             request.only(&["session_id", "request"])?;
