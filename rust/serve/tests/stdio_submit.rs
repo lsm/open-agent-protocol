@@ -195,3 +195,49 @@ fn an_unframable_acknowledgement_is_refused_and_its_run_rolled_back() {
     assert!(state.active_run_id.is_none(), "{:?}", state.active_run_id);
     assert!(state.active_runs.is_empty());
 }
+
+#[test]
+fn an_unframable_steer_acknowledgement_leaves_the_run_it_steered_running() {
+    let hub = opened();
+    let first = submit_line(
+        1,
+        &envelope(
+            EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST,
+            "submit-1",
+            &submit("s"),
+        ),
+    );
+    let steer = submit_line(
+        2,
+        &envelope(
+            EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST,
+            &"x".repeat(400),
+            &MessageSubmitRequest {
+                delivery: RequestedDeliveryMode::STEER,
+                ..submit("s")
+            },
+        ),
+    );
+    let options = StdioOptions {
+        frame_limit: steer.len() + 8,
+        ..StdioOptions::default()
+    };
+    let answered = lines_within(&hub, &[first, steer], &options);
+    let run = answered[0]["result"]["run_id"].clone();
+    assert_eq!(
+        answered[1]["error"]["code"], "response_too_large",
+        "{}",
+        answered[1]
+    );
+    assert!(answered[1]["error"]["message"]
+        .as_str()
+        .unwrap()
+        .ends_with("; the steered run was left running"));
+    let state = futures::executor::block_on(hub.session(&"s".into()).unwrap().state()).unwrap();
+    assert_eq!(
+        serde_json::json!(state.active_run_id),
+        run,
+        "{:?}",
+        state.active_runs
+    );
+}

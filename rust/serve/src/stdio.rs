@@ -1033,11 +1033,13 @@ fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
         }))
         .map(|admission| {
             let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
+            let steered = admission.admission == oap_protocol::Admission::STEERED;
             (
                 EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE,
                 serde_json::to_value(&admission),
                 session,
                 run,
+                steered,
             )
         }),
         (None, compaction) => block_on(entry.compact(oap_adapter::CompactRequest {
@@ -1046,15 +1048,17 @@ fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
         }))
         .map(|admission| {
             let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
+            let steered = admission.admission == oap_protocol::Admission::STEERED;
             (
                 EnvelopeType::SESSION_COMPACT_RESPONSE,
                 serde_json::to_value(&admission),
                 session,
                 run,
+                steered,
             )
         }),
     };
-    let (kind, admission, session_id, run_id) = admitted.map_err(|err| {
+    let (kind, admission, session_id, run_id, steered) = admitted.map_err(|err| {
         refusal(&err).unwrap_or_else(|| {
             wire(
                 match &err {
@@ -1084,6 +1088,7 @@ fn submit(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer {
         return Ok(answer);
     }
     let outcome = match run_id {
+        Some(_) if steered => "the steered run was left running".to_owned(),
         Some(run) => match rollback_run(hub, &entry, &run) {
             Ok(Some(settled)) if settled == EnvelopeType::RUN_CANCELLED => {
                 "the run was cancelled".to_owned()
