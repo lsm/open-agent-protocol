@@ -591,4 +591,10 @@ impl HubSession {
         self.mark_closed();
         Ok(())
     }
+
+    pub async fn rollback(&self) -> Result<(), HubError> {
+        let closed = self.close().await;
+        self.mark_closed();
+        closed
+    }
 }

@@ -65,6 +65,7 @@ struct Request {
     session_id: String,
     request: Option<Box<RawValue>>,
     run_id: String,
+    adapter: String,
     after: Option<Box<RawValue>>,
     present: Vec<String>,
 }
@@ -73,6 +74,8 @@ struct Request {
 struct WireError {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -170,7 +173,18 @@ fn serve_lines(
             return Ok(());
         };
         let request = decode_request(&frame).map_err(malformed)?;
-        let (answer, pump) = if request.op == "events" {
+        let (answer, pump) = if request.op == "open" {
+            match open(
+                hub,
+                &request,
+                &mut ids,
+                || Attached::claim(&attached, cap),
+                options.frame_limit,
+            ) {
+                Ok((answer, pump)) => (Ok(answer), pump),
+                Err(error) => (Err(error), None),
+            }
+        } else if request.op == "events" {
             match events(hub, &request, Attached::claim(&attached, cap)) {
                 Ok(pump) => (Ok(Value::Null), Some(pump)),
                 Err(Subscribing::Refused(error)) => (Err(error), None),
@@ -257,6 +271,201 @@ struct Pump {
     entry: Arc<HubSession>,
     subscription: Subscription,
     resume_from: u64,
+}
+
+fn detailed(code: &'static str, message: impl fmt::Display, details: Value) -> WireError {
+    WireError {
+        code,
+        message: trim(&message.to_string()),
+        details: Some(details),
+    }
+}
+
+fn refusal(err: &HubError) -> Option<WireError> {
+    use oap_adapter::Error;
+    match err {
+        HubError::StaleRevision { expected, current } => Some(detailed(
+            "stale_capabilities",
+            err,
+            serde_json::json!({ "expected_revision": expected, "current_revision": current }),
+        )),
+        HubError::Adapter(Error::UnsupportedControl(control)) => {
+            let mut details =
+                serde_json::json!({ "feature": control.feature, "reason": control.reason });
+            for (key, value) in [
+                ("tool", &control.tool),
+                ("field", &control.field),
+                ("source", &control.source),
+            ] {
+                if !value.is_empty() {
+                    details[key] = Value::String(value.clone());
+                }
+            }
+            Some(detailed("unsupported_feature", err, details))
+        }
+        HubError::Adapter(Error::DegradedControl(feature)) => Some(detailed(
+            "capability_degraded",
+            err,
+            serde_json::json!({ "feature": feature }),
+        )),
+        HubError::Adapter(Error::ModelNotFound(model)) => Some(detailed(
+            "model_not_found",
+            err,
+            serde_json::json!({ "model_id": model }),
+        )),
+        _ => None,
+    }
+}
+
+fn open(
+    hub: &Hub,
+    request: &Request,
+    ids: &mut u64,
+    claim: impl FnOnce() -> Result<Attached, WireError>,
+    limit: usize,
+) -> Result<(Value, Option<Pump>), WireError> {
+    request.only(&["adapter", "request"])?;
+    if request.adapter.is_empty() {
+        return Err(wire("invalid_request", "adapter is required"));
+    }
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[oap_protocol::EnvelopeType::SESSION_OPEN_REQUEST],
+    )?;
+    let asked: oap_protocol::SessionOpenRequest = payload(&envelope)?;
+    let attached = asked.subscribe.then(claim).transpose()?;
+    if hub.registry().lookup(&request.adapter).is_none() {
+        return Err(wire(
+            "unknown_adapter",
+            format!("no adapter \"{}\"", trim(&request.adapter)),
+        ));
+    }
+    if asked.message.is_some() {
+        return Err(wire(
+            "unsupported_feature",
+            "the stdio hub does not yet carry a message on an open",
+        ));
+    }
+    let cited = envelope.capability_revision.clone().unwrap_or_default();
+    let gated = block_on(async {
+        let attaching = crate::attachment_gate(hub, &request.adapter, &cited, &asked).await?;
+        let electing = crate::election_gate(hub, &request.adapter, &cited, &asked).await?;
+        Ok::<String, HubError>(if electing.is_empty() {
+            attaching
+        } else {
+            electing
+        })
+    })
+    .map_err(|err| refusal(&err).unwrap_or_else(|| wire("probe_failed", err)))?;
+    let tool_sources =
+        crate::resolve_attachments(hub.registry(), &asked.tool_sources).map_err(|refused| {
+            detailed(
+                "unsupported_feature",
+                &refused,
+                serde_json::json!({
+                    "feature": oap_protocol::FEATURE_TOOL_SOURCES_ATTACH,
+                    "reason": oap_adapter::CONTROL_UNSATISFIABLE,
+                    "source": refused.tool_source,
+                }),
+            )
+        })?;
+    let mut metadata = serde_json::Map::new();
+    for (key, raw) in &asked.metadata {
+        let value: Value = serde_json::from_str(raw.get()).map_err(|err| {
+            wire(
+                "invalid_payload",
+                format!("metadata {:?}: {err}", trim(key)),
+            )
+        })?;
+        metadata.insert(key.clone(), value);
+    }
+    let opening = oap_adapter::OpenRequest {
+        session_id: asked.session_id.clone().unwrap_or_default(),
+        participant: oap_protocol::Participant {
+            id: crate::DEFAULT_PARTICIPANT.into(),
+            ..oap_protocol::Participant::default()
+        },
+        metadata,
+        tool_sources,
+        tools: asked.tools.clone(),
+        allow_degraded_features: asked.allow_degraded_features.clone(),
+        reopen: asked.reopen,
+        reasoning_level: asked.reasoning_level.clone(),
+        compaction_policy: asked.compaction_policy.clone(),
+        ..oap_adapter::OpenRequest::default()
+    };
+    let opened = block_on(hub.open(&request.adapter, opening)).map_err(open_refusal)?;
+    let named = asked
+        .session_id
+        .as_ref()
+        .is_some_and(|id| !id.as_str().is_empty());
+    let pump = match attached {
+        Some(attached) => match hub.subscribe(opened.session.id()) {
+            Ok(subscription) => Some(Pump {
+                id: request.id,
+                entry: opened.session.clone(),
+                subscription,
+                resume_from: 0,
+                _attached: attached,
+            }),
+            Err(err) => {
+                let _ = block_on(opened.session.rollback());
+                return Err(open_refusal(err));
+            }
+        },
+        None => None,
+    };
+    let mut response = oap_protocol::Envelope::new(
+        oap_protocol::EnvelopeType::SESSION_OPEN_RESPONSE,
+        next_id(ids, "response"),
+        &opened.state,
+    )
+    .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(opened.state.session_id.clone());
+    response.capability_revision = if gated.is_empty() {
+        envelope.capability_revision.clone()
+    } else {
+        Some(gated)
+    };
+    let answer = serde_json::to_value(&response).map_err(|err| wire("internal", err))?;
+    let fits = response_line(request.id, Ok(answer.clone())).is_ok_and(|line| line.len() <= limit);
+    if !fits {
+        let outcome = if named {
+            "the session is open under the session_id the request supplied"
+        } else {
+            match block_on(opened.session.rollback()) {
+                Ok(()) | Err(HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
+                    "the session was rolled back"
+                }
+                Err(_) => "rolling the session back failed and it may still be live",
+            }
+        };
+        return Err(wire(
+            "response_too_large",
+            format!("the open response exceeds the frame limit; {outcome}"),
+        ));
+    }
+    Ok((answer, pump))
+}
+
+fn open_refusal(err: HubError) -> WireError {
+    {
+        refusal(&err).unwrap_or_else(|| {
+            wire(
+                match &err {
+                    HubError::UnknownAdapter(_) => "unknown_adapter",
+                    HubError::SessionExists(_) => "session_exists",
+                    HubError::UnknownSession(_) => "unknown_session",
+                    HubError::ClosedAtOpen(_)
+                    | HubError::SessionClosed(_)
+                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    _ => "open_failed",
+                },
+                err,
+            )
+        })
+    }
 }
 
 fn events(
@@ -627,6 +836,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 match key.as_str() {
                     "session_id" => request.session_id = text,
                     "run_id" => request.run_id = text,
+                    "adapter" => request.adapter = text,
                     _ => {}
                 }
             }
@@ -678,6 +888,7 @@ impl Request {
                 trim(&self.op),
                 extra.join(", ")
             ),
+            details: None,
         })
     }
 }
@@ -691,6 +902,7 @@ fn session(hub: &Hub, id: &str) -> Result<std::sync::Arc<crate::HubSession>, Wir
     hub.session(&id.into()).map_err(|err| WireError {
         code: "unknown_session",
         message: trim(&err.to_string()),
+        details: None,
     })
 }
 
@@ -698,6 +910,7 @@ fn wire(code: &'static str, message: impl fmt::Display) -> WireError {
     WireError {
         code,
         message: trim(&message.to_string()),
+        details: None,
     }
 }
 
@@ -932,6 +1145,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
                     return Err(WireError {
                         code: "state_failed",
                         message: trim(&err.to_string()),
+                        details: None,
                     })
                 }
             };
@@ -943,6 +1157,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
             .map_err(|err| WireError {
                 code: "internal",
                 message: trim(&err.to_string()),
+                details: None,
             })?;
             envelope.in_reply_to = Some(next_id(ids, "request").into());
             envelope.session_id = Some(state.session_id.clone());
@@ -966,6 +1181,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
                     _ => "internal",
                 },
                 message: trim(&err.to_string()),
+                details: None,
             })?;
             Ok(Value::Null)
         }
@@ -976,6 +1192,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
         _ => Err(WireError {
             code: "unknown_op",
             message: format!("no op {:?}", trim(&request.op)),
+            details: None,
         }),
     }
 }
@@ -1017,12 +1234,14 @@ fn fitted(id: i64, answer: Answer, limit: usize) -> Result<Option<Vec<u8>>, Stdi
         Err(error) => Some(WireError {
             code: error.code,
             message: trim(&error.message),
+            details: None,
         }),
         Ok(_) => None,
     };
     let fallback = WireError {
         code: "response_too_large",
         message: "the encoded response exceeds the frame limit".into(),
+        details: None,
     };
     for candidate in [Some(answer), reduced.map(Err), Some(Err(fallback))]
         .into_iter()
