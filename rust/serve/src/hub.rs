@@ -629,6 +629,84 @@ impl HubSession {
         Ok(admission)
     }
 
+    pub async fn models(
+        &self,
+        mut request: oap_protocol::ModelsRequest,
+    ) -> Result<oap_adapter::Catalog, HubError> {
+        if !request.session_id.as_str().is_empty() && request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        request.session_id = self.id.clone();
+        let lister = self.session.model_lister().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                oap_protocol::FEATURE_MODELS_LIST,
+            )))
+        })?;
+        let catalog = lister
+            .models(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if catalog.revision.is_empty() {
+            return Err(Error::Harness(
+                "serve: adapter served a model catalog with no capability revision".into(),
+            )
+            .into());
+        }
+        if catalog.models.session_id != self.id {
+            return Err(Error::Harness(format!(
+                "serve: adapter served a model catalog scoped to session {:?}, want {:?}",
+                catalog.models.session_id.as_str(),
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok(catalog)
+    }
+
+    pub async fn tools(
+        &self,
+        mut request: oap_protocol::ToolsListRequest,
+    ) -> Result<oap_adapter::ToolCatalog, HubError> {
+        if let Some(payload) = request.session_id.as_ref().filter(|id| **id != self.id) {
+            return Err(HubError::ScopeMismatch {
+                payload: payload.clone(),
+                addressed: self.id.clone(),
+            });
+        }
+        request.session_id = Some(self.id.clone());
+        let lister = self
+            .session
+            .tool_lister()
+            .ok_or(Error::ToolCatalogUnavailable)?;
+        let catalog = lister
+            .tools(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if catalog.revision.is_empty() {
+            return Err(Error::Harness(
+                "serve: adapter served a tool catalog with no capability revision".into(),
+            )
+            .into());
+        }
+        if catalog.tools.session_id.as_ref() != Some(&self.id) {
+            return Err(Error::Harness(format!(
+                "serve: adapter served a tool catalog scoped to session {:?}, want {:?}",
+                catalog
+                    .tools
+                    .session_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or_default(),
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok(catalog)
+    }
+
     pub async fn resolve(&self, resolution: InteractionResolution) -> Result<(), HubError> {
         let scoped = [
             resolution
