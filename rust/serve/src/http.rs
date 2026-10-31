@@ -668,7 +668,13 @@ impl Served {
         envelope.session_id = text("session_id")
             .or((!session.is_empty()).then_some(session))
             .map(Into::into);
-        envelope.run_id = text("run_id").map(Into::into);
+        envelope.run_id = text("run_id")
+            .or_else(|| {
+                named["payload"]["run_id"]
+                    .as_str()
+                    .filter(|run| !run.is_empty())
+            })
+            .map(Into::into);
         match serde_json::to_value(&envelope) {
             Ok(value) => json(status, &value),
             Err(_) => plain(500, "oap: internal error\n"),

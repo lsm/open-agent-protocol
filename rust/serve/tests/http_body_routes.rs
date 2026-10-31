@@ -291,3 +291,27 @@ fn the_catalog_routes_answer_the_sessions_tools_and_models() {
     assert_eq!(models.json()["type"], "models.response");
     assert_eq!(get("/sessions/ghost/models").status, 404);
 }
+
+#[test]
+fn a_refusal_of_a_cancel_carries_the_run_its_payload_names() {
+    let (_, addr) = started();
+    let cancel = Envelope::new(
+        EnvelopeType::RUN_CANCEL_REQUEST,
+        "cancel-1",
+        &RunCancelRequest {
+            session_id: "s".into(),
+            run_id: "ghost-run".into(),
+            ..RunCancelRequest::default()
+        },
+    )
+    .unwrap();
+    let refused = post(
+        addr,
+        "/sessions/s/cancel",
+        "application/json",
+        &serde_json::to_string(&cancel).unwrap(),
+    );
+    let envelope = refused.json();
+    assert_eq!(envelope["in_reply_to"], "cancel-1");
+    assert_eq!(envelope["run_id"], "ghost-run");
+}
