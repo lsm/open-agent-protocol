@@ -12,6 +12,7 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:6270";
 pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
 const MAX_HEADER_BYTES: usize = 64 << 10;
 const DRAIN_BYTES: u64 = 256 << 10;
+const MAX_BODY_BYTES: u64 = 16 << 20;
 const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const DEFAULT_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -99,6 +100,7 @@ pub(crate) struct Asked {
     pub(crate) path: String,
     pub(crate) query: Vec<(String, String)>,
     pub(crate) headers: Vec<(String, String)>,
+    pub(crate) rest: Vec<u8>,
 }
 
 impl Asked {
@@ -152,7 +154,7 @@ fn decode(text: &str, plus_is_space: bool) -> String {
 }
 
 enum Head {
-    Read(Vec<u8>),
+    Read(Vec<u8>, Vec<u8>),
     TooLarge(Vec<u8>),
     Gone,
 }
@@ -172,6 +174,13 @@ fn drain(stream: &TcpStream, cap: u64) {
             Ok(read) => left -= read as u64,
         }
     }
+}
+
+fn declared(asked: &Asked) -> u64 {
+    asked
+        .header("Content-Length")
+        .and_then(|length| length.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 fn read_head(stream: &TcpStream, budget: std::time::Duration) -> std::io::Result<Head> {
@@ -201,8 +210,8 @@ fn read_head(stream: &TcpStream, budget: std::time::Duration) -> std::io::Result
         }
         head.extend_from_slice(&chunk[..read]);
         if let Some(end) = head.windows(4).position(|window| window == b"\r\n\r\n") {
-            head.truncate(end + 4);
-            return Ok(Head::Read(head));
+            let rest = head.split_off(end + 4);
+            return Ok(Head::Read(head, rest));
         }
         if head.len() > MAX_HEADER_BYTES {
             return Ok(Head::TooLarge(head));
@@ -212,8 +221,8 @@ fn read_head(stream: &TcpStream, budget: std::time::Duration) -> std::io::Result
 
 impl Served {
     fn connection(&self, stream: TcpStream) -> std::io::Result<()> {
-        let head = match read_head(&stream, self.header_timeout)? {
-            Head::Read(head) => head,
+        let (head, rest) = match read_head(&stream, self.header_timeout)? {
+            Head::Read(head, rest) => (head, rest),
             Head::TooLarge(head) => {
                 return respond(
                     &stream,
@@ -255,19 +264,24 @@ impl Served {
                     )
                 })
                 .collect(),
+            rest,
         };
-        let answer = self.answer(&asked);
+        let mut consumed = false;
+        let answer = self.answer(&asked, &stream, &mut consumed);
         stream.set_write_timeout(Some(self.header_timeout))?;
         respond(&stream, &answer, asked.method != "HEAD")?;
-        let declared: u64 = asked
-            .header("Content-Length")
-            .and_then(|length| length.trim().parse().ok())
-            .unwrap_or(0);
-        drain(&stream, declared.min(DRAIN_BYTES));
+        if !consumed {
+            drain(
+                &stream,
+                declared(&asked)
+                    .saturating_sub(asked.rest.len() as u64)
+                    .min(DRAIN_BYTES),
+            );
+        }
         Ok(())
     }
 
-    fn answer(&self, asked: &Asked) -> Answer {
+    fn answer(&self, asked: &Asked, stream: &TcpStream, consumed: &mut bool) -> Answer {
         if asked.header("Origin").is_some() {
             return self.refused(
                 403,
@@ -276,6 +290,7 @@ impl Served {
                     "the daemon does not serve cross-origin requests",
                 ),
                 "",
+                None,
             );
         }
         if !self.allow.is_empty() {
@@ -301,6 +316,7 @@ impl Served {
                         "unrecognized Host header; this daemon serves loopback clients only",
                     ),
                     "",
+                    None,
                 );
             }
         }
@@ -326,6 +342,11 @@ impl Served {
             ["sessions"] => ("GET", "sessions", "", ""),
             ["sessions", "history"] => ("GET", "history", "", ""),
             ["sessions", id, "state"] => ("GET", "state", *id, ""),
+            ["sessions", id, "submit"] => ("POST", "submit", *id, ""),
+            ["sessions", id, "resolve"] => ("POST", "resolve", *id, ""),
+            ["sessions", id, "cancel"] => ("POST", "cancel", *id, ""),
+            ["sessions", id, "settings"] => ("POST", "settings", *id, ""),
+            ["sessions", id, "close"] => ("POST", "close", *id, ""),
             _ => return plain(404, "404 page not found\n"),
         };
         if method != allowed {
@@ -341,6 +362,21 @@ impl Served {
             cursor: asked.query("cursor").unwrap_or_default().to_owned(),
             ..stdio::Request::default()
         };
+        let mut body = Vec::new();
+        if matches!(op, "submit" | "resolve" | "cancel" | "settings") {
+            body = match self.body(asked, stream, consumed) {
+                Ok(body) => body,
+                Err((status, error)) => return self.refused(status, error, session, None),
+            };
+            match serde_json::value::RawValue::from_string(
+                String::from_utf8_lossy(&body).into_owned(),
+            ) {
+                Ok(raw) => request.request = Some(raw),
+                Err(err) => {
+                    return self.refused(400, stdio::wire("malformed_json", err), session, None)
+                }
+            }
+        }
         if let Some(limit) = asked.query("limit").filter(|_| op == "history") {
             match limit.parse::<i64>() {
                 Ok(limit) => request.limit = Some(limit),
@@ -349,20 +385,92 @@ impl Served {
                         400,
                         stdio::wire("invalid_request", oap_binding::Error::InvalidLimit),
                         session,
+                        None,
                     )
                 }
             }
         }
         match stdio::dispatch(&self.hub, &request, &self.ids, usize::MAX) {
+            Ok(Value::Null) if op == "close" => Answer {
+                status: 204,
+                content_type: "",
+                allow: None,
+                body: Vec::new(),
+            },
             Ok(value) => json(200, &value),
             Err(error) => {
                 let status = status_of(error.code);
-                self.refused(status, error, session)
+                let correlated = (!body.is_empty()).then_some(body.as_slice());
+                self.refused(status, error, session, correlated)
             }
         }
     }
 
-    fn refused(&self, status: u16, error: WireError, session: &str) -> Answer {
+    fn body(
+        &self,
+        asked: &Asked,
+        stream: &TcpStream,
+        consumed: &mut bool,
+    ) -> Result<Vec<u8>, (u16, WireError)> {
+        let media = asked
+            .header("Content-Type")
+            .unwrap_or_default()
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if media != "application/json" {
+            return Err((
+                415,
+                stdio::wire(
+                    "unsupported_media_type",
+                    "a request with a body declares application/json; the daemon reads no other media type",
+                ),
+            ));
+        }
+        let unreadable = || {
+            (
+                400,
+                stdio::wire("request_read", "request body could not be read"),
+            )
+        };
+        if asked.header("Transfer-Encoding").is_some() {
+            return Err(unreadable());
+        }
+        let length = declared(asked);
+        if length > MAX_BODY_BYTES {
+            return Err((
+                413,
+                stdio::wire("request_too_large", "request body exceeds the daemon limit"),
+            ));
+        }
+        *consumed = true;
+        let deadline = std::time::Instant::now() + self.header_timeout;
+        let mut body = asked.rest.clone();
+        body.truncate(length as usize);
+        let mut chunk = [0u8; 8192];
+        while (body.len() as u64) < length {
+            let wait = deadline.saturating_duration_since(std::time::Instant::now());
+            if wait.is_zero() || stream.set_read_timeout(Some(wait)).is_err() {
+                return Err(unreadable());
+            }
+            let want = chunk.len().min((length - body.len() as u64) as usize);
+            match (&*stream).read(&mut chunk[..want]) {
+                Ok(0) | Err(_) => return Err(unreadable()),
+                Ok(read) => body.extend_from_slice(&chunk[..read]),
+            }
+        }
+        Ok(body)
+    }
+
+    fn refused(
+        &self,
+        status: u16,
+        error: WireError,
+        session: &str,
+        request: Option<&[u8]>,
+    ) -> Answer {
         let next = |kind: &str| {
             let next = self.ids.fetch_add(1, Ordering::SeqCst) + 1;
             format!("oap-{kind}-{next}")
@@ -380,10 +488,19 @@ impl Served {
             Ok(envelope) => envelope,
             Err(_) => return plain(500, "oap: internal error\n"),
         };
-        envelope.in_reply_to = Some(next("request").into());
-        if !session.is_empty() {
-            envelope.session_id = Some(session.into());
-        }
+        let named = request
+            .and_then(|request| serde_json::from_slice::<Value>(request).ok())
+            .unwrap_or(Value::Null);
+        let text = |key: &str| named[key].as_str().filter(|value| !value.is_empty());
+        envelope.in_reply_to = Some(
+            text("id")
+                .map_or_else(|| next("request"), str::to_owned)
+                .into(),
+        );
+        envelope.session_id = text("session_id")
+            .or((!session.is_empty()).then_some(session))
+            .map(Into::into);
+        envelope.run_id = text("run_id").map(Into::into);
         match serde_json::to_value(&envelope) {
             Ok(value) => json(status, &value),
             Err(_) => plain(500, "oap: internal error\n"),
@@ -439,13 +556,14 @@ fn reason(status: u16) -> &'static str {
 }
 
 fn respond(mut stream: &TcpStream, answer: &Answer, with_body: bool) -> std::io::Result<()> {
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        answer.status,
-        reason(answer.status),
-        answer.content_type,
-        answer.body.len()
-    );
+    let mut head = format!("HTTP/1.1 {} {}\r\n", answer.status, reason(answer.status));
+    if !answer.content_type.is_empty() {
+        head.push_str(&format!("Content-Type: {}\r\n", answer.content_type));
+    }
+    if answer.status != 204 {
+        head.push_str(&format!("Content-Length: {}\r\n", answer.body.len()));
+    }
+    head.push_str("Connection: close\r\n");
     if let Some(allow) = answer.allow {
         head.push_str(&format!("Allow: {allow}\r\n"));
     }
