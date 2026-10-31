@@ -607,6 +607,7 @@ impl Served {
             ["sessions", id, "tools"] => ("GET", "tools", *id, ""),
             ["sessions", id, "models"] => ("GET", "models", *id, ""),
             ["sessions", id, "events"] => ("GET", "events", *id, ""),
+            ["sessions", id, "transcript"] => ("GET", "transcript", *id, ""),
             ["sessions", id, "submit"] => ("POST", "submit", *id, ""),
             ["sessions", id, "resolve"] => ("POST", "resolve", *id, ""),
             ["sessions", id, "cancel"] => ("POST", "cancel", *id, ""),
@@ -652,6 +653,11 @@ impl Served {
                     return self.refused(400, stdio::wire("malformed_json", err), session, None)
                 }
             }
+        }
+        if op == "transcript" {
+            request.limit = asked
+                .query("limit")
+                .map(|limit| limit.parse::<i64>().unwrap_or(0));
         }
         if let Some(limit) = asked.query("limit").filter(|_| op == "history") {
             match limit.parse::<i64>() {

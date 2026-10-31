@@ -1576,7 +1576,10 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
   page through its adapter, with a gap, and refuses a foreign cursor, an unbound
   session, a bad limit, an adapter that keeps no transcript and a session with
   no native id`, `GET /sessions/{id}/transcript answers the transcript op: an
-  unknown session is 404 and a limit out of range 400`. Rust (stdio only):
+  unknown session is 404 and a limit out of range 400`. Rust: over HTTP,
+  `a_transcript_page_reads_through_the_adapter_with_the_query_limit_and_cursor`,
+  `a_transcript_is_refused_for_an_unknown_session_a_bad_limit_and_an_adapter_without_one`
+  (a `limit` that does not parse reads as 0, as Go's route does); over stdio,
   `transcript_refuses_an_unknown_session_a_limit_out_of_range_and_a_cursor_as_after`,
   `a_held_session_whose_adapter_keeps_no_transcript_answers_transcript_load_unadvertised`,
   `a_held_session_reads_its_native_transcript_under_its_own_id`,
