@@ -114,3 +114,24 @@ fn a_request_past_the_in_flight_bound_is_refused_busy_naming_the_bound() {
     );
     assert_eq!(answer(&answered, 1)["error"]["code"], "probe_failed");
 }
+
+#[test]
+fn a_shutdown_past_the_in_flight_bound_is_refused_busy_like_any_other_op() {
+    let hub = hub(2, Duration::from_secs(1));
+    let answered = served(
+        &hub,
+        &[
+            r#"{"id":1,"op":"capabilities","adapter":"waiting"}"#,
+            r#"{"id":2,"op":"shutdown"}"#,
+        ],
+        &StdioOptions {
+            max_ops: 1,
+            ..StdioOptions::default()
+        },
+    );
+    assert_eq!(
+        answer(&answered, 2)["error"]["code"],
+        "busy",
+        "{answered:?}"
+    );
+}

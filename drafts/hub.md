@@ -2543,6 +2543,18 @@ closed` and `the sweep waits no longer than the window it was given`, all four i
 | **The fix** | Landed as described: the contract member, and the exposure set on `Subscription`. What remains is an adapter that reports its own stream failures by run, which is that adapter's change, not the hub's. |
 | **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 
+### D35 — the Rust stdio frontend waits on a full output queue instead of refusing
+
+`oap_serve::stdio` serves requests concurrently within the in-flight bounds of
+[Bounds on the stdio pipe](#bounds-on-the-stdio-pipe), but every line it writes,
+a `busy` refusal included, waits for room in the 256-line output queue. A host
+that stops reading therefore fills the queue and stalls the request loop
+instead of being answered `busy`, and the writer is not abandoned: serve ends
+only when the host closes its end or reads again. Go writes a refusal without
+waiting, counts the ones it could not deliver, and abandons a writer that
+outlives the shutdown window. A non-blocking refusal path and writer
+abandonment close this.
+
 ### D34 — Zig keeps a named compound open whose response will not frame
 
 A compound open that admitted its message and whose response exceeds the frame

@@ -143,7 +143,7 @@ pub fn serve(
             0 => DEFAULT_MAX_SUBSCRIPTIONS,
             cap => cap,
         },
-        pumps: Arc::default(),
+        pumps: Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
         stopping: Arc::default(),
         inflight: Arc::new(Inflight::new(options.max_ops)),
         broken: Arc::default(),
@@ -151,7 +151,11 @@ pub fn serve(
     let served = serve_lines(&serving, &frames);
     let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
     serving.inflight.settle(deadline);
-    let pumps = std::mem::take(&mut *lock(&serving.pumps));
+    let pumps = lock(&serving.pumps).take().unwrap_or_default();
+    let served = match (served, lock(&serving.broken).take()) {
+        (Ok(_), Some(err)) => Err(err),
+        (served, _) => served,
+    };
     let streaming = |pumps: &[(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)]| {
         pumps
             .iter()
@@ -246,7 +250,7 @@ impl Inflight {
     }
 }
 
-type Pumps = std::sync::Mutex<Vec<(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)>>;
+type Pumps = std::sync::Mutex<Option<Vec<(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)>>>;
 
 #[derive(Clone)]
 struct Serving {
@@ -406,25 +410,26 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             return Ok(stopping.draining && stopping.graceful());
         };
         let request = decode_request(&frame).map_err(malformed)?;
+        let size = frame.len();
+        if let Err(why) = serving.inflight.offer(size) {
+            let refused = wire("busy", format!("{why}; send this request again"));
+            if let Some(line) = fitted(request.id, Err(refused), serving.frame_limit)? {
+                emit(&serving.writer, &line)?;
+            }
+            continue;
+        }
         if request.op == "shutdown" {
             let mut stopping = serving
                 .stopping
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
+            serving.inflight.release(size);
             if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
                 emit(&serving.writer, &line)?;
             }
             if finished {
                 return Ok(stopping.draining && stopping.graceful());
-            }
-            continue;
-        }
-        let size = frame.len();
-        if let Err(why) = serving.inflight.offer(size) {
-            let refused = wire("busy", format!("{why}; send this request again"));
-            if let Some(line) = fitted(request.id, Err(refused), serving.frame_limit)? {
-                emit(&serving.writer, &line)?;
             }
             continue;
         }
@@ -440,7 +445,11 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
 
 impl Serving {
     fn start(&self, pump: Pump) {
-        lock(&self.pumps).push((pump.subscription.canceller(), pump.attached()));
+        let mut pumps = lock(&self.pumps);
+        let Some(pumps) = pumps.as_mut() else {
+            return;
+        };
+        pumps.push((pump.subscription.canceller(), pump.attached()));
         let writer = self.writer.clone();
         let limit = self.frame_limit;
         std::thread::spawn(move || pump.run(&writer, limit));
