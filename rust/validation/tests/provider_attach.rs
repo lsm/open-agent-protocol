@@ -75,9 +75,14 @@ fn traced(trace: &str) -> Vec<(String, String, String)> {
     found.into_iter().collect()
 }
 
+type Case = (
+    &'static str,
+    &'static [(&'static str, &'static str, &'static str)],
+);
+
 #[test]
 fn every_attach_path_draws_what_go_draws() {
-    let cases: [(&str, &[(&str, &str, &str)]); 13] = [
+    let cases: [Case; 13] = [
         (
             "degraded-accepted-other-session",
             &[("scope_mismatch", "attach-response", "/payload/session_id")][..],
