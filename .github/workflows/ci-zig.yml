@@ -525,6 +525,19 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-rs/bin/oapx
         run: cargo test --all-features
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Require the Rust stdio hub to answer as goap serve --stdio
+        working-directory: .
+        run: |
+          set -euo pipefail
+          cargo build --quiet --manifest-path rust/Cargo.toml -p oap-serve --bin oap-rust-hub
+          OAP_RUST_HUB_BIN="$PWD/rust/target/debug/oap-rust-hub" go test ./go/cmd/goap/ -run 'TestHubStdio(AnswersGoapAndRustTheSame|RustSkips)' -v
+
       - name: Tests leave no credential store in the checkout
         if: always()
         working-directory: .

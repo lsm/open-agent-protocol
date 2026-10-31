@@ -645,7 +645,8 @@ fn open_refusal(err: HubError) -> WireError {
                 match &err {
                     HubError::UnknownAdapter(_) => "unknown_adapter",
                     HubError::SessionExists(_) => "session_exists",
-                    HubError::UnknownSession(_) => "unknown_session",
+                    HubError::UnknownSession(_)
+                    | HubError::Adapter(oap_adapter::Error::UnknownSession(_)) => "unknown_session",
                     HubError::ClosedAtOpen(_)
                     | HubError::SessionClosed(_)
                     | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
