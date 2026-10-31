@@ -169,6 +169,9 @@ impl WorkLog {
             }
             return;
         };
+        if let Some(run) = &envelope.run_id {
+            self.waits.remove(run);
+        }
         let reply = if status == WorkStatus::Done {
             reply_text(envelope)
         } else {
@@ -205,7 +208,7 @@ impl WorkLog {
             None => self.dropped,
         };
         let from = start.saturating_sub(self.dropped).min(held) as usize;
-        let to = self.turns.len().min(from + limit);
+        let to = self.turns.len().min(from.saturating_add(limit));
         Turns {
             first_index: self.dropped + from as u64,
             turns: self.turns.range(from..to).cloned().collect(),
@@ -377,6 +380,7 @@ mod tests {
             log.turns(Some(u64::MAX), 1).first_index,
             (TURNS_KEPT + 2) as u64
         );
+        assert_eq!(log.turns(Some(5), usize::MAX).turns.len(), TURNS_KEPT - 4);
     }
 
     #[test]
@@ -400,5 +404,6 @@ mod tests {
         let outcome = log.outcome.clone().unwrap();
         assert_eq!(outcome.status, WorkStatus::Stopped);
         assert_eq!(log.turns(None, 10).turns[0].outcome, "cancelled");
+        assert!(log.waits.is_empty());
     }
 }
