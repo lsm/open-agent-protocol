@@ -133,6 +133,12 @@ pub(crate) struct Answer {
     pub(crate) content_type: &'static str,
     pub(crate) allow: Option<&'static str>,
     pub(crate) body: Vec<u8>,
+    pub(crate) events: Option<Events>,
+}
+
+pub(crate) enum Events {
+    Live(crate::Subscription),
+    Gap(oap_adapter::ReplayGap),
 }
 
 fn decode(text: &str, plus_is_space: bool) -> String {
@@ -468,8 +474,11 @@ impl Served {
             drain(&stream, DRAIN_BYTES);
             return Ok(());
         }
-        let answer = self.answer(&asked, &stream, &mut consumed);
+        let mut answer = self.answer(&asked, &stream, &mut consumed);
         stream.set_write_timeout(Some(self.header_timeout))?;
+        if let Some(events) = answer.events.take() {
+            return stream_events(&stream, events, asked.method != "HEAD");
+        }
         respond(&stream, &answer, asked.method != "HEAD")?;
         if !consumed {
             let left = if asked.header("Transfer-Encoding").is_some() {
@@ -545,6 +554,7 @@ impl Served {
             ["sessions", id, "state"] => ("GET", "state", *id, ""),
             ["sessions", id, "tools"] => ("GET", "tools", *id, ""),
             ["sessions", id, "models"] => ("GET", "models", *id, ""),
+            ["sessions", id, "events"] => ("GET", "events", *id, ""),
             ["sessions", id, "submit"] => ("POST", "submit", *id, ""),
             ["sessions", id, "resolve"] => ("POST", "resolve", *id, ""),
             ["sessions", id, "cancel"] => ("POST", "cancel", *id, ""),
@@ -557,6 +567,9 @@ impl Served {
                 allow: Some(allowed),
                 ..plain(405, "Method Not Allowed\n")
             };
+        }
+        if op == "events" {
+            return self.events(asked, session);
         }
         let mut request = stdio::Request {
             op: op.to_owned(),
@@ -607,6 +620,7 @@ impl Served {
                 content_type: "",
                 allow: None,
                 body: Vec::new(),
+                events: None,
             },
             Ok(value) => json(200, &value),
             Err(error) => {
@@ -614,6 +628,74 @@ impl Served {
                 let correlated = (!body.is_empty()).then_some(body.as_slice());
                 self.refused(status, error, session, correlated)
             }
+        }
+    }
+
+    fn events(&self, asked: &Asked, session: &str) -> Answer {
+        let refuse = |code: &'static str, message: String| {
+            self.refused(status_of(code), stdio::wire(code, message), session, None)
+        };
+        let Ok(entry) = self.hub.session(&session.into()) else {
+            return refuse("unknown_session", format!("no session {:?}", session));
+        };
+        if entry.is_closed() {
+            return refuse("session_closed", "the session is closed".into());
+        }
+        let cursor = asked
+            .query("after")
+            .filter(|after| !after.is_empty())
+            .or_else(|| asked.header("Last-Event-ID"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let run = asked.query("run_id").unwrap_or_default().to_owned();
+        let subscribed = if cursor.is_empty() {
+            if !run.is_empty() {
+                return refuse(
+                    "invalid_cursor",
+                    "run_id names the run a cursor belongs to; it has no meaning without after"
+                        .into(),
+                );
+            }
+            self.hub.subscribe(entry.id())
+        } else {
+            let Some(after) = cursor
+                .parse::<u64>()
+                .ok()
+                .filter(|_| cursor.bytes().all(|byte| byte.is_ascii_digit()))
+            else {
+                return refuse(
+                    "invalid_cursor",
+                    format!("cursor {cursor:?} is not an unsigned sequence"),
+                );
+            };
+            let run = (!run.is_empty()).then(|| run.as_str().into());
+            crate::live::block_on(self.hub.subscribe_after(entry.id(), run, after))
+        };
+        let events = match subscribed {
+            Ok(subscription) => Events::Live(subscription),
+            Err(crate::HubError::Adapter(oap_adapter::Error::ReplayGap(gap))) => Events::Gap(gap),
+            Err(err) => {
+                let code = match &err {
+                    crate::HubError::Adapter(oap_adapter::Error::SessionClosed)
+                    | crate::HubError::SessionClosed(_) => "session_closed",
+                    crate::HubError::NoRunToResume => "no_run_to_resume",
+                    crate::HubError::Adapter(oap_adapter::Error::ReplayCursorFuture) => {
+                        "replay_cursor_future"
+                    }
+                    crate::HubError::Adapter(oap_adapter::Error::RunNotFound) => "run_not_found",
+                    crate::HubError::UnknownSession(_) => "unknown_session",
+                    _ => "internal",
+                };
+                return refuse(code, err.to_string());
+            }
+        };
+        Answer {
+            status: 200,
+            content_type: "text/event-stream",
+            allow: None,
+            body: Vec::new(),
+            events: Some(events),
         }
     }
 
@@ -736,6 +818,7 @@ fn plain(status: u16, body: &str) -> Answer {
         content_type: "text/plain; charset=utf-8",
         allow: None,
         body: body.as_bytes().to_vec(),
+        events: None,
     }
 }
 
@@ -745,6 +828,7 @@ fn json(status: u16, value: &Value) -> Answer {
         content_type: "application/json",
         allow: None,
         body: serde_json::to_vec(value).unwrap_or_default(),
+        events: None,
     }
 }
 
@@ -763,6 +847,92 @@ fn reason(status: u16) -> &'static str {
         415 => "Unsupported Media Type",
         503 => "Service Unavailable",
         _ => "Internal Server Error",
+    }
+}
+
+fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<()> {
+    let line = format!("event: {event}\ndata: {}\n\n", serde_json::to_string(data)?);
+    stream.write_all(line.as_bytes())?;
+    stream.flush()
+}
+
+fn stream_events(mut stream: &TcpStream, events: Events, with_body: bool) -> std::io::Result<()> {
+    stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+    )?;
+    stream.flush()?;
+    if !with_body {
+        return Ok(());
+    }
+    let mut subscription = match events {
+        Events::Gap(gap) => {
+            return signal(
+                stream,
+                "oap-replay-gap",
+                &serde_json::json!({
+                    "requested_after": gap.requested_after,
+                    "oldest_available": gap.oldest_available,
+                    "latest_available": gap.latest_available,
+                    "message": "requested replay cursor is no longer retained; reconnect with a cursor at or after oldest_available - 1",
+                }),
+            )
+        }
+        Events::Live(subscription) => subscription,
+    };
+    if let Some((run, joined)) = subscription.joined_at() {
+        signal(
+            stream,
+            "oap-subscribed",
+            &serde_json::json!({
+                "run_id": run.as_str(),
+                "joined_after": joined,
+                "message": "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point",
+            }),
+        )?;
+    }
+    let canceller = subscription.canceller();
+    let watched = stream.try_clone()?;
+    std::thread::spawn(move || {
+        let _ = watched.set_read_timeout(None);
+        let mut sink = [0u8; 512];
+        loop {
+            match (&watched).read(&mut sink) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        canceller.cancel();
+    });
+    loop {
+        let next = crate::live::block_on(std::future::poll_fn(|context| {
+            futures_core::Stream::poll_next(std::pin::Pin::new(&mut subscription), context)
+        }));
+        match next {
+            Some(Ok(envelope)) => {
+                let mut frame = String::new();
+                if let Some(sequence) = envelope.sequence {
+                    frame.push_str(&format!("id: {sequence}\n"));
+                }
+                frame.push_str(&format!("data: {}\n\n", serde_json::to_string(&envelope)?));
+                stream.write_all(frame.as_bytes())?;
+                stream.flush()?;
+            }
+            Some(Err(crate::HubError::Overflow {
+                run_id,
+                last_sequence,
+            })) => {
+                return signal(
+                    stream,
+                    "oap-overflow",
+                    &serde_json::json!({
+                        "run_id": run_id.as_str(),
+                        "last_sequence": last_sequence,
+                        "message": "event stream consumer fell behind; reconnect with a cursor after this sequence",
+                    }),
+                )
+            }
+            _ => return Ok(()),
+        }
     }
 }
 
