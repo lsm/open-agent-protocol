@@ -92,3 +92,99 @@ fn a_call_resolution_for_another_session_is_a_scope_mismatch() {
         answered[0]
     );
 }
+
+struct Closing(Box<dyn oap_adapter::Session>);
+
+impl oap_adapter::CallResolver for Closing {
+    fn resolve_call(
+        &self,
+        _: oap_adapter::CallResolution,
+    ) -> oap_adapter::BoxFuture<'_, oap_protocol::ActionCallResolveResponse> {
+        Box::pin(async { Err(oap_adapter::Error::SessionClosed) })
+    }
+}
+
+impl oap_adapter::Session for Closing {
+    fn submit(
+        &self,
+        request: oap_adapter::SubmitRequest,
+    ) -> oap_adapter::BoxFuture<
+        '_,
+        (
+            oap_protocol::MessageSubmitResponse,
+            oap_adapter::EventStream,
+        ),
+    > {
+        self.0.submit(request)
+    }
+    fn state(&self) -> oap_adapter::BoxFuture<'_, oap_protocol::SessionState> {
+        self.0.state()
+    }
+    fn resolve(
+        &self,
+        resolution: oap_adapter::InteractionResolution,
+    ) -> oap_adapter::BoxFuture<'_, ()> {
+        self.0.resolve(resolution)
+    }
+    fn cancel(
+        &self,
+        run_id: oap_protocol::RunId,
+    ) -> oap_adapter::BoxFuture<'_, oap_protocol::RunCancelResponse> {
+        self.0.cancel(run_id)
+    }
+    fn resume(
+        &self,
+        request: oap_adapter::ResumeRequest,
+    ) -> oap_adapter::BoxFuture<'_, (oap_adapter::Recovery, oap_adapter::EventStream)> {
+        self.0.resume(request)
+    }
+    fn close(&self) -> oap_adapter::BoxFuture<'_, ()> {
+        self.0.close()
+    }
+    fn call_resolver(&self) -> Option<&dyn oap_adapter::CallResolver> {
+        Some(self)
+    }
+}
+
+struct ClosingAdapter(std::sync::Arc<dyn oap_adapter::Adapter>);
+
+impl oap_adapter::Adapter for ClosingAdapter {
+    fn probe(&self) -> oap_adapter::BoxFuture<'_, oap_adapter::Descriptor> {
+        self.0.probe()
+    }
+    fn open(
+        &self,
+        request: oap_adapter::OpenRequest,
+    ) -> oap_adapter::BoxFuture<'_, Box<dyn oap_adapter::Session>> {
+        Box::pin(async move {
+            let inner = self.0.open(request).await?;
+            Ok(Box::new(Closing(inner)) as Box<dyn oap_adapter::Session>)
+        })
+    }
+}
+
+#[test]
+fn a_call_resolution_finding_its_session_closed_closes_the_hub_session() {
+    let mut registry = Registry::new();
+    let memory = Registry::default_registry().lookup("memory").unwrap();
+    registry
+        .register("memory", std::sync::Arc::new(ClosingAdapter(memory)))
+        .unwrap();
+    let hub = Hub::new(registry);
+    let opened = block_on(hub.open(
+        "memory",
+        oap_adapter::OpenRequest {
+            session_id: "s".into(),
+            ..oap_adapter::OpenRequest::default()
+        },
+    ))
+    .unwrap();
+    let answered = lines(&hub, &[resolve_line(1, &call("s"))]);
+    assert_eq!(
+        answered[0]["error"]["code"], "session_closed",
+        "{}",
+        answered[0]
+    );
+    assert!(opened.session.is_closed());
+    assert!(hub.session(&"s".into()).is_err());
+}

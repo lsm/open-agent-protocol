@@ -743,7 +743,10 @@ impl HubSession {
                 oap_protocol::FEATURE_TOOLS_PROVIDE,
             )))
         })?;
-        Ok(resolver.resolve_call(resolution).await?)
+        Ok(resolver
+            .resolve_call(resolution)
+            .await
+            .inspect_err(|err| self.closed_by(err))?)
     }
 
     pub async fn cancel(&self, run: RunId) -> Result<RunCancelResponse, HubError> {
