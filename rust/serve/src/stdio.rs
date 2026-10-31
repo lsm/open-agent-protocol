@@ -1643,6 +1643,31 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64, limit: usize) -> Answer
                 catalog.revision,
             )
         }
+        "work.status" | "work.stop" | "work.read" => {
+            let id = oap_protocol::SessionId::from(request.session_id.as_str());
+            let answered = match request.op.as_str() {
+                "work.status" => {
+                    request.only(&["session_id"])?;
+                    crate::workwire::status(hub, &id)
+                }
+                "work.stop" => {
+                    request.only(&["session_id"])?;
+                    crate::workwire::stop(hub, &id)
+                }
+                _ => {
+                    request.only(&["session_id", "after", "limit"])?;
+                    let after = match request.after.as_deref().map(RawValue::get) {
+                        None | Some("null") => None,
+                        Some(text) => Some(
+                            text.parse::<u64>()
+                                .map_err(|_| wire("invalid_request", "after is a whole number"))?,
+                        ),
+                    };
+                    crate::workwire::read(hub, &id, after, request.limit)
+                }
+            };
+            answered.map_err(|refused| wire(refused.code, refused.message))
+        }
         "transcript" => {
             request.only(&["session_id", "cursor", "limit"])?;
             transcript(hub, request)
