@@ -192,18 +192,58 @@ fn too_large() -> (u16, WireError) {
 }
 
 fn json_media(header: &str) -> bool {
-    let mut parts = header.split(';');
-    let media = parts.next().unwrap_or_default().trim();
-    if !media.eq_ignore_ascii_case("application/json") {
+    let (media, mut rest) = header.split_at(header.find(';').unwrap_or(header.len()));
+    if !media.trim().eq_ignore_ascii_case("application/json") {
         return false;
     }
-    parts.all(|parameter| {
-        let parameter = parameter.trim();
-        parameter.is_empty()
-            || parameter
-                .split_once('=')
-                .is_some_and(|(key, value)| !key.trim().is_empty() && !value.trim().is_empty())
-    })
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        match media_parameter(rest) {
+            Some((key, after)) => {
+                if !seen.insert(key.to_ascii_lowercase()) {
+                    return false;
+                }
+                rest = after;
+            }
+            None => return rest.trim() == ";",
+        }
+    }
+}
+
+fn token_end(text: &str) -> usize {
+    text.find(|c: char| !c.is_ascii_graphic() || "()<>@,;:\\\"/[]?=".contains(c))
+        .unwrap_or(text.len())
+}
+
+fn media_parameter(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start().strip_prefix(';')?.trim_start();
+    let end = token_end(text);
+    let (key, text) = text.split_at(end);
+    if key.is_empty() {
+        return None;
+    }
+    let text = text.trim_start().strip_prefix('=')?.trim_start();
+    if let Some(quoted) = text.strip_prefix('"') {
+        let mut escaped = false;
+        for (at, c) in quoted.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => return Some((key, &quoted[at + 1..])),
+                _ => {}
+            }
+        }
+        return None;
+    }
+    let end = token_end(text);
+    if end == 0 {
+        return None;
+    }
+    Some((key, &text[end..]))
 }
 
 enum Refused {
@@ -387,6 +427,14 @@ impl Served {
             rest,
         };
         let mut consumed = false;
+        let codings = asked
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case("Transfer-Encoding"))
+            .count();
+        if codings > 1 || (codings == 1 && asked.header("Content-Length").is_some()) {
+            return respond(&stream, &plain(400, "400 Bad Request\n"), true);
+        }
         let answer = self.answer(&asked, &stream, &mut consumed);
         stream.set_write_timeout(Some(self.header_timeout))?;
         respond(&stream, &answer, asked.method != "HEAD")?;

@@ -230,15 +230,44 @@ fn chunk_sizes_that_overflow_their_sum_are_refused_as_too_large() {
 }
 
 #[test]
-fn a_media_parameter_with_no_value_is_refused_415() {
+fn a_media_parameter_list_go_refuses_is_refused_415_and_one_it_accepts_is_served() {
     let (_, addr) = started();
-    let refused = post(
-        addr,
-        "/sessions/s/submit",
+    for media in [
         "application/json; charset",
-        &submit("s"),
-    );
-    assert_eq!(refused.status, 415);
+        "application/json;;",
+        "application/json; ;",
+        "application/json; x=\"unterminated",
+        "application/json; charset=\"utf-8\" junk; x=1",
+        "application/json; a=1; a=2",
+        "application/json; a=1; A=1",
+    ] {
+        let refused = post(addr, "/sessions/s/settings", media, "{}");
+        assert_eq!(refused.status, 415, "{media}");
+    }
+    for media in [
+        "application/json;",
+        "Application/JSON; charset=\"utf-8\"",
+        "application/json ; charset=utf-8 ; q=1",
+    ] {
+        let served = post(addr, "/sessions/s/settings", media, "{}");
+        assert_ne!(served.status, 415, "{media}");
+    }
+}
+
+#[test]
+fn chunked_beside_a_length_or_twice_is_a_plain_400() {
+    let (_, addr) = started();
+    for framing in [
+        "Transfer-Encoding: chunked\r\nContent-Length: 5\r\n",
+        "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
+    ] {
+        let raw = format!(
+            "POST /sessions/s/submit HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{framing}\r\n0\r\n\r\n"
+        );
+        let refused = send(addr, raw.as_bytes());
+        assert_eq!(refused.status, 400, "{framing}");
+        assert_eq!(refused.body, b"400 Bad Request\n");
+    }
 }
 
 #[test]
