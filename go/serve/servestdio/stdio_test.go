@@ -1630,6 +1630,30 @@ func TestAnUnframableSteerAcknowledgementLeavesTheSteeredRunRunning(t *testing.T
 	}
 }
 
+func TestAnOversizedCompoundOpenRollsBackTheNamedSessionWhoseMessageItAdmitted(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	line := `{"id":1,"op":"open","adapter":"memory","request":` + string(requestEnvelope(t, "req-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
+		SessionID: "compound",
+		Message: &protocol.OpenMessage{
+			Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+		},
+	}, "", "")) + `}`
+	f := startFrontend(t, hub, Options{FrameLimit: len(line) + 8})
+	f.send(line)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+	if !strings.HasSuffix(response.Error.Message, "; the session was rolled back") {
+		t.Fatalf("refusal does not report the rollback: %s", response.Error.Message)
+	}
+	if _, err := hub.Session("compound"); err == nil {
+		t.Fatal("the named session survived a refused compound open")
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 type noControlsAdapter struct{ inner base.Adapter }
 
 func (a noControlsAdapter) Probe(ctx context.Context) (base.Descriptor, error) {

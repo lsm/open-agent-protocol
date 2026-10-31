@@ -509,7 +509,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 	if err != nil {
 
 		s.logger.Printf("servestdio: open %d: encode response: %v", *request.ID, err)
-		return nil, nil, s.refuseUnencodableOpen(ctx, request, entry, payload.SessionID != "")
+		return nil, nil, s.refuseUnencodableOpen(ctx, request, entry, payload.SessionID != "" && payload.Message == nil, admittedRun(opened))
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
@@ -523,17 +523,27 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		return nil, nil, werr
 	}
 	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
-		return nil, nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
+		return nil, nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "" && payload.Message == nil, admittedRun(opened))
 	}
 	handedOff = true
 	return result, opened.Subscription, nil
 }
 
-func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
+func admittedRun(opened serve.CompoundResult) protocol.RunID {
+	if opened.Admission == nil || opened.Admission.Admission == protocol.AdmissionSteered {
+		return ""
+	}
+	return opened.Admission.RunID
+}
+
+func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool, admitted protocol.RunID) *wireError {
 	if named {
 		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+	if admitted != "" {
+		_, _ = s.rollbackRun(rollback, entry, admitted)
+	}
 	err := serve.Rollback(rollback, s.hub, entry)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
@@ -543,11 +553,14 @@ func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine,
 	return &wireError{Code: "internal", Message: "the open response could not be encoded; rolling the session back failed and it may still be live"}
 }
 
-func (s *Server) refuseOversizedOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
+func (s *Server) refuseOversizedOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool, admitted protocol.RunID) *wireError {
 	if named {
 		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+	if admitted != "" {
+		_, _ = s.rollbackRun(rollback, entry, admitted)
+	}
 	err := serve.Rollback(rollback, s.hub, entry)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
