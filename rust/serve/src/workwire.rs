@@ -11,16 +11,10 @@ use crate::{Hub, HubError, NativeRef, Work, WorkStatus};
 pub(crate) const READ_DEFAULT: i64 = 100;
 pub(crate) const READ_MAX: i64 = 500;
 
-pub(crate) struct Refusal {
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-}
+pub(crate) type Refusal = crate::stdio::WireError;
 
 fn refused(code: &'static str, message: impl Into<String>) -> Refusal {
-    Refusal {
-        code,
-        message: message.into(),
-    }
+    crate::stdio::wire(code, message.into())
 }
 
 fn history_unreadable() -> Refusal {
@@ -275,8 +269,10 @@ fn native_turns(turns: &[NativeTurn], after: Option<u64>, bound: usize) -> Vec<T
         .collect()
 }
 
-const VERBS: [(&str, &str); 4] = [
+const VERBS: [(&str, &str); 6] = [
     ("work.list", ""),
+    ("work.start", "session.message.submit"),
+    ("work.send", "session.message.submit"),
     ("work.status", ""),
     ("work.stop", "run.cancel"),
     ("work.read", ""),
@@ -643,4 +639,226 @@ pub(crate) fn list(hub: &Hub, request: ListRequest) -> Result<Value, Refusal> {
         answer["unavailable"] = Value::Array(missing);
     }
     Ok(answer)
+}
+
+static ENVELOPES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn envelope_id() -> oap_protocol::EnvelopeId {
+    let next = ENVELOPES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    format!("work-{next}").into()
+}
+
+fn params(
+    raw: Option<&serde_json::value::RawValue>,
+) -> Result<serde_json::Map<String, Value>, Refusal> {
+    let Some(raw) = raw.filter(|raw| raw.get().trim() != "null") else {
+        return Err(refused("invalid_request", "request is required"));
+    };
+    let Ok(Value::Object(object)) = serde_json::from_str::<Value>(raw.get()) else {
+        return Err(refused("invalid_request", "request is an object"));
+    };
+    match object.get("message") {
+        None => Err(refused("invalid_request", "request.message is required")),
+        Some(Value::String(message)) if !message.is_empty() => Ok(object),
+        Some(_) => Err(refused(
+            "invalid_request",
+            "request.message is a non-empty string",
+        )),
+    }
+}
+
+fn text<'a>(object: &'a serde_json::Map<String, Value>, name: &str) -> Option<&'a str> {
+    object.get(name).and_then(Value::as_str)
+}
+
+fn open_refusal(err: HubError, adapter: &str) -> Refusal {
+    crate::stdio::refusal(&err).unwrap_or_else(|| {
+        let code = match &err {
+            HubError::UnknownAdapter(_) => {
+                return refused(
+                    "unknown_adapter",
+                    format!("no adapter is registered as {adapter:?}"),
+                )
+            }
+            HubError::UnknownSession(_) | HubError::Adapter(Error::UnknownSession(_)) => {
+                "unknown_session"
+            }
+            HubError::SessionExists(_) => "session_exists",
+            HubError::SessionClosed(_)
+            | HubError::ClosedAtOpen(_)
+            | HubError::Adapter(Error::SessionClosed) => "session_closed",
+            _ => "backend_failed",
+        };
+        refused(code, err.to_string())
+    })
+}
+
+fn submit_refusal(err: HubError) -> Refusal {
+    crate::stdio::refusal(&err).unwrap_or_else(|| {
+        let code = match &err {
+            HubError::SessionClosed(_) | HubError::Adapter(Error::SessionClosed) => {
+                "session_closed"
+            }
+            HubError::Adapter(Error::RunActive) => "run_active",
+            HubError::Adapter(Error::InvalidSubmission | Error::UnsupportedInput) => {
+                "invalid_submission"
+            }
+            _ => "internal",
+        };
+        refused(code, err.to_string())
+    })
+}
+
+fn submitted(entry: &std::sync::Arc<crate::HubSession>, message: &str) -> Result<(), HubError> {
+    block_on(entry.submit(oap_adapter::SubmitRequest {
+        request: oap_protocol::MessageSubmitRequest {
+            session_id: entry.id().clone(),
+            messages: vec![oap_protocol::Message {
+                role: oap_protocol::MessageRole::USER,
+                content: oap_protocol::MessageContent::from_text(message),
+                ..oap_protocol::Message::default()
+            }],
+            delivery: oap_protocol::RequestedDeliveryMode::AUTO,
+            ..oap_protocol::MessageSubmitRequest::default()
+        },
+        envelope_id: envelope_id(),
+    }))
+    .map(|_| ())
+}
+
+pub(crate) fn start(
+    hub: &Hub,
+    adapter: &str,
+    raw: Option<&serde_json::value::RawValue>,
+) -> Result<Value, Refusal> {
+    if adapter.is_empty() {
+        return Err(refused("invalid_request", "adapter is required"));
+    }
+    let given = params(raw)?;
+    if hub.registry().lookup(adapter).is_none() {
+        return Err(refused(
+            "unknown_adapter",
+            format!("no adapter is registered as {adapter:?}"),
+        ));
+    }
+    let configured = hub.registry().working_directory(adapter).to_owned();
+    if text(&given, "directory").is_some_and(|directory| directory != configured) {
+        return Err(crate::stdio::detailed(
+            "invalid_request",
+            "a session runs in its adapter's working directory; another directory needs its own adapter entry, or \"any_directory\": true on this one",
+            serde_json::json!({ "working_directory": configured }),
+        ));
+    }
+    if let Some(native) = text(&given, "native_id") {
+        return adopt(hub, adapter, native, &given, raw);
+    }
+    let opened = block_on(hub.open(adapter, oap_adapter::OpenRequest::default()))
+        .map_err(|err| open_refusal(err, adapter))?;
+    let entry = opened.session;
+    if let Err(err) = submitted(&entry, text(&given, "message").unwrap_or_default()) {
+        let _ = block_on(entry.close());
+        return Err(submit_refusal(err));
+    }
+    if let Some(title) = text(&given, "title") {
+        entry.set_title(title);
+    }
+    status(hub, entry.id())
+}
+
+fn adopt(
+    hub: &Hub,
+    adapter: &str,
+    native: &str,
+    given: &serde_json::Map<String, Value>,
+    raw: Option<&serde_json::value::RawValue>,
+) -> Result<Value, Refusal> {
+    if native.is_empty() {
+        return Err(refused(
+            "invalid_request",
+            "request.native_id is a non-empty string",
+        ));
+    }
+    let recorded = match hub.bindings() {
+        None => Vec::new(),
+        Some(bindings) => {
+            oap_binding::sessions(&bindings.sessions().map_err(|_| history_unreadable())?)
+        }
+    };
+    let bound = session_for_native(hub, adapter, native).or_else(|| {
+        recorded
+            .iter()
+            .find(|entry| {
+                entry.record.adapter == adapter && entry.record.native_session_id == native
+            })
+            .map(|entry| entry.record.session_id.as_str().into())
+    });
+    if let Some(held) = bound {
+        return send(hub, &held, raw);
+    }
+    if native_running(hub, adapter, native)? {
+        return Err(refused(
+            "run_active",
+            "another process is running this session; continuing it here would fork the conversation",
+        ));
+    }
+    let opened = block_on(hub.open(
+        adapter,
+        oap_adapter::OpenRequest {
+            reopen: true,
+            adopted: true,
+            native_session_id: native.to_owned(),
+            ..oap_adapter::OpenRequest::default()
+        },
+    ))
+    .map_err(|err| open_refusal(err, adapter))?;
+    if let Some(title) = text(given, "title") {
+        opened.session.set_title(title);
+    }
+    send(hub, opened.session.id(), raw)
+}
+
+fn native_running(hub: &Hub, adapter: &str, native: &str) -> Result<bool, Refusal> {
+    let Some(implementation) = hub.registry().lookup(adapter) else {
+        return Ok(false);
+    };
+    let Some(lister) = implementation.native_lister() else {
+        return Ok(false);
+    };
+    let listed = block_on(lister.native_list(oap_adapter::NativeListRequest {
+        directory: hub.registry().working_directory(adapter).to_owned(),
+        limit: 50,
+    }))
+    .map_err(|err| {
+        refused(
+            "backend_failed",
+            format!("cannot tell whether another process is running this session: {err}"),
+        )
+    })?;
+    Ok(listed
+        .iter()
+        .any(|listing| listing.native_id == native && listing.running))
+}
+
+pub(crate) fn send(
+    hub: &Hub,
+    id: &SessionId,
+    raw: Option<&serde_json::value::RawValue>,
+) -> Result<Value, Refusal> {
+    let given = params(raw)?;
+    if hub.session(id).is_err() {
+        if let Some(entry) = unheld(hub, id)? {
+            block_on(hub.open(
+                &entry.record.adapter,
+                oap_adapter::OpenRequest {
+                    session_id: id.clone(),
+                    reopen: true,
+                    ..oap_adapter::OpenRequest::default()
+                },
+            ))
+            .map_err(|err| open_refusal(err, &entry.record.adapter))?;
+        }
+    }
+    let entry = hub.session(id).map_err(|err| state_refusal(&err, id))?;
+    submitted(&entry, text(&given, "message").unwrap_or_default()).map_err(submit_refusal)?;
+    status(hub, id)
 }

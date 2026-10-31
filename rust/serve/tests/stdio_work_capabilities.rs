@@ -59,7 +59,7 @@ fn work_capabilities_lists_each_adapters_verbs_and_native_reach() {
         json!({"adapters": [{
             "adapter": "memory",
             "any_directory": false,
-            "verbs": ["work.list", "work.status", "work.stop", "work.read"],
+            "verbs": ["work.list", "work.start", "work.send", "work.status", "work.stop", "work.read"],
             "native": {"list": false, "read": false, "search": false},
         }]})
     );
