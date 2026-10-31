@@ -9,7 +9,6 @@ import (
 var rustHubUnported = map[string]string{
 	"the work verbs refuse what they cannot serve and list an empty hub": "the work verbs",
 	"the work verbs refuse malformed requests and filter an empty list":  "the work verbs",
-	"the transcript op refuses the same refusals":                        "the transcript op",
 }
 
 func TestHubStdioAnswersGoapAndRustTheSame(t *testing.T) {
