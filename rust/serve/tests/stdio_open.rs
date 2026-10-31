@@ -312,3 +312,18 @@ fn an_oversized_open_response_rolls_back_a_named_session_whose_message_it_admitt
     );
     assert!(hub.session(&"s".into()).is_err());
 }
+
+#[test]
+fn a_reopen_of_a_session_the_adapter_never_held_is_an_unknown_session() {
+    let hub = Hub::new(Registry::default_registry());
+    let reopening = SessionOpenRequest {
+        reopen: true,
+        ..opening("ghost")
+    };
+    let answered = lines(&hub, &[open_line(1, "memory", &request(&reopening, None))]);
+    assert_eq!(
+        answered[0]["error"]["code"], "unknown_session",
+        "{}",
+        answered[0]
+    );
+}
