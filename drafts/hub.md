@@ -874,7 +874,8 @@ than waiting on a peer that sends nothing more. The bound is **both** a byte cap
 elapsed-time budget, and it is the *total* over the whole drain that bounds it: a per-round cap
 with an unbounded round count is not a bound. The Zig port reads in 64 KiB rounds, stops at
 **1 MiB in total**, and stops at **2500 ms elapsed from that drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
-for hours still drains. A drain that cannot read its own clock stops rather than draining without a
+for hours still drains. The Rust port reads in 4 KiB rounds and stops at **256 KiB in total** or
+**1 s elapsed from the drain's start**, whichever comes first. A drain that cannot read its own clock stops rather than draining without a
 bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
 than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
 silent-socket poll forever; `readHead` and `readBody` do the same; and the round deadline **reuses the

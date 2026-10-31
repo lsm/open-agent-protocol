@@ -153,8 +153,25 @@ fn decode(text: &str, plus_is_space: bool) -> String {
 
 enum Head {
     Read(Vec<u8>),
-    TooLarge,
+    TooLarge(Vec<u8>),
     Gone,
+}
+
+fn drain(stream: &TcpStream, cap: u64) {
+    let deadline = std::time::Instant::now() + DRAIN_WAIT;
+    let mut left = cap;
+    let mut chunk = [0u8; 4096];
+    while left > 0 {
+        let wait = deadline.saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() || stream.set_read_timeout(Some(wait)).is_err() {
+            return;
+        }
+        let want = chunk.len().min(left as usize);
+        match (&*stream).read(&mut chunk[..want]) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => left -= read as u64,
+        }
+    }
 }
 
 fn read_head(stream: &TcpStream, budget: std::time::Duration) -> std::io::Result<Head> {
@@ -188,7 +205,7 @@ fn read_head(stream: &TcpStream, budget: std::time::Duration) -> std::io::Result
             return Ok(Head::Read(head));
         }
         if head.len() > MAX_HEADER_BYTES {
-            return Ok(Head::TooLarge);
+            return Ok(Head::TooLarge(head));
         }
     }
 }
@@ -197,11 +214,11 @@ impl Served {
     fn connection(&self, stream: TcpStream) -> std::io::Result<()> {
         let head = match read_head(&stream, self.header_timeout)? {
             Head::Read(head) => head,
-            Head::TooLarge => {
+            Head::TooLarge(head) => {
                 return respond(
                     &stream,
                     &plain(431, "431 Request Header Fields Too Large\n"),
-                    true,
+                    !head.starts_with(b"HEAD "),
                 )
             }
             Head::Gone => return Ok(()),
@@ -209,13 +226,17 @@ impl Served {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut parsed = httparse::Request::new(&mut headers);
         if !matches!(parsed.parse(&head), Ok(httparse::Status::Complete(_))) {
-            return respond(&stream, &plain(400, "400 Bad Request\n"), true);
+            return respond(
+                &stream,
+                &plain(400, "400 Bad Request\n"),
+                !head.starts_with(b"HEAD "),
+            );
         }
         let target = parsed.path.unwrap_or("/");
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let asked = Asked {
             method: parsed.method.unwrap_or("GET").to_owned(),
-            path: decode(path, false),
+            path: path.to_owned(),
             query: query
                 .split('&')
                 .filter(|pair| !pair.is_empty())
@@ -242,11 +263,7 @@ impl Served {
             .header("Content-Length")
             .and_then(|length| length.trim().parse().ok())
             .unwrap_or(0);
-        stream.set_read_timeout(Some(DRAIN_WAIT))?;
-        let _ = std::io::copy(
-            &mut (&stream).take(declared.min(DRAIN_BYTES)),
-            &mut std::io::sink(),
-        );
+        drain(&stream, declared.min(DRAIN_BYTES));
         Ok(())
     }
 
@@ -287,15 +304,17 @@ impl Served {
                 );
             }
         }
-        let segments: Vec<&str> = asked
+        let raw: Vec<&str> = asked
             .path
             .strip_prefix('/')
             .unwrap_or_default()
             .split('/')
             .collect();
-        if !asked.path.starts_with('/') || segments.iter().any(|segment| segment.is_empty()) {
+        if !asked.path.starts_with('/') || raw.iter().any(|segment| segment.is_empty()) {
             return plain(404, "404 page not found\n");
         }
+        let decoded: Vec<String> = raw.iter().map(|segment| decode(segment, false)).collect();
+        let segments: Vec<&str> = decoded.iter().map(String::as_str).collect();
         let method = if asked.method == "HEAD" {
             "GET"
         } else {
@@ -404,6 +423,7 @@ fn json(status: u16, value: &Value) -> Answer {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        502 => "Bad Gateway",
         204 => "No Content",
         400 => "Bad Request",
         403 => "Forbidden",
@@ -454,6 +474,7 @@ mod tests {
         ] {
             assert_eq!(super::status_of(code), status, "{code}");
         }
+        assert_eq!(super::reason(502), "Bad Gateway");
     }
 
     #[test]

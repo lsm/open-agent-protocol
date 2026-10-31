@@ -270,3 +270,38 @@ fn a_path_with_an_empty_segment_matches_no_route() {
         assert_eq!(reply.body, b"404 page not found\n", "{path}");
     }
 }
+
+#[test]
+fn an_escaped_slash_stays_inside_its_segment() {
+    let hub = hub();
+    block_on(hub.open(
+        "memory",
+        oap_adapter::OpenRequest {
+            session_id: "a/b".into(),
+            ..oap_adapter::OpenRequest::default()
+        },
+    ))
+    .unwrap();
+    let addr = started(hub, HttpOptions::default());
+    let state = get(addr, "/sessions/a%2Fb/state");
+    assert_eq!(
+        state.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&state.body)
+    );
+    assert_eq!(state.json()["session_id"], "a/b");
+}
+
+#[test]
+fn a_head_refused_before_routing_is_answered_without_a_body() {
+    let addr = started(hub(), HttpOptions::default());
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let mut head = b"HEAD /adapters HTTP/1.1\r\nX-Long: ".to_vec();
+    head.extend(vec![b'a'; 70 * 1024]);
+    let _ = stream.write_all(&head);
+    let raw = read_within(&mut stream, std::time::Duration::from_secs(5));
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.starts_with("HTTP/1.1 431"), "{text}");
+    assert!(text.ends_with("\r\n\r\n"), "{text}");
+}
