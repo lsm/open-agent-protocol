@@ -1,3 +1,4 @@
+mod compound;
 mod gate;
 mod hub;
 mod live;

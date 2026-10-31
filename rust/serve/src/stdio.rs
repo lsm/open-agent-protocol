@@ -345,12 +345,6 @@ fn open(
             format!("no adapter \"{}\"", trim(&request.adapter)),
         ));
     }
-    if asked.message.is_some() {
-        return Err(wire(
-            "unsupported_feature",
-            "the stdio hub does not yet carry a message on an open",
-        ));
-    }
     let cited = envelope.capability_revision.clone().unwrap_or_default();
     let gated = block_on(async {
         let attaching = crate::attachment_gate(hub, &request.adapter, &cited, &asked).await?;
@@ -420,10 +414,31 @@ fn open(
         },
         None => None,
     };
+    let state = match &asked.message {
+        Some(message) => {
+            let submitted = block_on(opened.session.submit(oap_adapter::SubmitRequest {
+                request: message.submit(opened.session.id().clone()),
+                envelope_id: envelope.id.clone(),
+            }));
+            match submitted {
+                Ok(admission) => crate::compound::with_admitted_run(
+                    opened.state.clone(),
+                    &admission,
+                    &envelope.id,
+                ),
+                Err(err) => {
+                    drop(pump);
+                    let _ = block_on(opened.session.rollback());
+                    return Err(open_refusal(err));
+                }
+            }
+        }
+        None => opened.state.clone(),
+    };
     let mut response = oap_protocol::Envelope::new(
         oap_protocol::EnvelopeType::SESSION_OPEN_RESPONSE,
         next_id(ids, "response"),
-        &opened.state,
+        &state,
     )
     .map_err(|err| wire("internal", err))?;
     response.in_reply_to = Some(envelope.id.clone());
