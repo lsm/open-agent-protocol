@@ -728,6 +728,24 @@ impl HubSession {
         Ok(())
     }
 
+    pub async fn resolve_call(
+        &self,
+        resolution: oap_adapter::CallResolution,
+    ) -> Result<oap_protocol::ActionCallResolveResponse, HubError> {
+        if resolution.request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: resolution.request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let resolver = self.session.call_resolver().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                oap_protocol::FEATURE_TOOLS_PROVIDE,
+            )))
+        })?;
+        Ok(resolver.resolve_call(resolution).await?)
+    }
+
     pub async fn cancel(&self, run: RunId) -> Result<RunCancelResponse, HubError> {
         Ok(self
             .session
