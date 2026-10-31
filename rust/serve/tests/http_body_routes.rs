@@ -269,6 +269,7 @@ fn ambiguous_or_unreadable_body_framing_is_a_plain_400() {
         "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
         "Content-Length: 2\r\nContent-Length: 9999\r\n",
         "Content-Length: two\r\n",
+        "Transfer-Encoding: gzip, chunked\r\n",
     ] {
         let raw = format!(
             "POST /sessions/s/submit HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{framing}\r\n0\r\n\r\n"
@@ -323,4 +324,24 @@ fn a_refusal_of_a_cancel_carries_the_run_its_payload_names() {
     let envelope = refused.json();
     assert_eq!(envelope["in_reply_to"], "cancel-1");
     assert_eq!(envelope["run_id"], "ghost-run");
+}
+
+#[test]
+fn chunked_framing_padded_past_its_free_overhead_is_refused() {
+    let (_, addr) = started();
+    let padding = "x".repeat(200);
+    let chunks: String = (0..100)
+        .map(|_| format!("1;pad={padding}\r\n{{\r\n"))
+        .collect();
+    let raw = format!(
+        "POST /sessions/s/submit HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{chunks}0\r\n\r\n"
+    );
+    let refused = send(addr, raw.as_bytes());
+    assert_eq!(
+        refused.status,
+        400,
+        "{}",
+        String::from_utf8_lossy(&refused.body)
+    );
+    assert_eq!(refused.json()["payload"]["error"]["code"], "request_read");
 }

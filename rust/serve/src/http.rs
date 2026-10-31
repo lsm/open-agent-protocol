@@ -13,6 +13,7 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
 const MAX_HEADER_BYTES: usize = 64 << 10;
 const DRAIN_BYTES: u64 = 256 << 10;
 const MAX_BODY_BYTES: u64 = 16 << 20;
+const CHUNK_EXCESS: u64 = 16 << 10;
 const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const DEFAULT_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -318,11 +319,17 @@ impl Reading<'_> {
 
     fn chunked(&mut self) -> Result<Vec<u8>, Refused> {
         let mut body = Vec::new();
+        let mut excess: u64 = 0;
         loop {
             let line = self.line().ok_or(Refused::Unreadable)?;
             let text = String::from_utf8_lossy(&line);
             let size = text.split(';').next().unwrap_or_default().trim();
             let size = u64::from_str_radix(size, 16).map_err(|_| Refused::Unreadable)?;
+            excess = (excess + line.len() as u64 + 2)
+                .saturating_sub(16u64.saturating_add(size.saturating_mul(2)));
+            if excess > CHUNK_EXCESS {
+                return Err(Refused::Unreadable);
+            }
             if size == 0 {
                 while !self.line().ok_or(Refused::Unreadable)?.is_empty() {}
                 return Ok(body);
@@ -448,7 +455,11 @@ impl Served {
                 || length.is_empty()
                 || !length.bytes().all(|b| b.is_ascii_digit())
         });
-        if codings > 1 || (codings == 1 && !lengths.is_empty()) || unreadable_length {
+        let other_coding = asked
+            .header("Transfer-Encoding")
+            .is_some_and(|coding| !coding.trim().eq_ignore_ascii_case("chunked"));
+        if codings > 1 || (codings == 1 && !lengths.is_empty()) || unreadable_length || other_coding
+        {
             respond(
                 &stream,
                 &plain(400, "400 Bad Request\n"),
