@@ -777,6 +777,7 @@ impl Pumps {
 struct Gate {
     held: Mutex<std::collections::HashSet<oap_protocol::RunId>>,
     lifted: Condvar,
+    waiting: Mutex<Vec<std::task::Waker>>,
 }
 
 impl Gate {
@@ -786,15 +787,30 @@ impl Gate {
 
     fn lift(&self, run: &oap_protocol::RunId) {
         lock(&self.held).remove(run);
-        self.lifted.notify_all();
+        self.woken();
     }
 
     fn lift_all(&self) {
         lock(&self.held).clear();
-        self.lifted.notify_all();
+        self.woken();
     }
 
-    fn pass(&self, run: Option<&oap_protocol::RunId>) {
+    fn woken(&self) {
+        self.lifted.notify_all();
+        for waker in std::mem::take(&mut *lock(&self.waiting)) {
+            waker.wake();
+        }
+    }
+
+    fn holds(&self, run: Option<&oap_protocol::RunId>) -> bool {
+        run.is_some_and(|run| lock(&self.held).contains(run))
+    }
+
+    fn wake_on_lift(&self, waker: &std::task::Waker) {
+        lock(&self.waiting).push(waker.clone());
+    }
+
+    fn wait_lifted(&self, run: Option<&oap_protocol::RunId>) {
         let Some(run) = run else {
             return;
         };
@@ -810,46 +826,87 @@ impl Gate {
 
 fn pump(out: &Out, gate: &Gate, subscription: &mut Subscription, run: &oap_protocol::RunId) {
     let mut delivered = 0;
-    loop {
+    let mut withheld: std::collections::VecDeque<Envelope> = std::collections::VecDeque::new();
+    let mut deliver = |withheld: &mut std::collections::VecDeque<Envelope>| {
+        while let Some(envelope) = withheld.pop_front() {
+            let sequence = envelope.sequence;
+            let sent = serde_json::to_vec(&envelope)
+                .map_err(|err| EndpointError::from(std::io::Error::from(err)))
+                .and_then(|line| out.send(line));
+            match sent {
+                Ok(()) => delivered = sequence.unwrap_or(delivered),
+                Err(EndpointError::FrameTooLarge(_)) => return Err(("frame_limit", delivered)),
+                Err(_) => return Err(("stream_failed", delivered)),
+            }
+        }
+        Ok(delivered)
+    };
+    let lost = loop {
         let next = block_on(std::future::poll_fn(|context| {
-            futures_core::Stream::poll_next(std::pin::Pin::new(&mut *subscription), context)
+            let held_run = withheld
+                .front()
+                .and_then(|envelope| envelope.run_id.clone());
+            if !withheld.is_empty() && !gate.holds(held_run.as_ref()) {
+                return std::task::Poll::Ready(None);
+            }
+            match futures_core::Stream::poll_next(std::pin::Pin::new(&mut *subscription), context) {
+                std::task::Poll::Ready(next) => std::task::Poll::Ready(Some(next)),
+                std::task::Poll::Pending => {
+                    if !withheld.is_empty() {
+                        gate.wake_on_lift(context.waker());
+                        if !gate.holds(held_run.as_ref()) {
+                            return std::task::Poll::Ready(None);
+                        }
+                    }
+                    std::task::Poll::Pending
+                }
+            }
         }));
-        let code = match next {
-            None => return,
-            Some(Ok(envelope)) => {
+        let ended = match next {
+            None => None,
+            Some(Some(Ok(envelope))) => {
                 if !run.as_str().is_empty() && envelope.run_id.as_ref() != Some(run) {
                     continue;
                 }
-                let sequence = envelope.sequence;
-                gate.pass(envelope.run_id.as_ref());
-                let sent = serde_json::to_vec(&envelope)
-                    .map_err(|err| EndpointError::from(std::io::Error::from(err)))
-                    .and_then(|line| out.send(line));
-                match sent {
-                    Ok(()) => {
-                        delivered = sequence.unwrap_or(delivered);
-                        continue;
-                    }
-                    Err(EndpointError::FrameTooLarge(_)) => "frame_limit",
-                    Err(_) => "stream_failed",
+                let holding = !withheld.is_empty() || gate.holds(envelope.run_id.as_ref());
+                withheld.push_back(envelope);
+                if holding {
+                    continue;
                 }
+                None
             }
-            Some(Err(HubError::Overflow { .. })) => "overflow",
-            Some(Err(_)) => "stream_failed",
+            Some(None) => Some(None),
+            Some(Some(Err(HubError::Overflow { .. }))) => Some(Some("overflow")),
+            Some(Some(Err(_))) => Some(Some("stream_failed")),
         };
-        let mut lost = serde_json::json!({
-            "control": "stream.lost",
-            "after": delivered,
-            "code": code,
-            "message": "this run's events stopped reaching the host; replay from after to continue",
-        });
-        if !run.as_str().is_empty() {
-            lost["run_id"] = run.as_str().into();
+        if ended.is_some() {
+            gate.wait_lifted(
+                withheld
+                    .front()
+                    .and_then(|envelope| envelope.run_id.as_ref()),
+            );
         }
-        if let Ok(line) = serde_json::to_vec(&lost) {
-            let _ = out.send(line);
+        if let Err(lost) = deliver(&mut withheld) {
+            break lost;
         }
-        return;
+        match ended {
+            None => continue,
+            Some(None) => return,
+            Some(Some(code)) => break (code, deliver(&mut withheld).unwrap_or(0)),
+        }
+    };
+    let (code, after) = lost;
+    let mut frame = serde_json::json!({
+        "control": "stream.lost",
+        "after": after,
+        "code": code,
+        "message": "this run's events stopped reaching the host; replay from after to continue",
+    });
+    if !run.as_str().is_empty() {
+        frame["run_id"] = run.as_str().into();
+    }
+    if let Ok(line) = serde_json::to_vec(&frame) {
+        let _ = out.send(line);
     }
 }
 
