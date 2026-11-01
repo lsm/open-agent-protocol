@@ -318,12 +318,12 @@ impl Tally {
 
 type Frames = std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, FrameError>>;
 
-const DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+pub(crate) const DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 #[derive(Default)]
-struct Stopping {
-    mode: Option<oap_protocol::ShutdownMode>,
-    draining: bool,
+pub(crate) struct Stopping {
+    pub(crate) mode: Option<oap_protocol::ShutdownMode>,
+    pub(crate) draining: bool,
 }
 
 impl Stopping {
@@ -331,7 +331,7 @@ impl Stopping {
         self.mode == Some(oap_protocol::ShutdownMode::GRACEFUL)
     }
 
-    fn drained(hub: &Hub) -> bool {
+    pub(crate) fn drained(hub: &Hub) -> bool {
         let runs = block_on(hub.nonterminal_runs());
         for run in runs
             .iter()
@@ -343,7 +343,7 @@ impl Stopping {
     }
 }
 
-fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, bool) {
+pub(crate) fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, bool) {
     use oap_protocol::{EndpointShutdownResponse, ShutdownMode, ShutdownOutcome};
     if let Err(refused) = request.only(&["request"]) {
         return (Err(refused), false);

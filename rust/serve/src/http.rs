@@ -36,6 +36,10 @@ struct Served {
     header_timeout: std::time::Duration,
     hold_for: std::time::Duration,
     held: Arc<Held>,
+    stopping: std::sync::RwLock<stdio::Stopping>,
+    finishing: std::sync::atomic::AtomicBool,
+    done: Arc<std::sync::atomic::AtomicBool>,
+    local: Option<std::net::SocketAddr>,
     attached: Arc<AtomicUsize>,
 }
 
@@ -89,11 +93,18 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
             .subscription_hold
             .unwrap_or(DEFAULT_SUBSCRIPTION_HOLD),
         held: Arc::default(),
+        stopping: std::sync::RwLock::default(),
+        finishing: std::sync::atomic::AtomicBool::new(false),
+        done: Arc::default(),
+        local: listener.local_addr().ok(),
         attached: Arc::default(),
     });
     let (held, hold_for) = (Arc::downgrade(&served.held), served.hold_for);
     std::thread::spawn(move || reap(&held, hold_for));
     for stream in listener.incoming() {
+        if served.done.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let stream = match stream {
             Ok(stream) => stream,
             Err(err) => match accepted(&err) {
@@ -113,9 +124,19 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
         std::thread::spawn(move || {
             let _slot = Slot(&served.open);
             let _ = served.connection(stream);
+            if served.finishing.load(Ordering::SeqCst) {
+                wake(&served.done, served.local);
+            }
         });
     }
     Ok(())
+}
+
+fn wake(done: &std::sync::atomic::AtomicBool, local: Option<std::net::SocketAddr>) {
+    done.store(true, Ordering::SeqCst);
+    if let Some(local) = local {
+        let _ = TcpStream::connect(local);
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -608,6 +629,7 @@ impl Served {
             ["work", "sessions", id, "send"] => ("POST", "work.send", *id, ""),
             ["work", "sessions", id, "stop"] => ("POST", "work.stop", *id, ""),
             ["work", "sessions", id, "read"] => ("GET", "work.read", *id, ""),
+            ["shutdown"] => ("POST", "shutdown", "", ""),
             ["sessions"] => ("GET", "sessions", "", ""),
             ["sessions", "history"] => ("GET", "history", "", ""),
             ["sessions", id, "state"] => ("GET", "state", *id, ""),
@@ -628,6 +650,31 @@ impl Served {
                 ..plain(405, "Method Not Allowed\n")
             };
         }
+        if op == "shutdown" {
+            return self.shutdown(asked, stream, consumed);
+        }
+        let _admission = if matches!(op, "open" | "submit" | "work.start" | "work.send") {
+            let admission = self
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let gated = !json_media(asked.header("Content-Type").unwrap_or_default())
+                || declared(asked) > MAX_BODY_BYTES;
+            if admission.mode.is_some() && !gated {
+                return self.refused(
+                    503,
+                    stdio::wire(
+                        "shutting_down",
+                        "the endpoint is shutting down and admits no new work",
+                    ),
+                    "",
+                    None,
+                );
+            }
+            Some(admission)
+        } else {
+            None
+        };
         if op == "events" {
             return self.events(asked, session);
         }
@@ -835,6 +882,50 @@ impl Served {
         match answered {
             Ok(value) => json(200, &value),
             Err(error) => self.refused(work_status(error.code), error, session, None),
+        }
+    }
+
+    fn shutdown(&self, asked: &Asked, stream: &TcpStream, consumed: &mut bool) -> Answer {
+        let body = match self.body(asked, stream, consumed) {
+            Ok(body) => body,
+            Err((status, error)) => return self.refused(status, error, "", None),
+        };
+        let text = String::from_utf8_lossy(&body);
+        let trimmed = text.trim();
+        let mut request = stdio::Request::default();
+        if !trimmed.is_empty() {
+            match serde_json::value::RawValue::from_string(trimmed.to_owned()) {
+                Ok(raw) if trimmed.starts_with('{') => request.request = Some(raw),
+                _ => {
+                    return self.refused(
+                        400,
+                        stdio::wire("malformed_json", "the request body is not JSON"),
+                        "",
+                        None,
+                    )
+                }
+            }
+        }
+        let mut stopping = self
+            .stopping
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let watching = stopping.draining;
+        let (answer, finished) = stdio::shutdown(&self.hub, &request, &mut stopping);
+        if finished {
+            self.finishing.store(true, Ordering::SeqCst);
+        } else if stopping.draining && !watching {
+            let (hub, done, local) = (self.hub.clone(), self.done.clone(), self.local);
+            std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) && !stdio::Stopping::drained(&hub) {
+                    std::thread::sleep(stdio::DRAIN_POLL);
+                }
+                wake(&done, local);
+            });
+        }
+        match answer {
+            Ok(value) => json(200, &value),
+            Err(error) => self.refused(status_of(error.code), error, "", None),
         }
     }
 
