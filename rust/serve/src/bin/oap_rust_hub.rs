@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use oap_binding::FileStore;
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
     }
     let hub = Hub::with_options(Registry::default_registry(), options);
     let input = std::io::BufReader::new(std::io::stdin());
+    let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let served = if agent {
         Endpoint::new(
             &hub,
@@ -61,13 +63,15 @@ fn main() -> ExitCode {
         )
         .map(Arc::new)
         .and_then(|endpoint| {
-            let signalled = endpoint.clone();
+            let (signalled, writing) = (endpoint.clone(), pending.clone());
             let mut count = 0;
             let relayed = ctrlc::set_handler(move || {
                 count += 1;
+                writing.fetch_add(1, Ordering::SeqCst);
                 if let Some(answer) = signalled.signal(count) {
                     eprintln!("{}", signal_line(count, &answer));
                 }
+                writing.fetch_sub(1, Ordering::SeqCst);
             });
             if let Err(err) = relayed {
                 eprintln!("oap-rust-hub: signals are not relayed: {err}");
@@ -79,6 +83,10 @@ fn main() -> ExitCode {
         serve(&hub, input, std::io::stdout(), &StdioOptions::default())
             .map_err(|err| err.to_string())
     };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while pending.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     for (session, err) in hub.close_sessions() {
         eprintln!("oap-rust-hub: close session {}: {err}", session.as_str());
     }
