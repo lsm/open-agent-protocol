@@ -108,6 +108,11 @@ fn a_cancel_answers_its_intent_and_the_run_stream_carries_the_cancellation() {
     );
     assert_eq!(acknowledged["run_id"], run_id.as_str());
     assert_eq!(acknowledged["session_id"], "s");
+    let at = |found: &dyn Fn(&Value) -> bool| answered.iter().position(|line| found(line));
+    assert!(
+        at(&|line| line["in_reply_to"] == "c") < at(&|line| line["type"] == "run.cancelled"),
+        "{answered:?}"
+    );
     assert_eq!(
         answer(&answered, "x")["payload"]["error"]["code"],
         "scope_mismatch"

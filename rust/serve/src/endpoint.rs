@@ -54,6 +54,8 @@ pub struct Endpoint {
     write_stall: Duration,
     started: Mutex<Option<(Subscription, oap_protocol::RunId)>>,
     updated: Mutex<Option<Envelope>>,
+    gate: Arc<Gate>,
+    acknowledged: Mutex<Option<oap_protocol::RunId>>,
     state_sequences: Mutex<std::collections::HashMap<oap_protocol::SessionId, u64>>,
 }
 
@@ -84,6 +86,8 @@ impl Endpoint {
                 .unwrap_or(DEFAULT_WRITE_STALL),
             started: Mutex::default(),
             updated: Mutex::default(),
+            gate: Arc::default(),
+            acknowledged: Mutex::default(),
             state_sequences: Mutex::default(),
         })
     }
@@ -105,6 +109,7 @@ impl Endpoint {
         };
         let pumps = Pumps::default();
         let served = self.serve_lines(&mut input, &out, &pumps);
+        self.gate.lift_all();
         let stalled = pumps.settle(served.is_err(), self.shutdown);
         drop(out);
         if stalled {
@@ -130,8 +135,11 @@ impl Endpoint {
             if let Some(answer) = self.handle(&line)? {
                 out.send(answer)?;
             }
+            if let Some(run) = lock(&self.acknowledged).take() {
+                self.gate.lift(&run);
+            }
             if let Some((subscription, run)) = lock(&self.started).take() {
-                pumps.start(out.clone(), subscription, run);
+                pumps.start(out.clone(), self.gate.clone(), subscription, run);
             }
             if let Some(updated) = lock(&self.updated).take() {
                 if let Ok(line) = serde_json::to_vec(&updated) {
@@ -460,7 +468,15 @@ impl Endpoint {
                 ),
             ));
         }
-        let ack = block_on(entry.cancel(request.run_id.clone())).map_err(hub_refusal)?;
+        self.gate.hold(&request.run_id);
+        let ack = match block_on(entry.cancel(request.run_id.clone())) {
+            Ok(ack) => ack,
+            Err(err) => {
+                self.gate.lift(&request.run_id);
+                return Err(hub_refusal(err));
+            }
+        };
+        *lock(&self.acknowledged) = Some(request.run_id.clone());
         let mut answer = self.session_reply(
             EnvelopeType::RUN_CANCEL_RESPONSE,
             envelope,
@@ -703,12 +719,18 @@ struct Pumps {
 }
 
 impl Pumps {
-    fn start(&self, out: Out, mut subscription: Subscription, run: oap_protocol::RunId) {
+    fn start(
+        &self,
+        out: Out,
+        gate: Arc<Gate>,
+        mut subscription: Subscription,
+        run: oap_protocol::RunId,
+    ) {
         lock(&self.cancellers).push(subscription.canceller());
         *lock(&self.live.0) += 1;
         let live = self.live.clone();
         std::thread::spawn(move || {
-            pump(&out, &mut subscription, &run);
+            pump(&out, &gate, &mut subscription, &run);
             drop(subscription);
             *lock(&live.0) -= 1;
             live.1.notify_all();
@@ -751,7 +773,42 @@ impl Pumps {
     }
 }
 
-fn pump(out: &Out, subscription: &mut Subscription, run: &oap_protocol::RunId) {
+#[derive(Default)]
+struct Gate {
+    held: Mutex<std::collections::HashSet<oap_protocol::RunId>>,
+    lifted: Condvar,
+}
+
+impl Gate {
+    fn hold(&self, run: &oap_protocol::RunId) {
+        lock(&self.held).insert(run.clone());
+    }
+
+    fn lift(&self, run: &oap_protocol::RunId) {
+        lock(&self.held).remove(run);
+        self.lifted.notify_all();
+    }
+
+    fn lift_all(&self) {
+        lock(&self.held).clear();
+        self.lifted.notify_all();
+    }
+
+    fn pass(&self, run: Option<&oap_protocol::RunId>) {
+        let Some(run) = run else {
+            return;
+        };
+        let mut held = lock(&self.held);
+        while held.contains(run) {
+            held = self
+                .lifted
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+fn pump(out: &Out, gate: &Gate, subscription: &mut Subscription, run: &oap_protocol::RunId) {
     let mut delivered = 0;
     loop {
         let next = block_on(std::future::poll_fn(|context| {
@@ -764,6 +821,7 @@ fn pump(out: &Out, subscription: &mut Subscription, run: &oap_protocol::RunId) {
                     continue;
                 }
                 let sequence = envelope.sequence;
+                gate.pass(envelope.run_id.as_ref());
                 let sent = serde_json::to_vec(&envelope)
                     .map_err(|err| EndpointError::from(std::io::Error::from(err)))
                     .and_then(|line| out.send(line));
