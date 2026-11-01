@@ -18,7 +18,7 @@ fn run(hub: &Hub, lines: &[Value]) -> (Vec<Value>, Result<(), EndpointError>) {
     .unwrap();
     let input: Vec<String> = lines.iter().map(Value::to_string).collect();
     let out = support::Captured::default();
-    let result = endpoint.run(input.join("\n").as_bytes(), out.clone());
+    let result = endpoint.run(std::io::Cursor::new(input.join("\n")), out.clone());
     (out.values(), result)
 }
 

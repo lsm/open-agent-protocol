@@ -57,6 +57,8 @@ pub struct Endpoint {
     gate: Arc<Gate>,
     acknowledged: Mutex<Option<oap_protocol::RunId>>,
     state_sequences: Mutex<std::collections::HashMap<oap_protocol::SessionId, u64>>,
+    stopping: Mutex<crate::stdio::Stopping>,
+    finished: std::sync::atomic::AtomicBool,
 }
 
 impl Endpoint {
@@ -89,12 +91,14 @@ impl Endpoint {
             gate: Arc::default(),
             acknowledged: Mutex::default(),
             state_sequences: Mutex::default(),
+            stopping: Mutex::default(),
+            finished: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     pub fn run(
         &self,
-        mut input: impl BufRead,
+        input: impl BufRead + Send + 'static,
         output: impl Write + Send + 'static,
     ) -> Result<(), EndpointError> {
         let (sender, lines) = std::sync::mpsc::sync_channel(WRITE_QUEUE);
@@ -108,9 +112,22 @@ impl Endpoint {
             stall: self.write_stall,
         };
         let pumps = Pumps::default();
-        let served = self.serve_lines(&mut input, &out, &pumps);
+        let (feed, frames) = std::sync::mpsc::sync_channel(1);
+        let limit = self.frame_limit;
+        std::thread::spawn(move || {
+            let mut input = input;
+            loop {
+                let frame = read_line(&mut input, limit);
+                let ended = !matches!(frame, Ok(Some(_)));
+                if feed.send(frame).is_err() || ended {
+                    return;
+                }
+            }
+        });
+        let served = self.serve_lines(&frames, &out, &pumps);
         self.gate.lift_all();
-        let stalled = pumps.settle(served.is_err(), self.shutdown);
+        let forced = lock(&self.stopping).mode == Some(oap_protocol::ShutdownMode::FORCE);
+        let stalled = pumps.settle(served.is_err() || forced, self.shutdown);
         drop(out);
         if stalled {
             return Err(served.err().unwrap_or(EndpointError::ShutdownStalled));
@@ -124,11 +141,33 @@ impl Endpoint {
 
     fn serve_lines(
         &self,
-        input: &mut impl BufRead,
+        frames: &std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, EndpointError>>,
         out: &Out,
         pumps: &Pumps,
     ) -> Result<(), EndpointError> {
-        while let Some(line) = self.read_line(input)? {
+        loop {
+            if self.finished.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let draining = lock(&self.stopping).draining;
+            if draining && crate::stdio::Stopping::drained(&self.hub) {
+                return Ok(());
+            }
+            let frame = if draining {
+                match frames.recv_timeout(crate::stdio::DRAIN_POLL) {
+                    Ok(frame) => frame,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                }
+            } else {
+                match frames.recv() {
+                    Ok(frame) => frame,
+                    Err(_) => return Ok(()),
+                }
+            };
+            let Some(line) = frame? else {
+                return Ok(());
+            };
             if String::from_utf8_lossy(&line).trim().is_empty() {
                 continue;
             }
@@ -145,35 +184,6 @@ impl Endpoint {
                 if let Ok(line) = serde_json::to_vec(&updated) {
                     let _ = out.send(line);
                 }
-            }
-        }
-        Ok(())
-    }
-
-    fn read_line(&self, input: &mut impl BufRead) -> Result<Option<Vec<u8>>, EndpointError> {
-        let mut line = Vec::new();
-        loop {
-            let buffer = input.fill_buf()?;
-            if buffer.is_empty() {
-                return Ok((!line.is_empty()).then_some(line));
-            }
-            let (taken, ended) = match buffer.iter().position(|byte| *byte == b'\n') {
-                Some(at) => (at + 1, true),
-                None => (buffer.len(), false),
-            };
-            line.extend_from_slice(&buffer[..taken]);
-            input.consume(taken);
-            if ended {
-                line.pop();
-                if line.last() == Some(&b'\r') {
-                    line.pop();
-                }
-            }
-            if line.len() > self.frame_limit {
-                return Err(EndpointError::FrameTooLarge(line.len()));
-            }
-            if ended {
-                return Ok(Some(line));
             }
         }
     }
@@ -277,6 +287,18 @@ impl Endpoint {
     fn serve(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
         self.refuse_stale_revision(envelope)?;
         let kind = &envelope.envelope_type;
+        let admits = *kind == EnvelopeType::SESSION_OPEN_REQUEST
+            || *kind == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST
+            || *kind == EnvelopeType::SESSION_COMPACT_REQUEST;
+        if admits && lock(&self.stopping).mode.is_some() {
+            return Err(wire(
+                "shutting_down",
+                "the endpoint is shutting down and admits no new work",
+            ));
+        }
+        if *kind == EnvelopeType::ENDPOINT_SHUTDOWN_REQUEST {
+            return self.shutdown_request(envelope);
+        }
         if *kind == EnvelopeType::PROTOCOL_INITIALIZE_REQUEST {
             return self.initialize(envelope);
         }
@@ -527,6 +549,31 @@ impl Endpoint {
         .answer("replay.accepted", serde_json::json!({}));
         *lock(&self.started) = Some((subscription, run));
         accepted
+    }
+
+    fn shutdown_request(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        crate::asked_shutdown(envelope.payload.as_deref()).map_err(|_| {
+            wire(
+                "invalid_payload",
+                "endpoint.shutdown.request carries only mode, graceful or force",
+            )
+        })?;
+        let request = crate::stdio::Request {
+            request: envelope.payload.clone(),
+            ..crate::stdio::Request::default()
+        };
+        let (answer, finished) =
+            crate::stdio::shutdown(&self.hub, &request, &mut lock(&self.stopping));
+        let answer = answer?;
+        if finished {
+            self.finished.store(true, Ordering::SeqCst);
+        }
+        self.reply(
+            EnvelopeType::ENDPOINT_SHUTDOWN_RESPONSE,
+            envelope,
+            &answer,
+            envelope.capability_revision.as_deref().unwrap_or_default(),
+        )
     }
 
     fn compact(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
@@ -881,6 +928,34 @@ impl Control {
             }
         }
         answer
+    }
+}
+
+fn read_line(input: &mut impl BufRead, limit: usize) -> Result<Option<Vec<u8>>, EndpointError> {
+    let mut line = Vec::new();
+    loop {
+        let buffer = input.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok((!line.is_empty()).then_some(line));
+        }
+        let (taken, ended) = match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (buffer.len(), false),
+        };
+        line.extend_from_slice(&buffer[..taken]);
+        input.consume(taken);
+        if ended {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+        }
+        if line.len() > limit {
+            return Err(EndpointError::FrameTooLarge(line.len()));
+        }
+        if ended {
+            return Ok(Some(line));
+        }
     }
 }
 
