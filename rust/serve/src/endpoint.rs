@@ -37,6 +37,7 @@ pub struct Endpoint {
     adapter: String,
     frame_limit: usize,
     ids: AtomicU64,
+    participant: std::sync::Mutex<String>,
 }
 
 impl Endpoint {
@@ -55,6 +56,7 @@ impl Endpoint {
                 limit => limit,
             },
             ids: AtomicU64::new(0),
+            participant: std::sync::Mutex::default(),
         })
     }
 
@@ -187,6 +189,12 @@ impl Endpoint {
         if *kind == EnvelopeType::CAPABILITIES_REQUEST {
             return self.capabilities(envelope);
         }
+        if *kind == EnvelopeType::SESSION_OPEN_REQUEST {
+            return self.open(envelope);
+        }
+        if *kind == EnvelopeType::SESSION_STATE_REQUEST {
+            return self.state(envelope);
+        }
         Err(wire(
             "unsupported_request",
             format!("this endpoint serves no {}", kind.as_str()),
@@ -242,9 +250,19 @@ impl Endpoint {
 
     fn initialize(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
         let descriptor = self.probe()?;
-        envelope
+        let asked = envelope
             .decode_payload::<oap_protocol::InitializeRequest>()
             .map_err(|err| wire("invalid_payload", err))?;
+        if let Some(named) = asked
+            .participant
+            .map(|participant| participant.id)
+            .filter(|id| !id.as_str().is_empty())
+        {
+            *self
+                .participant
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = named.as_str().to_owned();
+        }
         self.reply(
             EnvelopeType::PROTOCOL_INITIALIZE_RESPONSE,
             envelope,
@@ -255,6 +273,113 @@ impl Endpoint {
             },
             &descriptor.capability_revision,
         )
+    }
+
+    fn open(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let asked = envelope
+            .decode_payload::<oap_protocol::SessionOpenRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        block_on(async {
+            crate::election_gate(&self.hub, &self.adapter, "", &asked).await?;
+            crate::attachment_gate(&self.hub, &self.adapter, "", &asked).await
+        })
+        .map_err(hub_refusal)?;
+        if asked.message.is_some() {
+            return Err(hub_refusal(HubError::Adapter(
+                oap_adapter::Error::UnsupportedControl(Box::new(oap_adapter::UnsupportedControl {
+                    feature: "session.message.submit".into(),
+                    reason: oap_adapter::CONTROL_UNSATISFIABLE,
+                    field: "message".into(),
+                    ..oap_adapter::UnsupportedControl::default()
+                })),
+            )));
+        }
+        let tool_sources = crate::resolve_attachments(self.hub.registry(), &asked.tool_sources)
+            .map_err(|refused| {
+                detailed(
+                    "unsupported_feature",
+                    &refused,
+                    serde_json::json!({
+                        "feature": oap_protocol::FEATURE_TOOL_SOURCES_ATTACH,
+                        "reason": oap_adapter::CONTROL_UNSATISFIABLE,
+                        "source": refused.tool_source,
+                    }),
+                )
+            })?;
+        let mut metadata = serde_json::Map::new();
+        for (key, raw) in &asked.metadata {
+            let value: Value = serde_json::from_str(raw.get())
+                .map_err(|err| wire("invalid_payload", format!("metadata {key:?}: {err}")))?;
+            metadata.insert(key.clone(), value);
+        }
+        let participant = self
+            .participant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let opening = oap_adapter::OpenRequest {
+            session_id: asked.session_id.clone().unwrap_or_default(),
+            participant: oap_protocol::Participant {
+                id: if participant.is_empty() {
+                    crate::DEFAULT_PARTICIPANT.into()
+                } else {
+                    participant.as_str().into()
+                },
+                ..oap_protocol::Participant::default()
+            },
+            metadata,
+            tool_sources,
+            tools: asked.tools.clone(),
+            allow_degraded_features: asked.allow_degraded_features.clone(),
+            reopen: asked.reopen,
+            reasoning_level: asked.reasoning_level.clone(),
+            compaction_policy: asked.compaction_policy.clone(),
+            ..oap_adapter::OpenRequest::default()
+        };
+        let opened = block_on(self.hub.open(&self.adapter, opening)).map_err(hub_refusal)?;
+        self.session_reply(
+            EnvelopeType::SESSION_OPEN_RESPONSE,
+            envelope,
+            &opened.state,
+            opened.session.id(),
+        )
+    }
+
+    fn state(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let state = block_on(entry.state()).map_err(hub_refusal)?;
+        self.session_reply(
+            EnvelopeType::SESSION_STATE_RESPONSE,
+            envelope,
+            &state,
+            entry.id(),
+        )
+    }
+
+    fn session(&self, envelope: &Envelope) -> Result<std::sync::Arc<crate::HubSession>, WireError> {
+        let id = envelope
+            .session_id
+            .clone()
+            .filter(|id| !id.as_str().is_empty())
+            .ok_or_else(|| wire("invalid_request", "this request must name its session"))?;
+        self.hub.session(&id).map_err(hub_refusal)
+    }
+
+    fn session_reply(
+        &self,
+        kind: EnvelopeType,
+        asked: &Envelope,
+        payload: &impl serde::Serialize,
+        session: &oap_protocol::SessionId,
+    ) -> Result<Envelope, WireError> {
+        let mut answer = self.reply(
+            kind,
+            asked,
+            payload,
+            asked.capability_revision.as_deref().unwrap_or_default(),
+        )?;
+        answer.session_id = Some(session.clone());
+        Ok(answer)
     }
 
     fn capabilities(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
