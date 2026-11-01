@@ -59,7 +59,21 @@ fn main() -> ExitCode {
                 ..EndpointOptions::default()
             },
         )
-        .and_then(|endpoint| endpoint.run(input, std::io::stdout()))
+        .map(Arc::new)
+        .and_then(|endpoint| {
+            let signalled = endpoint.clone();
+            let mut count = 0;
+            let relayed = ctrlc::set_handler(move || {
+                count += 1;
+                if let Some(answer) = signalled.signal(count) {
+                    eprintln!("{}", signal_line(count, &answer));
+                }
+            });
+            if let Err(err) = relayed {
+                eprintln!("oap-rust-hub: signals are not relayed: {err}");
+            }
+            endpoint.run(input, std::io::stdout())
+        })
         .map_err(|err| err.to_string())
     } else {
         serve(&hub, input, std::io::stdout(), &StdioOptions::default())
@@ -74,5 +88,26 @@ fn main() -> ExitCode {
             eprintln!("oap-rust-hub: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn signal_line(count: usize, answer: &oap_protocol::EndpointShutdownResponse) -> String {
+    let active: Vec<String> = answer
+        .active_runs
+        .iter()
+        .map(|run| format!("{}/{}", run.session_id.as_str(), run.run_id.as_str()))
+        .collect();
+    let listed = if active.is_empty() {
+        "none".to_owned()
+    } else {
+        active.join(", ")
+    };
+    if count == 1 {
+        format!(
+            "oap-rust-hub: shutting down gracefully; still active: {listed}; {} queued run(s) lost; signal again to force",
+            answer.lost.len()
+        )
+    } else {
+        format!("oap-rust-hub: forced shutdown; cut off: {listed}")
     }
 }

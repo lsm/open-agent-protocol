@@ -13,6 +13,7 @@ oap-binding = { path = "../binding" }
 oap-protocol = { path = "../protocol" }
 oap-validation = { path = "../validation" }
 base64 = "0.22"
+ctrlc = { version = "=3.5.2", features = ["termination"] }
 httparse = "1"
 jsonschema = { version = "=0.59.0", default-features = false, features = ["arbitrary-precision"] }
 futures-core = "0.3"

@@ -59,6 +59,7 @@ pub struct Endpoint {
     state_sequences: Mutex<std::collections::HashMap<oap_protocol::SessionId, u64>>,
     stopping: Mutex<crate::stdio::Stopping>,
     finished: std::sync::atomic::AtomicBool,
+    abandoned: std::sync::atomic::AtomicBool,
 }
 
 impl Endpoint {
@@ -93,6 +94,7 @@ impl Endpoint {
             state_sequences: Mutex::default(),
             stopping: Mutex::default(),
             finished: std::sync::atomic::AtomicBool::new(false),
+            abandoned: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -126,7 +128,8 @@ impl Endpoint {
         });
         let served = self.serve_lines(&frames, &out, &pumps);
         self.gate.lift_all();
-        let forced = lock(&self.stopping).mode == Some(oap_protocol::ShutdownMode::FORCE);
+        let forced = lock(&self.stopping).mode == Some(oap_protocol::ShutdownMode::FORCE)
+            || self.abandoned.load(Ordering::SeqCst);
         let stalled = pumps.settle(served.is_err() || forced, self.shutdown);
         drop(out);
         if stalled {
@@ -146,24 +149,17 @@ impl Endpoint {
         pumps: &Pumps,
     ) -> Result<(), EndpointError> {
         loop {
-            if self.finished.load(Ordering::SeqCst) {
+            if self.finished.load(Ordering::SeqCst) || self.abandoned.load(Ordering::SeqCst) {
                 return Ok(());
             }
             let draining = lock(&self.stopping).draining;
             if draining && crate::stdio::Stopping::drained(&self.hub) {
                 return Ok(());
             }
-            let frame = if draining {
-                match frames.recv_timeout(crate::stdio::DRAIN_POLL) {
-                    Ok(frame) => frame,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                }
-            } else {
-                match frames.recv() {
-                    Ok(frame) => frame,
-                    Err(_) => return Ok(()),
-                }
+            let frame = match frames.recv_timeout(crate::stdio::DRAIN_POLL) {
+                Ok(frame) => frame,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             };
             let Some(line) = frame? else {
                 return Ok(());
@@ -552,6 +548,30 @@ impl Endpoint {
         .answer("replay.accepted", serde_json::json!({}));
         *lock(&self.started) = Some((subscription, run));
         accepted
+    }
+
+    pub fn signal(&self, count: usize) -> Option<oap_protocol::EndpointShutdownResponse> {
+        use oap_protocol::ShutdownMode;
+        if count > 2 {
+            self.abandoned.store(true, Ordering::SeqCst);
+            return None;
+        }
+        let mut stopping = lock(&self.stopping);
+        let wanted = if count >= 2 || stopping.mode == Some(ShutdownMode::FORCE) {
+            ShutdownMode::FORCE
+        } else {
+            ShutdownMode::GRACEFUL
+        };
+        let request = crate::stdio::Request {
+            request: serde_json::value::to_raw_value(&serde_json::json!({ "mode": wanted })).ok(),
+            ..crate::stdio::Request::default()
+        };
+        let (answer, finished) = crate::stdio::shutdown(&self.hub, &request, &mut stopping);
+        if finished {
+            self.finished.store(true, Ordering::SeqCst);
+        }
+        let answer = serde_json::from_value(answer.ok()?).ok()?;
+        (stopping.mode == Some(wanted)).then_some(answer)
     }
 
     fn shutdown_request(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
