@@ -72,8 +72,14 @@ impl Endpoint {
             },
             ids: AtomicU64::new(0),
             participant: std::sync::Mutex::default(),
-            shutdown: options.shutdown.unwrap_or(DEFAULT_SHUTDOWN),
-            write_stall: options.write_stall.unwrap_or(DEFAULT_WRITE_STALL),
+            shutdown: options
+                .shutdown
+                .filter(|window| !window.is_zero())
+                .unwrap_or(DEFAULT_SHUTDOWN),
+            write_stall: options
+                .write_stall
+                .filter(|stall| !stall.is_zero())
+                .unwrap_or(DEFAULT_WRITE_STALL),
             started: Mutex::default(),
         })
     }
