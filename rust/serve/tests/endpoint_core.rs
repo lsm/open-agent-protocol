@@ -150,7 +150,7 @@ fn a_request_it_does_not_serve_or_one_missing_members_is_refused_and_serving_goe
             request("endpoint.ping.request", "p", None),
             "".into(),
             r#"{"protocol":"oap","id":"m","session_id":"s"}"#.into(),
-            r#"{"control":"later","id":"k"}"#.into(),
+            r#"{"control":"later","id":"k","session_id":"s","run_id":"r"}"#.into(),
             request("capabilities.request", "c", None),
         ]
         .join("\n"),
@@ -171,9 +171,15 @@ fn a_request_it_does_not_serve_or_one_missing_members_is_refused_and_serving_goe
     );
     assert_eq!(answered[1]["in_reply_to"], "m");
     assert_eq!(answered[1]["session_id"], "s");
-    assert_eq!(answered[2]["control"], "replay.error");
-    assert_eq!(answered[2]["code"], "unsupported_control");
-    assert_eq!(answered[2]["id"], "k");
+    assert_eq!(
+        answered[2],
+        serde_json::json!({
+            "control": "replay.error",
+            "id": "k",
+            "code": "unsupported_control",
+            "message": "this endpoint serves no \"later\" control",
+        })
+    );
     assert_eq!(answered[3]["type"], "capabilities.response");
 }
 

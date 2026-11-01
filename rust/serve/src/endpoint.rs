@@ -204,7 +204,13 @@ impl Endpoint {
             let answer = if control == "replay" {
                 self.replay(&asked)
             } else {
-                asked.answer(
+                Control {
+                    id: asked.id.clone(),
+                    session_id: String::new(),
+                    run_id: String::new(),
+                    after: None,
+                }
+                .answer(
                     "replay.error",
                     serde_json::json!({
                         "code": "unsupported_control",
