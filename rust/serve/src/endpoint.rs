@@ -267,6 +267,18 @@ impl Endpoint {
         if *kind == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
             return self.submit(envelope);
         }
+        if *kind == EnvelopeType::SESSION_COMPACT_REQUEST {
+            return self.compact(envelope);
+        }
+        if *kind == EnvelopeType::MODELS_REQUEST {
+            return self.models(envelope);
+        }
+        if *kind == EnvelopeType::ACTION_TOOLS_LIST_REQUEST {
+            return self.tools(envelope);
+        }
+        if *kind == EnvelopeType::SESSION_LIST_REQUEST {
+            return self.session_list(envelope);
+        }
         if *kind == EnvelopeType::RUN_CANCEL_REQUEST {
             return self.cancel(envelope);
         }
@@ -426,6 +438,95 @@ impl Endpoint {
             envelope,
             &opened.state,
             opened.session.id(),
+        )
+    }
+
+    fn compact(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::SessionCompactRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        let subscription = self.hub.subscribe(entry.id()).map_err(hub_refusal)?;
+        let admission = block_on(entry.compact(oap_adapter::CompactRequest {
+            request,
+            envelope_id: envelope.id.clone(),
+        }))
+        .map_err(hub_refusal)?;
+        let mut answer = self.session_reply(
+            EnvelopeType::SESSION_COMPACT_RESPONSE,
+            envelope,
+            &admission,
+            &admission.session_id,
+        )?;
+        answer.run_id = admission.run_id.clone();
+        *lock(&self.started) = Some((subscription, admission.run_id.unwrap_or_default()));
+        Ok(answer)
+    }
+
+    fn models(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::ModelsRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        let catalog = block_on(entry.models(request)).map_err(hub_refusal)?;
+        let mut answer = self.reply(
+            EnvelopeType::MODELS_RESPONSE,
+            envelope,
+            &catalog.models,
+            &catalog.revision,
+        )?;
+        answer.session_id = Some(entry.id().clone());
+        Ok(answer)
+    }
+
+    fn tools(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::ToolsListRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        let catalog = block_on(entry.tools(request)).map_err(hub_refusal)?;
+        let mut answer = self.reply(
+            EnvelopeType::ACTION_TOOLS_LIST_RESPONSE,
+            envelope,
+            &catalog.tools,
+            &catalog.revision,
+        )?;
+        answer.session_id = Some(entry.id().clone());
+        Ok(answer)
+    }
+
+    fn session_list(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let request = envelope
+            .decode_payload::<oap_protocol::SessionListRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        if self.hub.bindings().is_none() {
+            return Err(detailed(
+                "unsupported_feature",
+                HubError::NoSessionHistory,
+                serde_json::json!({
+                    "feature": oap_protocol::FEATURE_SESSION_LIST,
+                    "reason": oap_adapter::CONTROL_UNADVERTISED,
+                }),
+            ));
+        }
+        let descriptor = self.probe()?;
+        let page = self
+            .hub
+            .session_history(&request.cursor, request.limit)
+            .map_err(|err| match err {
+                HubError::Binding(oap_binding::Error::InvalidCursor) => {
+                    wire("invalid_cursor", oap_binding::Error::InvalidCursor)
+                }
+                HubError::Binding(oap_binding::Error::InvalidLimit) => {
+                    wire("invalid_request", oap_binding::Error::InvalidLimit)
+                }
+                _ => wire("history_failed", "the session history could not be read"),
+            })?;
+        self.reply(
+            EnvelopeType::SESSION_LIST_RESPONSE,
+            envelope,
+            &page,
+            &descriptor.capability_revision,
         )
     }
 
