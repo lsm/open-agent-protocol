@@ -65,7 +65,9 @@ fn main() -> ExitCode {
         serve(&hub, input, std::io::stdout(), &StdioOptions::default())
             .map_err(|err| err.to_string())
     };
-    hub.close_sessions();
+    for (session, err) in hub.close_sessions() {
+        eprintln!("oap-rust-hub: close session {}: {err}", session.as_str());
+    }
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

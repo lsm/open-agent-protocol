@@ -469,10 +469,34 @@ impl Hub {
         self.shared.sessions().live.values().cloned().collect()
     }
 
-    pub fn close_sessions(&self) {
+    pub fn close_sessions(&self) -> Vec<(SessionId, HubError)> {
+        let mut failed = Vec::new();
         for entry in self.sessions() {
-            let _ = crate::live::block_on(entry.close());
+            let mut closed = crate::live::block_on(entry.close());
+            for _ in 0..3 {
+                if !matches!(closed, Err(HubError::Adapter(Error::RunActive))) {
+                    break;
+                }
+                if let Ok(state) = crate::live::block_on(entry.state()) {
+                    let mut runs: Vec<RunId> = state
+                        .active_runs
+                        .into_iter()
+                        .map(|run| run.run_id)
+                        .collect();
+                    runs.extend(state.active_run_id.filter(|run| !runs.contains(run)));
+                    for run in runs {
+                        let _ = crate::live::block_on(entry.cancel(run));
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                closed = crate::live::block_on(entry.close());
+            }
+            match closed {
+                Ok(()) | Err(HubError::Adapter(Error::SessionClosed)) => {}
+                Err(err) => failed.push((entry.id().clone(), err)),
+            }
         }
+        failed
     }
 }
 
