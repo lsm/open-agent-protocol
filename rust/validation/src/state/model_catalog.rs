@@ -11,6 +11,7 @@ const MODEL_NOT_FOUND: &str = "model_not_found";
 pub(super) struct SessionCatalog {
     revision: String,
     ids: HashSet<String>,
+    providers: HashSet<String>,
 }
 
 pub(super) struct HeldModel {
@@ -22,7 +23,7 @@ pub(super) struct HeldModel {
 }
 
 impl State {
-    pub(super) fn record_model_catalog(&mut self, e: &Envelope) {
+    pub(super) fn record_model_catalog(&mut self, at: (usize, usize), e: &Envelope) {
         let revision = e.capability_revision.clone().unwrap_or_default();
         if revision.is_empty() || revision != self.current_capability || self.capabilities_stale {
             return;
@@ -33,17 +34,65 @@ impl State {
         );
         let p: ModelsResponse = payload(e);
         let session = s(&p.session_id);
+        let declared: HashSet<&str> = p
+            .providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect();
+        let omitted: Vec<String> = self
+            .attached_providers
+            .get(&session)
+            .map(|attached| {
+                let mut aliases: Vec<String> = attached
+                    .keys()
+                    .filter(|alias| !declared.contains(alias.as_str()))
+                    .cloned()
+                    .collect();
+                aliases.sort();
+                aliases
+            })
+            .unwrap_or_default();
+        for alias in omitted {
+            let message = "catalog omitted an attached provider";
+            self.add_expected(
+                codes::UNMATCHED_PROVIDER,
+                at,
+                e,
+                "/payload/providers",
+                message,
+                &alias,
+                "absent",
+                &[],
+            );
+        }
         if !binding {
             self.model_catalogs.remove(&session);
             return;
         }
+        let mut providers: HashSet<String> = p
+            .providers
+            .iter()
+            .map(|provider| provider.id.clone())
+            .collect();
+        providers.extend(
+            p.models
+                .iter()
+                .filter(|model| !model.provider_id.is_empty())
+                .map(|model| model.provider_id.clone()),
+        );
         let ids: HashSet<String> = p.models.into_iter().map(|model| model.id).collect();
         let held = self.held_models.remove(&session).unwrap_or_default();
         for entry in held.iter().filter(|entry| entry.revision == revision) {
             self.judge_held_model(entry, ids.contains(&entry.model));
         }
-        self.model_catalogs
-            .insert(session, SessionCatalog { revision, ids });
+        self.model_catalogs.insert(
+            session,
+            SessionCatalog {
+                revision,
+                ids,
+                providers,
+            },
+        );
     }
 
     pub(super) fn catalog_lists(&self, session: &str, model: &str) -> Option<bool> {
@@ -119,5 +168,12 @@ impl State {
             &describe_refusal(&err),
             &[model],
         );
+    }
+
+    pub(super) fn catalog_serves_provider(&self, session: &str, alias: &str) -> bool {
+        self.model_catalogs
+            .get(session)
+            .filter(|catalog| catalog.revision == self.current_capability)
+            .is_some_and(|catalog| catalog.providers.contains(alias))
     }
 }
