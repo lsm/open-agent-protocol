@@ -26,7 +26,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Memory reference adapter | done | done | missing |
 | Hub, stdio | done | done | done |
 | Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close, SSE events, transcript, the work routes and shutdown; no Rust binary serves HTTP yet |
-| `serve agent` endpoint | done | done | partial: framing, initialize, capabilities, the stale-revision gate, open, state, submit with its run stream, cancel, resolve, settings, compaction, the model and tool catalogs, the session list and replay in `oap_serve::endpoint`; model switch, shutdown and a binary pending |
+| `serve agent` endpoint | done | done | partial: framing, initialize, capabilities, the stale-revision gate, open, state, submit with its run stream, cancel, resolve, settings, compaction, the model and tool catalogs, the session list, replay and shutdown in `oap_serve::endpoint`; model switch, signals and a binary pending |
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | missing |
 | `transcript.load` (Decision 0051) | done | partial: hub route pending | partial: the stdio op and the HTTP route; no Rust adapter has a reader yet |

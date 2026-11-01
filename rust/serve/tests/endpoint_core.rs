@@ -25,7 +25,7 @@ fn run(hub: &Hub, input: &str) -> (Vec<Value>, Result<(), EndpointError>) {
 
 fn run_within(hub: &Hub, input: &str, limit: usize) -> (Vec<Value>, Result<(), EndpointError>) {
     let out = support::Captured::default();
-    let result = endpoint(hub, limit).run(input.as_bytes(), out.clone());
+    let result = endpoint(hub, limit).run(std::io::Cursor::new(input.to_owned()), out.clone());
     (out.values(), result)
 }
 

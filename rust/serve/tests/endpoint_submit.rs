@@ -19,7 +19,7 @@ fn run(hub: &Hub, lines: &[Value]) -> Vec<Value> {
     let input: Vec<String> = lines.iter().map(Value::to_string).collect();
     let out = support::Captured::default();
     endpoint
-        .run(input.join("\n").as_bytes(), out.clone())
+        .run(std::io::Cursor::new(input.join("\n")), out.clone())
         .unwrap();
     out.values()
 }
