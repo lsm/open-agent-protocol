@@ -53,6 +53,8 @@ pub struct Endpoint {
     shutdown: Duration,
     write_stall: Duration,
     started: Mutex<Option<(Subscription, oap_protocol::RunId)>>,
+    updated: Mutex<Option<Envelope>>,
+    state_sequences: Mutex<std::collections::HashMap<oap_protocol::SessionId, u64>>,
 }
 
 impl Endpoint {
@@ -81,6 +83,8 @@ impl Endpoint {
                 .filter(|stall| !stall.is_zero())
                 .unwrap_or(DEFAULT_WRITE_STALL),
             started: Mutex::default(),
+            updated: Mutex::default(),
+            state_sequences: Mutex::default(),
         })
     }
 
@@ -128,6 +132,11 @@ impl Endpoint {
             }
             if let Some((subscription, run)) = lock(&self.started).take() {
                 pumps.start(out.clone(), subscription, run);
+            }
+            if let Some(updated) = lock(&self.updated).take() {
+                if let Ok(line) = serde_json::to_vec(&updated) {
+                    let _ = out.send(line);
+                }
             }
         }
         Ok(())
@@ -249,6 +258,18 @@ impl Endpoint {
         }
         if *kind == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
             return self.submit(envelope);
+        }
+        if *kind == EnvelopeType::RUN_CANCEL_REQUEST {
+            return self.cancel(envelope);
+        }
+        if *kind == EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST
+            || *kind == EnvelopeType::USER_INPUT_RESOLVE_REQUEST
+            || *kind == EnvelopeType::ACTION_CALL_RESOLVE_REQUEST
+        {
+            return self.resolve(envelope);
+        }
+        if *kind == EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST {
+            return self.update_settings(envelope);
         }
         Err(wire(
             "unsupported_request",
@@ -421,6 +442,124 @@ impl Endpoint {
         if admission.admission != oap_protocol::Admission::STEERED {
             *lock(&self.started) = Some((subscription, admission.run_id.unwrap_or_default()));
         }
+        Ok(answer)
+    }
+
+    fn cancel(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::RunCancelRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        if request.session_id != *entry.id() {
+            return Err(wire(
+                "scope_mismatch",
+                format!(
+                    "payload session_id {:?} does not match the addressed session {:?}",
+                    request.session_id.as_str(),
+                    entry.id().as_str()
+                ),
+            ));
+        }
+        let ack = block_on(entry.cancel(request.run_id.clone())).map_err(hub_refusal)?;
+        let mut answer = self.session_reply(
+            EnvelopeType::RUN_CANCEL_RESPONSE,
+            envelope,
+            &ack,
+            entry.id(),
+        )?;
+        answer.run_id = Some(request.run_id);
+        Ok(answer)
+    }
+
+    fn resolve(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let invalid = |err: oap_protocol::Error| wire("invalid_payload", err);
+        let kind = &envelope.envelope_type;
+        let mut resolution = oap_adapter::InteractionResolution::default();
+        let (answering, interaction, session) =
+            if *kind == EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST {
+                let asked = envelope
+                    .decode_payload::<oap_protocol::PermissionResolveRequest>()
+                    .map_err(invalid)?;
+                resolution.run_id = asked.run_id.clone();
+                resolution.responded_by = asked.responded_by.clone();
+                let named = (
+                    EnvelopeType::ACTION_PERMISSION_RESOLVE_RESPONSE,
+                    asked.interaction_id.clone(),
+                    asked.session_id.clone(),
+                );
+                resolution.permission = Some(asked);
+                named
+            } else if *kind == EnvelopeType::USER_INPUT_RESOLVE_REQUEST {
+                let asked = envelope
+                    .decode_payload::<oap_protocol::UserInputResolveRequest>()
+                    .map_err(invalid)?;
+                resolution.run_id = asked.run_id.clone();
+                resolution.responded_by = asked.responded_by.clone();
+                let named = (
+                    EnvelopeType::USER_INPUT_RESOLVE_RESPONSE,
+                    asked.interaction_id.clone(),
+                    asked.session_id.clone(),
+                );
+                resolution.input = Some(asked);
+                named
+            } else {
+                let asked = envelope
+                    .decode_payload::<oap_protocol::ActionCallResolveRequest>()
+                    .map_err(invalid)?;
+                let run = asked.run_id.clone();
+                let result = block_on(entry.resolve_call(oap_adapter::CallResolution {
+                    request_id: envelope.id.clone(),
+                    request: asked,
+                }))
+                .map_err(hub_refusal)?;
+                let mut answer = self.session_reply(
+                    EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
+                    envelope,
+                    &result,
+                    entry.id(),
+                )?;
+                answer.run_id = Some(run);
+                return Ok(answer);
+            };
+        let run = resolution.run_id.clone();
+        block_on(entry.resolve(resolution)).map_err(hub_refusal)?;
+        let body = oap_protocol::UserInputResolveResponse {
+            interaction_id: interaction,
+            session_id: session,
+            run_id: run.clone(),
+            accepted: true,
+        };
+        let mut answer = self.session_reply(answering, envelope, &body, entry.id())?;
+        answer.run_id = Some(run);
+        Ok(answer)
+    }
+
+    fn update_settings(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::SessionSettingsUpdateRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        let (response, state) = block_on(entry.update_settings(request)).map_err(hub_refusal)?;
+        let answer = self.session_reply(
+            EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE,
+            envelope,
+            &response,
+            entry.id(),
+        )?;
+        let mut updated = Envelope::new(
+            EnvelopeType::SESSION_STATE_UPDATED,
+            self.next_id("event"),
+            &state,
+        )
+        .map_err(|err| wire("internal", err))?;
+        updated.session_id = Some(entry.id().clone());
+        updated.capability_revision = envelope.capability_revision.clone();
+        let mut sequences = lock(&self.state_sequences);
+        let sequence = sequences.entry(entry.id().clone()).or_default();
+        *sequence += 1;
+        updated.sequence = Some(*sequence);
+        *lock(&self.updated) = Some(updated);
         Ok(answer)
     }
 
