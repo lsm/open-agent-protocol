@@ -189,18 +189,20 @@ impl Endpoint {
         };
         let (protocol, control) = (text("protocol")?, text("control")?);
         if protocol.is_empty() && !control.is_empty() {
-            let asked =
-                Control {
-                    id: text("id")?,
-                    session_id: text("session_id")?,
-                    run_id: text("run_id")?,
-                    after: match &shape["after"] {
-                        Value::Null => None,
-                        after => Some(after.as_u64().ok_or_else(|| {
-                            malformed("after is not an unsigned sequence".into())
-                        })?),
-                    },
-                };
+            let after = match &shape["after"] {
+                Value::Null => None,
+                after => Some(
+                    after
+                        .as_u64()
+                        .ok_or_else(|| malformed("after is not an unsigned sequence".into()))?,
+                ),
+            };
+            let asked = Control {
+                id: text("id")?,
+                session_id: text("session_id")?,
+                run_id: text("run_id")?,
+                after,
+            };
             let answer = if control == "replay" {
                 self.replay(&asked)
             } else {
