@@ -1,10 +1,60 @@
 mod support;
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use oap_adapter::{
+    Adapter, BoxFuture, Descriptor, EventStream, InteractionResolution, OpenRequest, Recovery,
+    ResumeRequest, Session, SubmitRequest,
+};
+use oap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
 use oap_serve::endpoint::{Endpoint, EndpointOptions};
 use oap_serve::{Hub, Registry};
 use serde_json::{json, Value};
+
+struct SlowAck(Box<dyn Session>);
+
+impl Session for SlowAck {
+    fn submit(
+        &self,
+        request: SubmitRequest,
+    ) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
+        self.0.submit(request)
+    }
+    fn state(&self) -> BoxFuture<'_, SessionState> {
+        self.0.state()
+    }
+    fn resolve(&self, resolution: InteractionResolution) -> BoxFuture<'_, ()> {
+        self.0.resolve(resolution)
+    }
+    fn cancel(&self, run_id: RunId) -> BoxFuture<'_, RunCancelResponse> {
+        Box::pin(async move {
+            let ack = self.0.cancel(run_id).await;
+            std::thread::sleep(Duration::from_millis(200));
+            ack
+        })
+    }
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
+        self.0.resume(request)
+    }
+    fn close(&self) -> BoxFuture<'_, ()> {
+        self.0.close()
+    }
+}
+
+struct Slow(Arc<dyn Adapter>);
+
+impl Adapter for Slow {
+    fn probe(&self) -> BoxFuture<'_, Descriptor> {
+        self.0.probe()
+    }
+    fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn Session>> {
+        Box::pin(async move {
+            let inner = self.0.open(request).await?;
+            Ok(Box::new(SlowAck(inner)) as Box<dyn Session>)
+        })
+    }
+}
 
 fn run(hub: &Hub, lines: &[Value]) -> Vec<Value> {
     let endpoint = Endpoint::new(
@@ -59,13 +109,20 @@ fn wait_for(out: &support::Captured, found: impl Fn(&Value) -> bool) -> Value {
 }
 
 #[test]
-fn a_cancel_answers_its_intent_and_the_run_stream_carries_the_cancellation() {
+fn a_cancel_answers_its_intent_before_the_run_stream_carries_the_cancellation() {
     use std::io::Write;
-    let hub = Hub::new(Registry::default_registry());
+    let mut registry = Registry::new();
+    registry
+        .register(
+            "slow",
+            Arc::new(Slow(Registry::default_registry().lookup("memory").unwrap())),
+        )
+        .unwrap();
+    let hub = Hub::new(registry);
     let endpoint = Endpoint::new(
         &hub,
         EndpointOptions {
-            adapter: "memory".into(),
+            adapter: "slow".into(),
             ..EndpointOptions::default()
         },
     )
