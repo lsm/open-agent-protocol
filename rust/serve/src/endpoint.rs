@@ -60,6 +60,7 @@ pub struct Endpoint {
     stopping: Mutex<crate::stdio::Stopping>,
     finished: std::sync::atomic::AtomicBool,
     abandoned: std::sync::atomic::AtomicBool,
+    signals_seen: std::sync::atomic::AtomicUsize,
 }
 
 impl Endpoint {
@@ -95,6 +96,7 @@ impl Endpoint {
             stopping: Mutex::default(),
             finished: std::sync::atomic::AtomicBool::new(false),
             abandoned: std::sync::atomic::AtomicBool::new(false),
+            signals_seen: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -562,6 +564,9 @@ impl Endpoint {
             return None;
         }
         let mut stopping = lock(&self.stopping);
+        if self.signals_seen.fetch_max(count, Ordering::SeqCst) >= count {
+            return None;
+        }
         let wanted = if count >= 2 || stopping.mode == Some(ShutdownMode::FORCE) {
             ShutdownMode::FORCE
         } else {

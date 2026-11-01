@@ -67,11 +67,18 @@ fn main() -> ExitCode {
             let mut count = 0;
             let relayed = ctrlc::set_handler(move || {
                 count += 1;
-                writing.fetch_add(1, Ordering::SeqCst);
-                if let Some(answer) = signalled.signal(count) {
-                    eprintln!("{}", signal_line(count, &answer));
+                if count > 2 {
+                    signalled.signal(count);
+                    return;
                 }
-                writing.fetch_sub(1, Ordering::SeqCst);
+                writing.fetch_add(1, Ordering::SeqCst);
+                let (applying, written, seen) = (signalled.clone(), writing.clone(), count);
+                std::thread::spawn(move || {
+                    if let Some(answer) = applying.signal(seen) {
+                        eprintln!("{}", signal_line(seen, &answer));
+                    }
+                    written.fetch_sub(1, Ordering::SeqCst);
+                });
             });
             if let Err(err) = relayed {
                 eprintln!("oap-rust-hub: signals are not relayed: {err}");
