@@ -1,4 +1,5 @@
 mod compound;
+pub mod endpoint;
 mod gate;
 pub mod http;
 mod hub;
