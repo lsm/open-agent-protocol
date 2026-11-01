@@ -52,6 +52,7 @@ var httpParityRequests = []httpParityRequest{
 	{method: "GET", path: "/sessions/s/transcript"},
 	{method: "GET", path: "/sessions/s/transcript?limit=501"},
 	{method: "GET", path: "/sessions/history"},
+	{method: "POST", path: "/sessions/s/submit", media: "application/json", body: strings.Replace(submitRequestBody("s"), `"payload":{"session_id":"s"`, `"payload":{"session_id":"other"`, 1)},
 	{method: "POST", path: "/sessions/s/submit", media: "application/json", body: submitRequestBody("s")},
 	{method: "POST", path: "/sessions/s/close", media: "application/json"},
 	{method: "GET", path: "/work"},
