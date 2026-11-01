@@ -69,3 +69,27 @@ fn a_config_the_rust_hub_cannot_serve_as_written_is_refused_naming_why() {
     )
     .contains("environment entry has no variable name"));
 }
+
+#[test]
+fn a_null_reads_as_absent_wherever_goap_reads_it_so() {
+    assert!(loaded("document", "null").unwrap().names().is_empty());
+    assert!(
+        loaded("members", r#"{"adapters":null,"tool_sources":null}"#)
+            .unwrap()
+            .names()
+            .is_empty()
+    );
+    let registry = loaded(
+        "entry",
+        r#"{"adapters":{"memory":null,"m":{"type":"memory","working_directory":null}}}"#,
+    )
+    .unwrap();
+    assert_eq!(registry.names(), ["m", "memory"]);
+    assert!(loaded(
+        "unknown",
+        r#"{"adapters":{"m":{"type":"memory","colour":null}}}"#
+    )
+    .err()
+    .unwrap_or_default()
+    .contains("unknown field \"colour\""));
+}

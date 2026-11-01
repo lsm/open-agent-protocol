@@ -93,8 +93,12 @@ impl Registry {
         if oap_validation::duplicate_key(&data).is_some() {
             return Err(parse("config: not one JSON object: DuplicateField".into()));
         }
-        let top: BTreeMap<String, Value> =
-            serde_json::from_str(&data).map_err(|err| parse(err.to_string()))?;
+        let top: BTreeMap<String, Value> = match serde_json::from_str(&data)
+            .map_err(|err| parse(err.to_string()))?
+        {
+            Value::Null => BTreeMap::new(),
+            document => serde_json::from_value(document).map_err(|err| parse(err.to_string()))?,
+        };
         if let Some(name) = top
             .keys()
             .find(|name| *name != "adapters" && *name != "tool_sources")
@@ -188,15 +192,17 @@ fn members(
     allowed: &[&str],
     what: &str,
 ) -> Result<Vec<(String, Value)>, String> {
-    let Some(raw) = top.get(key) else {
+    let Some(raw) = top.get(key).filter(|raw| !raw.is_null()) else {
         return Ok(Vec::new());
     };
     let entries: BTreeMap<String, Value> =
         serde_json::from_value(raw.clone()).map_err(|err| err.to_string())?;
     let mut found = Vec::new();
     for (name, value) in entries {
-        let Value::Object(fields) = &value else {
-            return Err(format!("config: {what} {name:?} is not an object"));
+        let mut fields = match value {
+            Value::Null => serde_json::Map::new(),
+            Value::Object(fields) => fields,
+            _ => return Err(format!("config: {what} {name:?} is not an object")),
         };
         if let Some(unknown) = fields
             .keys()
@@ -206,7 +212,8 @@ fn members(
                 "config: {what} {name:?}: unknown field {unknown:?}"
             ));
         }
-        found.push((name, value));
+        fields.retain(|_, field| !field.is_null());
+        found.push((name, Value::Object(fields)));
     }
     Ok(found)
 }
