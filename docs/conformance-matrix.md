@@ -67,9 +67,10 @@ Correctness and proof before features, smallest verifiable slice first.
 4. **Zig's capture-position rules.** 87 excused fixtures for
    `session_state_mismatch` and `scope_mismatch`.
 5. **Decision 0050 is unfinished in both trees**, and no validator judges it.
-6. **Rust ports beyond the validator**, in Decision 0052's order: harness
-   catalog, memory adapter, hub, endpoint, then each harness adapter against
-   the shared corpora.
+6. **Rust ports beyond the validator.** The harness catalog, memory adapter,
+   stdio hub and endpoint are done, in Decision 0052's order; what is left is
+   each harness adapter against the shared corpora, a binary serving the HTTP
+   hub, the conformance runner, and the agent loop.
 
 ## Owners
 
