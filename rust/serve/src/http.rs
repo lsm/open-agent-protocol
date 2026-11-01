@@ -601,6 +601,13 @@ impl Served {
             ["adapters"] => ("GET", "adapters", "", ""),
             ["adapters", name, "capabilities"] => ("GET", "capabilities", "", *name),
             ["adapters", name, "sessions"] => ("POST", "open", "", *name),
+            ["adapters", name, "work"] => ("POST", "work.start", "", *name),
+            ["work"] => ("GET", "work.list", "", ""),
+            ["work", "capabilities"] => ("GET", "work.capabilities", "", ""),
+            ["work", "sessions", id] => ("GET", "work.status", *id, ""),
+            ["work", "sessions", id, "send"] => ("POST", "work.send", *id, ""),
+            ["work", "sessions", id, "stop"] => ("POST", "work.stop", *id, ""),
+            ["work", "sessions", id, "read"] => ("GET", "work.read", *id, ""),
             ["sessions"] => ("GET", "sessions", "", ""),
             ["sessions", "history"] => ("GET", "history", "", ""),
             ["sessions", id, "state"] => ("GET", "state", *id, ""),
@@ -623,6 +630,9 @@ impl Served {
         }
         if op == "events" {
             return self.events(asked, session);
+        }
+        if op.starts_with("work.") {
+            return self.work(op, asked, stream, consumed, session, adapter);
         }
         let mut request = stdio::Request {
             op: op.to_owned(),
@@ -726,6 +736,106 @@ impl Served {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id)
             .map(|(_, subscription)| subscription)
+    }
+
+    fn work(
+        &self,
+        op: &str,
+        asked: &Asked,
+        stream: &TcpStream,
+        consumed: &mut bool,
+        session: &str,
+        adapter: &str,
+    ) -> Answer {
+        let id = oap_protocol::SessionId::from(session);
+        let mut raw = None;
+        if matches!(op, "work.start" | "work.send") {
+            let body = match self.body(asked, stream, consumed) {
+                Ok(body) => body,
+                Err((status, error)) => return self.refused(status, error, "", None),
+            };
+            let object =
+                serde_json::from_slice::<Value>(&body).is_ok_and(|value| value.is_object());
+            match serde_json::value::RawValue::from_string(
+                String::from_utf8_lossy(&body).into_owned(),
+            ) {
+                Ok(body) if object => raw = Some(body),
+                _ => {
+                    return self.refused(
+                        400,
+                        stdio::wire("malformed_json", "the request body is not a JSON envelope"),
+                        "",
+                        None,
+                    )
+                }
+            }
+        }
+        let answered = match op {
+            "work.start" => crate::workwire::start(&self.hub, adapter, raw.as_deref()),
+            "work.send" => crate::workwire::send(&self.hub, &id, raw.as_deref()),
+            "work.capabilities" => crate::workwire::capabilities(&self.hub),
+            "work.status" => crate::workwire::status(&self.hub, &id),
+            "work.stop" => crate::workwire::stop(&self.hub, &id),
+            "work.read" => {
+                let after = match asked.query("after") {
+                    None => None,
+                    Some(after) => match after
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|_| after.bytes().all(|byte| byte.is_ascii_digit()))
+                    {
+                        Some(after) => Some(after),
+                        None => {
+                            return self.refused(
+                                400,
+                                stdio::wire("invalid_request", "after is a whole number"),
+                                session,
+                                None,
+                            )
+                        }
+                    },
+                };
+                let limit = asked
+                    .query("limit")
+                    .map(|limit| limit.parse::<i64>().unwrap_or(0));
+                crate::workwire::read(&self.hub, &id, after, limit)
+            }
+            _ => {
+                let flag = |name: &str| matches!(asked.query(name), Some("true" | "1"));
+                let text = |name: &str| asked.query(name).map(str::to_owned);
+                let limit = match asked.query("limit").map(str::parse::<i64>) {
+                    None => None,
+                    Some(Ok(limit)) => Some(limit),
+                    Some(Err(_)) => {
+                        return self.refused(
+                            400,
+                            stdio::wire("invalid_request", "limit is 1 to 100"),
+                            "",
+                            None,
+                        )
+                    }
+                };
+                crate::workwire::list(
+                    &self.hub,
+                    crate::workwire::ListRequest {
+                        directory: text("directory"),
+                        adapters: asked
+                            .query("adapters")
+                            .filter(|adapters| !adapters.is_empty())
+                            .map(|adapters| adapters.split(',').map(str::to_owned).collect()),
+                        include_closed: Some(flag("include_closed")),
+                        include_native: Some(flag("include_native")),
+                        limit,
+                        cursor: text("cursor"),
+                        search: text("search"),
+                    },
+                )
+            }
+        };
+        match answered {
+            Ok(value) => json(200, &value),
+            Err(error) => self.refused(work_status(error.code), error, session, None),
+        }
     }
 
     fn events(&self, asked: &Asked, session: &str) -> Answer {
@@ -900,6 +1010,25 @@ impl Served {
             Ok(value) => json(status, &value),
             Err(_) => plain(500, "oap: internal error\n"),
         }
+    }
+}
+
+fn work_status(code: &str) -> u16 {
+    match code {
+        "unknown_adapter" | "unknown_session" | "run_not_found" => 404,
+        "session_closed" | "session_exists" | "run_terminal" | "stale_capabilities"
+        | "run_active" => 409,
+        "unsupported_feature"
+        | "capability_degraded"
+        | "scope_mismatch"
+        | "request_cancelled"
+        | "invalid_submission"
+        | "model_not_found"
+        | "malformed_json"
+        | "invalid_request"
+        | "invalid_payload"
+        | "invalid_cursor" => 400,
+        _ => 500,
     }
 }
 

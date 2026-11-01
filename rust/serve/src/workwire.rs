@@ -357,13 +357,13 @@ fn native_work(adapter: &str, listing: &oap_adapter::NativeListing) -> WorkJson 
 
 #[derive(Default, serde::Deserialize)]
 pub(crate) struct ListRequest {
-    directory: Option<String>,
-    adapters: Option<Vec<String>>,
-    include_closed: Option<bool>,
-    include_native: Option<bool>,
-    limit: Option<i64>,
-    cursor: Option<String>,
-    search: Option<String>,
+    pub(crate) directory: Option<String>,
+    pub(crate) adapters: Option<Vec<String>>,
+    pub(crate) include_closed: Option<bool>,
+    pub(crate) include_native: Option<bool>,
+    pub(crate) limit: Option<i64>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) search: Option<String>,
 }
 
 pub(crate) fn parse_list(
