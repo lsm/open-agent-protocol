@@ -1,3 +1,5 @@
+mod support;
+
 use oap_serve::endpoint::{Endpoint, EndpointOptions};
 use oap_serve::{Hub, Registry};
 use serde_json::{json, Value};
@@ -12,13 +14,11 @@ fn run(hub: &Hub, lines: &[Value]) -> Vec<Value> {
     )
     .unwrap();
     let input: Vec<String> = lines.iter().map(Value::to_string).collect();
-    let mut out = Vec::new();
-    endpoint.run(input.join("\n").as_bytes(), &mut out).unwrap();
-    String::from_utf8(out)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    let out = support::Captured::default();
+    endpoint
+        .run(input.join("\n").as_bytes(), out.clone())
+        .unwrap();
+    out.values()
 }
 
 fn request(kind: &str, id: &str, payload: Value) -> Value {
