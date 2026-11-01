@@ -130,12 +130,17 @@ impl Endpoint {
         self.gate.lift_all();
         let forced = lock(&self.stopping).mode == Some(oap_protocol::ShutdownMode::FORCE)
             || self.abandoned.load(Ordering::SeqCst);
-        let stalled = pumps.settle(served.is_err() || forced, self.shutdown);
+        let stalled = pumps.settle(served.is_err() || forced, self.shutdown, &self.abandoned);
         drop(out);
         if stalled {
             return Err(served.err().unwrap_or(EndpointError::ShutdownStalled));
         }
-        let flushed = match writer.recv_timeout(self.shutdown) {
+        let window = if self.abandoned.load(Ordering::SeqCst) {
+            crate::stdio::DRAIN_POLL
+        } else {
+            self.shutdown
+        };
+        let flushed = match writer.recv_timeout(window) {
             Ok(flushed) => flushed.map_err(EndpointError::from),
             Err(_) => Err(EndpointError::ShutdownStalled),
         };
@@ -1086,18 +1091,18 @@ impl Pumps {
         });
     }
 
-    fn drained_within(&self, window: Duration) -> bool {
+    fn drained_within(&self, window: Duration, abandoned: &std::sync::atomic::AtomicBool) -> bool {
         let deadline = Instant::now() + window;
         let mut live = lock(&self.live.0);
         while *live > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+            if left.is_zero() || abandoned.load(Ordering::SeqCst) {
                 return false;
             }
             live = self
                 .live
                 .1
-                .wait_timeout(live, left)
+                .wait_timeout(live, left.min(crate::stdio::DRAIN_POLL))
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
@@ -1110,15 +1115,20 @@ impl Pumps {
         }
     }
 
-    fn settle(&self, failed: bool, window: Duration) -> bool {
+    fn settle(
+        &self,
+        failed: bool,
+        window: Duration,
+        abandoned: &std::sync::atomic::AtomicBool,
+    ) -> bool {
         if failed {
             self.cancel();
         }
-        if self.drained_within(window) {
+        if self.drained_within(window, abandoned) {
             return false;
         }
         self.cancel();
-        !self.drained_within(window)
+        !self.drained_within(window, abandoned)
     }
 }
 
@@ -1288,4 +1298,24 @@ fn hub_refusal(err: HubError) -> WireError {
         _ => "internal",
     };
     wire(code, err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abandoning_serving_ends_a_settlement_a_stuck_pump_would_hold_for_both_windows() {
+        let pumps = Pumps::default();
+        *lock(&pumps.live.0) = 1;
+        let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let raised = abandoned.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            raised.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        assert!(pumps.settle(false, Duration::from_secs(30), &abandoned));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }
