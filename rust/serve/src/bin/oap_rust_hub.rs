@@ -8,7 +8,7 @@ use oap_serve::endpoint::{Endpoint, EndpointOptions};
 use oap_serve::stdio::{serve, StdioOptions};
 use oap_serve::{Hub, HubOptions, Registry};
 
-const USAGE: &str = "usage: oap-rust-hub serve --stdio [--session-history=PATH] serves many sessions; oap-rust-hub serve agent [--backend=B] [--stdio] [--session-history=PATH] serves one";
+const USAGE: &str = "usage: oap-rust-hub serve --stdio [--session-history=PATH] [--config=F] serves many sessions; oap-rust-hub serve agent [--backend=B] [--config=F] [--stdio] [--session-history=PATH] serves one";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,16 +24,29 @@ fn main() -> ExitCode {
     let mut stdio = agent;
     let mut history = None;
     let mut backend = "memory".to_owned();
-    for flag in flags {
+    let mut config = None;
+    let mut flags = flags.iter();
+    while let Some(flag) = flags.next() {
         if flag == "--stdio" {
             stdio = true;
-        } else if let Some(path) = flag.strip_prefix("--session-history=") {
-            history = Some(path.to_owned());
-        } else if let Some(name) = flag.strip_prefix("--backend=").filter(|_| agent) {
-            backend = name.to_owned();
-        } else {
+            continue;
+        }
+        let (name, value) = match flag.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_owned())),
+            None => (flag.as_str(), None),
+        };
+        if !matches!(name, "--session-history" | "--config") && !(agent && name == "--backend") {
             eprintln!("oap-rust-hub: unknown flag {flag:?}\n{USAGE}");
             return ExitCode::from(2);
+        }
+        let Some(value) = value.or_else(|| flags.next().cloned()) else {
+            eprintln!("oap-rust-hub: flag {name} needs a value\n{USAGE}");
+            return ExitCode::from(2);
+        };
+        match name {
+            "--session-history" => history = Some(value),
+            "--config" => config = Some(value),
+            _ => backend = value,
         }
     }
     if !stdio {
@@ -50,7 +63,17 @@ fn main() -> ExitCode {
             }
         }
     }
-    let hub = Hub::with_options(Registry::default_registry(), options);
+    let registry = match config.filter(|path| !path.is_empty()) {
+        None => Registry::default_registry(),
+        Some(path) => match Registry::load(Path::new(&path), |name| std::env::var(name).ok()) {
+            Ok(registry) => registry,
+            Err(err) => {
+                eprintln!("oap-rust-hub: {err}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let hub = Hub::with_options(registry, options);
     let input = std::io::BufReader::new(std::io::stdin());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let served = if agent {
