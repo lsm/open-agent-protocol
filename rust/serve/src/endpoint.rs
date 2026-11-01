@@ -53,6 +53,10 @@ pub struct Endpoint {
     shutdown: Duration,
     write_stall: Duration,
     started: Mutex<Option<(Subscription, oap_protocol::RunId)>>,
+    updated: Mutex<Option<Envelope>>,
+    gate: Arc<Gate>,
+    acknowledged: Mutex<Option<oap_protocol::RunId>>,
+    state_sequences: Mutex<std::collections::HashMap<oap_protocol::SessionId, u64>>,
 }
 
 impl Endpoint {
@@ -81,6 +85,10 @@ impl Endpoint {
                 .filter(|stall| !stall.is_zero())
                 .unwrap_or(DEFAULT_WRITE_STALL),
             started: Mutex::default(),
+            updated: Mutex::default(),
+            gate: Arc::default(),
+            acknowledged: Mutex::default(),
+            state_sequences: Mutex::default(),
         })
     }
 
@@ -101,6 +109,7 @@ impl Endpoint {
         };
         let pumps = Pumps::default();
         let served = self.serve_lines(&mut input, &out, &pumps);
+        self.gate.lift_all();
         let stalled = pumps.settle(served.is_err(), self.shutdown);
         drop(out);
         if stalled {
@@ -126,8 +135,16 @@ impl Endpoint {
             if let Some(answer) = self.handle(&line)? {
                 out.send(answer)?;
             }
+            if let Some(run) = lock(&self.acknowledged).take() {
+                self.gate.lift(&run);
+            }
             if let Some((subscription, run)) = lock(&self.started).take() {
-                pumps.start(out.clone(), subscription, run);
+                pumps.start(out.clone(), self.gate.clone(), subscription, run);
+            }
+            if let Some(updated) = lock(&self.updated).take() {
+                if let Ok(line) = serde_json::to_vec(&updated) {
+                    let _ = out.send(line);
+                }
             }
         }
         Ok(())
@@ -249,6 +266,18 @@ impl Endpoint {
         }
         if *kind == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
             return self.submit(envelope);
+        }
+        if *kind == EnvelopeType::RUN_CANCEL_REQUEST {
+            return self.cancel(envelope);
+        }
+        if *kind == EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST
+            || *kind == EnvelopeType::USER_INPUT_RESOLVE_REQUEST
+            || *kind == EnvelopeType::ACTION_CALL_RESOLVE_REQUEST
+        {
+            return self.resolve(envelope);
+        }
+        if *kind == EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST {
+            return self.update_settings(envelope);
         }
         Err(wire(
             "unsupported_request",
@@ -424,6 +453,132 @@ impl Endpoint {
         Ok(answer)
     }
 
+    fn cancel(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::RunCancelRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        if request.session_id != *entry.id() {
+            return Err(wire(
+                "scope_mismatch",
+                format!(
+                    "payload session_id {:?} does not match the addressed session {:?}",
+                    request.session_id.as_str(),
+                    entry.id().as_str()
+                ),
+            ));
+        }
+        self.gate.hold(&request.run_id);
+        let ack = match block_on(entry.cancel(request.run_id.clone())) {
+            Ok(ack) => ack,
+            Err(err) => {
+                self.gate.lift(&request.run_id);
+                return Err(hub_refusal(err));
+            }
+        };
+        *lock(&self.acknowledged) = Some(request.run_id.clone());
+        let mut answer = self.session_reply(
+            EnvelopeType::RUN_CANCEL_RESPONSE,
+            envelope,
+            &ack,
+            entry.id(),
+        )?;
+        answer.run_id = Some(request.run_id);
+        Ok(answer)
+    }
+
+    fn resolve(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let invalid = |err: oap_protocol::Error| wire("invalid_payload", err);
+        let kind = &envelope.envelope_type;
+        let mut resolution = oap_adapter::InteractionResolution::default();
+        let (answering, interaction, session) =
+            if *kind == EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST {
+                let asked = envelope
+                    .decode_payload::<oap_protocol::PermissionResolveRequest>()
+                    .map_err(invalid)?;
+                resolution.run_id = asked.run_id.clone();
+                resolution.responded_by = asked.responded_by.clone();
+                let named = (
+                    EnvelopeType::ACTION_PERMISSION_RESOLVE_RESPONSE,
+                    asked.interaction_id.clone(),
+                    asked.session_id.clone(),
+                );
+                resolution.permission = Some(asked);
+                named
+            } else if *kind == EnvelopeType::USER_INPUT_RESOLVE_REQUEST {
+                let asked = envelope
+                    .decode_payload::<oap_protocol::UserInputResolveRequest>()
+                    .map_err(invalid)?;
+                resolution.run_id = asked.run_id.clone();
+                resolution.responded_by = asked.responded_by.clone();
+                let named = (
+                    EnvelopeType::USER_INPUT_RESOLVE_RESPONSE,
+                    asked.interaction_id.clone(),
+                    asked.session_id.clone(),
+                );
+                resolution.input = Some(asked);
+                named
+            } else {
+                let asked = envelope
+                    .decode_payload::<oap_protocol::ActionCallResolveRequest>()
+                    .map_err(invalid)?;
+                let run = asked.run_id.clone();
+                let result = block_on(entry.resolve_call(oap_adapter::CallResolution {
+                    request_id: envelope.id.clone(),
+                    request: asked,
+                }))
+                .map_err(hub_refusal)?;
+                let mut answer = self.session_reply(
+                    EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
+                    envelope,
+                    &result,
+                    entry.id(),
+                )?;
+                answer.run_id = Some(run);
+                return Ok(answer);
+            };
+        let run = resolution.run_id.clone();
+        block_on(entry.resolve(resolution)).map_err(hub_refusal)?;
+        let body = oap_protocol::UserInputResolveResponse {
+            interaction_id: interaction,
+            session_id: session,
+            run_id: run.clone(),
+            accepted: true,
+        };
+        let mut answer = self.session_reply(answering, envelope, &body, entry.id())?;
+        answer.run_id = Some(run);
+        Ok(answer)
+    }
+
+    fn update_settings(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::SessionSettingsUpdateRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        let (response, state) = block_on(entry.update_settings(request)).map_err(hub_refusal)?;
+        let answer = self.session_reply(
+            EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE,
+            envelope,
+            &response,
+            entry.id(),
+        )?;
+        let mut updated = Envelope::new(
+            EnvelopeType::SESSION_STATE_UPDATED,
+            self.next_id("event"),
+            &state,
+        )
+        .map_err(|err| wire("internal", err))?;
+        updated.session_id = Some(entry.id().clone());
+        updated.capability_revision = envelope.capability_revision.clone();
+        let mut sequences = lock(&self.state_sequences);
+        let sequence = sequences.entry(entry.id().clone()).or_default();
+        *sequence += 1;
+        updated.sequence = Some(*sequence);
+        *lock(&self.updated) = Some(updated);
+        Ok(answer)
+    }
+
     fn state(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
         let entry = self.session(envelope)?;
         let state = block_on(entry.state()).map_err(hub_refusal)?;
@@ -564,12 +719,18 @@ struct Pumps {
 }
 
 impl Pumps {
-    fn start(&self, out: Out, mut subscription: Subscription, run: oap_protocol::RunId) {
+    fn start(
+        &self,
+        out: Out,
+        gate: Arc<Gate>,
+        mut subscription: Subscription,
+        run: oap_protocol::RunId,
+    ) {
         lock(&self.cancellers).push(subscription.canceller());
         *lock(&self.live.0) += 1;
         let live = self.live.clone();
         std::thread::spawn(move || {
-            pump(&out, &mut subscription, &run);
+            pump(&out, &gate, &mut subscription, &run);
             drop(subscription);
             *lock(&live.0) -= 1;
             live.1.notify_all();
@@ -612,47 +773,140 @@ impl Pumps {
     }
 }
 
-fn pump(out: &Out, subscription: &mut Subscription, run: &oap_protocol::RunId) {
+#[derive(Default)]
+struct Gate {
+    held: Mutex<std::collections::HashSet<oap_protocol::RunId>>,
+    lifted: Condvar,
+    waiting: Mutex<Vec<std::task::Waker>>,
+}
+
+impl Gate {
+    fn hold(&self, run: &oap_protocol::RunId) {
+        lock(&self.held).insert(run.clone());
+    }
+
+    fn lift(&self, run: &oap_protocol::RunId) {
+        lock(&self.held).remove(run);
+        self.woken();
+    }
+
+    fn lift_all(&self) {
+        lock(&self.held).clear();
+        self.woken();
+    }
+
+    fn woken(&self) {
+        self.lifted.notify_all();
+        for waker in std::mem::take(&mut *lock(&self.waiting)) {
+            waker.wake();
+        }
+    }
+
+    fn holds(&self, run: Option<&oap_protocol::RunId>) -> bool {
+        run.is_some_and(|run| lock(&self.held).contains(run))
+    }
+
+    fn wake_on_lift(&self, waker: &std::task::Waker) {
+        lock(&self.waiting).push(waker.clone());
+    }
+
+    fn wait_lifted(&self, run: Option<&oap_protocol::RunId>) {
+        let Some(run) = run else {
+            return;
+        };
+        let mut held = lock(&self.held);
+        while held.contains(run) {
+            held = self
+                .lifted
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+fn pump(out: &Out, gate: &Gate, subscription: &mut Subscription, run: &oap_protocol::RunId) {
     let mut delivered = 0;
-    loop {
+    let mut withheld: std::collections::VecDeque<Envelope> = std::collections::VecDeque::new();
+    let mut deliver = |withheld: &mut std::collections::VecDeque<Envelope>| {
+        while let Some(envelope) = withheld.pop_front() {
+            let sequence = envelope.sequence;
+            let sent = serde_json::to_vec(&envelope)
+                .map_err(|err| EndpointError::from(std::io::Error::from(err)))
+                .and_then(|line| out.send(line));
+            match sent {
+                Ok(()) => delivered = sequence.unwrap_or(delivered),
+                Err(EndpointError::FrameTooLarge(_)) => return Err(("frame_limit", delivered)),
+                Err(_) => return Err(("stream_failed", delivered)),
+            }
+        }
+        Ok(delivered)
+    };
+    let lost = loop {
         let next = block_on(std::future::poll_fn(|context| {
-            futures_core::Stream::poll_next(std::pin::Pin::new(&mut *subscription), context)
+            let held_run = withheld
+                .front()
+                .and_then(|envelope| envelope.run_id.clone());
+            if !withheld.is_empty() && !gate.holds(held_run.as_ref()) {
+                return std::task::Poll::Ready(None);
+            }
+            match futures_core::Stream::poll_next(std::pin::Pin::new(&mut *subscription), context) {
+                std::task::Poll::Ready(next) => std::task::Poll::Ready(Some(next)),
+                std::task::Poll::Pending => {
+                    if !withheld.is_empty() {
+                        gate.wake_on_lift(context.waker());
+                        if !gate.holds(held_run.as_ref()) {
+                            return std::task::Poll::Ready(None);
+                        }
+                    }
+                    std::task::Poll::Pending
+                }
+            }
         }));
-        let code = match next {
-            None => return,
-            Some(Ok(envelope)) => {
+        let ended = match next {
+            None => None,
+            Some(Some(Ok(envelope))) => {
                 if !run.as_str().is_empty() && envelope.run_id.as_ref() != Some(run) {
                     continue;
                 }
-                let sequence = envelope.sequence;
-                let sent = serde_json::to_vec(&envelope)
-                    .map_err(|err| EndpointError::from(std::io::Error::from(err)))
-                    .and_then(|line| out.send(line));
-                match sent {
-                    Ok(()) => {
-                        delivered = sequence.unwrap_or(delivered);
-                        continue;
-                    }
-                    Err(EndpointError::FrameTooLarge(_)) => "frame_limit",
-                    Err(_) => "stream_failed",
+                let holding = !withheld.is_empty() || gate.holds(envelope.run_id.as_ref());
+                withheld.push_back(envelope);
+                if holding {
+                    continue;
                 }
+                None
             }
-            Some(Err(HubError::Overflow { .. })) => "overflow",
-            Some(Err(_)) => "stream_failed",
+            Some(None) => Some(None),
+            Some(Some(Err(HubError::Overflow { .. }))) => Some(Some("overflow")),
+            Some(Some(Err(_))) => Some(Some("stream_failed")),
         };
-        let mut lost = serde_json::json!({
-            "control": "stream.lost",
-            "after": delivered,
-            "code": code,
-            "message": "this run's events stopped reaching the host; replay from after to continue",
-        });
-        if !run.as_str().is_empty() {
-            lost["run_id"] = run.as_str().into();
+        if ended.is_some() {
+            gate.wait_lifted(
+                withheld
+                    .front()
+                    .and_then(|envelope| envelope.run_id.as_ref()),
+            );
         }
-        if let Ok(line) = serde_json::to_vec(&lost) {
-            let _ = out.send(line);
+        if let Err(lost) = deliver(&mut withheld) {
+            break lost;
         }
-        return;
+        match ended {
+            None => continue,
+            Some(None) => return,
+            Some(Some(code)) => break (code, deliver(&mut withheld).unwrap_or(0)),
+        }
+    };
+    let (code, after) = lost;
+    let mut frame = serde_json::json!({
+        "control": "stream.lost",
+        "after": after,
+        "code": code,
+        "message": "this run's events stopped reaching the host; replay from after to continue",
+    });
+    if !run.as_str().is_empty() {
+        frame["run_id"] = run.as_str().into();
+    }
+    if let Ok(line) = serde_json::to_vec(&frame) {
+        let _ = out.send(line);
     }
 }
 
