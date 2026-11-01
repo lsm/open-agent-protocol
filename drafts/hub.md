@@ -804,9 +804,12 @@ the same for a path no pattern matches, and the draft's codes are
 The fifteen core routes and the seven work routes are written in both trees (D30 closed): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
-`405 Method Not Allowed` with an `Allow` header naming the one it takes, which
-is what Go's method-qualified patterns answer, and a `HEAD` is routed as the
-`GET` it describes. Zig: `a known path asked with the wrong method is 405 naming
+`405 Method Not Allowed` with an `Allow` header naming the one it takes —
+`GET, HEAD` for a `GET` route, since Go's mux serves `HEAD` on every `GET`
+pattern — which is what Go's method-qualified patterns answer, and a `HEAD` is
+routed as the `GET` it describes. Rust:
+`an_unknown_path_is_a_plain_404_a_wrong_method_is_405_naming_the_method_and_head_is_get`,
+and `TestHubHTTPAnswersGoapAndRustTheSame` compares the whole answer with goap's. Zig: `a known path asked with the wrong method is 405 naming
 the method it takes, and an unknown path is a plain 404`; Go pins the table by
 `TestTheRouteTableIsComplete`.
 

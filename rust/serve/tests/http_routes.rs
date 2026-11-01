@@ -113,7 +113,11 @@ fn an_unknown_path_is_a_plain_404_a_wrong_method_is_405_naming_the_method_and_he
         &format!("POST /adapters HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\n\r\n"),
     );
     assert_eq!(wrong.status, 405);
-    assert!(wrong.headers.contains("Allow: GET"), "{}", wrong.headers);
+    assert!(
+        wrong.headers.lines().any(|line| line == "Allow: GET, HEAD"),
+        "{}",
+        wrong.headers
+    );
     let head = ask(
         addr,
         &format!("HEAD /sessions HTTP/1.1\r\nHost: {addr}\r\n\r\n"),

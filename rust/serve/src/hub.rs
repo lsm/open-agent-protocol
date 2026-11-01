@@ -25,14 +25,16 @@ pub enum HubError {
     UnknownAdapter(String),
     #[error("no session \"{0}\"")]
     UnknownSession(SessionId),
-    #[error("session {0:?} already exists")]
+    #[error("session {:?} already exists", .0.as_str())]
     SessionExists(SessionId),
-    #[error("serve: adapter reported state scoped to session {got:?}, want {want:?}")]
+    #[error("serve: adapter reported state scoped to session {:?}, want {:?}", .got.as_str(), .want.as_str())]
     StateScope { got: SessionId, want: SessionId },
     #[error("the session is closed")]
     ClosedAtOpen(Box<SessionState>),
     #[error(
-        "serve: request session {payload:?} does not match the addressed session {addressed:?}"
+        "payload session_id {:?} does not match the addressed session {:?}",
+        .payload.as_str(),
+        .addressed.as_str()
     )]
     ScopeMismatch {
         payload: SessionId,
