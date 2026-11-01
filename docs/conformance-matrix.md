@@ -25,11 +25,11 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | missing |
 | Hub, stdio | done | done | done |
-| Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close and SSE events; transcript, the work routes and shutdown pending |
+| Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close, SSE events and transcript; the work routes and shutdown pending |
 | `serve agent` endpoint | done | done | missing |
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | missing |
-| `transcript.load` (Decision 0051) | done | partial: hub route pending | partial: the stdio op; no Rust adapter has a reader yet |
+| `transcript.load` (Decision 0051) | done | partial: hub route pending | partial: the stdio op and the HTTP route; no Rust adapter has a reader yet |
 | Shutdown (Decision 0050) | partial: signals and restart recovery pending | partial: same | partial: the stdio op; signals and restart recovery pending |
 | Client SDK | n/a (oapx is the runtime) | done | done (delegates to oapx) |
 | Agent loop and provider runtime | done | done | missing |
