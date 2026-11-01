@@ -449,8 +449,13 @@ also settles requests still in flight, then stops, waiting at most 5 s — Zig: 
 active, then graceful drains, refuses new work 503, and force stops the
 daemon`; Go: `TestAShutdownPostedWithNothingRunningStopsAtOnce`,
 `TestAShutdownPostedAsksWhileARunIsActiveThenGracefulRefusesNewWork503AndForceStops`,
-`TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing`; `goap serve`
-then shuts its HTTP server down as on a signal. Neither tree yet sends subscribers
+`TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing`; Rust:
+`a_shutdown_of_an_idle_hub_answers_stopping_and_the_server_returns`,
+`a_graceful_shutdown_drains_refusing_new_work_until_the_run_ends`,
+`a_shutdown_body_is_gated_by_media_then_json_then_its_members`. `goap serve`
+then shuts its HTTP server down as on a signal. Rust's `serve_http` returns
+once the answer that ends serving is written or the drain ends, and does not
+wait for other requests still in flight; its caller owns that window. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance. In
 both trees, on stdio and HTTP alike, SIGINT and SIGTERM now map as rule 4
 says: the first starts a graceful shutdown and writes one stderr line listing
