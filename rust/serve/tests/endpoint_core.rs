@@ -1,3 +1,5 @@
+mod support;
+
 use std::sync::Arc;
 
 use oap_binding::MemoryStore;
@@ -11,6 +13,7 @@ fn endpoint(hub: &Hub, frame_limit: usize) -> Endpoint {
         EndpointOptions {
             adapter: "memory".into(),
             frame_limit,
+            ..EndpointOptions::default()
         },
     )
     .unwrap()
@@ -21,14 +24,9 @@ fn run(hub: &Hub, input: &str) -> (Vec<Value>, Result<(), EndpointError>) {
 }
 
 fn run_within(hub: &Hub, input: &str, limit: usize) -> (Vec<Value>, Result<(), EndpointError>) {
-    let mut out = Vec::new();
-    let result = endpoint(hub, limit).run(input.as_bytes(), &mut out);
-    let lines = String::from_utf8(out)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    (lines, result)
+    let out = support::Captured::default();
+    let result = endpoint(hub, limit).run(input.as_bytes(), out.clone());
+    (out.values(), result)
 }
 
 fn request(kind: &str, id: &str, revision: Option<&str>) -> String {
