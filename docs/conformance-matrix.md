@@ -25,7 +25,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Adapter: copilot | done | missing | missing |
 | Memory reference adapter | done | done | done: `oap_adapter::memory`, which `oap-rust-hub serve agent` serves through every `goap conformance` check and the memory parity fixture |
 | Hub, stdio | done | done | done |
-| Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close, SSE events, transcript, the work routes and shutdown; no Rust binary serves HTTP yet |
+| Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close, SSE events, transcript, the work routes and shutdown; `oap-rust-hub serve --addr` serves them on a loopback allowlist; no HTTP differential against goap yet |
 | `serve agent` endpoint | done | done | done: `oap_serve::endpoint`, served by `oap-rust-hub serve agent`, passes every `goap conformance` check in CI and maps SIGINT and SIGTERM as Go does |
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | done: `oap-binding`'s file and memory session histories and run store (#1473); the hub records opens, closes and refusals (#1489) |
@@ -69,8 +69,8 @@ Correctness and proof before features, smallest verifiable slice first.
 5. **Decision 0050 is unfinished in both trees**, and no validator judges it.
 6. **Rust ports beyond the validator.** The harness catalog, memory adapter,
    stdio hub and endpoint are done, in Decision 0052's order; what is left is
-   each harness adapter against the shared corpora, a binary serving the HTTP
-   hub, the conformance runner, and the agent loop.
+   each harness adapter against the shared corpora, an HTTP differential
+   against goap, the conformance runner, and the agent loop.
 
 ## Owners
 

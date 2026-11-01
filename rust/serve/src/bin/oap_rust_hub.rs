@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use oap_binding::FileStore;
 use oap_serve::endpoint::{Endpoint, EndpointOptions};
+use oap_serve::http::{serve_http, HttpOptions};
 use oap_serve::stdio::{serve, StdioOptions};
 use oap_serve::{Hub, HubOptions, Registry};
 
-const USAGE: &str = "usage: oap-rust-hub serve --stdio [--session-history=PATH] [--config=F] serves many sessions; oap-rust-hub serve agent [--backend=B] [--config=F] [--stdio] [--session-history=PATH] serves one";
+const USAGE: &str = "usage: oap-rust-hub serve [--addr=A | --stdio] [--session-history=PATH] [--config=F] serves many sessions; oap-rust-hub serve agent [--backend=B] [--config=F] [--stdio] [--session-history=PATH] serves one";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +26,7 @@ fn main() -> ExitCode {
     let mut history = None;
     let mut backend = "memory".to_owned();
     let mut config = None;
+    let mut addr = None;
     let mut flags = flags.iter();
     while let Some(flag) = flags.next() {
         if flag == "--stdio" {
@@ -35,7 +37,10 @@ fn main() -> ExitCode {
             Some((name, value)) => (name, Some(value.to_owned())),
             None => (flag.as_str(), None),
         };
-        if !matches!(name, "--session-history" | "--config") && !(agent && name == "--backend") {
+        if !matches!(name, "--session-history" | "--config")
+            && !(agent && name == "--backend")
+            && !(!agent && name == "--addr")
+        {
             eprintln!("oap-rust-hub: unknown flag {flag:?}\n{USAGE}");
             return ExitCode::from(2);
         }
@@ -46,11 +51,12 @@ fn main() -> ExitCode {
         match name {
             "--session-history" => history = Some(value),
             "--config" => config = Some(value),
+            "--addr" => addr = Some(value),
             _ => backend = value,
         }
     }
-    if !stdio {
-        eprintln!("{USAGE}");
+    if stdio && addr.is_some() {
+        eprintln!("oap-rust-hub: serve --stdio takes no listen address; --addr and --stdio are mutually exclusive");
         return ExitCode::from(2);
     }
     let mut options = HubOptions::default();
@@ -109,9 +115,11 @@ fn main() -> ExitCode {
             endpoint.run(input, std::io::stdout())
         })
         .map_err(|err| err.to_string())
-    } else {
+    } else if stdio {
         serve(&hub, input, std::io::stdout(), &StdioOptions::default())
             .map_err(|err| err.to_string())
+    } else {
+        serve_on(&hub, &addr.unwrap_or_else(|| DEFAULT_ADDR.to_owned()))
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while pending.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
@@ -127,6 +135,35 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+const DEFAULT_ADDR: &str = "127.0.0.1:6270";
+
+fn serve_on(hub: &Hub, addr: &str) -> Result<(), String> {
+    let listener =
+        std::net::TcpListener::bind(addr).map_err(|err| format!("listen on {addr}: {err}"))?;
+    let bound = listener.local_addr().map_err(|err| err.to_string())?;
+    println!("listening on http://{bound}");
+    eprintln!(
+        "oap-rust-hub: serving adapters: {} (restart kills all sessions)",
+        hub.registry().names().join(", ")
+    );
+    let host = addr.rsplit_once(':').map_or(addr, |(host, _)| host);
+    let host_allowlist = match host.trim_start_matches('[').trim_end_matches(']') {
+        "localhost" | "127.0.0.1" | "::1" => ["localhost", "127.0.0.1", "::1"]
+            .map(str::to_owned)
+            .to_vec(),
+        _ => Vec::new(),
+    };
+    serve_http(
+        hub,
+        listener,
+        &HttpOptions {
+            host_allowlist,
+            ..HttpOptions::default()
+        },
+    )
+    .map_err(|err| err.to_string())
 }
 
 fn signal_line(count: usize, answer: &oap_protocol::EndpointShutdownResponse) -> String {
