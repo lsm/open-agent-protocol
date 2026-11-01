@@ -45,7 +45,7 @@ missing; Rust 5 done, 4 partial, 10 missing.
 | `fixtures/manifest.json`, 785 traces | gates judge 669; skip codes not yet implemented | all 785, exact codes | 68 decode and schema traces only |
 | Adapter corpora, byte for byte | yes | yes | no |
 | Hub differential (`goap` vs `oapx` stdio) | yes | yes | yes, against `oap-rust-hub`, every scenario |
-| Served backend parity (`TestBackendsMatchOapx`) | yes | yes | no |
+| Served backend parity (`TestBackendsMatchOapx`) | yes | yes | memory fixture only: `TestBackendsMatchRustHub` against `oap-rust-hub serve agent`; no Rust harness adapter yet |
 
 The Zig semantic gate skips any code Zig has not implemented, so a green Zig
 gate does not mean Zig agrees with Go on every trace. No check compares all
