@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use oap_binding::FileStore;
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
     }
     let hub = Hub::with_options(Registry::default_registry(), options);
     let input = std::io::BufReader::new(std::io::stdin());
+    let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let served = if agent {
         Endpoint::new(
             &hub,
@@ -59,12 +61,39 @@ fn main() -> ExitCode {
                 ..EndpointOptions::default()
             },
         )
-        .and_then(|endpoint| endpoint.run(input, std::io::stdout()))
+        .map(Arc::new)
+        .and_then(|endpoint| {
+            let (signalled, writing) = (endpoint.clone(), pending.clone());
+            let mut count = 0;
+            let relayed = ctrlc::set_handler(move || {
+                count += 1;
+                if count > 2 {
+                    signalled.signal(count);
+                    return;
+                }
+                writing.fetch_add(1, Ordering::SeqCst);
+                let (applying, written, seen) = (signalled.clone(), writing.clone(), count);
+                std::thread::spawn(move || {
+                    if let Some(answer) = applying.signal(seen) {
+                        eprintln!("{}", signal_line(seen, &answer));
+                    }
+                    written.fetch_sub(1, Ordering::SeqCst);
+                });
+            });
+            if let Err(err) = relayed {
+                eprintln!("oap-rust-hub: signals are not relayed: {err}");
+            }
+            endpoint.run(input, std::io::stdout())
+        })
         .map_err(|err| err.to_string())
     } else {
         serve(&hub, input, std::io::stdout(), &StdioOptions::default())
             .map_err(|err| err.to_string())
     };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while pending.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     for (session, err) in hub.close_sessions() {
         eprintln!("oap-rust-hub: close session {}: {err}", session.as_str());
     }
@@ -74,5 +103,26 @@ fn main() -> ExitCode {
             eprintln!("oap-rust-hub: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn signal_line(count: usize, answer: &oap_protocol::EndpointShutdownResponse) -> String {
+    let active: Vec<String> = answer
+        .active_runs
+        .iter()
+        .map(|run| format!("{}/{}", run.session_id.as_str(), run.run_id.as_str()))
+        .collect();
+    let listed = if active.is_empty() {
+        "none".to_owned()
+    } else {
+        active.join(", ")
+    };
+    if count == 1 {
+        format!(
+            "oap-rust-hub: shutting down gracefully; still active: {listed}; {} queued run(s) lost; signal again to force",
+            answer.lost.len()
+        )
+    } else {
+        format!("oap-rust-hub: forced shutdown; cut off: {listed}")
     }
 }
