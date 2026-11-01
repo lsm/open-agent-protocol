@@ -189,14 +189,31 @@ impl Endpoint {
         };
         let (protocol, control) = (text("protocol")?, text("control")?);
         if protocol.is_empty() && !control.is_empty() {
-            let refused = serde_json::json!({
-                "control": "replay.error",
-                "id": text("id").unwrap_or_default(),
-                "code": "unsupported_control",
-                "message": format!("this endpoint serves no {control:?} control"),
-            });
+            let asked =
+                Control {
+                    id: text("id")?,
+                    session_id: text("session_id")?,
+                    run_id: text("run_id")?,
+                    after: match &shape["after"] {
+                        Value::Null => None,
+                        after => Some(after.as_u64().ok_or_else(|| {
+                            malformed("after is not an unsigned sequence".into())
+                        })?),
+                    },
+                };
+            let answer = if control == "replay" {
+                self.replay(&asked)
+            } else {
+                asked.answer(
+                    "replay.error",
+                    serde_json::json!({
+                        "code": "unsupported_control",
+                        "message": format!("this endpoint serves no {control:?} control"),
+                    }),
+                )
+            };
             return Ok(Some(
-                serde_json::to_vec(&refused).map_err(std::io::Error::from)?,
+                serde_json::to_vec(&answer).map_err(std::io::Error::from)?,
             ));
         }
         if protocol.is_empty() {
@@ -439,6 +456,69 @@ impl Endpoint {
             &opened.state,
             opened.session.id(),
         )
+    }
+
+    fn replay(&self, asked: &Control) -> Value {
+        if asked.session_id.is_empty() {
+            return asked.answer(
+                "replay.error",
+                serde_json::json!({"code": "invalid_request", "message": "a replay must name its session"}),
+            );
+        }
+        let after = asked.after.unwrap_or(0);
+        let run = (!asked.run_id.is_empty()).then(|| asked.run_id.as_str().into());
+        let subscribed = self
+            .hub
+            .session(&asked.session_id.as_str().into())
+            .and_then(|entry| {
+                block_on(self.hub.subscribe_after(entry.id(), run, after)).map(|sub| (entry, sub))
+            });
+        let (entry, subscription) = match subscribed {
+            Ok(subscribed) => subscribed,
+            Err(HubError::Adapter(oap_adapter::Error::ReplayGap(gap))) => {
+                return asked.answer(
+                    "replay.gap",
+                    serde_json::json!({
+                        "requested_after": gap.requested_after,
+                        "oldest_available": gap.oldest_available,
+                        "latest_available": gap.latest_available,
+                        "message": "the requested replay cursor is no longer retained; ask again from oldest_available - 1",
+                    }),
+                )
+            }
+            Err(err) => {
+                use oap_adapter::Error;
+                let code = match &err {
+                    HubError::UnknownSession(_) | HubError::Adapter(Error::UnknownSession(_)) => {
+                        "unknown_session"
+                    }
+                    HubError::SessionClosed(_) | HubError::Adapter(Error::SessionClosed) => {
+                        "session_closed"
+                    }
+                    HubError::NoRunToResume => "no_run_to_resume",
+                    HubError::Adapter(Error::RunNotFound) => "run_not_found",
+                    HubError::Adapter(Error::ReplayCursorFuture) => "replay_cursor_future",
+                    _ => "internal",
+                };
+                return asked.answer(
+                    "replay.error",
+                    serde_json::json!({"code": code, "message": err.to_string()}),
+                );
+            }
+        };
+        let run = match subscription.run_id().as_str() {
+            "" => oap_protocol::RunId::from(asked.run_id.as_str()),
+            run => run.into(),
+        };
+        let accepted = Control {
+            id: asked.id.clone(),
+            session_id: entry.id().as_str().to_owned(),
+            run_id: run.as_str().to_owned(),
+            after: Some(after),
+        }
+        .answer("replay.accepted", serde_json::json!({}));
+        *lock(&self.started) = Some((subscription, run));
+        accepted
     }
 
     fn compact(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
@@ -758,6 +838,40 @@ impl Endpoint {
         answer.in_reply_to = Some(asked.id.clone());
         answer.session_id = asked.session_id.clone();
         answer.run_id = asked.run_id.clone();
+        answer
+    }
+}
+
+struct Control {
+    id: String,
+    session_id: String,
+    run_id: String,
+    after: Option<u64>,
+}
+
+impl Control {
+    fn answer(&self, control: &str, rest: Value) -> Value {
+        let mut answer = serde_json::json!({ "control": control });
+        for (key, value) in [
+            ("id", &self.id),
+            ("session_id", &self.session_id),
+            ("run_id", &self.run_id),
+        ] {
+            if !value.is_empty() {
+                answer[key] = value.as_str().into();
+            }
+        }
+        if let (Some(after), "replay.accepted") = (self.after, control) {
+            answer["after"] = after.into();
+        }
+        if let Value::Object(rest) = rest {
+            for (key, value) in rest {
+                let empty = value.as_u64() == Some(0) || value.as_str() == Some("");
+                if !empty {
+                    answer[key.as_str()] = value;
+                }
+            }
+        }
         answer
     }
 }
