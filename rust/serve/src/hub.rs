@@ -468,6 +468,36 @@ impl Hub {
     pub fn sessions(&self) -> Vec<Arc<HubSession>> {
         self.shared.sessions().live.values().cloned().collect()
     }
+
+    pub fn close_sessions(&self) -> Vec<(SessionId, HubError)> {
+        let mut failed = Vec::new();
+        for entry in self.sessions() {
+            let mut closed = crate::live::block_on(entry.close());
+            for _ in 0..3 {
+                if !matches!(closed, Err(HubError::Adapter(Error::RunActive))) {
+                    break;
+                }
+                if let Ok(state) = crate::live::block_on(entry.state()) {
+                    let mut runs: Vec<RunId> = state
+                        .active_runs
+                        .into_iter()
+                        .map(|run| run.run_id)
+                        .collect();
+                    runs.extend(state.active_run_id.filter(|run| !runs.contains(run)));
+                    for run in runs {
+                        let _ = crate::live::block_on(entry.cancel(run));
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                closed = crate::live::block_on(entry.close());
+            }
+            match closed {
+                Ok(()) | Err(HubError::Adapter(Error::SessionClosed)) => {}
+                Err(err) => failed.push((entry.id().clone(), err)),
+            }
+        }
+        failed
+    }
 }
 
 struct Reserved<'a>(Option<&'a HubSession>);
@@ -758,6 +788,38 @@ impl HubSession {
             .resolve_call(resolution)
             .await
             .inspect_err(|err| self.closed_by(err))?)
+    }
+
+    pub async fn switch_model(
+        &self,
+        request: oap_protocol::SessionModelSwitchRequest,
+    ) -> Result<(oap_protocol::SessionModelSwitchResponse, SessionState), HubError> {
+        if request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let switcher = self.session.model_switcher().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                oap_protocol::FEATURE_SESSION_MODEL_SWITCH,
+            )))
+        })?;
+        let (response, state) = switcher
+            .switch_model(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if response.session_id != self.id
+            || state.session_id != self.id
+            || response.model_id != state.current_model_id
+        {
+            return Err(Error::Harness(format!(
+                "serve: adapter reported a model switch outside session {:?}",
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok((response, state))
     }
 
     pub async fn update_settings(

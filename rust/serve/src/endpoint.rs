@@ -338,6 +338,9 @@ impl Endpoint {
         if *kind == EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST {
             return self.update_settings(envelope);
         }
+        if *kind == EnvelopeType::SESSION_MODEL_SWITCH_REQUEST {
+            return self.switch_model(envelope);
+        }
         Err(wire(
             "unsupported_request",
             format!("this endpoint serves no {}", kind.as_str()),
@@ -787,6 +790,46 @@ impl Endpoint {
         Ok(answer)
     }
 
+    fn switch_model(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
+        let entry = self.session(envelope)?;
+        let request = envelope
+            .decode_payload::<oap_protocol::SessionModelSwitchRequest>()
+            .map_err(|err| wire("invalid_payload", err))?;
+        let (response, state) = block_on(entry.switch_model(request)).map_err(hub_refusal)?;
+        let answer = self.session_reply(
+            EnvelopeType::SESSION_MODEL_SWITCH_RESPONSE,
+            envelope,
+            &response,
+            entry.id(),
+        )?;
+        if response.previous_model_id != response.model_id {
+            self.publish_state(envelope, entry.id(), &state)?;
+        }
+        Ok(answer)
+    }
+
+    fn publish_state(
+        &self,
+        envelope: &Envelope,
+        session: &oap_protocol::SessionId,
+        state: &oap_protocol::SessionState,
+    ) -> Result<(), WireError> {
+        let mut updated = Envelope::new(
+            EnvelopeType::SESSION_STATE_UPDATED,
+            self.next_id("event"),
+            state,
+        )
+        .map_err(|err| wire("internal", err))?;
+        updated.session_id = Some(session.clone());
+        updated.capability_revision = envelope.capability_revision.clone();
+        let mut sequences = lock(&self.state_sequences);
+        let sequence = sequences.entry(session.clone()).or_default();
+        *sequence += 1;
+        updated.sequence = Some(*sequence);
+        *lock(&self.updated) = Some(updated);
+        Ok(())
+    }
+
     fn update_settings(&self, envelope: &Envelope) -> Result<Envelope, WireError> {
         let entry = self.session(envelope)?;
         let request = envelope
@@ -799,19 +842,7 @@ impl Endpoint {
             &response,
             entry.id(),
         )?;
-        let mut updated = Envelope::new(
-            EnvelopeType::SESSION_STATE_UPDATED,
-            self.next_id("event"),
-            &state,
-        )
-        .map_err(|err| wire("internal", err))?;
-        updated.session_id = Some(entry.id().clone());
-        updated.capability_revision = envelope.capability_revision.clone();
-        let mut sequences = lock(&self.state_sequences);
-        let sequence = sequences.entry(entry.id().clone()).or_default();
-        *sequence += 1;
-        updated.sequence = Some(*sequence);
-        *lock(&self.updated) = Some(updated);
+        self.publish_state(envelope, entry.id(), &state)?;
         Ok(answer)
     }
 

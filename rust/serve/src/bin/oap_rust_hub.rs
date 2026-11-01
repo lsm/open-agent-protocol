@@ -3,10 +3,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use oap_binding::FileStore;
+use oap_serve::endpoint::{Endpoint, EndpointOptions};
 use oap_serve::stdio::{serve, StdioOptions};
 use oap_serve::{Hub, HubOptions, Registry};
 
-const USAGE: &str = "usage: oap-rust-hub serve --stdio [--session-history=PATH]";
+const USAGE: &str = "usage: oap-rust-hub serve --stdio [--session-history=PATH] serves many sessions; oap-rust-hub serve agent [--backend=B] [--stdio] [--session-history=PATH] serves one";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -15,18 +16,23 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let mut stdio = false;
+    let (agent, flags) = match flags.split_first() {
+        Some((role, rest)) if role == "agent" => (true, rest),
+        _ => (false, flags),
+    };
+    let mut stdio = agent;
     let mut history = None;
+    let mut backend = "memory".to_owned();
     for flag in flags {
-        match flag.as_str() {
-            "--stdio" => stdio = true,
-            other => match other.strip_prefix("--session-history=") {
-                Some(path) => history = Some(path.to_owned()),
-                None => {
-                    eprintln!("oap-rust-hub: unknown flag {other:?}\n{USAGE}");
-                    return ExitCode::from(2);
-                }
-            },
+        if flag == "--stdio" {
+            stdio = true;
+        } else if let Some(path) = flag.strip_prefix("--session-history=") {
+            history = Some(path.to_owned());
+        } else if let Some(name) = flag.strip_prefix("--backend=").filter(|_| agent) {
+            backend = name.to_owned();
+        } else {
+            eprintln!("oap-rust-hub: unknown flag {flag:?}\n{USAGE}");
+            return ExitCode::from(2);
         }
     }
     if !stdio {
@@ -44,12 +50,25 @@ fn main() -> ExitCode {
         }
     }
     let hub = Hub::with_options(Registry::default_registry(), options);
-    match serve(
-        &hub,
-        std::io::BufReader::new(std::io::stdin()),
-        std::io::stdout(),
-        &StdioOptions::default(),
-    ) {
+    let input = std::io::BufReader::new(std::io::stdin());
+    let served = if agent {
+        Endpoint::new(
+            &hub,
+            EndpointOptions {
+                adapter: backend,
+                ..EndpointOptions::default()
+            },
+        )
+        .and_then(|endpoint| endpoint.run(input, std::io::stdout()))
+        .map_err(|err| err.to_string())
+    } else {
+        serve(&hub, input, std::io::stdout(), &StdioOptions::default())
+            .map_err(|err| err.to_string())
+    };
+    for (session, err) in hub.close_sessions() {
+        eprintln!("oap-rust-hub: close session {}: {err}", session.as_str());
+    }
+    match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("oap-rust-hub: {err}");
