@@ -219,13 +219,9 @@ pub const Recorder = struct {
         if (event == .message_end and event.message_end.role == .assistant) self.flushThinking(allocator, store, meta);
         if (!eventFits(event)) return null;
         switch (event) {
-            .text_delta, .tool_call_delta, .provider_event, .tool_execution_update => {
-                store.saveChunk(meta.session_id, event) catch {};
-                return null;
-            },
+            .text_delta, .tool_call_delta, .provider_event, .tool_execution_update => return null,
             .thinking_delta => |payload| {
                 self.pending_thinking.appendSlice(allocator, payload.delta.slice()) catch {};
-                store.saveChunk(meta.session_id, event) catch {};
                 return null;
             },
             .message_start => self.pending_thinking.clearRetainingCapacity(),
@@ -349,20 +345,16 @@ pub const Store = struct {
     }
 
     pub fn save(self: Store, metadata: SessionMetadata, event: session_events.SessionEvent) !void {
-        try self.appendRecord(metadata.session_id, ".jsonl", metadata, event);
+        try self.appendRecord(metadata.session_id, metadata, event);
     }
 
     pub fn saveEvent(self: Store, session_id: []const u8, event: session_events.SessionEvent) !void {
-        try self.appendRecord(session_id, ".jsonl", null, event);
+        try self.appendRecord(session_id, null, event);
     }
 
-    pub fn saveChunk(self: Store, session_id: []const u8, event: session_events.SessionEvent) !void {
-        try self.appendRecord(session_id, stream_suffix, null, event);
-    }
-
-    fn appendRecord(self: Store, session_id: []const u8, suffix: []const u8, metadata: ?SessionMetadata, event: session_events.SessionEvent) !void {
+    fn appendRecord(self: Store, session_id: []const u8, metadata: ?SessionMetadata, event: session_events.SessionEvent) !void {
         try compat.fs.createDir(compat.fs.getCwd(), self.base_dir);
-        const path = try sessionFilePath(self.allocator, self.base_dir, session_id, suffix);
+        const path = try sessionFilePath(self.allocator, self.base_dir, session_id, ".jsonl");
         defer self.allocator.free(path);
         const line = try serializeEventRecord(self.allocator, metadata, event);
         defer self.allocator.free(line);
