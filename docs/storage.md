@@ -6,7 +6,7 @@ OAP's durable state is written by two hard-wired file stores today:
 
 - **Bindings.** `zig/src/hub/binding.zig` `Store`: one JSONL file
   (`~/.oapx/sessions.jsonl` by default), a CRC-32 per line, an exclusive
-  `<path>.lock`, and an atomic rewrite on every append. Go already has the
+  `<path>.lock`, and a durable in-place append. Go already has the
   interface, `go/binding.Store` (`Append`, `Latest`, `History`, `Sessions`),
   with a file and a memory implementation.
 - **`oapx` sessions.** `zig/src/tui/session_store.zig` `Store`: per session an
