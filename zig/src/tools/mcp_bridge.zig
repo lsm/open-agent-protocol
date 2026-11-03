@@ -145,6 +145,7 @@ const McpServerSession = struct {
     }
 
     fn sendRequest(self: *McpServerSession, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8, cancel_token: ?ai_types.CancelToken, timeout_ms: ?u64) !std.json.Parsed(std.json.Value) {
+        if (common.isCancelled(cancel_token)) return error.Cancelled;
         if (self.mock_response) |value| {
             return std.json.parseFromValue(std.json.Value, allocator, value, .{});
         }
@@ -157,8 +158,7 @@ const McpServerSession = struct {
         const request = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":{s},\"params\":{s}}}\n", .{ id, escaped_method, params_json });
         defer allocator.free(request);
         if (std.mem.indexOfScalar(u8, request[0 .. request.len - 1], '\n') != null) return error.InvalidMcpRequest;
-        if (common.isCancelled(cancel_token)) return error.Cancelled;
-        try child.stdin.?.writeStreamingAll(common.defaultIo(), request);
+        try writeUnlessCancelled(child, request, cancel_token);
 
         const start_ms = common.nowMs();
         const poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(common.process_poll_ms), .clock = .boot } };
@@ -203,6 +203,11 @@ const McpServerSession = struct {
             };
             try self.stdout_pending.appendSlice(allocator, reader.buffered());
         }
+    }
+
+    fn writeUnlessCancelled(child: *std.process.Child, request: []const u8, cancel_token: ?ai_types.CancelToken) !void {
+        if (common.isCancelled(cancel_token)) return error.Cancelled;
+        try child.stdin.?.writeStreamingAll(common.defaultIo(), request);
     }
 
     fn notifyCancelled(self: *McpServerSession, allocator: std.mem.Allocator, id: u64) void {
@@ -943,12 +948,36 @@ test "a call cancelled before it is written never reaches the server" {
     bridge.bind();
     defer bridge.deinit();
     try bridge.loadConfigJson(config_json);
+    const server = &bridge.servers.items[0];
+    try server.start(std.testing.allocator);
+    var cancelled = std.atomic.Value(bool).init(true);
+    const token = ai_types.CancelToken{ .cancelled = &cancelled };
+    try std.testing.expectError(error.Cancelled, McpServerSession.writeUnlessCancelled(&server.child.?, "{}\n", token));
+    compat.time.sleepMs(300);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(common.defaultIo(), "received", .{}));
+    cancelled.store(false, .seq_cst);
+    try McpServerSession.writeUnlessCancelled(&server.child.?, "{}\n", token);
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) : (compat.time.sleepMs(20)) {
+        tmp.dir.access(common.defaultIo(), "received", .{}) catch continue;
+        return;
+    }
+    return error.ServerNeverGotTheRequest;
+}
+
+test "a call already cancelled launches no server" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const config_json = try makeShellConfigJson(std.testing.allocator, hangingMcpServerScript());
+    defer std.testing.allocator.free(config_json);
+    var bridge = McpBridge.init(std.testing.allocator);
+    bridge.bind();
+    defer bridge.deinit();
+    try bridge.loadConfigJson(config_json);
     const tool = try makeTestTool(&bridge, "echo");
     var cancelled = std.atomic.Value(bool).init(true);
     const token = ai_types.CancelToken{ .cancelled = &cancelled };
     try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
-    compat.time.sleepMs(300);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(common.defaultIo(), "received", .{}));
+    try std.testing.expect(bridge.servers.items[0].child == null);
 }
 
 test "cancelling an MCP call in flight tells the server which request stopped" {
