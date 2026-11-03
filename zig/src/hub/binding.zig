@@ -191,6 +191,9 @@ pub const Store = struct {
     }
 
     pub fn append(self: *Store, entry: Entry) !void {
+        const io = compat.fs.defaultIo();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         self.write(entry) catch |err| {
             self.last_failure = err;
             return err;
@@ -209,12 +212,16 @@ pub const Store = struct {
         var file = try compat.fs.getCwd().createFile(io, self.path, .{ .truncate = false, .permissions = compat.fs.default_file_mode });
         defer file.close(io);
         try file.setLength(io, known);
+        errdefer file.setLength(io, known) catch {};
         try file.writePositionalAll(io, line, known);
         try file.sync(io);
         self.validated = known + line.len;
     }
 
     pub fn latest(self: *Store, arena: std.mem.Allocator, session_id: []const u8) !?Entry {
+        const io = compat.fs.defaultIo();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, max_store_bytes) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
@@ -231,6 +238,9 @@ pub const Store = struct {
     }
 
     pub fn sessions(self: *Store, arena: std.mem.Allocator) ![]Entry {
+        const io = compat.fs.defaultIo();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, max_store_bytes) catch |err| switch (err) {
             error.FileNotFound => return &.{},
             else => return err,
