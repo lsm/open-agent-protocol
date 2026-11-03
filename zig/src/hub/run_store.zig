@@ -66,6 +66,16 @@ fn stamped(arena: std.mem.Allocator, held: []const Record, record: Record) !Reco
     return record;
 }
 
+fn own(arena: std.mem.Allocator, record: Record) !Record {
+    var owned = record;
+    owned.session_id = try arena.dupe(u8, record.session_id);
+    owned.run_id = try arena.dupe(u8, record.run_id);
+    if (record.request) |given| owned.request = try arena.dupe(u8, given);
+    if (record.replaces) |given| owned.replaces = try arena.dupe(u8, given);
+    if (record.root) |given| owned.root = try arena.dupe(u8, given);
+    return owned;
+}
+
 fn compact(arena: std.mem.Allocator, all: []const Record) ![]Record {
     var sessions: std.ArrayList([]const u8) = .empty;
     for (all) |record| {
@@ -124,11 +134,21 @@ fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []con
     return open_runs.items;
 }
 
+pub const compact_slack: usize = 64;
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     path: []u8,
     staging: []u8,
     held: ?compat.fs.File = null,
+    log: ?Log = null,
+
+    const Log = struct {
+        arena: std.heap.ArenaAllocator,
+        records: std.ArrayList(Record),
+        length: u64,
+        kept: usize,
+    };
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.RunStoreNeedsAPath;
@@ -149,14 +169,15 @@ pub const Store = struct {
 
     pub fn deinit(self: *Store) void {
         if (self.held) |held| held.close(compat.fs.defaultIo());
+        if (self.log) |*log| log.arena.deinit();
         self.allocator.free(self.path);
         self.allocator.free(self.staging);
         self.* = undefined;
     }
 
-    fn records(self: *Store, arena: std.mem.Allocator) ![]Record {
+    fn records(self: *Store, arena: std.mem.Allocator) !struct { std.ArrayList(Record), u64 } {
         const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, binding.max_store_bytes) catch |err| switch (err) {
-            error.FileNotFound => return &.{},
+            error.FileNotFound => return .{ .empty, 0 },
             else => return err,
         };
         var kept: std.ArrayList(Record) = .empty;
@@ -168,22 +189,60 @@ pub const Store = struct {
             };
             try kept.append(arena, record);
         }
-        return kept.items;
+        return .{ kept, start };
+    }
+
+    fn load(self: *Store) !*Log {
+        if (self.log) |*log| return log;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const held, const length = try self.records(arena.allocator());
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const kept = (try compact(scratch.allocator(), held.items)).len;
+        self.log = .{ .arena = arena, .records = held, .length = length, .kept = kept };
+        return &self.log.?;
     }
 
     pub fn append(self: *Store, record: Record) !void {
+        const reopened = self.log == null;
+        const log = try self.load();
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
-        const held = try self.records(arena);
-        const all = try std.mem.concat(arena, Record, &.{ held, &.{try stamped(arena, held, record)} });
-        var next: std.ArrayList(u8) = .empty;
-        for (try compact(arena, all)) |kept| try next.appendSlice(arena, try encode(arena, kept));
-        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next.items);
+        const next = try stamped(arena, log.records.items, record);
+        const line = try encode(arena, next);
+        if (reopened or log.records.items.len + 1 > 2 * log.kept + compact_slack or log.length + line.len > binding.max_store_bytes / 2) return self.compactWith(arena, log, next);
+        const owned = try own(log.arena.allocator(), next);
+        try log.records.ensureUnusedCapacity(log.arena.allocator(), 1);
+        const io = compat.fs.defaultIo();
+        var file = try compat.fs.getCwd().createFile(io, self.path, .{ .truncate = false, .permissions = compat.fs.default_file_mode });
+        defer file.close(io);
+        try file.setLength(io, log.length);
+        try file.writePositionalAll(io, line, log.length);
+        try file.sync(io);
+        log.records.appendAssumeCapacity(owned);
+        log.length += line.len;
+    }
+
+    fn compactWith(self: *Store, arena: std.mem.Allocator, log: *Log, next: Record) !void {
+        const all = try std.mem.concat(arena, Record, &.{ log.records.items, &.{next} });
+        var fresh = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer fresh.deinit();
+        var kept: std.ArrayList(Record) = .empty;
+        var bytes: std.ArrayList(u8) = .empty;
+        for (try compact(arena, all)) |held| {
+            try kept.append(fresh.allocator(), try own(fresh.allocator(), held));
+            try bytes.appendSlice(arena, try encode(arena, held));
+        }
+        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, bytes.items);
+        log.arena.deinit();
+        log.* = .{ .arena = fresh, .records = kept, .length = bytes.items.len, .kept = kept.items.len };
     }
 
     pub fn openRuns(self: *Store, arena: std.mem.Allocator, session_id: []const u8) ![]Open {
-        return collectOpen(arena, try self.records(arena), session_id);
+        const held, _ = try self.records(arena);
+        return collectOpen(arena, held.items, session_id);
     }
 
     pub fn runs(self: *Store) Runs {
@@ -225,14 +284,9 @@ pub const Memory = struct {
     fn memoryAppend(ctx: *anyopaque, record: Record) anyerror!void {
         const self: *Memory = @ptrCast(@alignCast(ctx));
         const arena = self.arena.allocator();
-        const session_id = try arena.dupe(u8, record.session_id);
-        const run_id = try arena.dupe(u8, record.run_id);
-        const request = if (record.request) |given| try arena.dupe(u8, given) else null;
-        const replaces = if (record.replaces) |given| try arena.dupe(u8, given) else null;
-        const root = if (record.root) |given| try arena.dupe(u8, given) else null;
         var scratch = std.heap.ArenaAllocator.init(self.arena.child_allocator);
         defer scratch.deinit();
-        const owned = try stamped(scratch.allocator(), self.records.items, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request, .replaces = replaces, .root = root });
+        const owned = try stamped(scratch.allocator(), self.records.items, try own(arena, record));
         const all = try std.mem.concat(scratch.allocator(), Record, &.{ self.records.items, &.{owned} });
         const kept = try compact(scratch.allocator(), all);
         var next: std.ArrayList(Record) = .empty;
@@ -310,8 +364,6 @@ test "a run admitted and started before a restart is read after it, and a settle
     try testing.expect(!open_runs[1].started);
     try testing.expectEqualStrings("{\"message\":\"next\"}", open_runs[1].request.?);
     try testing.expectEqual(@as(usize, 0), (try store.openRuns(arena.allocator(), "other")).len);
-    const bytes = try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, binding.max_store_bytes);
-    try testing.expect(std.mem.indexOf(u8, bytes, "r3") == null);
 }
 
 test "a torn tail is not read as a run, and the next append drops it" {
@@ -447,7 +499,7 @@ const Unreplacing = struct {
     }
 };
 
-test "a re-delivery replaces its held run in one line" {
+test "a re-delivery replaces its held run" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
@@ -458,8 +510,6 @@ test "a re-delivery replaces its held run in one line" {
     try store.append(.{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "new", .request = "{}", .replaces = "held" });
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const bytes = try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, binding.max_store_bytes);
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, bytes, "\n"));
     const open_runs = try store.openRuns(arena.allocator(), "s");
     try testing.expectEqual(@as(usize, 1), open_runs.len);
     try testing.expectEqualStrings("new", open_runs[0].run_id);
@@ -516,4 +566,181 @@ test "a record after a run was replaced or settled does not reopen it" {
     }, "s");
     try testing.expectEqual(@as(usize, 1), open_runs.len);
     try testing.expectEqualStrings("redelivered", open_runs[0].run_id);
+}
+
+fn lineCount(arena: std.mem.Allocator, path: []const u8) !usize {
+    const bytes = try compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, binding.max_store_bytes);
+    return std.mem.count(u8, bytes, "\n");
+}
+
+fn churn(store: *Store, arena: std.mem.Allocator, from: usize, count: usize) !void {
+    for (from..from + count) |index| {
+        const run_id = try std.fmt.allocPrint(arena, "done-{d}", .{index});
+        try store.append(.{ .action = .admitted, .time_ms = @intCast(index), .session_id = "s", .run_id = run_id });
+        try store.append(.{ .action = .settled, .time_ms = @intCast(index), .session_id = "s", .run_id = run_id });
+    }
+}
+
+test "an append adds its line after the lines already written, settled ones included" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const records = [_]Record{
+        .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "done" },
+        .{ .action = .settled, .time_ms = 2, .session_id = "s", .run_id = "done" },
+        .{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "open" },
+    };
+    var expected: std.ArrayList(u8) = .empty;
+    for (records) |record| {
+        try store.append(record);
+        try expected.appendSlice(arena.allocator(), try encode(arena.allocator(), record));
+    }
+    try testing.expectEqualStrings(expected.items, try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, binding.max_store_bytes));
+}
+
+test "the log is compacted to its open runs once dead records outgrow the slack" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try store.append(.{ .action = .admitted, .time_ms = 0, .session_id = "s", .run_id = "open" });
+    try churn(&store, arena.allocator(), 0, compact_slack / 2);
+    try store.append(.{ .action = .started, .time_ms = 1, .session_id = "s", .run_id = "open" });
+    try testing.expectEqual(@as(usize, compact_slack + 2), try lineCount(arena.allocator(), path));
+    try store.append(.{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "late" });
+    try testing.expectEqual(@as(usize, 3), try lineCount(arena.allocator(), path));
+    for (0..4 * compact_slack) |index| {
+        try churn(&store, arena.allocator(), compact_slack + index, 1);
+        try testing.expect(try lineCount(arena.allocator(), path) <= 2 * 4 + compact_slack);
+    }
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 2), open_runs.len);
+    try testing.expectEqualStrings("open", open_runs[0].run_id);
+    try testing.expect(open_runs[0].started);
+    try testing.expectEqualStrings("late", open_runs[1].run_id);
+}
+
+test "a store reopened after compaction reads the same runs and keeps appending" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    {
+        var store = try Store.open(testing.allocator, path);
+        defer store.deinit();
+        try store.append(.{ .action = .admitted, .time_ms = 0, .session_id = "s", .run_id = "held", .request = "{}" });
+        try churn(&store, arena.allocator(), 0, compact_slack);
+        try store.append(.{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "next" });
+        try testing.expect(try lineCount(arena.allocator(), path) < 2 * compact_slack);
+    }
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "again", .request = "{}", .replaces = "held" });
+    var reopened = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 2), reopened.len);
+    try testing.expectEqualStrings("again", reopened[0].run_id);
+    try testing.expectEqualStrings("held", reopened[0].root);
+    try testing.expectEqualStrings("next", reopened[1].run_id);
+    store.deinit();
+    store = try Store.open(testing.allocator, path);
+    reopened = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqualStrings("held", reopened[0].root);
+}
+
+test "a torn tail left by a crash is cut before the first append after a reopen" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const first = try encode(arena.allocator(), .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "r1" });
+    const lost = try encode(arena.allocator(), .{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "lost" });
+    const after = try encode(arena.allocator(), .{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "after" });
+    const seed = try std.fmt.allocPrint(arena.allocator(), "{s}.seed", .{path});
+    try compat.fs.atomicReplace(compat.fs.getCwd(), path, seed, try std.mem.concat(arena.allocator(), u8, &.{ first, lost[0 .. lost.len / 2], after }));
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .admitted, .time_ms = 4, .session_id = "s", .run_id = "r2" });
+    const written = try encode(arena.allocator(), .{ .action = .admitted, .time_ms = 4, .session_id = "s", .run_id = "r2" });
+    try testing.expectEqualStrings(try std.mem.concat(arena.allocator(), u8, &.{ first, written }), try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, binding.max_store_bytes));
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 2), open_runs.len);
+    try testing.expectEqualStrings("r2", open_runs[1].run_id);
+}
+
+test "a compaction a crash left half-staged does not reach the log, and the next one replaces it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    {
+        var store = try Store.open(testing.allocator, path);
+        defer store.deinit();
+        try store.append(.{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "r1" });
+        try compat.fs.writeFile(compat.fs.getCwd(), store.staging, "0000 half a compac");
+    }
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try testing.expectEqual(@as(usize, 1), (try store.openRuns(arena.allocator(), "s")).len);
+    try churn(&store, arena.allocator(), 0, compact_slack);
+    try testing.expectEqual(compat.fs.FileKind.absent, compat.fs.fileKind(compat.fs.getCwd(), store.staging));
+    try testing.expect(try lineCount(arena.allocator(), path) < 2 * compact_slack);
+    try testing.expectEqualStrings("r1", (try store.openRuns(arena.allocator(), "s"))[0].run_id);
+}
+
+test "dead records never push the log past what a read accepts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const request = try arena.allocator().alloc(u8, binding.max_store_bytes / 4);
+    @memset(request, 'x');
+    for (0..5) |index| {
+        const run_id = try std.fmt.allocPrint(arena.allocator(), "big-{d}", .{index});
+        try store.append(.{ .action = .admitted, .time_ms = @intCast(index), .session_id = "s", .run_id = run_id, .request = request });
+        try store.append(.{ .action = .settled, .time_ms = @intCast(index), .session_id = "s", .run_id = run_id });
+    }
+    try store.append(.{ .action = .admitted, .time_ms = 9, .session_id = "s", .run_id = "small" });
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("small", open_runs[0].run_id);
+}
+
+test "the first append after an open leaves the log readable by its owner alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const io = compat.fs.defaultIo();
+    {
+        var file = try compat.fs.getCwd().createFile(io, path, .{ .permissions = @fromBackingInt(@intCast(0o644)) });
+        defer file.close(io);
+        try file.writeStreamingAll(io, try encode(arena.allocator(), .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "r1", .request = "{}" }));
+    }
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .started, .time_ms = 2, .session_id = "s", .run_id = "r1" });
+    const stat = try compat.fs.getCwd().statFile(io, path, .{});
+    try testing.expectEqual(@as(u32, 0o600), @as(u32, @intCast(@backingInt(stat.permissions))) & 0o777);
 }

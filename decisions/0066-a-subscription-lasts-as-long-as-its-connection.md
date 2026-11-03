@@ -82,4 +82,4 @@ an open client would then keep it from ever parking. The hub holds a
 subscription, not the harness, so a parked session keeps its streams.
 
 The trees reach this rule one pull request at a time; `drafts/hub.md` records
-which have not in D35.
+which have not in D36.
