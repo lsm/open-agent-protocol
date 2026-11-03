@@ -1096,7 +1096,9 @@ fn streamRetriedTurn(
     while (true) {
         return streamAssistantResponse(allocator, context, config, event_stream, &turn_retry) catch |err| {
             if (err != error.TurnRetryable) return err;
-            _ = retry.sleepMs(turn_retry.delay_ms, if (config.cancel_token) |token| token.cancelled else null);
+            if (!retry.sleepMs(turn_retry.delay_ms, if (config.cancel_token) |token| token.cancelled else null)) {
+                return makeProviderErrorAssistantMessage(allocator, config.model, "request cancelled");
+            }
             turn_retry.attempt += 1;
             continue;
         };
@@ -1513,7 +1515,9 @@ const FlakyCtx = struct {
     failures_left: usize,
     show_text: bool = false,
     error_event: bool = false,
+    cancel_on_failure: ?*std.atomic.Value(bool) = null,
     calls: usize = 0,
+    history_differed: bool = false,
 };
 
 fn flakyStream(
@@ -1525,6 +1529,8 @@ fn flakyStream(
 ) anyerror!*event_stream_module.AssistantMessageEventStream {
     const flaky: *FlakyCtx = @ptrCast(@alignCast(ctx.?));
     flaky.calls += 1;
+    if (context.messages.len != 1 or context.messages[0] != .user) flaky.history_differed = true;
+    if (flaky.cancel_on_failure) |cancelled| cancelled.store(true, .release);
     if (flaky.failures_left == 0) {
         var answered = ReplyCtx{ .text = "recovered", .stop_reason = .stop };
         return replyStream(&answered, model, context, options, allocator);
@@ -1565,12 +1571,17 @@ fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
     defer events.deinit();
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
+    try context.appendMessage(try ai_types.cloneMessage(std.testing.allocator, .{ .user = .{
+        .content = .{ .text = "saved question" },
+        .timestamp = 0,
+    } }));
 
     try runLoop(std.testing.allocator, &.{}, &context, .{
         .model = testModel(),
         .protocol = .{ .stream_fn = flakyStream, .ctx = flaky },
         .max_iterations = 1,
         .max_retry_delay_ms = 1,
+        .cancel_token = if (flaky.cancel_on_failure) |cancelled| .{ .cancelled = cancelled } else null,
     }, events, &events.retention);
 
     var outcome = FlakyOutcome{};
@@ -1594,8 +1605,17 @@ test "a stream that drops before any output retries from the saved history" {
     var flaky = FlakyCtx{ .failure = "read error", .failures_left = 2 };
     const outcome = try runFlakyTurn(&flaky);
     try std.testing.expectEqual(@as(usize, 3), flaky.calls);
+    try std.testing.expect(!flaky.history_differed);
     try std.testing.expectEqual(@as(usize, 0), outcome.message_starts);
     try std.testing.expect(outcome.final_text);
+}
+
+test "a cancel during the retry wait starts no further attempt" {
+    var cancelled = std.atomic.Value(bool).init(false);
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 10, .cancel_on_failure = &cancelled };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
 }
 
 test "the turn retry is bounded and the last failure ends the run" {
