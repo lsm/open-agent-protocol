@@ -184,6 +184,7 @@ pub const Store = struct {
         const keep = try validPrefix(self.allocator, bytes);
         const exists = compat.fs.fileKind(compat.fs.getCwd(), self.path) == .file;
         if (line == null and keep == bytes.len and exists) return keep;
+        if (keep + (if (line) |given| given.len else 0) > max_store_bytes) return error.StreamTooLong;
         const next = try std.mem.concat(self.allocator, u8, &.{ bytes[0..keep], line orelse "" });
         defer self.allocator.free(next);
         try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next);
