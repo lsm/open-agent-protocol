@@ -145,7 +145,6 @@ const McpServerSession = struct {
     }
 
     fn sendRequest(self: *McpServerSession, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8, cancel_token: ?ai_types.CancelToken, timeout_ms: ?u64) !std.json.Parsed(std.json.Value) {
-        if (common.isCancelled(cancel_token)) return error.Cancelled;
         if (self.mock_response) |value| {
             return std.json.parseFromValue(std.json.Value, allocator, value, .{});
         }
@@ -158,6 +157,7 @@ const McpServerSession = struct {
         const request = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":{s},\"params\":{s}}}\n", .{ id, escaped_method, params_json });
         defer allocator.free(request);
         if (std.mem.indexOfScalar(u8, request[0 .. request.len - 1], '\n') != null) return error.InvalidMcpRequest;
+        if (common.isCancelled(cancel_token)) return error.Cancelled;
         try child.stdin.?.writeStreamingAll(common.defaultIo(), request);
 
         const start_ms = common.nowMs();
@@ -913,9 +913,42 @@ test "MCP execution honors cancellation while waiting" {
 }
 
 
-fn cancelAfterTheRequestIsWritten(cancelled: *std.atomic.Value(bool)) void {
-    compat.time.sleepMs(200);
+fn cancelOnceTheServerHasTheRequest(dir: std.Io.Dir, cancelled: *std.atomic.Value(bool)) void {
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) : (compat.time.sleepMs(10)) {
+        const file = dir.openFile(common.defaultIo(), "cancelled.received", .{}) catch continue;
+        file.close(common.defaultIo());
+        break;
+    }
     cancelled.store(true, .seq_cst);
+}
+
+test "a call cancelled before it is written never reaches the server" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(std.testing.io, std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "received" });
+    defer std.testing.allocator.free(marker);
+    const script = try std.mem.concat(std.testing.allocator, u8, &.{
+        "python3 -u -c 'import sys\n" ++
+            "for line in sys.stdin: open(sys.argv[1],\"w\").write(line)' ",
+        marker,
+    });
+    defer std.testing.allocator.free(script);
+    const config_json = try makeShellConfigJson(std.testing.allocator, script);
+    defer std.testing.allocator.free(config_json);
+    var bridge = McpBridge.init(std.testing.allocator);
+    bridge.bind();
+    defer bridge.deinit();
+    try bridge.loadConfigJson(config_json);
+    const tool = try makeTestTool(&bridge, "echo");
+    var cancelled = std.atomic.Value(bool).init(true);
+    const token = ai_types.CancelToken{ .cancelled = &cancelled };
+    try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
+    compat.time.sleepMs(300);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(common.defaultIo(), "received", .{}));
 }
 
 test "cancelling an MCP call in flight tells the server which request stopped" {
@@ -930,6 +963,7 @@ test "cancelling an MCP call in flight tells the server which request stopped" {
         "python3 -u -c 'import json,sys\n" ++
             "for line in sys.stdin:\n" ++
             " msg=json.loads(line)\n" ++
+            " if msg.get(\"method\")==\"tools/call\": open(sys.argv[1]+\".received\",\"w\").close()\n" ++
             " if msg.get(\"method\")==\"notifications/cancelled\": open(sys.argv[1],\"w\").write(str(msg[\"params\"][\"requestId\"]))' ",
         marker,
     });
@@ -943,7 +977,7 @@ test "cancelling an MCP call in flight tells the server which request stopped" {
     const tool = try makeTestTool(&bridge, "echo");
     var cancelled = std.atomic.Value(bool).init(false);
     const token = ai_types.CancelToken{ .cancelled = &cancelled };
-    const canceller = try std.Thread.spawn(.{}, cancelAfterTheRequestIsWritten, .{&cancelled});
+    const canceller = try std.Thread.spawn(.{}, cancelOnceTheServerHasTheRequest, .{ tmp.dir, &cancelled });
     defer canceller.join();
     try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
     const by = common.nowMs() + 5_000;
