@@ -484,7 +484,7 @@ def report_lines(results, targets, scenarios, counts, host_class, revision, cap,
                          **{name: round(r[key] * scale) if key in r else None for name, key, scale in METRICS})
                     for r in group]
             fitted = [r for r in rows if r["status"] == "ok"]
-            per_agent = {name: slope([(r["n"], r[name]) for r in fitted]) for name, _, _ in METRICS[:7]}
+            per_agent = {name: slope([(r["n"], r[name]) for r in fitted]) for name, _, _ in METRICS[:8]}
             yield json.dumps(dict(identity, workload=f"{target}/{scenario}", fixture_version=1, agent_counts=counts,
                                   history_turns=HISTORY_TURNS, rss_cap_bytes=cap,
                                   timeout_ms=round(timeout * 1000), rows=rows, per_agent=per_agent),

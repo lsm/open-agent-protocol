@@ -149,6 +149,7 @@ const PerAgent = struct {
     written: ?f64,
     stored: ?f64,
     p50_ns: ?f64,
+    p99_ns: ?f64,
 };
 
 const ScalingReport = struct {
@@ -231,9 +232,11 @@ fn compareScalingLine(allocator: std.mem.Allocator, baseline_line: []const u8, c
     defer allocator.free(stored);
     const p50 = try slopeChange(allocator, base.p50_ns, next.p50_ns, 1.0 / 1000.0, " us");
     defer allocator.free(p50);
+    const p99 = try slopeChange(allocator, base.p99_ns, next.p99_ns, 1.0 / 1000.0, " us");
+    defer allocator.free(p99);
     const base_completed = completedAgents(baseline.value);
     const next_completed = completedAgents(candidate.value);
-    return std.fmt.allocPrint(allocator, "{s}: per agent settled RSS {s}, peak RSS {s}, threads {s}, FDs {s}, written {s}, stored {s}, step p50 {s}; completes N={d} -> N={d}{s}\n", .{ baseline.value.workload, settled, peak, threads, fds, written, stored, p50, base_completed, next_completed, if (next_completed < base_completed) " (stops earlier)" else "" });
+    return std.fmt.allocPrint(allocator, "{s}: per agent settled RSS {s}, peak RSS {s}, threads {s}, FDs {s}, written {s}, stored {s}, step p50 {s}, step p99 {s}; completes N={d} -> N={d}{s}\n", .{ baseline.value.workload, settled, peak, threads, fds, written, stored, p50, p99, base_completed, next_completed, if (next_completed < base_completed) " (stops earlier)" else "" });
 }
 
 fn compareScaling(allocator: std.mem.Allocator, baseline_data: []const u8, candidate_data: []const u8) !void {
@@ -360,15 +363,15 @@ test "comparison rejects incompatible identity" {
 
 test "scaling comparison reports slope changes and refuses another identity" {
     const line =
-        \\{"schema_version":1,"git_revision":"abc","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"ok","peak_rss":4096,"settled_rss":2048,"threads":3,"fds":4,"written":0,"stored":100,"p50_ns":1000,"p99_ns":2000,"wall_ns":50}],"per_agent":{"peak_rss":2048,"settled_rss":1024,"threads":0,"fds":0,"written":null,"stored":1,"p50_ns":0}}
+        \\{"schema_version":1,"git_revision":"abc","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"ok","peak_rss":4096,"settled_rss":2048,"threads":3,"fds":4,"written":0,"stored":100,"p50_ns":1000,"p99_ns":2000,"wall_ns":50}],"per_agent":{"peak_rss":2048,"settled_rss":1024,"threads":0,"fds":0,"written":null,"stored":1,"p50_ns":0,"p99_ns":2000}}
     ;
     const slower =
-        \\{"schema_version":1,"git_revision":"def","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"stopped","peak_rss":null,"settled_rss":null,"threads":null,"fds":null,"written":null,"stored":null,"p50_ns":null,"p99_ns":null,"wall_ns":null}],"per_agent":{"peak_rss":null,"settled_rss":3072,"threads":1,"fds":0,"written":null,"stored":1,"p50_ns":0}}
+        \\{"schema_version":1,"git_revision":"def","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"stopped","peak_rss":null,"settled_rss":null,"threads":null,"fds":null,"written":null,"stored":null,"p50_ns":null,"p99_ns":null,"wall_ns":null}],"per_agent":{"peak_rss":null,"settled_rss":3072,"threads":1,"fds":0,"written":null,"stored":1,"p50_ns":0,"p99_ns":2000}}
     ;
     try std.testing.expect(try isScaling(std.testing.allocator, line));
     const output = try compareScalingLine(std.testing.allocator, line, slower);
     defer std.testing.allocator.free(output);
-    try std.testing.expectEqualStrings("go/history: per agent settled RSS 1.00 -> 3.00 KiB (200.00%), peak RSS unavailable, threads 0.00 -> 1.00, FDs 0.00 -> 0.00, written unavailable, stored 1.00 -> 1.00 B (0.00%), step p50 0.00 -> 0.00 us; completes N=100 -> N=10 (stops earlier)\n", output);
+    try std.testing.expectEqualStrings("go/history: per agent settled RSS 1.00 -> 3.00 KiB (200.00%), peak RSS unavailable, threads 0.00 -> 1.00, FDs 0.00 -> 0.00, written unavailable, stored 1.00 -> 1.00 B (0.00%), step p50 0.00 -> 0.00 us, step p99 2.00 -> 2.00 us (0.00%); completes N=100 -> N=10 (stops earlier)\n", output);
     const elsewhere = try std.mem.replaceOwned(u8, std.testing.allocator, slower, "\"host_class\":\"ci\"", "\"host_class\":\"laptop\"");
     defer std.testing.allocator.free(elsewhere);
     try std.testing.expectError(error.IncompatibleReports, compareScalingLine(std.testing.allocator, line, elsewhere));
@@ -393,6 +396,6 @@ test "completed agents is the largest N that finished, whatever the row order" {
         }
     }.make;
     const rows = [_]ScalingRow{ row(1000, "ok"), row(10, "ok"), row(100, "ok"), row(10000, "stopped") };
-    const report: ScalingReport = .{ .schema_version = 1, .git_revision = "abc", .host_class = "ci", .target = "x86_64-linux", .cpu_model = "generic", .mode = "scaling", .workload = "go/empty", .fixture_version = 1, .agent_counts = &.{ 1000, 10, 100, 10000 }, .history_turns = 3, .rss_cap_bytes = 1, .timeout_ms = 1, .rows = &rows, .per_agent = .{ .peak_rss = null, .settled_rss = null, .threads = null, .fds = null, .written = null, .stored = null, .p50_ns = null } };
+    const report: ScalingReport = .{ .schema_version = 1, .git_revision = "abc", .host_class = "ci", .target = "x86_64-linux", .cpu_model = "generic", .mode = "scaling", .workload = "go/empty", .fixture_version = 1, .agent_counts = &.{ 1000, 10, 100, 10000 }, .history_turns = 3, .rss_cap_bytes = 1, .timeout_ms = 1, .rows = &rows, .per_agent = .{ .peak_rss = null, .settled_rss = null, .threads = null, .fds = null, .written = null, .stored = null, .p50_ns = null, .p99_ns = null } };
     try std.testing.expectEqual(@as(u64, 1000), completedAgents(report));
 }
