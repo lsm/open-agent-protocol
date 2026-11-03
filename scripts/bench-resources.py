@@ -32,6 +32,13 @@ SCENARIOS = ("empty", "history", "waiting", "jobs", "burst")
 TARGETS = ("zig", "go", "rust", "zig-loop")
 LOOP_ONLY = {"jobs"}
 
+# Layouts from the macOS SDK's <sys/proc_info.h> and <sys/resource.h>, checked with
+# sizeof/offsetof: struct proc_taskinfo is 96 bytes, pti_resident_size at byte 8 and
+# pti_threadnum at byte 84; in struct rusage_info_v4 the 16-byte ri_uuid fills uint64
+# slots 0-1, so ri_logical_writes is slot 29. struct proc_fdinfo is 8 bytes.
+TASKINFO_SIZE, TASKINFO_RESIDENT, TASKINFO_THREADS = 96, 8, 84
+RUSAGE_LOGICAL_WRITES, FDINFO_SIZE = 29, 8
+
 
 class Probe:
     """Reads RSS, thread count, open descriptors and bytes written for one pid."""
@@ -42,9 +49,9 @@ class Probe:
             self.lib = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib")
             self.lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
             self.lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-            self.task = ctypes.create_string_buffer(96)
+            self.task = ctypes.create_string_buffer(TASKINFO_SIZE)
             self.usage = (ctypes.c_uint64 * 64)()
-            self.fds = ctypes.create_string_buffer(8 * 65536)
+            self.fds = ctypes.create_string_buffer(FDINFO_SIZE * 65536)
 
     def sample(self):
         if sys.platform == "darwin":
@@ -52,14 +59,14 @@ class Probe:
         return self._linux()
 
     def _darwin(self):
-        if self.lib.proc_pidinfo(self.pid, 4, 0, self.task, 96) != 96:
+        if self.lib.proc_pidinfo(self.pid, 4, 0, self.task, TASKINFO_SIZE) != TASKINFO_SIZE:
             raise ProcessLookupError(self.pid)
-        rss = int.from_bytes(self.task.raw[8:16], "little")
-        threads = int.from_bytes(self.task.raw[84:88], "little")
-        fds = self.lib.proc_pidinfo(self.pid, 1, 0, self.fds, len(self.fds)) // 8
+        rss = int.from_bytes(self.task.raw[TASKINFO_RESIDENT:TASKINFO_RESIDENT + 8], "little")
+        threads = int.from_bytes(self.task.raw[TASKINFO_THREADS:TASKINFO_THREADS + 4], "little")
+        fds = self.lib.proc_pidinfo(self.pid, 1, 0, self.fds, len(self.fds)) // FDINFO_SIZE
         if self.lib.proc_pid_rusage(self.pid, 4, self.usage) != 0:
             raise ProcessLookupError(self.pid)
-        return {"rss": rss, "threads": threads, "fds": fds, "written": int(self.usage[2 + 27])}
+        return {"rss": rss, "threads": threads, "fds": fds, "written": int(self.usage[RUSAGE_LOGICAL_WRITES])}
 
     def _linux(self):
         base = Path("/proc") / str(self.pid)
