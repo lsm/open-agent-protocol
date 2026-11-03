@@ -946,3 +946,8 @@ test "AgentMessage fromToolResult" {
     try std.testing.expect(agent_msg.isLlmCompatible());
     try std.testing.expectEqual(@as(i64, 12345), agent_msg.getTimestamp());
 }
+
+test "a run's end carries no copy of its messages" {
+    try std.testing.expect(!@hasField(AgentEndPayload, "messages"));
+    try std.testing.expect(!@hasField(AgentLoopResult, "messages"));
+}
