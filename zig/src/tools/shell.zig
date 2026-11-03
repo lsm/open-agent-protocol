@@ -68,6 +68,7 @@ pub const Jobs = struct {
         var dir = try common.openWorkspace(workspace_root, false);
         defer dir.close(common.defaultIo());
         try dir.createDirPath(common.defaultIo(), jobs_dir);
+        self.reap();
         self.lock();
         defer self.mutex.unlock();
         try self.list.ensureUnusedCapacity(self.allocator, 1);
@@ -103,6 +104,7 @@ pub const Jobs = struct {
     }
 
     pub fn report(self: *Jobs, output_path: []const u8, kill: bool) !Report {
+        self.reap();
         self.lock();
         const job = self.find(output_path) orelse {
             self.mutex.unlock();
@@ -142,6 +144,20 @@ pub const Jobs = struct {
     fn find(self: *Jobs, output_path: []const u8) ?*Job {
         for (self.list.items) |job| if (std.mem.eql(u8, job.output, output_path)) return job;
         return null;
+    }
+
+    fn reap(self: *Jobs) void {
+        while (true) {
+            self.lock();
+            const watcher = for (self.list.items) |job| {
+                if (job.term == null) continue;
+                const thread = job.watcher orelse continue;
+                job.watcher = null;
+                break thread;
+            } else null;
+            self.mutex.unlock();
+            (watcher orelse return).join();
+        }
     }
 
     fn end(self: *Jobs, job: *Job) void {
@@ -863,4 +879,31 @@ test "the shell tool outside a session refuses a background job rather than runn
     const args = try backgroundArgs(&case, "sleep 30");
     defer std.testing.allocator.free(args);
     try std.testing.expectError(error.BackgroundJobsUnavailable, execute("call-static", args, null, null, null, std.testing.allocator));
+}
+
+test "a finished job's thread is joined by the next job call, and its status and output stay readable" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    const tools = sessionTools(&jobs);
+    const quick = try backgroundArgs(&case, "echo done; exit 3");
+    defer std.testing.allocator.free(quick);
+    var first = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-quick", quick, null, null, null, std.testing.allocator);
+    defer first.deinit(std.testing.allocator);
+    const quick_path = jobs.list.items[0].output;
+    const by = common.nowMs() + 5_000;
+    while (std.mem.eql(u8, (try jobs.report(quick_path, false)).status, "running") and common.nowMs() < by) compat.time.sleepMs(20);
+
+    var second = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-next", quick, null, null, null, std.testing.allocator);
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expect(jobs.list.items[0].watcher == null);
+
+    const reported = try jobs.report(quick_path, false);
+    try std.testing.expectEqualStrings("exited", reported.status);
+    try std.testing.expectEqual(@as(?u8, 3), reported.exit_code);
+    const output = try case.tmp.dir.readFileAlloc(common.defaultIo(), quick_path, std.testing.allocator, .limited(1 << 20));
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("done\n", output);
 }
