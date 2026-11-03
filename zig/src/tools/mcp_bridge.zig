@@ -394,6 +394,11 @@ pub const McpBridge = struct {
         defer allocator.free(params);
         var response = try self.servers.items[ctx.server_index].sendRequest(allocator, "tools/call", params, cancel_token, null);
         defer response.deinit();
+        if (rpcErrorMessage(response.value)) |message| {
+            var failed = try common.makeTextResult(allocator, message, "{\"source\":\"mcp\"}");
+            failed.is_error = true;
+            return failed;
+        }
         try validateRpcResult(response.value);
         const result = resultObject(response.value) orelse return error.InvalidMcpResponse;
         return resultFromMcp(allocator, result);
@@ -490,6 +495,14 @@ fn resultObject(value: std.json.Value) ?std.json.ObjectMap {
     return if (result == .object) result.object else null;
 }
 
+fn rpcErrorMessage(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    const failure = value.object.get("error") orelse return null;
+    if (failure != .object) return null;
+    const message = getString(failure.object, "message") orelse return null;
+    return if (message.len > 0) message else null;
+}
+
 fn validateRpcResult(value: std.json.Value) !void {
     if (value != .object) return error.InvalidMcpResponse;
     const obj = value.object;
@@ -525,7 +538,6 @@ fn declaredDestructive(obj: std.json.ObjectMap) bool {
 
 fn resultFromMcp(allocator: std.mem.Allocator, result: std.json.ObjectMap) !agent.AgentToolResult {
     const is_error = if (result.get("isError")) |v| v == .bool and v.bool else false;
-    if (is_error) return error.McpToolError;
     var text = std.ArrayList(u8).empty;
     defer text.deinit(allocator);
     if (result.get("content")) |content_value| {
@@ -551,7 +563,9 @@ fn resultFromMcp(allocator: std.mem.Allocator, result: std.json.ObjectMap) !agen
             try text.appendSlice(allocator, result_json);
         }
     }
-    return common.makeTextResult(allocator, text.items, "{\"source\":\"mcp\"}");
+    var converted = try common.makeTextResult(allocator, text.items, "{\"source\":\"mcp\"}");
+    converted.is_error = is_error;
+    return converted;
 }
 
 test "MCP tool definition maps to AgentTool" {
