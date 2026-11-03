@@ -91,6 +91,7 @@ type runState struct {
 	ops          int
 	bytes        int
 	attached     int
+	streams      map[*attachment]struct{}
 
 	pumps     context.Context
 	stopPumps context.CancelFunc
@@ -107,7 +108,7 @@ func newRunState(ctx context.Context, maxOps, maxBytes, maxAttach int) *runState
 		maxAttach = maxSubscriptions
 	}
 	pumps, stopPumps := context.WithCancel(ctx)
-	return &runState{maxOps: maxOps, maxBytes: maxBytes, maxAttach: maxAttach, pumps: pumps, stopPumps: stopPumps}
+	return &runState{maxOps: maxOps, maxBytes: maxBytes, maxAttach: maxAttach, streams: make(map[*attachment]struct{}), pumps: pumps, stopPumps: stopPumps}
 }
 
 type admission int
@@ -138,7 +139,14 @@ func (r *runState) offer(size int) (admission, string) {
 	return refused, fmt.Sprintf("the requests already in flight fill the frontend's %d-byte budget", r.maxBytes)
 }
 
-func (r *runState) attach() (context.Context, admission, string) {
+type attachment struct {
+	id     int64
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (r *runState) attach(id int64) (*attachment, admission, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.shuttingDown {
@@ -149,14 +157,38 @@ func (r *runState) attach() (context.Context, admission, string) {
 	}
 	r.attached++
 	r.work.Add(1)
-	return r.pumps, admitted, ""
+	stream, cancel := context.WithCancel(r.pumps)
+	attached := &attachment{id: id, ctx: stream, cancel: cancel, done: make(chan struct{})}
+	r.streams[attached] = struct{}{}
+	return attached, admitted, ""
 }
 
-func (r *runState) detach() {
+func (r *runState) detach(attached *attachment) {
 	r.mu.Lock()
 	r.attached--
+	delete(r.streams, attached)
 	r.mu.Unlock()
+	attached.cancel()
+	close(attached.done)
 	r.work.Done()
+}
+
+func (r *runState) unsubscribe(ctx context.Context, id int64) {
+	r.mu.Lock()
+	var ending []*attachment
+	for attached := range r.streams {
+		if attached.id == id {
+			ending = append(ending, attached)
+		}
+	}
+	r.mu.Unlock()
+	for _, attached := range ending {
+		attached.cancel()
+		select {
+		case <-attached.done:
+		case <-ctx.Done():
+		}
+	}
 }
 
 func (r *runState) release(size int) {
@@ -627,6 +659,8 @@ type requestLine struct {
 	Cursor    string          `json:"cursor,omitempty"`
 	Limit     *int            `json:"limit,omitempty"`
 
+	Subscription json.RawMessage `json:"subscription,omitempty"`
+
 	AllowDegradedFeatures []string `json:"allow_degraded_features,omitempty"`
 
 	present map[string]bool
@@ -660,7 +694,7 @@ func decodeRequest(frame []byte) (requestLine, error) {
 
 var canonicalKeys = map[string]bool{
 	"id": true, "op": true, "adapter": true, "session_id": true, "run_id": true, "after": true, "request": true,
-	"cursor": true, "limit": true,
+	"cursor": true, "limit": true, "subscription": true,
 	"allow_degraded_features": true,
 }
 

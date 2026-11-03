@@ -829,6 +829,53 @@ func TestSubscriptionsAreBounded(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeEndsOneSubscriptionAndFreesItsSlot(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "ending")
+	f := startFrontend(t, hub, Options{MaxSubscriptions: 1})
+
+	f.send(`{"id":1,"op":"events","session_id":"ending"}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("events: %+v", response.Error)
+	}
+	f.send(`{"id":2,"op":"events","session_id":"ending"}`)
+	if refused := f.expectResponse(2); refused.OK || refused.Error.Code != "busy" {
+		t.Fatalf("a second subscription past the bound: %+v", refused)
+	}
+	f.send(`{"id":3,"op":"unsubscribe","subscription":1}`)
+	if response := f.expectResponse(3); !response.OK || string(response.Result) != "null" {
+		t.Fatalf("unsubscribe: %+v", response)
+	}
+	f.send(`{"id":4,"op":"events","session_id":"ending"}`)
+	if response := f.expectResponse(4); !response.OK {
+		t.Fatalf("the slot was not freed: %+v", response.Error)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnsubscribeAnswersTheSameForAnIDWithNoSubscription(t *testing.T) {
+	f := startFrontend(t, newTestHub(t, 64, 64), Options{})
+	f.send(`{"id":1,"op":"unsubscribe","subscription":99}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("unsubscribe: %+v", response.Error)
+	}
+	for id, line := range map[int64]string{
+		2: `{"id":2,"op":"unsubscribe"}`,
+		3: `{"id":3,"op":"unsubscribe","subscription":"two"}`,
+		4: `{"id":4,"op":"unsubscribe","subscription":2,"session_id":"s1"}`,
+	} {
+		f.send(line)
+		if refused := f.expectResponse(id); refused.OK || refused.Error.Code != "invalid_request" {
+			t.Fatalf("%s: %+v", line, refused)
+		}
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	id := strings.Repeat("d", 200)
