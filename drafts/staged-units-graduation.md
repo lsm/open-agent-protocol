@@ -1986,6 +1986,12 @@ conformance draft's `+models` unit text cites the fixtures.
 
 ## T2. Queue delivery
 
+> [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+> supersedes every use below and in T3 and T4 of `?follow=session`,
+> `oap-run-boundary` and `oap-stream-end`: a subscription lasts as long as its
+> connection in one mode, and none of the three exists. Read those passages as
+> the history of that choice.
+
 Unit name: `queue`. Decision:
 [0007](../decisions/0007-queue-delivery.md), which graduates the admission
 overlap, the ordering rule, the disclosed bounds, the refusal in both
@@ -2817,11 +2823,7 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   `run` parameter. `?run=` is still needed even with ordered
   delivery: a drop between one run's terminal and the next run's first
   envelope leaves the client holding the finished run's cursor while the
-  next run is already the started one. ([Decision
-  0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
-  supersedes the rest of this stream-end design: every subscription lasts as
-  long as its connection, with no `?follow=session`, `oap-run-boundary` or
-  `oap-stream-end`.) Stream end changes with it: today
+  next run is already the started one. Stream end changes with it: today
   the daemon ends a stream at a run terminal unless a resubmit already
   landed, and both clients read a terminal as the stream's clean end. Under
   T2 a following subscription (`?follow=session`, below) continues past a
