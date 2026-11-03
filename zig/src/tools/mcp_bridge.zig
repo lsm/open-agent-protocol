@@ -166,7 +166,10 @@ const McpServerSession = struct {
         errdefer if (matched_response) |*response| response.deinit();
 
         while (true) {
-            if (common.isCancelled(cancel_token)) return error.Cancelled;
+            if (common.isCancelled(cancel_token)) {
+                self.notifyCancelled(allocator, id);
+                return error.Cancelled;
+            }
             while (try takePendingLine(allocator, &self.stdout_pending)) |line| {
                 defer allocator.free(line);
                 const trimmed = std.mem.trim(u8, line, " \t\r\n");
@@ -200,6 +203,12 @@ const McpServerSession = struct {
             };
             try self.stdout_pending.appendSlice(allocator, reader.buffered());
         }
+    }
+
+    fn notifyCancelled(self: *McpServerSession, allocator: std.mem.Allocator, id: u64) void {
+        const params = std.fmt.allocPrint(allocator, "{{\"requestId\":{d},\"reason\":\"cancelled\"}}", .{id}) catch return;
+        defer allocator.free(params);
+        self.sendNotification(allocator, "notifications/cancelled", params) catch {};
     }
 
     fn sendNotification(self: *McpServerSession, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) !void {
