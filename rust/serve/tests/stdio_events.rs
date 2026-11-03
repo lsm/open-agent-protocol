@@ -214,6 +214,27 @@ fn unsubscribe_ends_one_subscription_and_frees_its_slot() {
 }
 
 #[test]
+fn unsubscribe_right_after_the_acknowledgement_still_reaches_the_subscription() {
+    let (hub, _) = opened(64);
+    for _ in 0..300 {
+        let answered = lines_with(
+            &hub,
+            &[
+                r#"{"id":1,"op":"events","session_id":"s"}"#,
+                r#"{"id":2,"op":"unsubscribe","subscription":1}"#,
+                r#"{"id":3,"op":"events","session_id":"s"}"#,
+            ],
+            StdioOptions {
+                max_subscriptions: 1,
+                ..StdioOptions::default()
+            },
+        );
+        let third = answered.iter().find(|line| line["id"] == 3).unwrap();
+        assert_eq!(third["ok"], true, "{answered:?}");
+    }
+}
+
+#[test]
 fn unsubscribe_answers_the_same_for_an_id_with_no_subscription() {
     let (hub, _) = opened(64);
     let answered = lines(

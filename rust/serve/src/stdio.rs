@@ -563,10 +563,10 @@ impl Serving {
         }
     }
 
-    fn start(&self, pump: Pump) {
+    fn register(&self, pump: &Pump) -> bool {
         let mut pumps = lock(&self.pumps);
         let Some(pumps) = pumps.as_mut() else {
-            return;
+            return false;
         };
         pumps.push(Running {
             id: pump.id,
@@ -574,6 +574,10 @@ impl Serving {
             attached: pump.attached(),
             stopped: pump._attached.stopped.clone(),
         });
+        true
+    }
+
+    fn start(&self, pump: Pump) {
         let writer = self.writer.clone();
         let limit = self.frame_limit;
         std::thread::spawn(move || pump.run(&writer, limit));
@@ -687,6 +691,7 @@ impl Serving {
                 None,
             )
         };
+        let pump = pump.filter(|pump| self.register(pump));
         if let Some(line) = fitted(request.id, answer, self.frame_limit)? {
             emit(&self.writer, &line)?;
         }
