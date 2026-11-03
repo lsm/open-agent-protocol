@@ -30,6 +30,7 @@ pub const op_cancel = "cancel";
 pub const op_close = "close";
 pub const op_settings = "settings";
 pub const op_events = "events";
+pub const op_unsubscribe = "unsubscribe";
 pub const op_history = "history";
 pub const op_transcript = "transcript";
 pub const transcript_max: usize = 500;
@@ -76,6 +77,7 @@ pub const Supplied = struct {
     allow_degraded_features: bool = false,
     cursor: bool = false,
     limit: bool = false,
+    subscription: bool = false,
 };
 
 const no_parameters: []const []const u8 = &.{};
@@ -85,13 +87,14 @@ const open_parameters: []const []const u8 = &.{ "adapter", "request" };
 const max_envelope_bytes: usize = 16 << 20;
 const session_parameter: []const []const u8 = &.{"session_id"};
 const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
+const unsubscribe_parameters: []const []const u8 = &.{"subscription"};
 const session_request_parameters: []const []const u8 = &.{ "session_id", "request" };
 const history_parameters: []const []const u8 = &.{ "cursor", "limit" };
 const transcript_parameters: []const []const u8 = &.{ "session_id", "cursor", "limit" };
 const work_start_parameters: []const []const u8 = &.{ "adapter", "request" };
 const request_parameter: []const []const u8 = &.{"request"};
 const work_read_parameters: []const []const u8 = &.{ "session_id", "after", "limit" };
-const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
+const all_parameters = [_][]const u8{ "subscription", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
 
 pub const Request = struct {
     id: i64,
@@ -105,6 +108,7 @@ pub const Request = struct {
     allow_degraded_features: []const []const u8 = &.{},
     cursor: ?[]const u8 = null,
     limit: ?i64 = null,
+    subscription: ?i64 = null,
     supplied: Supplied = .{},
     after_unreadable: bool = false,
     directory: []const u8 = "",
@@ -125,6 +129,7 @@ pub const Request = struct {
         if (std.mem.eql(u8, parameter, "allow_degraded_features")) return self.supplied.allow_degraded_features;
         if (std.mem.eql(u8, parameter, "cursor")) return self.supplied.cursor;
         if (std.mem.eql(u8, parameter, "limit")) return self.supplied.limit;
+        if (std.mem.eql(u8, parameter, "subscription")) return self.supplied.subscription;
         unreachable;
     }
 
@@ -398,6 +403,10 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     request.supplied.allow_degraded_features = member(root, "allow_degraded_features") != null;
     request.supplied.cursor = member(root, "cursor") != null;
     request.supplied.limit = member(root, "limit") != null;
+    request.supplied.subscription = member(root, "subscription") != null;
+    if (member(root, "subscription")) |subscription| {
+        if (subscription == .integer) request.subscription = subscription.integer;
+    }
     try requireStringOrNull(root, "cursor");
     request.cursor = stringMember(root, "cursor");
     if (member(root, "limit")) |limit| {
@@ -466,7 +475,7 @@ fn requestBytes(arena: std.mem.Allocator, line: []const u8) !usize {
 }
 
 fn allowed(key: []const u8) bool {
-    const names = [_][]const u8{ "id", "op", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
+    const names = [_][]const u8{ "id", "op", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features", "subscription" };
     for (names) |name| {
         if (std.mem.eql(u8, key, name)) return true;
     }
@@ -792,6 +801,21 @@ pub const Frontend = struct {
         return .streaming;
     }
 
+    fn unsubscribe(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Outcome {
+        if (try request.only(arena, unsubscribe_parameters)) |refusal| return .{ .refused = refusal };
+        const id = request.subscription orelse {
+            return .{ .refused = .{ .code = "invalid_request", .message = "subscription is the id of the request that started it" } };
+        };
+        for (self.streams.items, 0..) |watched, index| {
+            if (watched.id != id) continue;
+            var ended = self.streams.orderedRemove(index);
+            ended.subscription.close();
+            ended.run.deinit(self.allocator);
+            break;
+        }
+        return .{ .answer = .{ .null = {} } };
+    }
+
     pub fn pumpStreams(self: *Frontend) Error!void {
         var index: usize = 0;
         while (index < self.streams.items.len) {
@@ -1020,6 +1044,7 @@ pub const Frontend = struct {
             return self.openSession(arena, name, request, .framed);
         }
         if (std.mem.eql(u8, request.op, op_events)) return self.events(arena, request);
+        if (std.mem.eql(u8, request.op, op_unsubscribe)) return self.unsubscribe(arena, request);
         if (std.mem.eql(u8, request.op, op_submit) or std.mem.eql(u8, request.op, op_resolve) or std.mem.eql(u8, request.op, op_cancel) or std.mem.eql(u8, request.op, op_settings)) {
             if (try request.only(arena, session_request_parameters)) |refusal| return .{ .refused = refusal };
             if (request.envelopeSizeRefusal()) |refusal| return .{ .refused = refusal };
@@ -5525,6 +5550,45 @@ test "work.list pages newest first with ties in key order, asks the native lists
     try testing.expectEqual(@as(usize, 0), groups[0].object.get("work").?.array.items.len);
     for ([_][]const u8{ "{\"id\":5,\"op\":\"work.list\",\"request\":{\"limit\":101}}", "{\"id\":6,\"op\":\"work.list\",\"request\":{\"cursor\":\"eyJhdCI6MSwia2V5IjoiIiwiZGVwdGgiOjF9\"}}" }) |refused| {
         try harness.send(refused);
+        try testing.expectEqualStrings("invalid_request", try harness.code());
+    }
+}
+
+test "unsubscribe ends one subscription, frees its slot and leaves the others streaming" {
+    const harness = try Harness.init(testing.allocator, .{}, .{ .max_subscriptions = 1 });
+    defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+    try harness.send("{\"id\":3,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("busy", try harness.code());
+
+    try harness.send("{\"id\":4,\"op\":\"unsubscribe\",\"subscription\":2}");
+    try testing.expectEqualStrings("{\"id\":4,\"ok\":true,\"result\":null}", harness.recorder.last());
+    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+    const before = harness.recorder.lines.items.len;
+    reference_holder.pending_events = &.{.{ .line = started_line, .run_id = "run-1", .sequence = 1 }};
+    try harness.hub.pump(testing.allocator, 0);
+    try harness.frontend.pumpStreams();
+    try testing.expectEqual(before, harness.recorder.lines.items.len);
+
+    try harness.send("{\"id\":5,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("{\"id\":5,\"ok\":true,\"result\":null}", harness.recorder.lines.items[before]);
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+}
+
+test "unsubscribe answers the same for an id with no subscription and refuses a bad request" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"unsubscribe\",\"subscription\":99}");
+    try testing.expectEqualStrings("{\"id\":1,\"ok\":true,\"result\":null}", harness.recorder.last());
+    for ([_][]const u8{
+        "{\"id\":2,\"op\":\"unsubscribe\"}",
+        "{\"id\":3,\"op\":\"unsubscribe\",\"subscription\":\"two\"}",
+        "{\"id\":4,\"op\":\"unsubscribe\",\"subscription\":2,\"session_id\":\"s1\"}",
+    }) |line| {
+        try harness.send(line);
         try testing.expectEqualStrings("invalid_request", try harness.code());
     }
 }
