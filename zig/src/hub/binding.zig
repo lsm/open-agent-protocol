@@ -721,3 +721,23 @@ test "an append that would pass the read cap fails and leaves the history readab
     try testing.expectEqual(@as(?anyerror, error.StreamTooLong), store.last_failure);
     try testing.expectEqual(Action.opened, (try store.latest(arena.allocator(), "s")).?.action);
 }
+
+test "the first append after an open that would pass the read cap fails and changes nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const home = try arena.allocator().alloc(u8, max_store_bytes - 1024);
+    @memset(home, 'h');
+    const seeded = try encode(arena.allocator(), .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi", .home = home } });
+    try compat.fs.writeFile(compat.fs.getCwd(), path, seeded);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const directory = try arena.allocator().alloc(u8, 2048);
+    @memset(directory, 'd');
+    try testing.expectError(error.StreamTooLong, store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi", .directory = directory } }));
+    try testing.expectEqual(seeded.len, (try compat.fs.getCwd().statFile(compat.fs.defaultIo(), path, .{})).size);
+    try testing.expectEqual(Action.opened, (try store.latest(arena.allocator(), "s")).?.action);
+}
