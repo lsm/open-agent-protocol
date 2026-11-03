@@ -33,11 +33,11 @@ TARGETS = ("zig", "go", "rust", "zig-loop")
 LOOP_ONLY = {"jobs"}
 
 # Layouts from the macOS SDK's <sys/proc_info.h> and <sys/resource.h>, checked with
-# sizeof/offsetof: struct proc_taskinfo is 96 bytes, pti_resident_size at byte 8 and
-# pti_threadnum at byte 84; in struct rusage_info_v4 the 16-byte ri_uuid fills uint64
-# slots 0-1, so ri_logical_writes is slot 29. struct proc_fdinfo is 8 bytes.
-TASKINFO_SIZE, TASKINFO_RESIDENT, TASKINFO_THREADS = 96, 8, 84
-RUSAGE_LOGICAL_WRITES, FDINFO_SIZE = 29, 8
+# sizeof/offsetof: struct proc_taskinfo is 96 bytes with pti_threadnum at byte 84; in
+# struct rusage_info_v4 the 16-byte ri_uuid fills uint64 slots 0-1, so ri_phys_footprint
+# is slot 9 and ri_logical_writes slot 29. struct proc_fdinfo is 8 bytes.
+TASKINFO_SIZE, TASKINFO_THREADS = 96, 84
+RUSAGE_PHYS_FOOTPRINT, RUSAGE_LOGICAL_WRITES, FDINFO_SIZE = 9, 29, 8
 
 
 class Probe:
@@ -61,18 +61,19 @@ class Probe:
     def _darwin(self):
         if self.lib.proc_pidinfo(self.pid, 4, 0, self.task, TASKINFO_SIZE) != TASKINFO_SIZE:
             raise ProcessLookupError(self.pid)
-        rss = int.from_bytes(self.task.raw[TASKINFO_RESIDENT:TASKINFO_RESIDENT + 8], "little")
         threads = int.from_bytes(self.task.raw[TASKINFO_THREADS:TASKINFO_THREADS + 4], "little")
         fds = self.lib.proc_pidinfo(self.pid, 1, 0, self.fds, len(self.fds)) // FDINFO_SIZE
         if self.lib.proc_pid_rusage(self.pid, 4, self.usage) != 0:
             raise ProcessLookupError(self.pid)
-        return {"rss": rss, "threads": threads, "fds": fds, "written": int(self.usage[RUSAGE_LOGICAL_WRITES])}
+        return {"rss": int(self.usage[RUSAGE_PHYS_FOOTPRINT]), "threads": threads, "fds": fds,
+                "written": int(self.usage[RUSAGE_LOGICAL_WRITES])}
 
     def _linux(self):
         base = Path("/proc") / str(self.pid)
         status = dict(line.split(":", 1) for line in (base / "status").read_text().splitlines() if ":" in line)
         io = dict(line.split(": ") for line in (base / "io").read_text().splitlines())
-        return {"rss": int(status["VmRSS"].split()[0]) * 1024, "threads": int(status["Threads"]),
+        resident = int(status["VmRSS"].split()[0]) + int(status.get("VmSwap", "0 kB").split()[0])
+        return {"rss": resident * 1024, "threads": int(status["Threads"]),
                 "fds": len(os.listdir(base / "fd")), "written": int(io["write_bytes"])}
 
 

@@ -74,8 +74,13 @@ so `jobs` runs only on `zig-loop`.
 
 ## Columns
 
-- **peak RSS**: the largest resident size sampled every 10 ms while the
-  scenario ran. **settled RSS**: one sample a second after it finished.
+- **peak RSS**: the largest memory reading sampled every 10 ms while the
+  scenario ran. **settled RSS**: one sample a second after it finished. The
+  reading counts what the hub holds, not only what is resident right now:
+  `ri_phys_footprint` on macOS and `VmRSS` plus `VmSwap` on Linux. Plain
+  resident size is the wrong number here, because the kernel compresses or
+  swaps idle pages out of it: one 10,000-agent run read 1.8 GiB resident
+  against an 8.9 GiB footprint.
 - **threads**, **FDs**: the OS thread count and open descriptors, settled.
   Goroutines and async tasks are not threads and do not show here.
 - **written**: bytes the hub wrote to files, from the kernel's per-process
