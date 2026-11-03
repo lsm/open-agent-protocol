@@ -26,7 +26,7 @@ jobs:
       group: benchmark-report-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     continue-on-error: true
     steps:
       - name: Checkout candidate
@@ -36,6 +36,16 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       - name: Capture candidate reports
         run: ./scripts/capture-benchmark-baseline.sh artifacts/candidate github-ubuntu-24.04-x86_64 "$GITHUB_SHA"
@@ -49,8 +59,8 @@ jobs:
             .git_revision, .digest, .raw_window_ns, .ns_per_iteration,
             .window_avg_p50_ns, .window_avg_p95_ns, .window_avg_p99_ns,
             .allocation_count, .free_count, .allocated_bytes, .freed_bytes,
-            .peak_live_bytes, .leak_bytes
-          ))' artifacts/candidate/latency.jsonl artifacts/candidate/allocation.jsonl)
+            .peak_live_bytes, .leak_bytes, .rows, .per_agent
+          ))' artifacts/candidate/latency.jsonl artifacts/candidate/allocation.jsonl artifacts/candidate/scaling.jsonl)
           if ! run_ids_text=$(gh api --method GET --paginate --slurp \
             "repos/$GITHUB_REPOSITORY/actions/workflows/benchmark-baseline.yml/runs" \
             -f branch=main -f event=workflow_dispatch -f status=success -F per_page=100 | \
@@ -86,12 +96,13 @@ jobs:
             [[ -n "$baseline_file" ]] || continue
             baseline_directory=$(dirname "$baseline_file")
             [[ -f "$baseline_directory/allocation.jsonl" ]] || continue
+            [[ -f "$baseline_directory/scaling.jsonl" ]] || continue
             baseline_identity=$(jq -Scs 'map(del(
               .git_revision, .digest, .raw_window_ns, .ns_per_iteration,
               .window_avg_p50_ns, .window_avg_p95_ns, .window_avg_p99_ns,
               .allocation_count, .free_count, .allocated_bytes, .freed_bytes,
-              .peak_live_bytes, .leak_bytes
-            ))' "$baseline_file" "$baseline_directory/allocation.jsonl")
+              .peak_live_bytes, .leak_bytes, .rows, .per_agent
+            ))' "$baseline_file" "$baseline_directory/allocation.jsonl" "$baseline_directory/scaling.jsonl")
             if [[ "$baseline_identity" == "$candidate_identity" ]]; then
               mkdir -p artifacts/baseline
               cp "$baseline_directory"/* artifacts/baseline/
@@ -114,7 +125,7 @@ jobs:
             echo
             echo '```text'
             comparison_valid=true
-            for mode in latency allocation; do
+            for mode in latency allocation scaling; do
               if output=$(zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- "artifacts/baseline/$mode.jsonl" "artifacts/candidate/$mode.jsonl" 2>&1); then
                 printf '%s\n' "$output"
               else

@@ -15,10 +15,12 @@ const ProtocolClient = protocol_client.ProtocolClient;
 const ProviderProtocolRuntime = protocol_runtime.ProviderProtocolRuntime;
 
 const default_idle_timeout_ms: i64 = 600_000;
+const default_first_byte_timeout_ms: i64 = 180_000;
 
 pub const InProcessProviderProtocolBridge = struct {
     registry: *api_registry.ApiRegistry,
     idle_timeout_ms: i64 = default_idle_timeout_ms,
+    first_byte_timeout_ms: i64 = default_first_byte_timeout_ms,
 
     pub fn init(registry: *api_registry.ApiRegistry) InProcessProviderProtocolBridge {
         return .{ .registry = registry };
@@ -42,6 +44,7 @@ const StreamThreadContext = struct {
     api_key: ?[]u8,
     session_id: ?[]u8,
     idle_timeout_ms: i64,
+    first_byte_timeout_ms: i64,
 
     fn deinit(self: *StreamThreadContext) void {
         self.model.deinit(self.allocator);
@@ -79,6 +82,7 @@ fn streamViaProtocol(
         .api_key = if (options.api_key) |k| try allocator.dupe(u8, k) else null,
         .session_id = if (options.session_id) |sid| try allocator.dupe(u8, sid) else null,
         .idle_timeout_ms = bridge.idle_timeout_ms,
+        .first_byte_timeout_ms = bridge.first_byte_timeout_ms,
     };
 
     const thread = try std.Thread.spawn(.{}, runStreamThread, .{thread_ctx});
@@ -245,6 +249,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
 
     var last_progress_ms = compat.time.nowMillis();
     var abort_sent = false;
+    var first_byte_seen = false;
 
     while (!client.isComplete()) {
         if (!abort_sent and tokenCancelled(ctx.options.cancel_token)) {
@@ -263,7 +268,14 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
         };
 
         const now_ms = compat.time.nowMillis();
-        if (drained) last_progress_ms = now_ms;
+        if (drained) {
+            last_progress_ms = now_ms;
+            first_byte_seen = true;
+        }
+        if (!first_byte_seen and now_ms - last_progress_ms > ctx.first_byte_timeout_ms) {
+            ctx.out_stream.completeWithError("Provider protocol stream timed out before the first byte");
+            return;
+        }
         if (now_ms - last_progress_ms > ctx.idle_timeout_ms) {
             ctx.out_stream.completeWithError("Provider protocol stream timed out");
             return;
@@ -883,6 +895,63 @@ test "a stream that goes silent for the idle window fails as timed out" {
     }
 
     try std.testing.expectEqualStrings("Provider protocol stream timed out", stream.getError() orelse "");
+}
+
+test "a provider that never sends a first byte times out before the idle limit" {
+    const allocator = std.testing.allocator;
+
+    const Silent = struct {
+        fn stream(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, a: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+            _ = model;
+            _ = context;
+            const s = try a.create(event_stream.AssistantMessageEventStream);
+            s.* = event_stream.AssistantMessageEventStream.init(a);
+            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+            s.wait_for_thread_on_deinit = true;
+            const thread = try std.Thread.spawn(.{}, untilCancelled, .{ s, options.?.cancel_token.? });
+            thread.detach();
+            return s;
+        }
+        fn streamSimple(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.SimpleStreamOptions, a: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+            return stream(model, context, .{ .cancel_token = options.?.cancel_token }, a);
+        }
+        fn untilCancelled(s: *event_stream.AssistantMessageEventStream, token: ai_types.CancelToken) void {
+            while (!token.isCancelled()) compat.time.sleepNs(1 * std.time.ns_per_ms);
+            s.completeWithError("request cancelled");
+            s.markThreadDone();
+        }
+    };
+
+    var registry = api_registry.ApiRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{
+        .api = "openai-completions",
+        .stream = Silent.stream,
+        .stream_simple = Silent.streamSimple,
+    }, null);
+
+    var bridge = InProcessProviderProtocolBridge.init(&registry);
+    bridge.first_byte_timeout_ms = 100;
+    const protocol = bridge.protocolClient();
+
+    const user = ai_types.Message{ .user = .{
+        .content = .{ .text = "hello" },
+        .timestamp = compat.time.nowMillis(),
+    } };
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{user} };
+
+    const stream = try protocol.stream(bridgeTestModel("silent", "silent-model"), ctx, .{ .api_key = "test-key" }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |ev| {
+        var owned_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
+    }
+
+    try std.testing.expectEqualStrings("Provider protocol stream timed out before the first byte", stream.getError() orelse "");
 }
 
 fn bridgeTestModel(provider: []const u8, id: []const u8) ai_types.Model {

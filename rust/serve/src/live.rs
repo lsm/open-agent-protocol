@@ -93,6 +93,7 @@ pub(crate) struct Live {
     pending_end: Option<(Vec<Arc<Subscriber>>, Terminal)>,
     reservations: usize,
     finish_due: bool,
+    pub(crate) work: crate::work::WorkLog,
 }
 
 impl Live {
@@ -157,6 +158,7 @@ impl Live {
     }
 
     fn publish(&mut self, envelope: &Envelope, capacity: usize) {
+        self.work.observe(envelope, crate::hub::now_ms());
         let run = envelope.run_id.clone().unwrap_or_default();
         let terminal = [
             EnvelopeType::RUN_COMPLETED,

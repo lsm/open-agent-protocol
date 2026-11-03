@@ -24,6 +24,14 @@ For a harness sanity check, add `--extra-copy` to candidate allocation collectio
 
 Use a stable, explicit host class for tracked baselines. Do not compare `local` reports from unrelated machines, and avoid running latency collection alongside other CPU-heavy work. Re-run a noisy sample before drawing conclusions; this Phase A harness is a regression tripwire, not a general-purpose microbenchmark framework.
 
+## Agent scaling
+
+A third report, `scaling.jsonl`, comes from `scripts/bench-resources.py`
+rather than `makai-bench`: it measures how the Zig, Go and Rust hubs' memory,
+threads, descriptors, disk writes and step latency grow per agent, and
+`bench-compare` compares its per-agent slopes. What it measures and what it
+does not is in [the resource benchmark](resource-benchmark.md).
+
 ## Canonical capture
 
 Run the **Capture Benchmark Baseline** workflow manually on the revision that will serve as the comparison baseline. It uses the pinned `ubuntu-24.04` x86_64 runner class, validates each JSON Lines report with `bench-compare`, and retains the raw reports, validation summaries, revision, and host class for 90 days. The artifact name includes the full source revision and runner class.

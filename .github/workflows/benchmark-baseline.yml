@@ -10,7 +10,7 @@ jobs:
   capture:
     name: Canonical baseline (Ubuntu 24.04 x86_64)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,6 +19,16 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       - name: Capture and validate baseline
         run: ./scripts/capture-benchmark-baseline.sh artifacts/benchmark github-ubuntu-24.04-x86_64 "$GITHUB_SHA"
@@ -31,6 +41,9 @@ jobs:
           fi
           if [[ -f artifacts/benchmark/allocation-summary.txt ]]; then
             cat artifacts/benchmark/allocation-summary.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -f artifacts/benchmark/scaling.md ]]; then
+            cat artifacts/benchmark/scaling.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload raw canonical reports

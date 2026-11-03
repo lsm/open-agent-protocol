@@ -31,6 +31,7 @@ const PARAMS: [&str; 8] = [
 pub struct StdioOptions {
     pub frame_limit: usize,
     pub max_subscriptions: usize,
+    pub max_ops: usize,
 }
 
 pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 64;
@@ -40,6 +41,7 @@ impl Default for StdioOptions {
         Self {
             frame_limit: DEFAULT_FRAME_LIMIT,
             max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
+            max_ops: DEFAULT_MAX_OPS,
         }
     }
 }
@@ -54,25 +56,35 @@ pub enum StdioError {
     MalformedLine { line: usize, detail: String },
     #[error("servestdio: encoded line exceeds the frame limit")]
     LineTooLarge,
+    #[error("servestdio: requests read before the host's end were dropped unserved")]
+    RequestsDropped,
+    #[error("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")]
+    ShutdownStalled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
 #[derive(Debug, Default)]
-struct Request {
-    id: i64,
-    op: String,
-    session_id: String,
-    request: Option<Box<RawValue>>,
-    run_id: String,
-    after: Option<Box<RawValue>>,
-    present: Vec<String>,
+pub(crate) struct Request {
+    pub(crate) id: i64,
+    pub(crate) op: String,
+    pub(crate) session_id: String,
+    pub(crate) request: Option<Box<RawValue>>,
+    pub(crate) run_id: String,
+    pub(crate) adapter: String,
+    pub(crate) cursor: String,
+    pub(crate) limit: Option<i64>,
+    pub(crate) allow_degraded_features: Vec<String>,
+    pub(crate) after: Option<Box<RawValue>>,
+    pub(crate) present: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct WireError {
-    code: &'static str,
-    message: String,
+pub(crate) struct WireError {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) details: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -88,21 +100,26 @@ pub const WRITE_QUEUE: usize = 256;
 
 pub const SHUTDOWN_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
-type Lines = std::sync::mpsc::SyncSender<Vec<u8>>;
+type Lines = std::sync::mpsc::SyncSender<(Vec<u8>, bool)>;
 
 pub fn serve(
     hub: &Hub,
-    input: impl BufRead,
+    input: impl BufRead + Send + 'static,
     mut output: impl Write + Send + 'static,
     options: &StdioOptions,
 ) -> Result<(), StdioError> {
     if options.frame_limit < MIN_FRAME_LIMIT {
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
-    let (writer, queue) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    let (writer, queue) = std::sync::mpsc::sync_channel::<(Vec<u8>, bool)>(WRITE_QUEUE);
     let (drained, written) = std::sync::mpsc::channel();
+    let tally = Arc::new(Tally::default());
+    let writing = tally.clone();
     std::thread::spawn(move || {
-        for line in queue {
+        for (line, refusal) in queue {
+            if writing.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             let wrote = output
                 .write_all(&line)
                 .and_then(|()| output.write_all(b"\n"))
@@ -110,73 +127,490 @@ pub fn serve(
             if wrote.is_err() {
                 break;
             }
+            if refusal {
+                writing
+                    .delivered
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         let _ = drained.send(());
     });
-    let mut pumps = Vec::new();
-    let served = serve_lines(hub, input, &writer, options, |pump| {
-        pumps.push((pump.subscription.canceller(), pump.attached()));
-        let writer = writer.clone();
-        let limit = options.frame_limit;
-        std::thread::spawn(move || pump.run(&writer, limit));
+    let (read, frames) = std::sync::mpsc::sync_channel(0);
+    let limit = options.frame_limit;
+    std::thread::spawn(move || {
+        let mut input = input;
+        loop {
+            let frame = read_frame(&mut input, limit);
+            let more = matches!(frame, Ok(Some(_)));
+            if read.send(frame).is_err() || !more {
+                return;
+            }
+        }
     });
+    let serving = Serving {
+        hub: hub.clone(),
+        writer,
+        frame_limit: options.frame_limit,
+        ids: Arc::default(),
+        attached: Arc::default(),
+        cap: match options.max_subscriptions {
+            0 => DEFAULT_MAX_SUBSCRIPTIONS,
+            cap => cap,
+        },
+        pumps: Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
+        stopping: Arc::default(),
+        inflight: Arc::new(Inflight::new(options.max_ops)),
+        broken: Arc::default(),
+        pending: Arc::default(),
+        tally: tally.clone(),
+    };
+    let served = serve_lines(&serving, &frames);
     let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
+    let settled = serving.inflight.settle(deadline);
+    let pumps = lock(&serving.pumps).take().unwrap_or_default();
+    let served = match (served, lock(&serving.broken).take()) {
+        (Ok(_), Some(err)) => Err(err),
+        (served, _) => served,
+    };
+    let streaming = |pumps: &[(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)]| {
+        pumps
+            .iter()
+            .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
+    };
+    if matches!(served, Ok(true)) {
+        while streaming(&pumps) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     for (canceller, _) in &pumps {
         canceller.cancel();
     }
-    while pumps
-        .iter()
-        .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
-        && std::time::Instant::now() < deadline
-    {
+    while streaming(&pumps) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    drop(writer);
-    let _ = written.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
-    served
+    serving.flush_until(deadline);
+    drop(serving);
+    let drained = written
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .is_ok();
+    if !drained {
+        tally
+            .abandoned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let ended = if tally.undelivered() > 0 {
+        Err(StdioError::RequestsDropped)
+    } else if !settled || !drained {
+        Err(StdioError::ShutdownStalled)
+    } else {
+        Ok(())
+    };
+    served.and(ended)
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) type Ids = std::sync::atomic::AtomicU64;
+
+pub const DEFAULT_MAX_OPS: usize = 16;
+
+const ADMISSION_BYTES: usize = MAX_ENVELOPE_BYTES;
+
+struct Inflight {
+    held: std::sync::Mutex<(usize, usize)>,
+    settled: std::sync::Condvar,
+    max_ops: usize,
+}
+
+impl Inflight {
+    fn new(max_ops: usize) -> Self {
+        Self {
+            held: std::sync::Mutex::default(),
+            settled: std::sync::Condvar::new(),
+            max_ops: match max_ops {
+                0 => DEFAULT_MAX_OPS,
+                max => max,
+            },
+        }
+    }
+
+    fn offer(&self, size: usize) -> Result<(), String> {
+        let mut held = lock(&self.held);
+        let (ops, bytes) = *held;
+        if ops == 0 || (ops < self.max_ops && bytes + size <= ADMISSION_BYTES) {
+            *held = (ops + 1, bytes + size);
+            return Ok(());
+        }
+        if ops >= self.max_ops {
+            return Err(format!(
+                "the frontend is already running {} operations",
+                self.max_ops
+            ));
+        }
+        Err(format!(
+            "the requests already in flight fill the frontend's {ADMISSION_BYTES}-byte budget"
+        ))
+    }
+
+    fn release(&self, size: usize) {
+        let mut held = lock(&self.held);
+        held.0 -= 1;
+        held.1 -= size;
+        if held.0 == 0 {
+            self.settled.notify_all();
+        }
+    }
+
+    fn settle(&self, deadline: std::time::Instant) -> bool {
+        let mut held = lock(&self.held);
+        while held.0 > 0 {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            held = self
+                .settled
+                .wait_timeout(held, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+}
+
+type Pumps = std::sync::Mutex<Option<Vec<(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)>>>;
+
+#[derive(Clone)]
+struct Serving {
+    hub: Hub,
+    writer: Lines,
+    frame_limit: usize,
+    ids: Arc<Ids>,
+    attached: Arc<std::sync::atomic::AtomicUsize>,
+    cap: usize,
+    pumps: Arc<Pumps>,
+    stopping: Arc<std::sync::RwLock<Stopping>>,
+    inflight: Arc<Inflight>,
+    broken: Arc<std::sync::Mutex<Option<StdioError>>>,
+    pending: Arc<Held>,
+    tally: Arc<Tally>,
+}
+
+type Held = std::sync::Mutex<std::collections::VecDeque<(Vec<u8>, bool)>>;
+
+#[derive(Default)]
+struct Tally {
+    owed: std::sync::atomic::AtomicUsize,
+    delivered: std::sync::atomic::AtomicUsize,
+    abandoned: std::sync::atomic::AtomicBool,
+}
+
+impl Tally {
+    fn undelivered(&self) -> usize {
+        let owed = self.owed.load(std::sync::atomic::Ordering::SeqCst);
+        owed.saturating_sub(self.delivered.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+type Frames = std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, FrameError>>;
+
+pub(crate) const DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+#[derive(Default)]
+pub(crate) struct Stopping {
+    pub(crate) mode: Option<oap_protocol::ShutdownMode>,
+    pub(crate) draining: bool,
+}
+
+impl Stopping {
+    fn graceful(&self) -> bool {
+        self.mode == Some(oap_protocol::ShutdownMode::GRACEFUL)
+    }
+
+    pub(crate) fn drained(hub: &Hub) -> bool {
+        let runs = block_on(hub.nonterminal_runs());
+        for run in runs
+            .iter()
+            .filter(|run| run.status == oap_protocol::RunStatus::QUEUED)
+        {
+            block_on(hub.cancel_queued(run));
+        }
+        runs.is_empty()
+    }
+}
+
+pub(crate) fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, bool) {
+    use oap_protocol::{EndpointShutdownResponse, ShutdownMode, ShutdownOutcome};
+    if let Err(refused) = request.only(&["request"]) {
+        return (Err(refused), false);
+    }
+    let asked = match crate::asked_shutdown(request.request.as_deref()) {
+        Ok(asked) => asked,
+        Err(refused) => return (Err(wire("invalid_request", refused)), false),
+    };
+    let mut runs = block_on(hub.nonterminal_runs());
+    let mode = match asked.or_else(|| stopping.mode.clone()) {
+        Some(mode) => mode,
+        None if !runs.is_empty() => {
+            let choose = EndpointShutdownResponse {
+                outcome: ShutdownOutcome::CHOOSE,
+                active_runs: runs,
+                ..EndpointShutdownResponse::default()
+            };
+            return (
+                serde_json::to_value(&choose).map_err(|err| wire("internal", err)),
+                false,
+            );
+        }
+        None => ShutdownMode::GRACEFUL,
+    };
+    if stopping.mode != Some(ShutdownMode::FORCE) {
+        stopping.mode = Some(mode);
+    }
+    let mut lost = Vec::new();
+    if stopping.graceful() {
+        runs.retain(|run| {
+            let dropped =
+                run.status == oap_protocol::RunStatus::QUEUED && block_on(hub.cancel_queued(run));
+            if dropped {
+                lost.push(oap_protocol::ShutdownQueuedRun {
+                    session_id: run.session_id.clone(),
+                    run_id: run.run_id.clone(),
+                });
+            }
+            !dropped
+        });
+    }
+    let finished = !(stopping.graceful() && !runs.is_empty());
+    let outcome = if finished {
+        ShutdownOutcome::STOPPING
+    } else {
+        stopping.draining = true;
+        ShutdownOutcome::DRAINING
+    };
+    let answer = EndpointShutdownResponse {
+        outcome,
+        active_runs: runs,
+        lost,
+        ..EndpointShutdownResponse::default()
+    };
+    (
+        serde_json::to_value(&answer).map_err(|err| wire("internal", err)),
+        finished,
+    )
 }
 
 fn emit(writer: &Lines, line: &[u8]) -> std::io::Result<()> {
     writer
-        .send(line.to_vec())
+        .send((line.to_vec(), false))
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the output closed"))
 }
 
-fn serve_lines(
-    hub: &Hub,
-    mut input: impl BufRead,
-    writer: &Lines,
-    options: &StdioOptions,
-    mut start: impl FnMut(Pump),
-) -> Result<(), StdioError> {
+fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
     let mut number = 0;
-    let mut ids = 0;
-    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let cap = match options.max_subscriptions {
-        0 => DEFAULT_MAX_SUBSCRIPTIONS,
-        cap => cap,
-    };
     loop {
+        if let Some(err) = lock(&serving.broken).take() {
+            return Err(err);
+        }
         number += 1;
         let malformed = |detail: String| StdioError::MalformedLine {
             line: number,
             detail,
         };
-        let Some(frame) = read_frame(&mut input, options.frame_limit).map_err(|err| match err {
+        let Some(frame) = serving.next_frame(frames) else {
+            return Ok(false);
+        };
+        let Some(frame) = frame.map_err(|err| match err {
             FrameError::Defect(detail) => malformed(detail),
             FrameError::Io(err) => StdioError::Io(err),
         })?
         else {
-            return Ok(());
+            let stopping = serving
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            return Ok(stopping.draining && stopping.graceful());
         };
         let request = decode_request(&frame).map_err(malformed)?;
-        let (answer, pump) = if request.op == "events" {
-            match events(hub, &request, Attached::claim(&attached, cap)) {
+        let size = frame.len();
+        if let Err(why) = serving.inflight.offer(size) {
+            let refused = wire("busy", format!("{why}; send this request again"));
+            if let Some(line) = fitted(request.id, Err(refused), serving.frame_limit)? {
+                serving.queue(line, true)?;
+            }
+            continue;
+        }
+        if request.op == "shutdown" {
+            let mut stopping = serving
+                .stopping
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
+            serving.inflight.release(size);
+            if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
+                serving.queue(line, false)?;
+            }
+            if finished {
+                return Ok(stopping.draining && stopping.graceful());
+            }
+            continue;
+        }
+        let worker = serving.clone();
+        std::thread::spawn(move || {
+            if let Err(err) = worker.answer(&request) {
+                lock(&worker.broken).get_or_insert(err);
+            }
+            worker.inflight.release(size);
+        });
+    }
+}
+
+impl Serving {
+    fn queue(&self, line: Vec<u8>, refusal: bool) -> Result<(), StdioError> {
+        if refusal {
+            self.tally
+                .owed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let line = (line, refusal);
+        self.flush()?;
+        let mut pending = lock(&self.pending);
+        if pending.is_empty() {
+            match self.writer.try_send(line) {
+                Ok(()) => return Ok(()),
+                Err(std::sync::mpsc::TrySendError::Full(line)) => pending.push_back(line),
+                Err(std::sync::mpsc::TrySendError::Disconnected(line)) => {
+                    pending.push_back(line);
+                    return Err(StdioError::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "the output closed",
+                    )));
+                }
+            }
+        } else {
+            pending.push_back(line);
+        }
+        if pending.len() > WRITE_QUEUE {
+            return Err(StdioError::RequestsDropped);
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), StdioError> {
+        let mut pending = lock(&self.pending);
+        while let Some(line) = pending.pop_front() {
+            match self.writer.try_send(line) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(line)) => {
+                    pending.push_front(line);
+                    break;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(line)) => {
+                    pending.push_front(line);
+                    return Err(StdioError::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "the output closed",
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_until(&self, deadline: std::time::Instant) {
+        while self.flush().is_ok()
+            && !lock(&self.pending).is_empty()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn next_frame(&self, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
+        loop {
+            let draining = self
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .draining;
+            if draining && Stopping::drained(&self.hub) {
+                return Some(Ok(None));
+            }
+            let waiting = !lock(&self.pending).is_empty();
+            if !draining && !waiting {
+                return frames.recv().ok();
+            }
+            match frames.recv_timeout(DRAIN_POLL) {
+                Ok(frame) => return Some(frame),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = self.flush();
+                }
+            }
+        }
+    }
+
+    fn start(&self, pump: Pump) {
+        let mut pumps = lock(&self.pumps);
+        let Some(pumps) = pumps.as_mut() else {
+            return;
+        };
+        pumps.push((pump.subscription.canceller(), pump.attached()));
+        let writer = self.writer.clone();
+        let limit = self.frame_limit;
+        std::thread::spawn(move || pump.run(&writer, limit));
+    }
+
+    fn answer(&self, request: &Request) -> Result<(), StdioError> {
+        let admits = matches!(
+            request.op.as_str(),
+            "submit" | "open" | "work.start" | "work.send"
+        );
+        let _admitted = if admits {
+            let stopping = self
+                .stopping
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if stopping.mode.is_some() {
+                let refused = wire(
+                    "shutting_down",
+                    "the endpoint is shutting down and admits no new work",
+                );
+                if let Some(line) = fitted(request.id, Err(refused), self.frame_limit)? {
+                    emit(&self.writer, &line)?;
+                }
+                return Ok(());
+            }
+            Some(stopping)
+        } else {
+            None
+        };
+        let (answer, pump) = if request.op == "open" {
+            match open(
+                &self.hub,
+                request,
+                &self.ids,
+                || Attached::claim(&self.attached, self.cap),
+                self.frame_limit,
+            ) {
+                Ok((answer, pump)) => (Ok(answer), pump),
+                Err(error) => (Err(error), None),
+            }
+        } else if request.op == "events" {
+            match events(
+                &self.hub,
+                request,
+                Attached::claim(&self.attached, self.cap),
+            ) {
                 Ok(pump) => (Ok(Value::Null), Some(pump)),
                 Err(Subscribing::Refused(error)) => (Err(error), None),
                 Err(Subscribing::Gap(gap)) => {
-                    if let Some(line) = fitted(request.id, Ok(Value::Null), options.frame_limit)? {
-                        emit(writer, &line)?;
+                    if let Some(line) = fitted(request.id, Ok(Value::Null), self.frame_limit)? {
+                        emit(&self.writer, &line)?;
                     }
                     let full = GapLine {
                         event: "oap-replay-gap",
@@ -195,23 +629,27 @@ fn serve_lines(
                     let fitting = [&full, &minimal].into_iter().find_map(|gap| {
                         serde_json::to_vec(gap)
                             .ok()
-                            .filter(|line| line.len() <= options.frame_limit)
+                            .filter(|line| line.len() <= self.frame_limit)
                     });
                     if let Some(line) = fitting {
-                        emit(writer, &line)?;
+                        emit(&self.writer, &line)?;
                     }
-                    continue;
+                    return Ok(());
                 }
             }
         } else {
-            (dispatch(hub, &request, &mut ids), None)
+            (
+                dispatch(&self.hub, request, &self.ids, self.frame_limit),
+                None,
+            )
         };
-        if let Some(line) = fitted(request.id, answer, options.frame_limit)? {
-            emit(writer, &line)?;
+        if let Some(line) = fitted(request.id, answer, self.frame_limit)? {
+            emit(&self.writer, &line)?;
         }
         if let Some(pump) = pump {
-            start(pump);
+            self.start(pump);
         }
+        Ok(())
     }
 }
 
@@ -226,10 +664,13 @@ impl From<WireError> for Subscribing {
     }
 }
 
-struct Attached(Arc<std::sync::atomic::AtomicUsize>);
+pub(crate) struct Attached(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Attached {
-    fn claim(count: &Arc<std::sync::atomic::AtomicUsize>, cap: usize) -> Result<Self, WireError> {
+    pub(crate) fn claim(
+        count: &Arc<std::sync::atomic::AtomicUsize>,
+        cap: usize,
+    ) -> Result<Self, WireError> {
         use std::sync::atomic::Ordering;
         let mut held = count.load(Ordering::SeqCst);
         while held < cap {
@@ -251,12 +692,243 @@ impl Drop for Attached {
     }
 }
 
-struct Pump {
+pub(crate) struct Pump {
     _attached: Attached,
     id: i64,
     entry: Arc<HubSession>,
-    subscription: Subscription,
+    pub(crate) subscription: Subscription,
     resume_from: u64,
+}
+
+pub(crate) fn detailed(
+    code: &'static str,
+    message: impl fmt::Display,
+    details: Value,
+) -> WireError {
+    WireError {
+        code,
+        message: trim(&message.to_string()),
+        details: Some(details),
+    }
+}
+
+pub(crate) fn refusal(err: &HubError) -> Option<WireError> {
+    use oap_adapter::Error;
+    match err {
+        HubError::StaleRevision { expected, current } => Some(detailed(
+            "stale_capabilities",
+            err,
+            serde_json::json!({ "expected_revision": expected, "current_revision": current }),
+        )),
+        HubError::Adapter(Error::UnsupportedControl(control)) => {
+            let mut details =
+                serde_json::json!({ "feature": control.feature, "reason": control.reason });
+            for (key, value) in [
+                ("tool", &control.tool),
+                ("field", &control.field),
+                ("source", &control.source),
+            ] {
+                if !value.is_empty() {
+                    details[key] = Value::String(value.clone());
+                }
+            }
+            Some(detailed("unsupported_feature", err, details))
+        }
+        HubError::Adapter(Error::DegradedControl(feature)) => Some(detailed(
+            "capability_degraded",
+            err,
+            serde_json::json!({ "feature": feature }),
+        )),
+        HubError::Adapter(Error::InvalidSteerTarget { reason, .. }) => Some(detailed(
+            "invalid_steer_target",
+            err,
+            serde_json::json!({ "reason": reason }),
+        )),
+        HubError::Adapter(Error::ModelNotFound(model)) => Some(detailed(
+            "model_not_found",
+            err,
+            serde_json::json!({ "model_id": model }),
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) fn open(
+    hub: &Hub,
+    request: &Request,
+    ids: &Ids,
+    claim: impl FnOnce() -> Result<Attached, WireError>,
+    limit: usize,
+) -> Result<(Value, Option<Pump>), WireError> {
+    request.only(&["adapter", "request"])?;
+    if request.adapter.is_empty() {
+        return Err(wire("invalid_request", "adapter is required"));
+    }
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[oap_protocol::EnvelopeType::SESSION_OPEN_REQUEST],
+    )?;
+    let asked: oap_protocol::SessionOpenRequest = payload(&envelope)?;
+    let attached = asked.subscribe.then(claim).transpose()?;
+    if hub.registry().lookup(&request.adapter).is_none() {
+        return Err(wire(
+            "unknown_adapter",
+            format!("no adapter \"{}\"", trim(&request.adapter)),
+        ));
+    }
+    let cited = envelope.capability_revision.clone().unwrap_or_default();
+    let gated = block_on(async {
+        let attaching = crate::attachment_gate(hub, &request.adapter, &cited, &asked).await?;
+        let electing = crate::election_gate(hub, &request.adapter, &cited, &asked).await?;
+        Ok::<String, HubError>(if electing.is_empty() {
+            attaching
+        } else {
+            electing
+        })
+    })
+    .map_err(|err| refusal(&err).unwrap_or_else(|| wire("probe_failed", err)))?;
+    let tool_sources =
+        crate::resolve_attachments(hub.registry(), &asked.tool_sources).map_err(|refused| {
+            detailed(
+                "unsupported_feature",
+                &refused,
+                serde_json::json!({
+                    "feature": oap_protocol::FEATURE_TOOL_SOURCES_ATTACH,
+                    "reason": oap_adapter::CONTROL_UNSATISFIABLE,
+                    "source": refused.tool_source,
+                }),
+            )
+        })?;
+    let mut metadata = serde_json::Map::new();
+    for (key, raw) in &asked.metadata {
+        let value: Value = serde_json::from_str(raw.get()).map_err(|err| {
+            wire(
+                "invalid_payload",
+                format!("metadata {:?}: {err}", trim(key)),
+            )
+        })?;
+        metadata.insert(key.clone(), value);
+    }
+    let opening = oap_adapter::OpenRequest {
+        session_id: asked.session_id.clone().unwrap_or_default(),
+        participant: oap_protocol::Participant {
+            id: crate::DEFAULT_PARTICIPANT.into(),
+            ..oap_protocol::Participant::default()
+        },
+        metadata,
+        tool_sources,
+        tools: asked.tools.clone(),
+        allow_degraded_features: asked.allow_degraded_features.clone(),
+        reopen: asked.reopen,
+        reasoning_level: asked.reasoning_level.clone(),
+        compaction_policy: asked.compaction_policy.clone(),
+        ..oap_adapter::OpenRequest::default()
+    };
+    let opened = block_on(hub.open(&request.adapter, opening)).map_err(open_refusal)?;
+    let named = asked
+        .session_id
+        .as_ref()
+        .is_some_and(|id| !id.as_str().is_empty());
+    let pump = match attached {
+        Some(attached) => match hub.subscribe(opened.session.id()) {
+            Ok(subscription) => Some(Pump {
+                id: request.id,
+                entry: opened.session.clone(),
+                subscription,
+                resume_from: 0,
+                _attached: attached,
+            }),
+            Err(err) => {
+                let _ = block_on(opened.session.rollback());
+                return Err(open_refusal(err));
+            }
+        },
+        None => None,
+    };
+    let mut admitted_run = None;
+    let state = match &asked.message {
+        Some(message) => {
+            let submitted = block_on(opened.session.submit(oap_adapter::SubmitRequest {
+                request: message.submit(opened.session.id().clone()),
+                envelope_id: envelope.id.clone(),
+            }));
+            match submitted {
+                Ok(admission) => {
+                    admitted_run = admission
+                        .run_id
+                        .clone()
+                        .filter(|_| admission.admission != oap_protocol::Admission::STEERED);
+                    crate::compound::with_admitted_run(
+                        opened.state.clone(),
+                        &admission,
+                        &envelope.id,
+                    )
+                }
+                Err(err) => {
+                    drop(pump);
+                    let _ = block_on(opened.session.rollback());
+                    return Err(open_refusal(err));
+                }
+            }
+        }
+        None => opened.state.clone(),
+    };
+    let mut response = oap_protocol::Envelope::new(
+        oap_protocol::EnvelopeType::SESSION_OPEN_RESPONSE,
+        next_id(ids, "response"),
+        &state,
+    )
+    .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(opened.state.session_id.clone());
+    response.capability_revision = if gated.is_empty() {
+        envelope.capability_revision.clone()
+    } else {
+        Some(gated)
+    };
+    let answer = serde_json::to_value(&response).map_err(|err| wire("internal", err))?;
+    let fits = response_line(request.id, Ok(answer.clone())).is_ok_and(|line| line.len() <= limit);
+    if !fits {
+        let outcome = if named && asked.message.is_none() {
+            "the session is open under the session_id the request supplied"
+        } else {
+            drop(pump);
+            if let Some(run) = &admitted_run {
+                let _ = rollback_run(hub, &opened.session, run);
+            }
+            match block_on(opened.session.rollback()) {
+                Ok(()) | Err(HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
+                    "the session was rolled back"
+                }
+                Err(_) => "rolling the session back failed and it may still be live",
+            }
+        };
+        return Err(wire(
+            "response_too_large",
+            format!("the open response exceeds the frame limit; {outcome}"),
+        ));
+    }
+    Ok((answer, pump))
+}
+
+fn open_refusal(err: HubError) -> WireError {
+    {
+        refusal(&err).unwrap_or_else(|| {
+            wire(
+                match &err {
+                    HubError::UnknownAdapter(_) => "unknown_adapter",
+                    HubError::SessionExists(_) => "session_exists",
+                    HubError::UnknownSession(_)
+                    | HubError::Adapter(oap_adapter::Error::UnknownSession(_)) => "unknown_session",
+                    HubError::ClosedAtOpen(_)
+                    | HubError::SessionClosed(_)
+                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    _ => "open_failed",
+                },
+                err,
+            )
+        })
+    }
 }
 
 fn events(
@@ -627,15 +1299,27 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 match key.as_str() {
                     "session_id" => request.session_id = text,
                     "run_id" => request.run_id = text,
-                    _ => {}
+                    "adapter" => request.adapter = text,
+                    _ => request.cursor = text,
                 }
             }
-            "limit" => typed(parsed.is_i64() || parsed.is_null())?,
-            "allow_degraded_features" => typed(match &parsed {
-                Value::Array(items) => items.iter().all(Value::is_string),
-                Value::Null => true,
-                _ => false,
-            })?,
+            "limit" => {
+                typed(parsed.is_i64() || parsed.is_null())?;
+                request.limit = parsed.as_i64();
+            }
+            "allow_degraded_features" => {
+                typed(match &parsed {
+                    Value::Array(items) => items.iter().all(Value::is_string),
+                    Value::Null => true,
+                    _ => false,
+                })?;
+                request.allow_degraded_features = parsed
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect();
+            }
             "request" => request.request = Some(value),
             "after" => request.after = Some(value),
             _ => {
@@ -678,26 +1362,29 @@ impl Request {
                 trim(&self.op),
                 extra.join(", ")
             ),
+            details: None,
         })
     }
 }
 
-fn next_id(ids: &mut u64, kind: &str) -> String {
-    *ids += 1;
-    format!("oap-{kind}-{ids}")
+fn next_id(ids: &Ids, kind: &str) -> String {
+    let next = ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    format!("oap-{kind}-{next}")
 }
 
 fn session(hub: &Hub, id: &str) -> Result<std::sync::Arc<crate::HubSession>, WireError> {
     hub.session(&id.into()).map_err(|err| WireError {
         code: "unknown_session",
         message: trim(&err.to_string()),
+        details: None,
     })
 }
 
-fn wire(code: &'static str, message: impl fmt::Display) -> WireError {
+pub(crate) fn wire(code: &'static str, message: impl fmt::Display) -> WireError {
     WireError {
         code,
         message: trim(&message.to_string()),
+        details: None,
     }
 }
 
@@ -758,7 +1445,7 @@ fn reply(
     session_id: oap_protocol::SessionId,
     run_id: oap_protocol::RunId,
     body: &impl Serialize,
-    ids: &mut u64,
+    ids: &Ids,
 ) -> Answer {
     let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), body)
         .map_err(|err| wire("internal", err))?;
@@ -786,7 +1473,257 @@ fn adapter_code(err: &crate::HubError) -> &'static str {
     }
 }
 
-fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+fn transcript(hub: &Hub, request: &Request) -> Answer {
+    use oap_protocol::{TRANSCRIPT_LOAD_DEFAULT_LIMIT, TRANSCRIPT_LOAD_MAX_LIMIT};
+    let limit = match request.limit {
+        None => TRANSCRIPT_LOAD_DEFAULT_LIMIT,
+        Some(limit) if (1..=TRANSCRIPT_LOAD_MAX_LIMIT).contains(&limit) => limit,
+        Some(_) => {
+            return Err(wire(
+                "invalid_request",
+                format!("transcript: limit must be from 1 to {TRANSCRIPT_LOAD_MAX_LIMIT}"),
+            ))
+        }
+    };
+    let id = oap_protocol::SessionId::from(request.session_id.as_str());
+    let native = match hub.held_native(&id) {
+        Some(native) => native,
+        None => hub
+            .recorded_native(&id)
+            .map_err(|_| wire("history_failed", "the session history could not be read"))?
+            .ok_or_else(|| {
+                wire(
+                    "unknown_session",
+                    format!("no session {:?}", request.session_id),
+                )
+            })?,
+    };
+    let page =
+        block_on(hub.transcript_page(&native, &request.cursor, limit as usize)).map_err(|err| {
+            match err {
+                HubError::Adapter(oap_adapter::Error::InvalidCursor) => wire("invalid_cursor", err),
+                _ => wire("internal", err),
+            }
+        })?;
+    let Some(mut page) = page else {
+        return Err(detailed(
+            "unsupported_feature",
+            "transcript: this session's adapter keeps no transcript it can read",
+            serde_json::json!({
+                "feature": oap_protocol::FEATURE_TRANSCRIPT_LOAD,
+                "reason": oap_adapter::CONTROL_UNADVERTISED,
+            }),
+        ));
+    };
+    page.session_id = id;
+    serde_json::to_value(&page).map_err(|err| wire("internal", err))
+}
+
+fn submit_refusal(err: HubError) -> WireError {
+    refusal(&err).unwrap_or_else(|| {
+        wire(
+            match &err {
+                HubError::ScopeMismatch { .. } => "scope_mismatch",
+                HubError::SessionClosed(_)
+                | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
+                HubError::Adapter(
+                    oap_adapter::Error::InvalidSubmission | oap_adapter::Error::UnsupportedInput,
+                ) => "invalid_submission",
+                _ => "internal",
+            },
+            err,
+        )
+    })
+}
+
+fn settings(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST],
+    )?;
+    let asked: oap_protocol::SessionSettingsUpdateRequest = payload(&envelope)?;
+    let entry = session(hub, &request.session_id)?;
+    let (updated, _) = block_on(entry.update_settings(asked)).map_err(submit_refusal)?;
+    let mut response = oap_protocol::Envelope::new(
+        oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE,
+        next_id(ids, "response"),
+        &updated,
+    )
+    .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(updated.session_id.clone());
+    response.capability_revision = envelope.capability_revision.clone();
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
+}
+
+fn catalog_refusal(err: HubError, otherwise: &'static str) -> WireError {
+    if let Some(refused) = refusal(&err) {
+        return refused;
+    }
+    match err {
+        HubError::Adapter(oap_adapter::Error::ToolCatalogUnavailable) => detailed(
+            "unsupported_feature",
+            &err,
+            serde_json::json!({
+                "feature": oap_protocol::FEATURE_TOOLS_LIST,
+                "reason": oap_adapter::CONTROL_UNADVERTISED,
+            }),
+        ),
+        HubError::ScopeMismatch { .. } => wire("scope_mismatch", err),
+        HubError::SessionClosed(_) | HubError::Adapter(oap_adapter::Error::SessionClosed) => {
+            wire("session_closed", err)
+        }
+        _ => wire(otherwise, err),
+    }
+}
+
+fn listing(
+    ids: &Ids,
+    kind: oap_protocol::EnvelopeType,
+    payload: &impl Serialize,
+    session_id: &oap_protocol::SessionId,
+    revision: String,
+) -> Answer {
+    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), payload)
+        .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(next_id(ids, "request").into());
+    response.session_id = Some(session_id.clone());
+    response.capability_revision = Some(revision);
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
+}
+
+fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
+    use oap_protocol::EnvelopeType;
+    let envelope = gate_request(
+        request.request.as_deref(),
+        &[
+            EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST,
+            EnvelopeType::SESSION_COMPACT_REQUEST,
+        ],
+    )?;
+    let compacting = envelope.envelope_type == EnvelopeType::SESSION_COMPACT_REQUEST;
+    let (message, compaction) = if compacting {
+        (
+            None,
+            Some(payload::<oap_protocol::SessionCompactRequest>(&envelope)?),
+        )
+    } else {
+        (
+            Some(payload::<oap_protocol::MessageSubmitRequest>(&envelope)?),
+            None,
+        )
+    };
+    let entry = session(hub, &request.session_id)?;
+    let admitted = match (message, compaction) {
+        (Some(message), _) => block_on(entry.submit(oap_adapter::SubmitRequest {
+            request: message,
+            envelope_id: envelope.id.clone(),
+        }))
+        .map(|admission| {
+            let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
+            let steered = admission.admission == oap_protocol::Admission::STEERED;
+            (
+                EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE,
+                serde_json::to_value(&admission),
+                session,
+                run,
+                steered,
+            )
+        }),
+        (None, compaction) => block_on(entry.compact(oap_adapter::CompactRequest {
+            request: compaction.unwrap_or_default(),
+            envelope_id: envelope.id.clone(),
+        }))
+        .map(|admission| {
+            let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
+            let steered = admission.admission == oap_protocol::Admission::STEERED;
+            (
+                EnvelopeType::SESSION_COMPACT_RESPONSE,
+                serde_json::to_value(&admission),
+                session,
+                run,
+                steered,
+            )
+        }),
+    };
+    let (kind, admission, session_id, run_id, steered) = admitted.map_err(submit_refusal)?;
+    let admission = admission.map_err(|err| wire("internal", err))?;
+    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), &admission)
+        .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(session_id);
+    response.run_id = run_id.clone();
+    response.capability_revision = envelope.capability_revision.clone();
+    let answer = serde_json::to_value(&response).map_err(|err| wire("internal", err))?;
+    if response_line(request.id, Ok(answer.clone())).is_ok_and(|line| line.len() <= limit) {
+        return Ok(answer);
+    }
+    let outcome = match run_id {
+        Some(_) if steered => "the steered run was left running".to_owned(),
+        Some(run) => match rollback_run(hub, &entry, &run) {
+            Ok(Some(settled)) if settled == EnvelopeType::RUN_CANCELLED => {
+                "the run was cancelled".to_owned()
+            }
+            Ok(Some(settled)) => format!("the run settled before the rollback ({settled})"),
+            Ok(None) => "the run's cancellation did not settle within the rollback window and may still be live".to_owned(),
+            Err(
+                HubError::Adapter(
+                    oap_adapter::Error::RunAlreadyTerminal { .. }
+                    | oap_adapter::Error::RunNotFound
+                    | oap_adapter::Error::SessionClosed,
+                )
+                | HubError::SessionClosed(_),
+            ) => "the run settled before the rollback".to_owned(),
+            Err(_) => "rolling the run back failed and the run may still be live".to_owned(),
+        },
+        None => "the run settled before the rollback".to_owned(),
+    };
+    Err(wire(
+        "response_too_large",
+        format!("the submit acknowledgement exceeds the frame limit; {outcome}"),
+    ))
+}
+
+fn rollback_run(
+    hub: &Hub,
+    entry: &HubSession,
+    run: &oap_protocol::RunId,
+) -> Result<Option<oap_protocol::EnvelopeType>, HubError> {
+    use oap_protocol::EnvelopeType;
+    let mut subscription = hub.subscribe(entry.id())?;
+    let canceller = subscription.canceller();
+    let (done, waiting) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if waiting.recv_timeout(SHUTDOWN_WINDOW) == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        {
+            canceller.cancel();
+        }
+    });
+    block_on(entry.cancel(run.clone()))?;
+    let settled = loop {
+        match block_on(futures_next(&mut subscription)) {
+            Some(Ok(envelope)) if envelope.run_id.as_ref() == Some(run) => {
+                let kind = envelope.envelope_type;
+                if [
+                    EnvelopeType::RUN_CANCELLED,
+                    EnvelopeType::RUN_COMPLETED,
+                    EnvelopeType::RUN_FAILED,
+                ]
+                .contains(&kind)
+                {
+                    break Some(kind);
+                }
+            }
+            Some(Ok(_)) => {}
+            _ => break None,
+        }
+    };
+    drop(done);
+    Ok(settled)
+}
+
+fn cancel(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     let envelope = gate_request(
         request.request.as_deref(),
         &[oap_protocol::EnvelopeType::RUN_CANCEL_REQUEST],
@@ -814,7 +1751,43 @@ fn cancel(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
     )
 }
 
-fn resolve(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &Ids) -> Answer {
+    let asked: oap_protocol::ActionCallResolveRequest = payload(envelope)?;
+    let run = asked.run_id.clone();
+    let answer = block_on(entry.resolve_call(oap_adapter::CallResolution {
+        request_id: envelope.id.clone(),
+        request: asked,
+    }))
+    .map_err(|err| {
+        refusal(&err).unwrap_or_else(|| {
+            wire(
+                match &err {
+                    HubError::ScopeMismatch { .. } => "scope_mismatch",
+                    HubError::Adapter(oap_adapter::Error::UnsupportedInput) => {
+                        "unsupported_feature"
+                    }
+                    HubError::SessionClosed(_)
+                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    _ => "internal",
+                },
+                err,
+            )
+        })
+    })?;
+    let mut response = oap_protocol::Envelope::new(
+        oap_protocol::EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
+        next_id(ids, "response"),
+        &answer,
+    )
+    .map_err(|err| wire("internal", err))?;
+    response.in_reply_to = Some(envelope.id.clone());
+    response.session_id = Some(entry.id().clone());
+    response.run_id = Some(run);
+    response.capability_revision = envelope.capability_revision.clone();
+    serde_json::to_value(&response).map_err(|err| wire("internal", err))
+}
+
+fn resolve(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     use oap_protocol::EnvelopeType;
     let envelope = gate_request(
         request.request.as_deref(),
@@ -852,10 +1825,7 @@ fn resolve(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
             resolution.input = Some(asked);
             named
         } else {
-            return Err(wire(
-                "unsupported_feature",
-                "the hub does not yet resolve provided-tool calls over stdio",
-            ));
+            return resolve_call(&entry, &envelope, ids);
         };
     let run = resolution.run_id.clone();
     block_on(entry.resolve(resolution)).map_err(|err| wire(adapter_code(&err), err))?;
@@ -892,8 +1862,143 @@ fn rfc3339(ms: i64) -> String {
     )
 }
 
-fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
+pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
     match request.op.as_str() {
+        "capabilities" => {
+            request.only(&["adapter"])?;
+            if request.adapter.is_empty() {
+                return Err(wire("invalid_request", "adapter is required"));
+            }
+            let correlation = next_id(ids, "request");
+            let descriptor = block_on(hub.probe(&request.adapter)).map_err(|err| match err {
+                HubError::UnknownAdapter(_) => wire("unknown_adapter", err),
+                _ => wire("probe_failed", err),
+            })?;
+            let mut response = oap_protocol::Envelope::new(
+                oap_protocol::EnvelopeType::CAPABILITIES_RESPONSE,
+                next_id(ids, "response"),
+                &descriptor.capabilities,
+            )
+            .map_err(|err| wire("internal", err))?;
+            response.in_reply_to = Some(correlation.into());
+            response.capability_revision = Some(descriptor.capability_revision);
+            serde_json::to_value(&response).map_err(|err| wire("internal", err))
+        }
+        "models" => {
+            request.only(&["session_id", "allow_degraded_features"])?;
+            let entry = session(hub, &request.session_id)?;
+            let catalog = block_on(entry.models(oap_protocol::ModelsRequest {
+                session_id: entry.id().clone(),
+                allow_degraded_features: request.allow_degraded_features.clone(),
+            }))
+            .map_err(|err| catalog_refusal(err, "internal"))?;
+            listing(
+                ids,
+                oap_protocol::EnvelopeType::MODELS_RESPONSE,
+                &catalog.models,
+                entry.id(),
+                catalog.revision,
+            )
+        }
+        "tools" => {
+            request.only(&["session_id", "allow_degraded_features"])?;
+            let entry = session(hub, &request.session_id)?;
+            let catalog = block_on(entry.tools(oap_protocol::ToolsListRequest {
+                session_id: Some(entry.id().clone()),
+                allow_degraded_features: request.allow_degraded_features.clone(),
+            }))
+            .map_err(|err| catalog_refusal(err, "tools_failed"))?;
+            listing(
+                ids,
+                oap_protocol::EnvelopeType::ACTION_TOOLS_LIST_RESPONSE,
+                &catalog.tools,
+                entry.id(),
+                catalog.revision,
+            )
+        }
+        "work.start" => {
+            request.only(&["adapter", "request"])?;
+            crate::workwire::start(hub, &request.adapter, request.request.as_deref())
+        }
+        "work.send" => {
+            request.only(&["session_id", "request"])?;
+            crate::workwire::send(
+                hub,
+                &request.session_id.as_str().into(),
+                request.request.as_deref(),
+            )
+        }
+        "work.list" => {
+            request.only(&["request"])?;
+            crate::workwire::parse_list(request.request.as_deref())
+                .and_then(|asked| crate::workwire::list(hub, asked))
+        }
+        "work.capabilities" => {
+            request.only(&[])?;
+            crate::workwire::capabilities(hub)
+        }
+        "work.status" | "work.stop" | "work.read" => {
+            let id = oap_protocol::SessionId::from(request.session_id.as_str());
+            let answered = match request.op.as_str() {
+                "work.status" => {
+                    request.only(&["session_id"])?;
+                    crate::workwire::status(hub, &id)
+                }
+                "work.stop" => {
+                    request.only(&["session_id"])?;
+                    crate::workwire::stop(hub, &id)
+                }
+                _ => {
+                    request.only(&["session_id", "after", "limit"])?;
+                    let after = match request.after.as_deref().map(RawValue::get) {
+                        None | Some("null") => None,
+                        Some(text) => Some(
+                            text.parse::<u64>()
+                                .map_err(|_| wire("invalid_request", "after is a whole number"))?,
+                        ),
+                    };
+                    crate::workwire::read(hub, &id, after, request.limit)
+                }
+            };
+            answered
+        }
+        "transcript" => {
+            request.only(&["session_id", "cursor", "limit"])?;
+            transcript(hub, request)
+        }
+        "history" => {
+            request.only(&["cursor", "limit"])?;
+            if request
+                .limit
+                .is_some_and(|limit| !(1..=oap_binding::MAX_LIMIT as i64).contains(&limit))
+            {
+                return Err(wire("invalid_request", oap_binding::Error::InvalidLimit));
+            }
+            let page = hub
+                .session_history(&request.cursor, request.limit.unwrap_or(0))
+                .map_err(|err| match err {
+                    HubError::NoSessionHistory => detailed(
+                        "unsupported_feature",
+                        &err,
+                        serde_json::json!({
+                            "feature": oap_protocol::FEATURE_SESSION_LIST,
+                            "reason": oap_adapter::CONTROL_UNADVERTISED,
+                        }),
+                    ),
+                    HubError::Binding(oap_binding::Error::InvalidCursor) => {
+                        wire("invalid_cursor", oap_binding::Error::InvalidCursor)
+                    }
+                    HubError::Binding(oap_binding::Error::InvalidLimit) => {
+                        wire("invalid_request", oap_binding::Error::InvalidLimit)
+                    }
+                    _ => wire("history_failed", "the session history could not be read"),
+                })?;
+            serde_json::to_value(&page).map_err(|err| wire("internal", err))
+        }
+        "submit" => {
+            request.only(&["session_id", "request"])?;
+            submit(hub, request, ids, limit)
+        }
         "sessions" => {
             request.only(&[])?;
             let listed: Vec<Value> = block_on(hub.session_statuses())
@@ -932,6 +2037,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
                     return Err(WireError {
                         code: "state_failed",
                         message: trim(&err.to_string()),
+                        details: None,
                     })
                 }
             };
@@ -943,10 +2049,15 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
             .map_err(|err| WireError {
                 code: "internal",
                 message: trim(&err.to_string()),
+                details: None,
             })?;
             envelope.in_reply_to = Some(next_id(ids, "request").into());
             envelope.session_id = Some(state.session_id.clone());
             Ok(serde_json::to_value(&envelope).unwrap_or(Value::Null))
+        }
+        "settings" => {
+            request.only(&["session_id", "request"])?;
+            settings(hub, request, ids)
         }
         "cancel" => {
             request.only(&["session_id", "request"])?;
@@ -966,6 +2077,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
                     _ => "internal",
                 },
                 message: trim(&err.to_string()),
+                details: None,
             })?;
             Ok(Value::Null)
         }
@@ -976,6 +2088,7 @@ fn dispatch(hub: &Hub, request: &Request, ids: &mut u64) -> Answer {
         _ => Err(WireError {
             code: "unknown_op",
             message: format!("no op {:?}", trim(&request.op)),
+            details: None,
         }),
     }
 }
@@ -1017,12 +2130,14 @@ fn fitted(id: i64, answer: Answer, limit: usize) -> Result<Option<Vec<u8>>, Stdi
         Err(error) => Some(WireError {
             code: error.code,
             message: trim(&error.message),
+            details: None,
         }),
         Ok(_) => None,
     };
     let fallback = WireError {
         code: "response_too_large",
         message: "the encoded response exceeds the frame limit".into(),
+        details: None,
     };
     for candidate in [Some(answer), reduced.map(Err), Some(Err(fallback))]
         .into_iter()
@@ -1053,6 +2168,22 @@ fn response_line(id: i64, answer: Answer) -> Result<Vec<u8>, StdioError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_byte_budget_admits_one_oversize_request_and_refuses_what_overfills_it() {
+        let inflight = super::Inflight::new(16);
+        assert!(inflight.offer(super::ADMISSION_BYTES + 1).is_ok());
+        assert_eq!(
+            inflight.offer(1),
+            Err(format!(
+                "the requests already in flight fill the frontend's {}-byte budget",
+                super::ADMISSION_BYTES
+            ))
+        );
+        inflight.release(super::ADMISSION_BYTES + 1);
+        assert!(inflight.offer(super::ADMISSION_BYTES).is_ok());
+        assert!(inflight.offer(1).is_err());
+    }
+
     #[test]
     fn rfc3339_spells_utc_seconds_across_leap_days_and_centuries() {
         for (ms, want) in [

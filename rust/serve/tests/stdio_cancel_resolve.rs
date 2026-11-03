@@ -61,7 +61,7 @@ fn answer(hub: &Hub, op: &str, request: &str) -> Value {
     let output = support::Captured::default();
     serve(
         hub,
-        line.as_bytes(),
+        std::io::Cursor::new(line.to_owned().into_bytes()),
         output.clone(),
         &StdioOptions::default(),
     )

@@ -3,13 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use oap_adapter::{
-    Error, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest, UnsupportedControl,
-    CONTROL_UNSATISFIABLE,
+    CompactRequest, Error, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest,
+    UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
 use oap_binding::{Action, Entry, Record, Store};
 use oap_protocol::{
-    Admission, MessageSubmitResponse, RunCancelResponse, RunId, SessionId, SessionState,
-    SessionStatus, FEATURE_OPEN_REOPEN,
+    Admission, MessageSubmitResponse, RunCancelResponse, RunId, SessionCompactResponse, SessionId,
+    SessionState, SessionStatus, FEATURE_OPEN_REOPEN, FEATURE_SESSION_COMPACT,
 };
 
 use crate::live::{self, Live, Subscription, DEFAULT_STREAM_QUEUE};
@@ -19,6 +19,8 @@ pub const DEFAULT_PARTICIPANT: &str = "user";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HubError {
+    #[error("serve: this hub keeps no session history")]
+    NoSessionHistory,
     #[error("no adapter {0:?}")]
     UnknownAdapter(String),
     #[error("no session \"{0}\"")]
@@ -93,7 +95,7 @@ struct Shared {
     options: HubOptions,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
@@ -117,6 +119,7 @@ impl Shared {
     }
 }
 
+#[derive(Clone)]
 pub struct Hub {
     shared: Arc<Shared>,
 }
@@ -221,18 +224,20 @@ impl Hub {
                 return Err(err.into());
             }
         };
-        let mut record = Record::default();
-        if self.shared.options.bindings.is_some() {
-            let version = match implementation.probe().await {
-                Ok(descriptor) => descriptor.capabilities.endpoint.version,
-                Err(_) => String::new(),
+        let record = {
+            let version = match self.shared.options.bindings {
+                Some(_) => match implementation.probe().await {
+                    Ok(descriptor) => descriptor.capabilities.endpoint.version,
+                    Err(_) => String::new(),
+                },
+                None => String::new(),
             };
             let sources: Vec<String> = asked
                 .tool_sources
                 .iter()
                 .map(|source| source.id.clone())
                 .collect();
-            record = Record::from_open(
+            let mut record = Record::from_open(
                 state.session_id.as_str(),
                 adapter,
                 &version,
@@ -245,7 +250,8 @@ impl Hub {
             record.adopted = asked.adopted;
             record.compaction_policy = asked.compaction_policy.clone();
             record.native_session_id = session.native_session_id().unwrap_or_default();
-        }
+            record
+        };
         let began = if asked.reopen {
             Action::Reopened
         } else {
@@ -324,6 +330,41 @@ impl Hub {
         Ok(Reservation {
             shared: &self.shared,
             id: Some(id.clone()),
+        })
+    }
+
+    pub fn session_history(
+        &self,
+        cursor: &str,
+        limit: i64,
+    ) -> Result<oap_protocol::SessionListResponse, HubError> {
+        let bindings = self
+            .shared
+            .options
+            .bindings
+            .as_ref()
+            .ok_or(HubError::NoSessionHistory)?;
+        let page = oap_binding::list(&bindings.sessions()?, cursor, limit)?;
+        let sessions = page
+            .entries
+            .into_iter()
+            .map(|entry| oap_protocol::SessionListEntry {
+                state: if entry.live() {
+                    oap_protocol::SessionListState::LIVE
+                } else {
+                    oap_protocol::SessionListState::CLOSED
+                },
+                session_id: entry.record.session_id.as_str().into(),
+                adapter: entry.record.adapter,
+                harness_version: entry.record.harness_version,
+                updated_at_ms: entry.time_ms,
+                model: entry.record.model,
+                directory: entry.record.directory,
+            })
+            .collect();
+        Ok(oap_protocol::SessionListResponse {
+            sessions,
+            next_cursor: page.next_cursor,
         })
     }
 
@@ -427,6 +468,36 @@ impl Hub {
     pub fn sessions(&self) -> Vec<Arc<HubSession>> {
         self.shared.sessions().live.values().cloned().collect()
     }
+
+    pub fn close_sessions(&self) -> Vec<(SessionId, HubError)> {
+        let mut failed = Vec::new();
+        for entry in self.sessions() {
+            let mut closed = crate::live::block_on(entry.close());
+            for _ in 0..3 {
+                if !matches!(closed, Err(HubError::Adapter(Error::RunActive))) {
+                    break;
+                }
+                if let Ok(state) = crate::live::block_on(entry.state()) {
+                    let mut runs: Vec<RunId> = state
+                        .active_runs
+                        .into_iter()
+                        .map(|run| run.run_id)
+                        .collect();
+                    runs.extend(state.active_run_id.filter(|run| !runs.contains(run)));
+                    for run in runs {
+                        let _ = crate::live::block_on(entry.cancel(run));
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                closed = crate::live::block_on(entry.close());
+            }
+            match closed {
+                Ok(()) | Err(HubError::Adapter(Error::SessionClosed)) => {}
+                Err(err) => failed.push((entry.id().clone(), err)),
+            }
+        }
+        failed
+    }
 }
 
 struct Reserved<'a>(Option<&'a HubSession>);
@@ -462,6 +533,10 @@ pub struct SessionListing {
 }
 
 impl HubSession {
+    pub(crate) fn record(&self) -> &Record {
+        &self.record
+    }
+
     pub fn id(&self) -> &SessionId {
         &self.id
     }
@@ -478,7 +553,7 @@ impl HubSession {
         self.closed.load(Ordering::SeqCst)
     }
 
-    fn mark_closed(&self) {
+    pub(crate) fn mark_closed(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
             live::finish(self.with_live(Live::close));
             match self.hub.upgrade() {
@@ -539,6 +614,7 @@ impl HubSession {
         }
         let mut reserved = Reserved(Some(self));
         self.with_live(Live::reserve);
+        let messages = submit.request.messages.clone();
         let (admission, stream) = match self.session.submit(submit).await {
             Ok(admitted) => admitted,
             Err(err) => {
@@ -546,6 +622,8 @@ impl HubSession {
                 return Err(err.into());
             }
         };
+        let at = now_ms();
+        self.with_live(|live| live.work.submitted(&messages, admission.run_id.clone(), at));
         if admission.admission == Admission::STEERED {
             return Ok(admission);
         }
@@ -555,6 +633,119 @@ impl HubSession {
         let serial = self.with_live(|live| live.start(run.as_ref(), current));
         live::read_run(self.clone(), run, serial, current, stream);
         Ok(admission)
+    }
+
+    pub async fn compact(
+        self: &Arc<Self>,
+        compact: CompactRequest,
+    ) -> Result<SessionCompactResponse, HubError> {
+        if compact.request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: compact.request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let Some(compactor) = self.session.compactor() else {
+            return Err(
+                Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                    FEATURE_SESSION_COMPACT,
+                )))
+                .into(),
+            );
+        };
+        let mut reserved = Reserved(Some(self));
+        self.with_live(Live::reserve);
+        let (admission, stream) = match compactor.compact(compact).await {
+            Ok(admitted) => admitted,
+            Err(err) => {
+                self.closed_by(&err);
+                return Err(err.into());
+            }
+        };
+        reserved.0 = None;
+        let current = admission.admission != Admission::QUEUED;
+        let run = admission.run_id.clone();
+        let serial = self.with_live(|live| live.start(run.as_ref(), current));
+        live::read_run(self.clone(), run, serial, current, stream);
+        Ok(admission)
+    }
+
+    pub async fn models(
+        &self,
+        mut request: oap_protocol::ModelsRequest,
+    ) -> Result<oap_adapter::Catalog, HubError> {
+        if !request.session_id.as_str().is_empty() && request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        request.session_id = self.id.clone();
+        let lister = self.session.model_lister().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                oap_protocol::FEATURE_MODELS_LIST,
+            )))
+        })?;
+        let catalog = lister
+            .models(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if catalog.revision.is_empty() {
+            return Err(Error::Harness(
+                "serve: adapter served a model catalog with no capability revision".into(),
+            )
+            .into());
+        }
+        if catalog.models.session_id != self.id {
+            return Err(Error::Harness(format!(
+                "serve: adapter served a model catalog scoped to session {:?}, want {:?}",
+                catalog.models.session_id.as_str(),
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok(catalog)
+    }
+
+    pub async fn tools(
+        &self,
+        mut request: oap_protocol::ToolsListRequest,
+    ) -> Result<oap_adapter::ToolCatalog, HubError> {
+        if let Some(payload) = request.session_id.as_ref().filter(|id| **id != self.id) {
+            return Err(HubError::ScopeMismatch {
+                payload: payload.clone(),
+                addressed: self.id.clone(),
+            });
+        }
+        request.session_id = Some(self.id.clone());
+        let lister = self
+            .session
+            .tool_lister()
+            .ok_or(Error::ToolCatalogUnavailable)?;
+        let catalog = lister
+            .tools(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if catalog.revision.is_empty() {
+            return Err(Error::Harness(
+                "serve: adapter served a tool catalog with no capability revision".into(),
+            )
+            .into());
+        }
+        if catalog.tools.session_id.as_ref() != Some(&self.id) {
+            return Err(Error::Harness(format!(
+                "serve: adapter served a tool catalog scoped to session {:?}, want {:?}",
+                catalog
+                    .tools
+                    .session_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or_default(),
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok(catalog)
     }
 
     pub async fn resolve(&self, resolution: InteractionResolution) -> Result<(), HubError> {
@@ -578,6 +769,96 @@ impl HubSession {
         Ok(())
     }
 
+    pub async fn resolve_call(
+        &self,
+        resolution: oap_adapter::CallResolution,
+    ) -> Result<oap_protocol::ActionCallResolveResponse, HubError> {
+        if resolution.request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: resolution.request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let resolver = self.session.call_resolver().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                oap_protocol::FEATURE_TOOLS_PROVIDE,
+            )))
+        })?;
+        Ok(resolver
+            .resolve_call(resolution)
+            .await
+            .inspect_err(|err| self.closed_by(err))?)
+    }
+
+    pub async fn switch_model(
+        &self,
+        request: oap_protocol::SessionModelSwitchRequest,
+    ) -> Result<(oap_protocol::SessionModelSwitchResponse, SessionState), HubError> {
+        if request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let switcher = self.session.model_switcher().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
+                oap_protocol::FEATURE_SESSION_MODEL_SWITCH,
+            )))
+        })?;
+        let (response, state) = switcher
+            .switch_model(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if response.session_id != self.id
+            || state.session_id != self.id
+            || response.model_id != state.current_model_id
+        {
+            return Err(Error::Harness(format!(
+                "serve: adapter reported a model switch outside session {:?}",
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok((response, state))
+    }
+
+    pub async fn update_settings(
+        &self,
+        request: oap_protocol::SessionSettingsUpdateRequest,
+    ) -> Result<(oap_protocol::SessionSettingsUpdateResponse, SessionState), HubError> {
+        if request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let keys = oap_adapter::open_setting_keys(
+            &request.reasoning_level,
+            request.compaction_policy.as_ref(),
+        );
+        let Some(first) = keys.first().copied() else {
+            return Err(Error::InvalidSubmission.into());
+        };
+        let updater = self.session.settings_updater().ok_or_else(|| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl {
+                field: oap_adapter::open_setting_field(first).to_owned(),
+                ..UnsupportedControl::unadvertised(first)
+            }))
+        })?;
+        let (response, state) = updater
+            .update_settings(request)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if response.session_id != self.id || state.session_id != self.id {
+            return Err(Error::Harness(format!(
+                "serve: adapter reported a settings update outside session {:?}",
+                self.id.as_str()
+            ))
+            .into());
+        }
+        Ok((response, state))
+    }
+
     pub async fn cancel(&self, run: RunId) -> Result<RunCancelResponse, HubError> {
         Ok(self
             .session
@@ -590,5 +871,11 @@ impl HubSession {
         self.session.close().await?;
         self.mark_closed();
         Ok(())
+    }
+
+    pub async fn rollback(&self) -> Result<(), HubError> {
+        let closed = self.close().await;
+        self.mark_closed();
+        closed
     }
 }

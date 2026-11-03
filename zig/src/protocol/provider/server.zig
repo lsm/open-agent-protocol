@@ -1,4 +1,5 @@
 const std = @import("std");
+const retry = @import("retry");
 const provider_catalog = @import("provider_catalog");
 
 const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
@@ -166,15 +167,7 @@ const AUTH_REFRESH_FAILED_MESSAGE = "auth_refresh_failed";
 const AUTH_REQUIRED_MESSAGE = "auth_required";
 const AUTH_EXPIRED_MESSAGE = "auth_expired";
 
-fn statusFromMessage(err_msg: []const u8) ?u16 {
-    const marker = "HTTP ";
-    const idx = std.mem.find(u8, err_msg, marker) orelse return null;
-    const start = idx + marker.len;
-    var end = start;
-    while (end < err_msg.len and std.ascii.isDigit(err_msg[end])) end += 1;
-    if (end == start) return null;
-    return std.fmt.parseInt(u16, err_msg[start..end], 10) catch null;
-}
+const statusFromMessage = retry.httpStatus;
 
 fn defaultAuthFailureDetector(err_msg: []const u8) bool {
     if (std.mem.eql(u8, err_msg, AUTH_REQUIRED_MESSAGE)) return true;
@@ -199,12 +192,6 @@ test "an explicit status decides auth failure instead of text anywhere in the me
     try std.testing.expect(defaultAuthFailureDetector("request was forbidden"));
     try std.testing.expect(defaultAuthFailureDetector("got a 401 back"));
     try std.testing.expect(!defaultAuthFailureDetector("stream ended early"));
-}
-
-test "statusFromMessage reads the first status and ignores the rest" {
-    try std.testing.expectEqual(@as(?u16, 403), statusFromMessage("kimi request failed: HTTP 403 (HTTP 500 inside)"));
-    try std.testing.expectEqual(@as(?u16, null), statusFromMessage("no status here"));
-    try std.testing.expectEqual(@as(?u16, null), statusFromMessage("HTTP nope"));
 }
 
 pub fn streamErrorCode(err_msg: []const u8) protocol_types.ErrorCode {

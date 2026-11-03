@@ -21,6 +21,8 @@ zig build --build-file zig/build.zig bench -Doptimize=ReleaseFast -Dgit-revision
 zig build --build-file zig/build.zig bench -Doptimize=ReleaseFast -Dgit-revision="$git_revision" -- \
   --mode allocation --samples 15 --iterations 10 --host-class "$host_class" \
   > "$output_directory/allocation.jsonl"
+python3 scripts/bench-resources.py --n 10,100,1000 --timeout 120 --host-class "$host_class" --git-revision "$git_revision" \
+  --report "$output_directory/scaling.jsonl" > "$output_directory/scaling.md"
 
 # A report must be internally valid before it is retained as a baseline.
 zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- \
@@ -29,6 +31,9 @@ zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- \
 zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- \
   "$output_directory/allocation.jsonl" "$output_directory/allocation.jsonl" \
   > "$output_directory/allocation-summary.txt"
+zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- \
+  "$output_directory/scaling.jsonl" "$output_directory/scaling.jsonl" \
+  > "$output_directory/scaling-summary.txt"
 
 printf '%s\n' "$git_revision" > "$output_directory/git-revision.txt"
 printf '%s\n' "$host_class" > "$output_directory/host-class.txt"

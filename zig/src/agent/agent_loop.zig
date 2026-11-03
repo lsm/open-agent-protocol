@@ -2,6 +2,7 @@ const repeat = @import("repeat").repeat;
 const std = @import("std");
 const json_encode = @import("json_encode");
 const compat = @import("compat");
+const retry = @import("retry");
 const ai_types = @import("ai_types");
 const event_stream_module = @import("event_stream");
 const types = @import("agent_types");
@@ -1057,11 +1058,59 @@ fn executeToolCalls(
     };
 }
 
+const max_turn_retries: u8 = 2;
+const turn_retry_base_delay_ms: u32 = 1000;
+const turn_retry_budget_ms: i64 = 600_000;
+const failed_after_output_note = "after output was shown, so it was not retried";
+
+const TurnRetry = struct {
+    started_ms: i64,
+    attempt: u8 = 0,
+    delay_ms: u64 = 0,
+
+    fn eligible(error_text: []const u8) bool {
+        if (retry.httpStatus(error_text) != null) return false;
+        return switch (retry.classifyError(error_text)) {
+            .transient, .throttled => true,
+            .context_overflow, .fatal => false,
+        };
+    }
+
+    fn claim(self: *TurnRetry, error_text: []const u8, max_delay_ms: u32) bool {
+        if (self.attempt >= max_turn_retries or !eligible(error_text)) return false;
+        if (compat.time.nowMillis() - self.started_ms >= turn_retry_budget_ms) return false;
+        const backoff = retry.calculateDelay(self.attempt, turn_retry_base_delay_ms, max_delay_ms);
+        const asked = retry.extractRetryDelayFromBody(error_text) orelse 0;
+        self.delay_ms = @max(backoff, @min(asked, max_delay_ms));
+        return true;
+    }
+};
+
+fn streamRetriedTurn(
+    allocator: std.mem.Allocator,
+    context: *AgentContext,
+    config: AgentLoopConfig,
+    event_stream: *AgentEventStream,
+) !ai_types.AssistantMessage {
+    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis() };
+    while (true) {
+        return streamAssistantResponse(allocator, context, config, event_stream, &turn_retry) catch |err| {
+            if (err != error.TurnRetryable) return err;
+            if (!retry.sleepMs(turn_retry.delay_ms, if (config.cancel_token) |token| token.cancelled else null)) {
+                return makeProviderErrorAssistantMessage(allocator, config.model, "request cancelled");
+            }
+            turn_retry.attempt += 1;
+            continue;
+        };
+    }
+}
+
 fn streamAssistantResponse(
     allocator: std.mem.Allocator,
     context: *AgentContext,
     config: AgentLoopConfig,
     event_stream: *AgentEventStream,
+    turn_retry: *TurnRetry,
 ) !ai_types.AssistantMessage {
     var messages = context.messagesSlice();
 
@@ -1113,9 +1162,26 @@ fn streamAssistantResponse(
     defer _ = provider_stream.deinitAndDestroy();
 
     var final_message: ?ai_types.AssistantMessage = null;
+    var pending_start: ?ai_types.Message = null;
     var message_started = false;
+    const max_delay_ms = config.max_retry_delay_ms orelse 60_000;
 
     while (provider_stream.wait()) |provider_event| {
+        const output_shown = message_started;
+        if (provider_event == .@"error" and !output_shown and turn_retry.claim(provider_event.@"error".err.error_message.slice(), max_delay_ms)) {
+            if (provider_stream.ownership.isOwned()) {
+                var owned_error_event = provider_event;
+                ai_types.deinitAssistantMessageEvent(allocator, &owned_error_event);
+            }
+            return error.TurnRetryable;
+        }
+        if (provider_event != .start and provider_event != .keepalive) {
+            if (pending_start) |start| {
+                pending_start = null;
+                message_started = true;
+                try pushAgentEvent(event_stream, .{ .message_start = .{ .message = start } });
+            }
+        }
         switch (provider_event) {
             .start => |s| {
                 var owned_start_event = provider_event;
@@ -1123,7 +1189,7 @@ fn streamAssistantResponse(
                     ai_types.deinitAssistantMessageEvent(allocator, &owned_start_event);
                 };
 
-                const msg: ai_types.Message = .{ .assistant = .{
+                pending_start = .{ .assistant = .{
                     .content = &.{},
                     .api = config.model.api,
                     .provider = config.model.provider,
@@ -1133,13 +1199,9 @@ fn streamAssistantResponse(
                     .timestamp = s.partial.timestamp,
                     .is_owned = false,
                 } };
-                try pushAgentEvent(event_stream, .{ .message_start = .{
-                    .message = msg,
-                } });
                 if (provider_stream.ownership.isOwned()) {
                     ai_types.deinitAssistantMessageEvent(allocator, &owned_start_event);
                 }
-                message_started = true;
             },
             .text_start => |evt| {
                 try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
@@ -1187,15 +1249,33 @@ fn streamAssistantResponse(
                 errdefer if (provider_stream.ownership.isOwned() and !final_transferred) {
                     ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
                 };
-                final_message = e.err;
-                const msg: ai_types.Message = .{ .assistant = e.err };
+                var noted: ?ai_types.AssistantMessage = null;
+                errdefer if (noted) |*message| message.deinit(allocator);
+                if (output_shown and TurnRetry.eligible(e.err.error_message.slice())) {
+                    noted = try notedAfterOutput(allocator, e.err);
+                    if (provider_stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
+                    final_transferred = true;
+                }
+                final_message = noted orelse e.err;
+                const msg: ai_types.Message = .{ .assistant = final_message.? };
                 try pushAgentEvent(event_stream, .{ .message_end = .{
                     .message = msg,
                 } });
+                noted = null;
                 final_transferred = true;
             },
             .keepalive => {},
         }
+    }
+
+    if (final_message == null and !message_started) {
+        if (provider_stream.getError()) |provider_error| {
+            if (turn_retry.claim(provider_error, max_delay_ms)) return error.TurnRetryable;
+        }
+    }
+
+    if (pending_start) |start| {
+        try pushAgentEvent(event_stream, .{ .message_start = .{ .message = start } });
     }
 
     if (final_message == null) {
@@ -1212,11 +1292,25 @@ fn streamAssistantResponse(
 
     if (final_message == null) {
         if (provider_stream.getError()) |provider_error| {
+            if (message_started and TurnRetry.eligible(provider_error)) {
+                const noted = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ provider_error, failed_after_output_note });
+                defer allocator.free(noted);
+                return try makeProviderErrorAssistantMessage(allocator, config.model, noted);
+            }
             return try makeProviderErrorAssistantMessage(allocator, config.model, provider_error);
         }
     }
 
     return final_message orelse error.NoFinalMessage;
+}
+
+fn notedAfterOutput(allocator: std.mem.Allocator, message: ai_types.AssistantMessage) !ai_types.AssistantMessage {
+    var noted = try ai_types.cloneAssistantMessage(allocator, message);
+    errdefer noted.deinit(allocator);
+    const text = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ message.error_message.slice(), failed_after_output_note });
+    noted.error_message.deinit(allocator);
+    noted.error_message = ai_types.OwnedSlice(u8).initOwned(text);
+    return noted;
 }
 
 fn makeProviderErrorAssistantMessage(
@@ -1414,6 +1508,181 @@ fn replyStream(
         .is_owned = true,
     });
     return stream_ptr;
+}
+
+const FlakyCtx = struct {
+    failure: []const u8,
+    failures_left: usize,
+    show_text: bool = false,
+    error_event: bool = false,
+    cancel_on_failure: ?*std.atomic.Value(bool) = null,
+    calls: usize = 0,
+    history_differed: bool = false,
+};
+
+fn flakyStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    const flaky: *FlakyCtx = @ptrCast(@alignCast(ctx.?));
+    flaky.calls += 1;
+    if (context.messages.len != 1 or context.messages[0] != .user) flaky.history_differed = true;
+    if (flaky.cancel_on_failure) |cancelled| cancelled.store(true, .release);
+    if (flaky.failures_left == 0) {
+        var answered = ReplyCtx{ .text = "recovered", .stop_reason = .stop };
+        return replyStream(&answered, model, context, options, allocator);
+    }
+    flaky.failures_left -= 1;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    if (flaky.error_event) stream_ptr.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = model.api,
+        .provider = model.provider,
+        .model = model.id,
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = false,
+    };
+    try stream_ptr.push(.{ .start = .{ .partial = partial } });
+    if (flaky.show_text) try stream_ptr.push(.{ .text_delta = .{ .content_index = 0, .delta = "half an ans", .partial = partial } });
+    if (flaky.error_event) {
+        var failed = partial;
+        failed.stop_reason = .@"error";
+        failed.error_message = ai_types.OwnedSlice(u8).initBorrowed(flaky.failure);
+        try stream_ptr.push(.{ .@"error" = .{ .reason = .@"error", .err = failed } });
+    }
+    stream_ptr.completeWithError(flaky.failure);
+    return stream_ptr;
+}
+
+const FlakyOutcome = struct { message_starts: usize = 0, final_text: bool = false, final_error: bool = false, noted_after_output: bool = false };
+
+fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    try context.appendMessage(try ai_types.cloneMessage(std.testing.allocator, .{ .user = .{
+        .content = .{ .text = "saved question" },
+        .timestamp = 0,
+    } }));
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = testModel(),
+        .protocol = .{ .stream_fn = flakyStream, .ctx = flaky },
+        .max_iterations = 1,
+        .max_retry_delay_ms = 1,
+        .cancel_token = if (flaky.cancel_on_failure) |cancelled| .{ .cancelled = cancelled } else null,
+    }, events, &events.retention);
+
+    var outcome = FlakyOutcome{};
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_start => outcome.message_starts += 1,
+            .turn_end => |payload| {
+                outcome.final_error = payload.message.stop_reason == .@"error";
+                outcome.noted_after_output = std.mem.indexOf(u8, payload.message.error_message.slice(), failed_after_output_note) != null;
+                outcome.final_text = payload.message.content.len > 0 and payload.message.content[0] == .text and std.mem.eql(u8, payload.message.content[0].text.text, "recovered");
+            },
+            else => {},
+        }
+    }
+    return outcome;
+}
+
+test "a stream that drops before any output retries from the saved history" {
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 2 };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 3), flaky.calls);
+    try std.testing.expect(!flaky.history_differed);
+    try std.testing.expectEqual(@as(usize, 0), outcome.message_starts);
+    try std.testing.expect(outcome.final_text);
+}
+
+test "a cancel during the retry wait starts no further attempt" {
+    var cancelled = std.atomic.Value(bool).init(false);
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 10, .cancel_on_failure = &cancelled };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
+}
+
+test "the turn retry is bounded and the last failure ends the run" {
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 10 };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, max_turn_retries + 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
+}
+
+test "a stream that drops after visible output does not retry and says so" {
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 1, .show_text = true };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(outcome.noted_after_output);
+}
+
+test "an error event after visible output does not retry and says so" {
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 1, .show_text = true, .error_event = true };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(outcome.noted_after_output);
+}
+
+test "an error event before any output retries, and running out of retries carries no note" {
+    var recovered = FlakyCtx{ .failure = "read error", .failures_left = 2, .error_event = true };
+    const recovered_outcome = try runFlakyTurn(&recovered);
+    try std.testing.expectEqual(@as(usize, 3), recovered.calls);
+    try std.testing.expect(recovered_outcome.final_text);
+
+    var exhausted = FlakyCtx{ .failure = "read error", .failures_left = 10, .error_event = true };
+    const exhausted_outcome = try runFlakyTurn(&exhausted);
+    try std.testing.expectEqual(@as(usize, max_turn_retries + 1), exhausted.calls);
+    try std.testing.expect(exhausted_outcome.final_error);
+    try std.testing.expect(!exhausted_outcome.noted_after_output);
+}
+
+test "no retry starts once the turn has used its time budget" {
+    const now = compat.time.nowMillis();
+    var fresh = TurnRetry{ .started_ms = now };
+    try std.testing.expect(fresh.claim("Provider protocol stream timed out", 1));
+    var spent = TurnRetry{ .started_ms = now - turn_retry_budget_ms };
+    try std.testing.expect(!spent.claim("Provider protocol stream timed out", 1));
+}
+
+test "a fatal failure after visible output carries no retry note" {
+    var flaky = FlakyCtx{ .failure = "provider said no", .failures_left = 1, .show_text = true };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(!outcome.noted_after_output);
+}
+
+test "a failure the provider already retried is not retried again" {
+    var flaky = FlakyCtx{ .failure = "openai request failed: HTTP 503", .failures_left = 1 };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
+}
+
+test "a fatal or overflow failure is not retried" {
+    for ([_][]const u8{ "provider said no", "prompt is too long: 9000 tokens > 8192 maximum" }) |failure| {
+        var flaky = FlakyCtx{ .failure = failure, .failures_left = 1 };
+        const outcome = try runFlakyTurn(&flaky);
+        try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+        try std.testing.expect(outcome.final_error);
+    }
 }
 
 fn steeringCallbackFails(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]ai_types.Message {
@@ -1843,7 +2112,7 @@ fn runLoop(
 
             try pushAgentEvent(event_stream, .turn_start);
 
-            const assistant_message = streamAssistantResponse(
+            const assistant_message = streamRetriedTurn(
                 allocator,
                 context,
                 turn_config,
@@ -2330,6 +2599,7 @@ test "streamAssistantResponse emits context and prompt segment usage" {
     var agent_events = AgentEventStream.init(allocator);
     defer agent_events.deinit();
 
+    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis() };
     var final = try streamAssistantResponse(
         allocator,
         &context,
@@ -2338,6 +2608,7 @@ test "streamAssistantResponse emits context and prompt segment usage" {
             .protocol = .{ .stream_fn = mockContextUsageStream },
         },
         &agent_events,
+        &turn_retry,
     );
     defer final.deinit(allocator);
 

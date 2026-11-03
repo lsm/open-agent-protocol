@@ -1,5 +1,6 @@
 const std = @import("std");
 const compat = @import("compat");
+const overflow = @import("overflow");
 
 pub const RetryConfig = struct {
     max_retries: u32 = 3,
@@ -323,6 +324,36 @@ pub fn isRetryableError(error_text: []const u8) bool {
     return false;
 }
 
+pub const ErrorClass = enum { transient, throttled, context_overflow, fatal };
+
+pub fn httpStatus(error_text: []const u8) ?u16 {
+    const marker = "HTTP ";
+    const idx = std.mem.find(u8, error_text, marker) orelse return null;
+    const start = idx + marker.len;
+    var end = start;
+    while (end < error_text.len and std.ascii.isDigit(error_text[end])) end += 1;
+    if (end == start) return null;
+    return std.fmt.parseInt(u16, error_text[start..end], 10) catch null;
+}
+
+pub fn classifyError(error_text: []const u8) ErrorClass {
+    if (overflow.isContextOverflowText(error_text)) return .context_overflow;
+    if (httpStatus(error_text)) |status| {
+        if (status == 429) return .throttled;
+        return if (isRetryable(status)) .transient else .fatal;
+    }
+    const throttled = [_][]const u8{ "rate limit", "ratelimit", "too many requests", "resource exhausted" };
+    for (throttled) |pattern| {
+        if (indexOfCaseInsensitive(error_text, pattern) != null) return .throttled;
+    }
+    if (isRetryableError(error_text)) return .transient;
+    const dropped = [_][]const u8{ "read error", "read failed", "receive failed", "timed out" };
+    for (dropped) |pattern| {
+        if (indexOfCaseInsensitive(error_text, pattern) != null) return .transient;
+    }
+    return .fatal;
+}
+
 pub fn sleepMs(ms: u64, cancel_token: ?*const std.atomic.Value(bool)) bool {
     const check_interval_ms: u64 = 100;
     const ns_per_ms: u64 = std.time.ns_per_ms;
@@ -609,4 +640,30 @@ test "retry_budget_exhaustion_edge_cases" {
     const capped = RetryConfig{ .max_retries = 1, .base_delay_ms = 100, .max_delay_ms = 150, .jitter_factor = 0.0 };
     try std.testing.expectEqual(@as(?u64, 100), capped.nextDelay(0, null));
     try std.testing.expectEqual(@as(?u64, null), capped.nextDelay(1, null));
+}
+
+test "classifyError sorts provider failures into the four classes" {
+    const cases = [_]struct { text: []const u8, class: ErrorClass }{
+        .{ .text = "read error", .class = .transient },
+        .{ .text = "read failed", .class = .transient },
+        .{ .text = "receive failed", .class = .transient },
+        .{ .text = "Provider protocol stream timed out", .class = .transient },
+        .{ .text = "overloaded_error: Overloaded", .class = .transient },
+        .{ .text = "openai request failed: HTTP 503", .class = .transient },
+        .{ .text = "openai request failed: HTTP 429 (usage_limit_reached)", .class = .throttled },
+        .{ .text = "Rate limit reached, try again", .class = .throttled },
+        .{ .text = "prompt is too long: 213462 tokens > 200000 maximum", .class = .context_overflow },
+        .{ .text = "anthropic request failed: HTTP 400 (invalid_request_error: prompt is too long)", .class = .context_overflow },
+        .{ .text = "anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid)", .class = .fatal },
+        .{ .text = "openai request failed: HTTP 400 (read error in the prompt)", .class = .fatal },
+        .{ .text = "request cancelled", .class = .fatal },
+        .{ .text = "provider said no", .class = .fatal },
+    };
+    for (cases) |case| try std.testing.expectEqual(case.class, classifyError(case.text));
+}
+
+test "httpStatus reads the first status and ignores the rest" {
+    try std.testing.expectEqual(@as(?u16, 403), httpStatus("kimi request failed: HTTP 403 (HTTP 500 inside)"));
+    try std.testing.expectEqual(@as(?u16, null), httpStatus("no status here"));
+    try std.testing.expectEqual(@as(?u16, null), httpStatus("HTTP nope"));
 }

@@ -385,8 +385,8 @@ and a subscribing `open` can reach.
 
 | bound | value | pinned by |
 | --- | --- | --- |
-| Concurrent ops in flight | 16 | `TestInFlightOpsAreBounded` |
-| Request bytes held in flight | 16 MiB, with one oversize request admitted so it can be refused | `TestAdmissionBudgetsRequestBytes`, `TestAdmissionAdmitsOneOversizeRequest` |
+| Concurrent ops in flight | 16 | `TestInFlightOpsAreBounded`; Rust: `a_request_past_the_in_flight_bound_is_refused_busy_naming_the_bound`, `pipelined_requests_are_served_at_once_rather_than_one_after_another` |
+| Request bytes held in flight | 16 MiB, with one oversize request admitted so it can be refused | `TestAdmissionBudgetsRequestBytes`, `TestAdmissionAdmitsOneOversizeRequest`; Rust: `the_byte_budget_admits_one_oversize_request_and_refuses_what_overfills_it` |
 | Concurrent subscriptions | 64 | `TestSubscriptionsAreBounded` |
 | Queued output lines before the writer is abandoned | 256 | `TestRefusalHeldThroughAFullQueueStillArrives` |
 | Frame limit | 16 MiB envelope + 2 MiB wrapper, floor 256 | `TestOversizedLineFailsClosed`, `TestFrameLimitFloorRejectsUnusableLimits` |
@@ -398,8 +398,8 @@ and a subscribing `open` can reach.
 | Subscriptions are not charged against the in-flight op bound, because a subscription is not an op that finishes | `TestSubscriptionsAreNotChargedAgainstTheInFlightBound` |
 | A refusal names the bound that refused it | `TestRefusalNamesTheBoundThatRefused`, `TestRefusedRequestNamesItself` |
 | A host that pipelines past the bound is answered, not stalled | `TestSlowWorkersBehindTheBoundAreAnswered` |
-| The in-flight bounds refuse **any** op, since admission is decided before the op is read | `TestRefusedRequestNamesItself` — it parks a `capabilities` op at the ceiling and asserts the `adapters` line behind it is refused `busy`; the bound's mechanism by `TestInFlightOpsAreBounded` |
-| A refusal that cannot be written is reported as dropped, not swallowed | `TestQueuedRefusalWithdrawnUnwrittenIsReported`, `TestMalformedLineSurvivesASaturatedBound` |
+| The in-flight bounds refuse **any** op, since admission is decided before the op is read | `TestRefusedRequestNamesItself` — it parks a `capabilities` op at the ceiling and asserts the `adapters` line behind it is refused `busy`; the bound's mechanism by `TestInFlightOpsAreBounded`; Rust: `a_shutdown_past_the_in_flight_bound_is_refused_busy_like_any_other_op` |
+| A refusal that cannot be written is reported as dropped, not swallowed | `TestQueuedRefusalWithdrawnUnwrittenIsReported`, `TestMalformedLineSurvivesASaturatedBound`; Rust: `refusals_a_stalled_host_cannot_take_are_dropped_and_reported_rather_than_stalling_the_reader` |
 | A saturated bound does not hide a framing defect behind it | `TestBufferedDefectIsJudgedBehindASaturatedBound` |
 | Admission closes at teardown, and a request arriving after it is dropped unserved | `TestAdmissionClosesAtTeardown`, `TestDisconnectIsObservedWhileAdmissionIsFull` |
 | The frontend serves again after a teardown | `TestServerServesAgainAfterTeardown` |
@@ -436,7 +436,12 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Zig also serves it as
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`; Rust (`oap_serve::stdio`):
+`a_shutdown_with_nothing_running_stops_serving_with_input_still_open`,
+`a_shutdown_naming_no_mode_while_a_run_is_live_asks_the_host_to_choose`,
+`a_graceful_shutdown_refuses_new_work_and_stops_once_its_runs_settle`, with a
+queued run's loss pinned only at the hub
+(`cancel_queued_cancels_a_queued_run_and_reports_a_session_it_cannot_find`). Zig also serves it as
 `POST /shutdown`, whose body is the same `request` object or empty, answering
 `200` with the same object and refusing new work `503 shutting_down`; once
 the shutdown completes the daemon writes every answer it owes, and on graceful
@@ -444,8 +449,13 @@ also settles requests still in flight, then stops, waiting at most 5 s — Zig: 
 active, then graceful drains, refuses new work 503, and force stops the
 daemon`; Go: `TestAShutdownPostedWithNothingRunningStopsAtOnce`,
 `TestAShutdownPostedAsksWhileARunIsActiveThenGracefulRefusesNewWork503AndForceStops`,
-`TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing`; `goap serve`
-then shuts its HTTP server down as on a signal. Neither tree yet sends subscribers
+`TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing`; Rust:
+`a_shutdown_of_an_idle_hub_answers_stopping_and_the_server_returns`,
+`a_graceful_shutdown_drains_refusing_new_work_until_the_run_ends`,
+`a_shutdown_body_is_gated_by_media_then_json_then_its_members`. `goap serve`
+then shuts its HTTP server down as on a signal. Rust's `serve_http` returns
+once the answer that ends serving is written or the drain ends, and does not
+wait for other requests still in flight; its caller owns that window. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance. In
 both trees, on stdio and HTTP alike, SIGINT and SIGTERM now map as rule 4
 says: the first starts a graceful shutdown and writes one stderr line listing
@@ -757,8 +767,8 @@ concurrency and invents no code for having done so.
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
 | Accept poll | 10 ms at most; the loop wakes on any socket or child becoming ready and falls back on this bound for a session that has no handle to poll, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
 | Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
-| Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
-| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops polling the listener | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
+| Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own"; Rust chose 64 KiB, answered `431` past it, and reads the head within one 30 s deadline |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops polling the listener; Rust: 64 (`HttpOptions::max_connections`), a thread each, and a connection past the bound is closed unanswered | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
@@ -869,7 +879,8 @@ than waiting on a peer that sends nothing more. The bound is **both** a byte cap
 elapsed-time budget, and it is the *total* over the whole drain that bounds it: a per-round cap
 with an unbounded round count is not a bound. The Zig port reads in 64 KiB rounds, stops at
 **1 MiB in total**, and stops at **2500 ms elapsed from that drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
-for hours still drains. A drain that cannot read its own clock stops rather than draining without a
+for hours still drains. The Rust port reads in 4 KiB rounds and stops at **256 KiB in total** or
+**1 s elapsed from the drain's start**, whichever comes first. A drain that cannot read its own clock stops rather than draining without a
 bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
 than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
 silent-socket poll forever; `readHead` and `readBody` do the same; and the round deadline **reuses the
@@ -1283,8 +1294,8 @@ under — the citation is checked, never required.
 | A degraded `subscribe` is refused without the opt-in, and admitted with it | `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
 | An open citing a stale revision is refused `stale_capabilities`, naming both revisions; an open citing none is admitted under the revision it was gated with | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP); `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` (the same comparison on the `subscribe` path, and the stdio op's own mapping of it) |
 | An open response that cannot be encoded rolls the session back and says so | `TestOpenRollsBackWhenItsResponseCannotEncode`, `TestAnOpenThatCannotEncodeIsRolledBack` |
-| An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which | `TestAnOpenTheHostNamedIsKeptAndSaidSo` |
-| A submit acknowledgement that will not frame rolls its run back and names the outcome | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement` |
+| An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which; a compound open that admitted a message is rolled back even so, its run cancelled first, because a refused compound open leaves nothing to clean up (Decision 0009) | `TestAnOpenTheHostNamedIsKeptAndSaidSo`, `TestAnOversizedCompoundOpenRollsBackTheNamedSessionWhoseMessageItAdmitted` |
+| A submit acknowledgement that will not frame rolls its run back and names the outcome; a steer, which admits no run of its own, leaves the run it steered running | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement`, `TestAnUnframableSteerAcknowledgementLeavesTheSteeredRunRunning` |
 
 ### The held subscription
 
@@ -1307,9 +1318,10 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 | rule | pinned by |
 | --- | --- |
-| A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest` |
+| A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest`; Rust: `the_first_uncursored_stream_after_a_subscribing_open_carries_the_run_the_open_started` |
 | A held subscription nothing adopts is released | `TestOpenSubscriptionNotAdoptedIsReleased` |
-| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release) |
+| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release); Rust: `a_held_subscription_expires_after_its_hold` |
+| An `events` request carrying a cursor releases the held subscription rather than adopting it | Rust: `a_cursored_stream_discards_the_held_subscription`; no Go test pins it |
 | The default hold is 30 s, and an explicit window still wins | `TestASubscriptionIsHeldForThirtySecondsByDefault` |
 
 ## The operations
@@ -1569,7 +1581,14 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
   page through its adapter, with a gap, and refuses a foreign cursor, an unbound
   session, a bad limit, an adapter that keeps no transcript and a session with
   no native id`, `GET /sessions/{id}/transcript answers the transcript op: an
-  unknown session is 404 and a limit out of range 400`.
+  unknown session is 404 and a limit out of range 400`. Rust: over HTTP,
+  `a_transcript_page_reads_through_the_adapter_with_the_query_limit_and_cursor`,
+  `a_transcript_is_refused_for_an_unknown_session_a_bad_limit_and_an_adapter_without_one`
+  (a `limit` that does not parse reads as 0, as Go's route does); over stdio,
+  `transcript_refuses_an_unknown_session_a_limit_out_of_range_and_a_cursor_as_after`,
+  `a_held_session_whose_adapter_keeps_no_transcript_answers_transcript_load_unadvertised`,
+  `a_held_session_reads_its_native_transcript_under_its_own_id`,
+  `a_closed_session_the_history_records_reads_the_native_it_was_bound_to`.
 
 ### `state`
 
@@ -2534,18 +2553,18 @@ closed` and `the sweep waits no longer than the window it was given`, all four i
 | **The fix** | Landed as described: the contract member, and the exposure set on `Subscription`. What remains is an adapter that reports its own stream failures by run, which is that adapter's change, not the hub's. |
 | **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 
-### D32 — the Rust stdio frontend answers requests one at a time
+### D34 — Zig keeps a named compound open whose response will not frame
 
-`oap_serve::stdio` (Decision 0052) reads, serves and answers each request
-before reading the next, where Go serves each in its own goroutine under the
-in-flight bounds of [Bounds on the stdio pipe](#bounds-on-the-stdio-pipe). Its
-output goes through one writer thread fed by a queue of 256 lines, and a
-subscription's pump writes to the same queue, so a host that stops reading
-fills the queue and the request loop then waits on it instead of answering
-`busy`. Shutdown is bounded either way: at the end of input the pumps are
-cancelled and the writer is given the 5-second window before it is abandoned,
-pinned by `a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window`.
-Concurrent serving with the `busy` bounds closes this.
+A compound open that admitted its message and whose response exceeds the frame
+must be rolled back whether or not the host named the session, its run
+cancelled first: the host received a refusal, and Decision 0009 says a refused
+compound open leaves no session and no run to clean up. Go
+(`TestAnOversizedCompoundOpenRollsBackTheNamedSessionWhoseMessageItAdmitted`)
+and Rust (`an_oversized_open_response_rolls_back_a_named_session_whose_message_it_admitted`)
+do. Zig's `oversizedOpen` in `zig/src/hub/stdio.zig` keeps every named
+session, so a named compound open leaves its session and run live behind
+`response_too_large`. Cancelling the admitted run and discarding the session
+when the open carried a message closes this.
 
 ### Recorded, and not divergences
 

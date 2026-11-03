@@ -40,6 +40,14 @@ list; an adapter that could not be probed is named in `unavailable`.
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
 | `work.read` | the harness's own transcript where the adapter reads one, else the turns `serve` records as messages are submitted and runs end | never |
 
+The Rust stdio hub serves all six verbs and advertises only those it serves,
+pinned by
+`work_capabilities_lists_each_adapters_verbs_and_native_reach`.
+
+Its HTTP hub serves the same verbs on Go's seven routes with Go's statuses,
+pinned by `work_started_over_http_is_sent_to_read_listed_and_stopped` and
+`the_work_routes_refuse_with_gos_statuses`.
+
 A verb an adapter cannot serve is refused `unsupported_feature` naming the
 core feature it rests on, as the core's own refusal does: `work.stop` over
 DeepSeek names `run.cancel`, as decision 0047 says. The `work.*` key only says,
