@@ -86,7 +86,7 @@ fn a_null_reads_as_absent_wherever_goap_reads_it_so() {
     .unwrap();
     assert_eq!(registry.names(), ["m", "memory"]);
     assert!(loaded(
-        "unknown",
+        "null-member",
         r#"{"adapters":{"m":{"type":"memory","colour":null}}}"#
     )
     .err()
