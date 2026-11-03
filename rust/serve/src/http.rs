@@ -646,7 +646,11 @@ impl Served {
         };
         if method != allowed {
             return Answer {
-                allow: Some(allowed),
+                allow: Some(if allowed == "GET" {
+                    "GET, HEAD"
+                } else {
+                    allowed
+                }),
                 ..plain(405, "Method Not Allowed\n")
             };
         }

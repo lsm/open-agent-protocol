@@ -804,9 +804,12 @@ the same for a path no pattern matches, and the draft's codes are
 The fifteen core routes and the seven work routes are written in both trees (D30 closed): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
-`405 Method Not Allowed` with an `Allow` header naming the one it takes, which
-is what Go's method-qualified patterns answer, and a `HEAD` is routed as the
-`GET` it describes. Zig: `a known path asked with the wrong method is 405 naming
+`405 Method Not Allowed` with an `Allow` header naming the one it takes —
+`GET, HEAD` for a `GET` route, since Go's mux serves `HEAD` on every `GET`
+pattern — which is what Go's method-qualified patterns answer, and a `HEAD` is
+routed as the `GET` it describes; Zig still names `GET` alone (D35). Rust:
+`an_unknown_path_is_a_plain_404_a_wrong_method_is_405_naming_the_method_and_head_is_get`,
+and `TestHubHTTPAnswersGoapAndRustTheSame` compares the whole answer with goap's. Zig: `a known path asked with the wrong method is 405 naming
 the method it takes, and an unknown path is a plain 404`; Go pins the table by
 `TestTheRouteTableIsComplete`.
 
@@ -833,7 +836,7 @@ and it is the one still open.
   it would be a policy change this table does not make. Carried forward from #656.
 - **A wrong method on a known path — RESOLVED as `405`, matching Go.** The routes are now wired, and
   the running hub answers a wrong method on a known path `405` with an `Allow` header, as Go's mux
-  does; the record below is kept because it is what this row said while the question was open.
+  does, though naming `GET` alone where Go names `GET, HEAD` (D35); the record below is kept because it is what this row said while the question was open.
   **Previously an unresolved question, and deliberately not merged with the row
   above.** Go registers patterns that include the method (`mux.HandleFunc("GET /adapters", ...)`,
   `servehttp/server.go:69`) and the module targets `go 1.26`, where `http.ServeMux` answers a request
@@ -2565,6 +2568,15 @@ do. Zig's `oversizedOpen` in `zig/src/hub/stdio.zig` keeps every named
 session, so a named compound open leaves its session and run live behind
 `response_too_large`. Cancelling the admitted run and discarding the session
 when the open carried a message closes this.
+
+### D35 — Zig names only `GET` in a GET route's `Allow`
+
+A wrong method on a `GET` route answers `405` with `Allow: GET, HEAD` in Go,
+because its mux serves `HEAD` on every `GET` pattern, and in Rust since
+`TestHubHTTPAnswersGoapAndRustTheSame` found the difference. Zig's
+`zig/src/hub/routes.zig` answers the table entry's method alone, so its `405`
+says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
+`GET` entry, and updating that test, closes this.
 
 ### Recorded, and not divergences
 
