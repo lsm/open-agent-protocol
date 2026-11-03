@@ -700,3 +700,25 @@ test "a compaction a crash left half-staged does not reach the log, and the next
     try testing.expect(try lineCount(arena.allocator(), path) < 2 * compact_slack);
     try testing.expectEqualStrings("r1", (try store.openRuns(arena.allocator(), "s"))[0].run_id);
 }
+
+test "dead records never push the log past what a read accepts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const request = try arena.allocator().alloc(u8, binding.max_store_bytes / 4);
+    @memset(request, 'x');
+    for (0..5) |index| {
+        const run_id = try std.fmt.allocPrint(arena.allocator(), "big-{d}", .{index});
+        try store.append(.{ .action = .admitted, .time_ms = @intCast(index), .session_id = "s", .run_id = run_id, .request = request });
+        try store.append(.{ .action = .settled, .time_ms = @intCast(index), .session_id = "s", .run_id = run_id });
+    }
+    try store.append(.{ .action = .admitted, .time_ms = 9, .session_id = "s", .run_id = "small" });
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("small", open_runs[0].run_id);
+}
