@@ -464,17 +464,11 @@ open question answered here:
   `session.state.updated` comes from the same channel.
 - **The hub** journals a triggered run like any run, so its replay and
   resume are a run's.
-- **A subscription that follows the session.** [Decision
+- **Every subscription follows the session.** [Decision
   0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
-  makes this every subscription's behaviour, so it replaces the opt-in below:
-  there is no `?follow=session`, and no `oap-run-boundary` or `oap-stream-end`.
-  The rest stands. As first designed, a hub subscription ended
-  at its run's terminal envelope ([hub.md](hub.md)), so nothing in it could
-  carry a run nobody subscribed to. This reuses the recorded T2 design in
-  [staged-units-graduation.md](staged-units-graduation.md) rather than a new
-  one:
-  - A host subscribes with `?follow=session` (a `follow` flag on the stdio
-    `events` op). A subscription without it keeps today's behaviour exactly.
+  makes a subscription last as long as its connection, so it carries a run
+  nobody subscribed to, with no `?follow=session`, `oap-run-boundary` or
+  `oap-stream-end`:
   - Every line is an `envelope` line, and scope is read from the envelope's
     own members, never from `sequence`: one carrying `run_id` advances that
     run's cursor, one carrying `session_id` without `run_id` is
@@ -482,16 +476,11 @@ open question answered here:
     their session-domain `sequence`, as
     [harness-initiated-state.md](harness-initiated-state.md) proposal 3
     delivers them.
-  - Before leaving a run's domain the hub writes `oap-run-boundary` for it,
-    and a triggered run's lines start at its `run.started`.
-  - One change to T2: a following subscription does not end at a terminal
-    with no later-admitted run, because a trigger can admit one at any time.
-    It writes `oap-run-boundary` and stays open until the session closes, it
-    overflows, or the client ends it, and only then writes `oap-stream-end`.
-    The T2 section records this.
+  - A triggered run's lines start at its `run.started`, and its terminal is an
+    ordinary envelope.
   - Session events are delivered live and not replayed. A host that
-    reconnects reads `session.state.tasks`, and resumes a run through the
-    run's own cursor and `?run=`.
+    reconnects reads `session.state.tasks`, and resumes runs through a run's
+    own cursor.
 
 ## Where it lands
 
