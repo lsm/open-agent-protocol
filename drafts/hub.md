@@ -2566,18 +2566,19 @@ session, so a named compound open leaves its session and run live behind
 `response_too_large`. Cancelling the admitted run and discarding the session
 when the open carried a message closes this.
 
-### D35 — a live subscription ends at its run's terminal in Zig and spans queued runs in Go
+### D35 — a live subscription ends at its run's terminal in Zig and spans queued runs in Go and Rust
 
 A stream ends at the run's terminal envelope, as [the stdio wire](#the-stdio-transport-object-wire)
 and [SSE framing](#sse-framing) both say, and Zig's `Subscription.next` does: it
 returns nothing after the first terminal it delivers. Go stops a live subscriber
 only when the session has no run left to follow, so one that was reading when a
 queued run is promoted reads that run too, and `go/serve/session_test.go` pins
-this as a subscription spanning runs. Both trees keep every run contiguous and
-deliver nothing of a run after its terminal, which is what their seeded
-interleaving tests check; only where the stream stops differs. Undecided: either
-Go ends at the first terminal, or this document says a stream follows the runs
-queued behind it.
+this as a subscription spanning runs. Rust's live subscription spans them the
+same way. All three keep every run contiguous and deliver nothing of a run
+after its terminal, which is what their seeded interleaving tests check; only
+where the stream stops differs. Undecided: either Go and Rust end at the first
+terminal, or this document says a stream follows the runs queued behind it and
+Zig does.
 
 ### Recorded, and not divergences
 
