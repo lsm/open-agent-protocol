@@ -201,17 +201,23 @@ pub const Store = struct {
         self.last_failure = null;
     }
 
+    fn unchangedLength(self: *Store, io: std.Io) ?u64 {
+        const known = self.validated orelse return null;
+        const stat = compat.fs.getCwd().statFile(io, self.path, .{}) catch return null;
+        return if (stat.size == known) known else null;
+    }
+
     fn write(self: *Store, entry: Entry) !void {
         const line = try encode(self.allocator, entry);
         defer self.allocator.free(line);
-        const known = self.validated orelse {
+        const io = compat.fs.defaultIo();
+        const known = self.unchangedLength(io) orelse {
             self.validated = try self.rewrite(line);
             return;
         };
-        const io = compat.fs.defaultIo();
+        if (known + line.len > max_store_bytes) return error.StreamTooLong;
         var file = try compat.fs.getCwd().createFile(io, self.path, .{ .truncate = false, .permissions = compat.fs.default_file_mode });
         defer file.close(io);
-        try file.setLength(io, known);
         errdefer file.setLength(io, known) catch {};
         try file.writePositionalAll(io, line, known);
         try file.sync(io);
