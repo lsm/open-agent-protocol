@@ -65,14 +65,15 @@ fn traced(trace: &str) -> Vec<(String, String, String)> {
         "{}/tests/data/provider_attach/{trace}.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let found: std::collections::BTreeSet<_> = Validator::new()
+    let mut found: Vec<_> = Validator::new()
         .unwrap()
         .validate(&std::fs::read(&path).unwrap(), &path)
         .diagnostics
         .into_iter()
         .map(|d| (d.code, d.envelope_id, d.pointer))
         .collect();
-    found.into_iter().collect()
+    found.sort();
+    found
 }
 
 type Case = (
@@ -82,7 +83,35 @@ type Case = (
 
 #[test]
 fn every_attach_path_draws_what_go_draws() {
-    let cases: [Case; 13] = [
+    let cases: [Case; 15] = [
+        (
+            "response-envelope-other-session",
+            &[(
+                "scope_mismatch",
+                "attach-response-one",
+                "/payload/session_id",
+            )][..],
+        ),
+        (
+            "request-envelope-other-session",
+            &[
+                (
+                    "scope_mismatch",
+                    "attach-request-one",
+                    "/payload/session_id",
+                ),
+                (
+                    "scope_mismatch",
+                    "attach-request-one",
+                    "/payload/session_id",
+                ),
+                (
+                    "scope_mismatch",
+                    "attach-response-one",
+                    "/payload/session_id",
+                ),
+            ][..],
+        ),
         (
             "degraded-accepted-other-session",
             &[("scope_mismatch", "attach-response", "/payload/session_id")][..],
