@@ -666,7 +666,7 @@ test "MCP tool list rejects non-object entries" {
     try std.testing.expectError(error.InvalidMcpResponse, bridge.addToolsFromResponse(0, response.value));
 }
 
-test "MCP JSON-RPC and result errors fail execution" {
+test "an MCP error reaches the model as an error result carrying the server's text" {
     var bridge = McpBridge.init(std.testing.allocator);
     bridge.bind();
     defer bridge.deinit();
@@ -692,7 +692,10 @@ test "MCP JSON-RPC and result errors fail execution" {
     );
     defer rpc_error.deinit();
     bridge.servers.items[0].mock_response = rpc_error.value;
-    try std.testing.expectError(error.McpToolError, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", null, null, null, std.testing.allocator));
+    var rpc_result = try tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", null, null, null, std.testing.allocator);
+    defer rpc_result.deinit(std.testing.allocator);
+    try std.testing.expect(rpc_result.is_error);
+    try std.testing.expectEqualStrings("boom", rpc_result.content.slice()[0].text.text);
 
     var result_error = try std.json.parseFromSlice(
         std.json.Value,
@@ -702,7 +705,20 @@ test "MCP JSON-RPC and result errors fail execution" {
     );
     defer result_error.deinit();
     bridge.servers.items[0].mock_response = result_error.value;
-    try std.testing.expectError(error.McpToolError, tool.runtime_execute.?(tool.runtime_ctx, "call_2", "{}", null, null, null, std.testing.allocator));
+    var tool_result = try tool.runtime_execute.?(tool.runtime_ctx, "call_2", "{}", null, null, null, std.testing.allocator);
+    defer tool_result.deinit(std.testing.allocator);
+    try std.testing.expect(tool_result.is_error);
+    try std.testing.expectEqualStrings("bad", tool_result.content.slice()[0].text.text);
+
+    var bare_error = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000}}",
+        .{},
+    );
+    defer bare_error.deinit();
+    bridge.servers.items[0].mock_response = bare_error.value;
+    try std.testing.expectError(error.McpToolError, tool.runtime_execute.?(tool.runtime_ctx, "call_3", "{}", null, null, null, std.testing.allocator));
 }
 
 fn makeTestTool(bridge: *McpBridge, name: []const u8) !agent.AgentTool {
