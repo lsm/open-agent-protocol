@@ -1060,9 +1060,11 @@ fn executeToolCalls(
 
 const max_turn_retries: u8 = 2;
 const turn_retry_base_delay_ms: u32 = 1000;
+const turn_retry_budget_ms: i64 = 600_000;
 const failed_after_output_note = "after output was shown, so it was not retried";
 
 const TurnRetry = struct {
+    started_ms: i64,
     attempt: u8 = 0,
     delay_ms: u64 = 0,
 
@@ -1076,6 +1078,7 @@ const TurnRetry = struct {
 
     fn claim(self: *TurnRetry, error_text: []const u8, max_delay_ms: u32) bool {
         if (self.attempt >= max_turn_retries or !eligible(error_text)) return false;
+        if (compat.time.nowMillis() - self.started_ms >= turn_retry_budget_ms) return false;
         const backoff = retry.calculateDelay(self.attempt, turn_retry_base_delay_ms, max_delay_ms);
         const asked = retry.extractRetryDelayFromBody(error_text) orelse 0;
         self.delay_ms = @max(backoff, @min(asked, max_delay_ms));
@@ -1089,7 +1092,7 @@ fn streamRetriedTurn(
     config: AgentLoopConfig,
     event_stream: *AgentEventStream,
 ) !ai_types.AssistantMessage {
-    var turn_retry = TurnRetry{};
+    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis() };
     while (true) {
         return streamAssistantResponse(allocator, context, config, event_stream, &turn_retry) catch |err| {
             if (err != error.TurnRetryable) return err;
@@ -1629,6 +1632,14 @@ test "an error event before any output retries, and running out of retries carri
     try std.testing.expectEqual(@as(usize, max_turn_retries + 1), exhausted.calls);
     try std.testing.expect(exhausted_outcome.final_error);
     try std.testing.expect(!exhausted_outcome.noted_after_output);
+}
+
+test "no retry starts once the turn has used its time budget" {
+    const now = compat.time.nowMillis();
+    var fresh = TurnRetry{ .started_ms = now };
+    try std.testing.expect(fresh.claim("Provider protocol stream timed out", 1));
+    var spent = TurnRetry{ .started_ms = now - turn_retry_budget_ms };
+    try std.testing.expect(!spent.claim("Provider protocol stream timed out", 1));
 }
 
 test "a fatal failure after visible output carries no retry note" {
@@ -2568,7 +2579,7 @@ test "streamAssistantResponse emits context and prompt segment usage" {
     var agent_events = AgentEventStream.init(allocator);
     defer agent_events.deinit();
 
-    var turn_retry = TurnRetry{};
+    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis() };
     var final = try streamAssistantResponse(
         allocator,
         &context,
