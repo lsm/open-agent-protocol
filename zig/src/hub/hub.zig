@@ -5194,6 +5194,9 @@ const Reader = struct {
     run: u64 = 0,
     sequence: u64 = 0,
     from_start: ?u64,
+    joined: ?u64,
+    after: u64,
+    earlier: usize,
     finished: bool = false,
 };
 
@@ -5201,6 +5204,7 @@ const Interleaving = struct {
     hub: *Hub,
     witnessed: std.ArrayList(Witness) = .empty,
     readers: std.ArrayList(Reader) = .empty,
+    admitted: std.ArrayList(struct { session: usize, run: u64 }) = .empty,
     names: [3][16]u8 = undefined,
     lengths: [3]usize = @splat(0),
     generations: [3]usize = @splat(0),
@@ -5209,6 +5213,7 @@ const Interleaving = struct {
     fn deinit(self: *Interleaving) void {
         self.witnessed.deinit(testing.allocator);
         self.readers.deinit(testing.allocator);
+        self.admitted.deinit(testing.allocator);
     }
 
     fn name(self: *const Interleaving, slot: usize) []const u8 {
@@ -5234,6 +5239,7 @@ const Interleaving = struct {
             else => |failure| return failure,
         };
         try testing.expect(admitted.admission == .started or admitted.admission == .queued);
+        try self.admitted.append(testing.allocator, .{ .session = self.generations[slot], .run = std.hash.Wyhash.hash(0, admitted.run_id.?) });
     }
 
     fn cancel(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !void {
@@ -5261,7 +5267,14 @@ const Interleaving = struct {
             error.NoRunToResume => return,
             else => |failure| return failure,
         };
-        try self.readers.append(testing.allocator, .{ .subscription = subscription, .session = self.generations[slot], .from_start = if (from_start) std.hash.Wyhash.hash(0, subscription.run_id) else null });
+        try self.readers.append(testing.allocator, .{
+            .subscription = subscription,
+            .session = self.generations[slot],
+            .from_start = if (from_start) std.hash.Wyhash.hash(0, subscription.run_id) else null,
+            .joined = if (subscription.joined) std.hash.Wyhash.hash(0, subscription.joined_run) else null,
+            .after = subscription.joined_after,
+            .earlier = self.admitted.items.len,
+        });
     }
 
     fn witness(self: *Interleaving, session: usize, run: u64, sequence: u64, line: []const u8, ended: bool) !void {
@@ -5276,6 +5289,13 @@ const Interleaving = struct {
         try self.witnessed.append(testing.allocator, .{ .session = session, .run = run, .sequence = sequence, .line = printed, .terminal = ended });
     }
 
+    fn admittedBefore(self: *const Interleaving, reader: *const Reader, run: u64) bool {
+        for (self.admitted.items[0..reader.earlier]) |known| {
+            if (known.session == reader.session and known.run == run) return true;
+        }
+        return false;
+    }
+
     fn read(self: *Interleaving) !void {
         for (self.readers.items) |*reader| {
             while (reader.subscription.next()) |delivery| {
@@ -5284,7 +5304,11 @@ const Interleaving = struct {
                 if (run != reader.run) {
                     reader.run = run;
                     reader.sequence = 0;
-                    if (reader.from_start == run) try testing.expectEqual(@as(u64, 1), delivery.sequence);
+                    if (reader.joined == run) {
+                        try testing.expectEqual(reader.after + 1, delivery.sequence);
+                    } else if (reader.from_start == run or !self.admittedBefore(reader, run)) {
+                        try testing.expectEqual(@as(u64, 1), delivery.sequence);
+                    }
                 } else {
                     try testing.expectEqual(reader.sequence + 1, delivery.sequence);
                 }
