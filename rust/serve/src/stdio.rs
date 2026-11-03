@@ -16,7 +16,7 @@ pub const MIN_FRAME_LIMIT: usize = 256;
 
 const MESSAGE_LIMIT: usize = 300;
 
-const PARAMS: [&str; 8] = [
+const PARAMS: [&str; 9] = [
     "adapter",
     "session_id",
     "run_id",
@@ -24,6 +24,7 @@ const PARAMS: [&str; 8] = [
     "request",
     "cursor",
     "limit",
+    "subscription",
     "allow_degraded_features",
 ];
 
@@ -74,6 +75,7 @@ pub(crate) struct Request {
     pub(crate) adapter: String,
     pub(crate) cursor: String,
     pub(crate) limit: Option<i64>,
+    pub(crate) subscription: Option<i64>,
     pub(crate) allow_degraded_features: Vec<String>,
     pub(crate) after: Option<Box<RawValue>>,
     pub(crate) present: Vec<String>,
@@ -172,18 +174,18 @@ pub fn serve(
         (Ok(_), Some(err)) => Err(err),
         (served, _) => served,
     };
-    let streaming = |pumps: &[(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)]| {
+    let streaming = |pumps: &[Running]| {
         pumps
             .iter()
-            .any(|(_, attached)| attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
+            .any(|pump| pump.attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
     };
     if matches!(served, Ok(true)) {
         while streaming(&pumps) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
-    for (canceller, _) in &pumps {
-        canceller.cancel();
+    for pump in &pumps {
+        pump.canceller.cancel();
     }
     while streaming(&pumps) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -282,7 +284,14 @@ impl Inflight {
     }
 }
 
-type Pumps = std::sync::Mutex<Option<Vec<(crate::Canceller, Arc<std::sync::atomic::AtomicUsize>)>>>;
+struct Running {
+    id: i64,
+    canceller: crate::Canceller,
+    attached: Arc<std::sync::atomic::AtomicUsize>,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+type Pumps = std::sync::Mutex<Option<Vec<Running>>>;
 
 #[derive(Clone)]
 struct Serving {
@@ -559,10 +568,43 @@ impl Serving {
         let Some(pumps) = pumps.as_mut() else {
             return;
         };
-        pumps.push((pump.subscription.canceller(), pump.attached()));
+        pumps.push(Running {
+            id: pump.id,
+            canceller: pump.subscription.canceller(),
+            attached: pump.attached(),
+            stopped: pump._attached.stopped.clone(),
+        });
         let writer = self.writer.clone();
         let limit = self.frame_limit;
         std::thread::spawn(move || pump.run(&writer, limit));
+    }
+
+    fn unsubscribe(&self, request: &Request) -> Result<Value, WireError> {
+        request.only(&["subscription"])?;
+        let id = request.subscription.ok_or_else(|| {
+            wire(
+                "invalid_request",
+                "subscription is the id of the request that started it",
+            )
+        })?;
+        let mut ending = Vec::new();
+        if let Some(pumps) = lock(&self.pumps).as_mut() {
+            let (matched, kept) = std::mem::take(pumps)
+                .into_iter()
+                .partition(|pump| pump.id == id);
+            ending = matched;
+            *pumps = kept;
+        }
+        let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
+        for pump in &ending {
+            pump.canceller.cancel();
+            while !pump.stopped.load(std::sync::atomic::Ordering::SeqCst)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        Ok(Value::Null)
     }
 
     fn answer(&self, request: &Request) -> Result<(), StdioError> {
@@ -600,6 +642,8 @@ impl Serving {
                 Ok((answer, pump)) => (Ok(answer), pump),
                 Err(error) => (Err(error), None),
             }
+        } else if request.op == "unsubscribe" {
+            (self.unsubscribe(request), None)
         } else if request.op == "events" {
             match events(
                 &self.hub,
@@ -664,7 +708,10 @@ impl From<WireError> for Subscribing {
     }
 }
 
-pub(crate) struct Attached(Arc<std::sync::atomic::AtomicUsize>);
+pub(crate) struct Attached {
+    count: Arc<std::sync::atomic::AtomicUsize>,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl Attached {
     pub(crate) fn claim(
@@ -675,7 +722,12 @@ impl Attached {
         let mut held = count.load(Ordering::SeqCst);
         while held < cap {
             match count.compare_exchange(held, held + 1, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return Ok(Attached(count.clone())),
+                Ok(_) => {
+                    return Ok(Attached {
+                        count: count.clone(),
+                        stopped: Arc::default(),
+                    })
+                }
                 Err(now) => held = now,
             }
         }
@@ -688,7 +740,9 @@ impl Attached {
 
 impl Drop for Attached {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1056,7 +1110,7 @@ impl Pump {
     }
 
     fn attached(&self) -> Arc<std::sync::atomic::AtomicUsize> {
-        self._attached.0.clone()
+        self._attached.count.clone()
     }
 
     fn run(mut self, writer: &Lines, limit: usize) {
@@ -1307,6 +1361,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 typed(parsed.is_i64() || parsed.is_null())?;
                 request.limit = parsed.as_i64();
             }
+            "subscription" => request.subscription = parsed.as_i64(),
             "allow_degraded_features" => {
                 typed(match &parsed {
                     Value::Array(items) => items.iter().all(Value::is_string),
