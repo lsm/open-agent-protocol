@@ -170,8 +170,10 @@ const ScalingReport = struct {
 
 fn validateScaling(report: ScalingReport) !void {
     if (report.schema_version != 1 or report.git_revision.len == 0 or report.workload.len == 0 or !std.mem.eql(u8, report.mode, "scaling") or report.agent_counts.len == 0 or report.rows.len != report.agent_counts.len) return error.InvalidReport;
+    if (!std.mem.eql(u8, report.rows[0].status, "ok")) return error.InvalidReport;
     for (report.rows, report.agent_counts) |row, count| {
         if (row.n != count) return error.InvalidReport;
+        if (std.mem.startsWith(u8, row.status, "failed")) return error.InvalidReport;
         if (!std.mem.eql(u8, row.status, "ok")) continue;
         const metrics = [_]?u64{ row.peak_rss, row.settled_rss, row.threads, row.fds, row.written, row.stored, row.p50_ns, row.p99_ns, row.wall_ns };
         for (metrics) |metric| if (metric == null) return error.InvalidReport;
@@ -376,6 +378,12 @@ test "scaling comparison reports slope changes and refuses another identity" {
     const missing = try std.mem.replaceOwned(u8, std.testing.allocator, line, "\"fds\":4,\"written\":0,\"stored\":100", "\"fds\":4,\"written\":null,\"stored\":100");
     defer std.testing.allocator.free(missing);
     try std.testing.expectError(error.InvalidReport, compareScalingLine(std.testing.allocator, missing, line));
+    const broken = try std.mem.replaceOwned(u8, std.testing.allocator, slower, "\"status\":\"stopped\"", "\"status\":\"failed at step 3: hub exited\"");
+    defer std.testing.allocator.free(broken);
+    try std.testing.expectError(error.InvalidReport, compareScalingLine(std.testing.allocator, line, broken));
+    const first = try std.mem.replaceOwned(u8, std.testing.allocator, line, "{\"n\":10,\"status\":\"ok\"", "{\"n\":10,\"status\":\"timeout after 120s at step 4\"");
+    defer std.testing.allocator.free(first);
+    try std.testing.expectError(error.InvalidReport, compareScalingLine(std.testing.allocator, first, line));
 }
 
 test "completed agents is the largest N that finished, whatever the row order" {

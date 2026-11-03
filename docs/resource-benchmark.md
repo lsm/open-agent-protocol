@@ -25,7 +25,9 @@ the shape of the [micro benchmark reports](performance-baseline.md): the same
 slopes. `zig build bench-compare` reads it like the other two modes and prints,
 per workload, each slope's baseline and candidate value with its change, and the
 largest N each one completed, marked `stops earlier` when the candidate gave up
-sooner. `scripts/capture-benchmark-baseline.sh` captures it at N = 10, 100 and
+sooner. It refuses a report with a `failed` row, or whose smallest N did not
+complete, since that is a broken run rather than a measurement.
+`scripts/capture-benchmark-baseline.sh` captures it at N = 10, 100 and
 1,000, so the Capture Benchmark Baseline and Benchmark Report workflows keep
 and compare it with the others.
 
