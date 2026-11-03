@@ -722,3 +722,24 @@ test "dead records never push the log past what a read accepts" {
     try testing.expectEqual(@as(usize, 1), open_runs.len);
     try testing.expectEqualStrings("small", open_runs[0].run_id);
 }
+
+test "the first append after an open leaves the log readable by its owner alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const io = compat.fs.defaultIo();
+    {
+        var file = try compat.fs.getCwd().createFile(io, path, .{ .permissions = @enumFromInt(0o644) });
+        defer file.close(io);
+        try file.writeStreamingAll(io, try encode(arena.allocator(), .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "r1", .request = "{}" }));
+    }
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .started, .time_ms = 2, .session_id = "s", .run_id = "r1" });
+    const stat = try compat.fs.getCwd().statFile(io, path, .{});
+    try testing.expectEqual(@as(u32, 0o600), @as(u32, @intCast(@intFromEnum(stat.permissions))) & 0o777);
+}
