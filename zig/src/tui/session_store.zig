@@ -2300,9 +2300,9 @@ test "list reads a session's details from its index and skips its stream file" {
     meta.last_active = 22;
 
     try store.saveEvent("indexed-list", .{ .turn_start = .{} });
-    var chunk = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "streamed") } };
-    defer chunk.deinit(std.testing.allocator);
-    try store.saveChunk("indexed-list", chunk);
+    const leftover = try sessionFilePath(std.testing.allocator, base, "indexed-list", stream_suffix);
+    defer std.testing.allocator.free(leftover);
+    try compat.fs.writeFile(compat.fs.getCwd(), leftover, "{}\n");
     try store.saveIndex(meta);
 
     var list = try store.list();
@@ -2680,12 +2680,10 @@ test "deleteSession removes the JSONL and sidecar directory" {
     var meta = try testMeta("delete-me");
     defer meta.deinit(std.testing.allocator);
     try saveText(store, meta, .user, "question");
-    var chunk = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "stream") } };
-    defer chunk.deinit(std.testing.allocator);
-    try store.saveChunk("delete-me", chunk);
     try store.saveIndex(meta);
     const stream_path = try sessionFilePath(std.testing.allocator, base, "delete-me", stream_suffix);
     defer std.testing.allocator.free(stream_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), stream_path, "{}\n");
     const index_path = try sessionFilePath(std.testing.allocator, base, "delete-me", index_suffix);
     defer std.testing.allocator.free(index_path);
     const sidecar_dir = try std.fs.path.join(std.testing.allocator, &.{ base, "delete-me" });
