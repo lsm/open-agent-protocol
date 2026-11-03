@@ -5204,7 +5204,7 @@ const Interleaving = struct {
     hub: *Hub,
     witnessed: std.ArrayList(Witness) = .empty,
     readers: std.ArrayList(Reader) = .empty,
-    admitted: std.ArrayList(struct { session: usize, run: u64 }) = .empty,
+    admitted: std.ArrayList(struct { session: usize, run: u64, id: []u8 }) = .empty,
     names: [3][16]u8 = undefined,
     lengths: [3]usize = @splat(0),
     generations: [3]usize = @splat(0),
@@ -5213,6 +5213,7 @@ const Interleaving = struct {
     fn deinit(self: *Interleaving) void {
         self.witnessed.deinit(testing.allocator);
         self.readers.deinit(testing.allocator);
+        for (self.admitted.items) |known| testing.allocator.free(known.id);
         self.admitted.deinit(testing.allocator);
     }
 
@@ -5239,7 +5240,9 @@ const Interleaving = struct {
             else => |failure| return failure,
         };
         try testing.expect(admitted.admission == .started or admitted.admission == .queued);
-        try self.admitted.append(testing.allocator, .{ .session = self.generations[slot], .run = std.hash.Wyhash.hash(0, admitted.run_id.?) });
+        const id = try testing.allocator.dupe(u8, admitted.run_id.?);
+        errdefer testing.allocator.free(id);
+        try self.admitted.append(testing.allocator, .{ .session = self.generations[slot], .run = std.hash.Wyhash.hash(0, id), .id = id });
     }
 
     fn cancel(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !void {
@@ -5342,9 +5345,26 @@ const Interleaving = struct {
             }
             try self.hub.pump(testing.allocator, 0);
             try self.read();
-            if (!busy) return;
+            if (!busy) return self.replayEveryRun(arena);
         }
         return error.RunsNeverSettled;
+    }
+
+    fn replayEveryRun(self: *Interleaving, arena: std.mem.Allocator) !void {
+        for (0..self.names.len) |slot| {
+            for (self.admitted.items) |known| {
+                if (known.session != self.generations[slot]) continue;
+                const replay = try self.hub.subscribe(arena, self.name(slot), .{ .run_id = known.id, .after = 0 });
+                var expected: u64 = 1;
+                var ended = false;
+                while (replay.next()) |delivery| : (expected += 1) {
+                    try testing.expect(!ended);
+                    try testing.expectEqual(expected, delivery.sequence);
+                    ended = try Hub.terminal(testing.allocator, delivery.line);
+                }
+                try testing.expect(ended);
+            }
+        }
     }
 };
 
