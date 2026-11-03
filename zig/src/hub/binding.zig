@@ -143,6 +143,7 @@ pub const Store = struct {
     last_failure: ?anyerror = null,
     held: ?compat.fs.File = null,
     validated: ?u64 = null,
+    mutex: std.Io.Mutex = .init,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.BindingStoreNeedsAPath;
@@ -620,4 +621,38 @@ test "the first append after an open leaves the session history readable by its 
     try store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } });
     const stat = try compat.fs.getCwd().statFile(io, path, .{});
     try testing.expectEqual(@as(u32, 0o600), @as(u32, @intCast(@backingInt(stat.permissions))) & 0o777);
+}
+
+const LockedOut = struct {
+    store: *Store,
+    finished: std.atomic.Value(usize) = .init(0),
+
+    fn read(self: *LockedOut) void {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        _ = self.store.latest(arena.allocator(), "s") catch {};
+        _ = self.finished.fetchAdd(1, .seq_cst);
+        _ = self.store.sessions(arena.allocator()) catch {};
+        _ = self.finished.fetchAdd(1, .seq_cst);
+    }
+};
+
+test "a read waits for an append in progress rather than overlapping its write" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } });
+    var locked_out = LockedOut{ .store = &store };
+    const io = compat.fs.defaultIo();
+    store.mutex.lockUncancelable(io);
+    const reader = try std.Thread.spawn(.{}, LockedOut.read, .{&locked_out});
+    compat.time.sleepMs(100);
+    const while_locked = locked_out.finished.load(.seq_cst);
+    store.mutex.unlock(io);
+    reader.join();
+    try testing.expectEqual(@as(usize, 0), while_locked);
+    try testing.expectEqual(@as(usize, 2), locked_out.finished.load(.seq_cst));
 }
