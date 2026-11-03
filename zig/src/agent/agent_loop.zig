@@ -1172,6 +1172,14 @@ fn streamAssistantResponse(
 ) !ai_types.AssistantMessage {
     var messages = context.messagesSlice();
 
+    var request_messages: ?[]ai_types.Message = null;
+    defer if (request_messages) |copy| allocator.free(copy);
+
+    if (turn_retry.withheld.len > 0) {
+        request_messages = try turn_retry.withheld.apply(allocator, messages);
+        messages = request_messages.?;
+    }
+
     var transformed_messages: ?[]const ai_types.Message = null;
     defer if (transformed_messages) |tm| allocator.free(tm);
 
@@ -1186,14 +1194,6 @@ fn streamAssistantResponse(
     if (config.convert_to_llm_fn) |convert| {
         llm_messages = try convert(config.convert_to_llm_ctx, messages, allocator);
         messages = llm_messages.?;
-    }
-
-    var request_messages: ?[]ai_types.Message = null;
-    defer if (request_messages) |copy| allocator.free(copy);
-
-    if (turn_retry.withheld.len > 0) {
-        request_messages = try turn_retry.withheld.apply(allocator, messages);
-        messages = request_messages.?;
     }
 
     var tools: ?[]ai_types.Tool = null;
@@ -1722,6 +1722,7 @@ test "an error event before any output retries, and running out of retries carri
 
 const OverflowCtx = struct {
     limit: usize = 6000,
+    rename_ids: bool = false,
     calls: usize = 0,
     placeholders_seen: usize = 0,
     small_result_intact: bool = true,
@@ -1755,6 +1756,15 @@ fn overflowStream(
     return stream_ptr;
 }
 
+fn renameToolResults(ctx: ?*anyopaque, messages: []const ai_types.Message, allocator: std.mem.Allocator) anyerror![]const ai_types.Message {
+    _ = ctx;
+    const renamed = try allocator.dupe(ai_types.Message, messages);
+    for (renamed) |*message| {
+        if (message.* == .tool_result) message.tool_result.tool_call_id = "renamed";
+    }
+    return renamed;
+}
+
 fn appendToolResult(context: *AgentContext, id: []const u8, text: []const u8) !void {
     const parts = [_]ai_types.UserContentPart{.{ .text = .{ .text = text } }};
     try context.appendMessage(try ai_types.cloneMessage(std.testing.allocator, .{ .tool_result = .{
@@ -1786,6 +1796,7 @@ fn runOverflowTurn(overflow: *OverflowCtx, sizes: []const usize) !FlakyOutcome {
         .model = testModel(),
         .protocol = .{ .stream_fn = overflowStream, .ctx = overflow },
         .max_iterations = 1,
+        .transform_context_fn = if (overflow.rename_ids) renameToolResults else null,
     }, events, &events.retention);
 
     for (sizes, 0..) |size, index| {
@@ -1810,6 +1821,14 @@ test "an overflow withholds the largest tool result from the request and leaves 
     try std.testing.expectEqual(@as(usize, 2), overflow.calls);
     try std.testing.expectEqual(@as(usize, 1), overflow.placeholders_seen);
     try std.testing.expect(overflow.small_result_intact);
+    try std.testing.expect(outcome.final_text);
+}
+
+test "withholding reaches a result whose id a context transform changes" {
+    var overflow = OverflowCtx{ .rename_ids = true };
+    const outcome = try runOverflowTurn(&overflow, &.{9000});
+    try std.testing.expectEqual(@as(usize, 2), overflow.calls);
+    try std.testing.expectEqual(@as(usize, 1), overflow.placeholders_seen);
     try std.testing.expect(outcome.final_text);
 }
 
