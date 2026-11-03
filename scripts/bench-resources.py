@@ -471,7 +471,23 @@ def cpu_model():
     return platform.processor() or "unknown"
 
 
-def report_lines(results, targets, scenarios, counts, host_class, revision, cap, timeout):
+def toolchain(target, binary):
+    if target == "go":
+        command = ["go", "version", str(binary)]
+    elif target == "rust":
+        command = ["rustc", "--version"]
+    else:
+        command = ["zig", "version"]
+    try:
+        answer = subprocess.run(command, capture_output=True, text=True, timeout=60).stdout.strip()
+    except OSError:
+        answer = ""
+    if target == "go":
+        answer = answer.split(": ", 1)[-1]
+    return answer or "unknown"
+
+
+def report_lines(results, targets, scenarios, counts, host_class, revision, cap, timeout, toolchains):
     identity = {"schema_version": 1, "git_revision": revision, "host_class": host_class,
                 "target": f"{platform.machine()}-{platform.system().lower()}", "cpu_model": cpu_model(),
                 "mode": "scaling"}
@@ -485,7 +501,7 @@ def report_lines(results, targets, scenarios, counts, host_class, revision, cap,
                     for r in group]
             fitted = [r for r in rows if r["status"] == "ok"]
             per_agent = {name: slope([(r["n"], r[name]) for r in fitted]) for name, _, _ in METRICS[:8]}
-            yield json.dumps(dict(identity, workload=f"{target}/{scenario}", fixture_version=1, agent_counts=counts,
+            yield json.dumps(dict(identity, workload=f"{target}/{scenario}", toolchain=toolchains[target], fixture_version=1, agent_counts=counts,
                                   history_turns=HISTORY_TURNS, rss_cap_bytes=cap,
                                   timeout_ms=round(timeout * 1000), rows=rows, per_agent=per_agent),
                              separators=(",", ":"))
@@ -565,7 +581,8 @@ def main():
             (out / "results.md").write_text(table)
         if arguments.report:
             lines = report_lines(results, targets, scenarios, counts, arguments.host_class, revision,
-                                 arguments.rss_cap_mib << 20, arguments.timeout)
+                                 arguments.rss_cap_mib << 20, arguments.timeout,
+                                 {target: toolchain(target, binaries[target]) for target in targets})
             Path(arguments.report).write_text("".join(line + "\n" for line in lines))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

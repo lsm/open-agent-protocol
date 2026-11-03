@@ -160,6 +160,7 @@ const ScalingReport = struct {
     cpu_model: []const u8,
     mode: []const u8,
     workload: []const u8,
+    toolchain: []const u8,
     fixture_version: u32,
     agent_counts: []const u64,
     history_turns: u32,
@@ -192,6 +193,7 @@ fn expectScalingCompatible(baseline: ScalingReport, candidate: ScalingReport) !v
         !std.mem.eql(u8, baseline.host_class, candidate.host_class) or
         !std.mem.eql(u8, baseline.target, candidate.target) or
         !std.mem.eql(u8, baseline.cpu_model, candidate.cpu_model) or
+        !std.mem.eql(u8, baseline.toolchain, candidate.toolchain) or
         !std.mem.eql(u8, baseline.workload, candidate.workload)) return error.IncompatibleReports;
 }
 
@@ -363,10 +365,10 @@ test "comparison rejects incompatible identity" {
 
 test "scaling comparison reports slope changes and refuses another identity" {
     const line =
-        \\{"schema_version":1,"git_revision":"abc","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"ok","peak_rss":4096,"settled_rss":2048,"threads":3,"fds":4,"written":0,"stored":100,"p50_ns":1000,"p99_ns":2000,"wall_ns":50}],"per_agent":{"peak_rss":2048,"settled_rss":1024,"threads":0,"fds":0,"written":null,"stored":1,"p50_ns":0,"p99_ns":2000}}
+        \\{"schema_version":1,"git_revision":"abc","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","toolchain":"go1.27.1","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"ok","peak_rss":4096,"settled_rss":2048,"threads":3,"fds":4,"written":0,"stored":100,"p50_ns":1000,"p99_ns":2000,"wall_ns":50}],"per_agent":{"peak_rss":2048,"settled_rss":1024,"threads":0,"fds":0,"written":null,"stored":1,"p50_ns":0,"p99_ns":2000}}
     ;
     const slower =
-        \\{"schema_version":1,"git_revision":"def","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"stopped","peak_rss":null,"settled_rss":null,"threads":null,"fds":null,"written":null,"stored":null,"p50_ns":null,"p99_ns":null,"wall_ns":null}],"per_agent":{"peak_rss":null,"settled_rss":3072,"threads":1,"fds":0,"written":null,"stored":1,"p50_ns":0,"p99_ns":2000}}
+        \\{"schema_version":1,"git_revision":"def","host_class":"ci","target":"x86_64-linux","cpu_model":"generic","mode":"scaling","workload":"go/history","toolchain":"go1.27.1","fixture_version":1,"agent_counts":[10,100],"history_turns":3,"rss_cap_bytes":4096,"timeout_ms":120000,"rows":[{"n":10,"status":"ok","peak_rss":2048,"settled_rss":1024,"threads":3,"fds":4,"written":0,"stored":10,"p50_ns":1000,"p99_ns":2000,"wall_ns":5},{"n":100,"status":"stopped","peak_rss":null,"settled_rss":null,"threads":null,"fds":null,"written":null,"stored":null,"p50_ns":null,"p99_ns":null,"wall_ns":null}],"per_agent":{"peak_rss":null,"settled_rss":3072,"threads":1,"fds":0,"written":null,"stored":1,"p50_ns":0,"p99_ns":2000}}
     ;
     try std.testing.expect(try isScaling(std.testing.allocator, line));
     const output = try compareScalingLine(std.testing.allocator, line, slower);
@@ -378,6 +380,9 @@ test "scaling comparison reports slope changes and refuses another identity" {
     const longer = try std.mem.replaceOwned(u8, std.testing.allocator, slower, "\"timeout_ms\":120000", "\"timeout_ms\":600000");
     defer std.testing.allocator.free(longer);
     try std.testing.expectError(error.IncompatibleReports, compareScalingLine(std.testing.allocator, line, longer));
+    const newer = try std.mem.replaceOwned(u8, std.testing.allocator, slower, "\"toolchain\":\"go1.27.1\"", "\"toolchain\":\"go1.27.2\"");
+    defer std.testing.allocator.free(newer);
+    try std.testing.expectError(error.IncompatibleReports, compareScalingLine(std.testing.allocator, line, newer));
     const missing = try std.mem.replaceOwned(u8, std.testing.allocator, line, "\"fds\":4,\"written\":0,\"stored\":100", "\"fds\":4,\"written\":null,\"stored\":100");
     defer std.testing.allocator.free(missing);
     try std.testing.expectError(error.InvalidReport, compareScalingLine(std.testing.allocator, missing, line));
@@ -396,6 +401,6 @@ test "completed agents is the largest N that finished, whatever the row order" {
         }
     }.make;
     const rows = [_]ScalingRow{ row(1000, "ok"), row(10, "ok"), row(100, "ok"), row(10000, "stopped") };
-    const report: ScalingReport = .{ .schema_version = 1, .git_revision = "abc", .host_class = "ci", .target = "x86_64-linux", .cpu_model = "generic", .mode = "scaling", .workload = "go/empty", .fixture_version = 1, .agent_counts = &.{ 1000, 10, 100, 10000 }, .history_turns = 3, .rss_cap_bytes = 1, .timeout_ms = 1, .rows = &rows, .per_agent = .{ .peak_rss = null, .settled_rss = null, .threads = null, .fds = null, .written = null, .stored = null, .p50_ns = null, .p99_ns = null } };
+    const report: ScalingReport = .{ .schema_version = 1, .git_revision = "abc", .host_class = "ci", .target = "x86_64-linux", .cpu_model = "generic", .mode = "scaling", .workload = "go/empty", .toolchain = "go1.27.1", .fixture_version = 1, .agent_counts = &.{ 1000, 10, 100, 10000 }, .history_turns = 3, .rss_cap_bytes = 1, .timeout_ms = 1, .rows = &rows, .per_agent = .{ .peak_rss = null, .settled_rss = null, .threads = null, .fds = null, .written = null, .stored = null, .p50_ns = null, .p99_ns = null } };
     try std.testing.expectEqual(@as(u64, 1000), completedAgents(report));
 }
