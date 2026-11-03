@@ -193,8 +193,7 @@ fn expectScalingCompatible(baseline: ScalingReport, candidate: ScalingReport) !v
 fn completedAgents(report: ScalingReport) u64 {
     var completed: u64 = 0;
     for (report.rows) |row| {
-        if (!std.mem.eql(u8, row.status, "ok")) break;
-        completed = row.n;
+        if (std.mem.eql(u8, row.status, "ok")) completed = @max(completed, row.n);
     }
     return completed;
 }
@@ -372,4 +371,15 @@ test "scaling comparison reports slope changes and refuses another identity" {
     const missing = try std.mem.replaceOwned(u8, std.testing.allocator, line, "\"fds\":4,\"written\":0,\"stored\":100", "\"fds\":4,\"written\":null,\"stored\":100");
     defer std.testing.allocator.free(missing);
     try std.testing.expectError(error.InvalidReport, compareScalingLine(std.testing.allocator, missing, line));
+}
+
+test "completed agents is the largest N that finished, whatever the row order" {
+    const row = struct {
+        fn make(n: u64, status: []const u8) ScalingRow {
+            return .{ .n = n, .status = status, .peak_rss = 1, .settled_rss = 1, .threads = 1, .fds = 1, .written = 1, .stored = 1, .p50_ns = 1, .p99_ns = 1, .wall_ns = 1 };
+        }
+    }.make;
+    const rows = [_]ScalingRow{ row(1000, "ok"), row(10, "ok"), row(100, "ok"), row(10000, "stopped") };
+    const report: ScalingReport = .{ .schema_version = 1, .git_revision = "abc", .host_class = "ci", .target = "x86_64-linux", .cpu_model = "generic", .mode = "scaling", .workload = "go/empty", .fixture_version = 1, .agent_counts = &.{ 1000, 10, 100, 10000 }, .history_turns = 3, .rss_cap_bytes = 1, .rows = &rows, .per_agent = .{ .peak_rss = null, .settled_rss = null, .threads = null, .fds = null, .written = null, .stored = null, .p50_ns = null } };
+    try std.testing.expectEqual(@as(u64, 1000), completedAgents(report));
 }

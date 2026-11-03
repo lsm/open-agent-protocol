@@ -516,7 +516,7 @@ def main():
         return serve_provider(arguments)
     targets = [t for t in arguments.targets.split(",") if t]
     scenarios = [s for s in arguments.scenarios.split(",") if s]
-    counts = [int(n) for n in arguments.n.split(",")]
+    counts = sorted({int(n) for n in arguments.n.split(",")})
     unknown = set(targets) - set(TARGETS) | set(scenarios) - set(SCENARIOS)
     if unknown:
         parser.error("unknown target or scenario: " + ", ".join(sorted(unknown)))
