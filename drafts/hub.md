@@ -556,7 +556,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the fifteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire is the sixteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 
@@ -735,7 +735,7 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | A stream ends when the client closes the connection | structural: the request context — `TestACancelledSubscriptionEndsTheStream` (a cancelled context ends the stream and leaves it finished) and `TestASubscriptionClosedByItsOwnerEndsTheStream` (`Close` ends it with `io.EOF`) at the hub, where it is observable; nothing in the hub reports subscriber accounting, so the HTTP handler is not itself under test |
 | A stream ends when the session closes | `TestSSEStreamEndsOnSessionClose` |
 | A connection to a session that has closed is refused `404 unknown_session` | `TestSSEOnClosedSession`, for a live stream and a cursor stream |
-| A cursor that is not an unsigned sequence is refused `400 invalid_cursor` | `TestSSECursorErrors` |
+| A cursor that is neither an unsigned sequence nor, in `Last-Event-ID`, `<run_id>:<sequence>` is refused `400 invalid_cursor` | `TestSSECursorErrors` for the unsigned form; the run-qualified form is not pinned yet, see D36 |
 | A session with no run to replay is refused `409 no_run_to_resume` | `TestSSENoRunToResume` |
 | An unknown session is refused `404` | `TestSSEUnknownSession` |
 | A `run_id` with no cursor is refused `400 invalid_cursor` | `TestSSERefusesARunWithoutACursor`, and the stdio side `TestEventsRefusesARunWithoutACursor` |
@@ -1241,7 +1241,7 @@ and the run it wants is usually the one that just ended under it.
 | --- | --- |
 | A cursor may name its run, and naming a settled run replays it | `TestSSECursorFollowsTheRunItNames`, `TestEventsCursorFollowsTheRunItNames`, `TestRunQualifiedCursorMatchesHTTP` |
 | An unqualified cursor resolves onto the current run | `TestEventsCursorWithoutARunStillFollowsTheCurrentOne`, `TestHubCursorResumeBindsRun` |
-| `run_id` without a cursor is `invalid_cursor` — a live subscription is always the current run, so a run on a request with no cursor names a position that does not exist | `TestSSERefusesARunWithoutACursor`, `TestEventsRefusesARunWithoutACursor` |
+| `run_id` without a cursor is `invalid_cursor` — a live subscription starts from now, so a run on a request with no cursor names a position that does not exist | `TestSSERefusesARunWithoutACursor`, `TestEventsRefusesARunWithoutACursor` |
 | A run the session never had is `run_not_found` | `TestSSERefusesARunTheSessionNeverHad`, `TestEventsRefusesARunTheSessionNeverHad` |
 | `run_id` belongs to the `events` op alone; no other op accepts it | `TestRunIDBelongsToTheEventsOpAlone` |
 | A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | not pinned yet; see D36 |
@@ -1334,7 +1334,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Fifteen ops, plus `shutdown`, which [Shutdown and exit on
+Sixteen ops, plus `shutdown`, which [Shutdown and exit on
 stdio](#shutdown-and-exit-on-stdio) describes, with its route `POST /shutdown`.
 Each row gives the request line's parameters, the answer, and the errors. A
 refusal the row does not name is `internal` on both, with the
