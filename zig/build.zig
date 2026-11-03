@@ -800,6 +800,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
+            .{ .name = "overflow", .module = overflow_mod },
         },
     });
 
@@ -1160,6 +1161,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "retry", .module = retry_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
@@ -1861,6 +1863,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     agent_loop_mod.addImport("repeat", repeat_mod);
+    agent_loop_mod.addImport("retry", retry_mod);
 
     const agent_compaction_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/compaction.zig"),
