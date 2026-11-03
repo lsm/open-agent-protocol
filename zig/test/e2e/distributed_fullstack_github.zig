@@ -259,7 +259,7 @@ test "distributed fullstack github: agent loop via provider+tool protocols witho
 
     const result = stream.getResult() orelse return error.MissingResult;
     var found_tool_result = false;
-    for (result.messages.slice()) |message| {
+    for (context.messages.items) |message| {
         if (message != .tool_result) continue;
         found_tool_result = true;
         try std.testing.expectEqualStrings("remote_sum", message.tool_result.tool_name);

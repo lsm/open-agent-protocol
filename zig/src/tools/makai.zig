@@ -1727,9 +1727,7 @@ fn runPrintAgentLoop(
                     perrf("[agent-turn-end] error={s}\n", .{payload.message.error_message.slice()});
                 }
             },
-            .agent_end => |payload| {
-                perrf("[agent-end] messages={d}\n", .{payload.messages.slice().len});
-            },
+            .agent_end => perrf("[agent-end]\n", .{}),
             else => perrf("[agent-event#{d}] {s}\n", .{ event_count, @tagName(owned_event) }),
         }
     }

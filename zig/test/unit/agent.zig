@@ -248,7 +248,7 @@ test "agentLoop: basic single turn with text response" {
     }
 
     const result = stream.getResult().?;
-    try testing.expectEqual(@as(usize, 2), result.messages.slice().len);
+    try testing.expectEqual(@as(usize, 2), ctx.messages.items.len);
     try testing.expect(result.final_message.stop_reason == .stop);
     try testing.expectEqual(@as(usize, 1), state.call_count);
 }
@@ -793,7 +793,7 @@ test "agentLoop: a tool call cut off at the output limit is answered with an err
 
     const result = stream.getResult().?;
     var answers: usize = 0;
-    for (result.messages.slice()) |message| {
+    for (ctx.messages.items) |message| {
         if (message != .tool_result) continue;
         try testing.expect(message.tool_result.is_error);
         try testing.expect(std.mem.indexOf(u8, message.tool_result.content[0].text.text, "output token limit") != null);
@@ -847,7 +847,7 @@ test "agentLoop: a run whose tool calls keep getting cut off ends after three er
 
     const result = stream.getResult().?;
     var answers: usize = 0;
-    for (result.messages.slice()) |message| {
+    for (ctx.messages.items) |message| {
         if (message != .tool_result) continue;
         try testing.expect(message.tool_result.is_error);
         answers += 1;

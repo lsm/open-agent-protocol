@@ -8,7 +8,6 @@ const event_stream_module = @import("event_stream");
 const types = @import("agent_types");
 const permission = @import("permission");
 const json_writer = @import("json_writer");
-const owned_slice_mod = @import("owned_slice");
 
 pub const AgentEvent = types.AgentEvent;
 pub const AgentEventStream = types.AgentEventStream;
@@ -1339,30 +1338,15 @@ fn makeProviderErrorAssistantMessage(
 }
 
 const LoopState = struct {
-    messages: std.ArrayList(ai_types.Message),
     iterations: u32,
     final_message: ?ai_types.AssistantMessage,
 
     fn deinit(self: *LoopState, allocator: std.mem.Allocator) void {
-        for (self.messages.items) |*msg| {
-            msg.deinit(allocator);
-        }
-        self.messages.deinit(allocator);
         if (self.final_message) |*fm| {
             fm.deinit(allocator);
         }
     }
 };
-
-fn appendClonedStateMessage(
-    messages: *std.ArrayList(ai_types.Message),
-    allocator: std.mem.Allocator,
-    msg: ai_types.Message,
-) !void {
-    var cloned = try ai_types.cloneMessage(allocator, msg);
-    errdefer cloned.deinit(allocator);
-    try messages.append(allocator, cloned);
-}
 
 fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_types.AssistantMessage) !void {
     var cloned = try ai_types.cloneAssistantMessage(allocator, msg);
@@ -2005,7 +1989,6 @@ fn runLoop(
     retained: *types.StreamRetention,
 ) !void {
     var state = LoopState{
-        .messages = std.ArrayList(ai_types.Message).empty,
         .iterations = 0,
         .final_message = null,
     };
@@ -2027,7 +2010,6 @@ fn runLoop(
                 .steering = config.prompts_are_steering,
             } });
 
-            try appendClonedStateMessage(&state.messages, allocator, prompt);
         }
     }
 
@@ -2077,7 +2059,6 @@ fn runLoop(
                         try pushAgentEvent(event_stream, .{ .message_end = .{
                             .message = request,
                         } });
-                        try appendClonedStateMessage(&state.messages, allocator, request);
                     }
                     if (runCancelled(config)) {
                         ended_before_cap = true;
@@ -2102,7 +2083,6 @@ fn runLoop(
                             .message = steering_msg,
                             .steering = true,
                         } });
-                        try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                     }
                     allocator.free(msgs);
                 } else {
@@ -2133,7 +2113,6 @@ fn runLoop(
                     .is_owned = false,
                 };
                 try setFinalMessage(&state, allocator, error_msg);
-                try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = error_msg });
 
                 const final_error_msg = state.final_message orelse error_msg;
                 try pushAgentEvent(event_stream, .{ .turn_end = .{
@@ -2151,7 +2130,6 @@ fn runLoop(
             var message_transferred = false;
             errdefer if (loop_owns_message and !message_transferred) retained.park(assistant_message);
             try setFinalMessage(&state, allocator, assistant_message);
-            try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
             const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, turn_config.model) else null;
             if (raised) |higher| turn_config.max_tokens = higher;
@@ -2197,7 +2175,6 @@ fn runLoop(
                                         .message = steering_msg,
                                         .steering = true,
                                     } });
-                                    try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                                 }
                                 allocator.free(queued_steering);
                                 continue;
@@ -2217,7 +2194,6 @@ fn runLoop(
                                     try pushAgentEvent(event_stream, .{ .message_end = .{
                                         .message = follow_up,
                                     } });
-                                    try appendClonedStateMessage(&state.messages, allocator, follow_up);
                                 }
                                 allocator.free(follow_ups);
                                 continue :outer;
@@ -2250,7 +2226,6 @@ fn runLoop(
                     try pushAgentEvent(event_stream, .{ .message_end = .{
                         .message = request,
                     } });
-                    try appendClonedStateMessage(&state.messages, allocator, request);
                 },
                 .called_tools => {
                     var tool_result = try executeToolCalls(
@@ -2278,7 +2253,6 @@ fn runLoop(
                         try pushAgentEvent(event_stream, .{ .message_end = .{
                             .message = msg,
                         } });
-                        try appendClonedStateMessage(&state.messages, allocator, msg);
                     }
 
                     if (tool_result.steering_messages) |steering_msgs| {
@@ -2292,7 +2266,6 @@ fn runLoop(
                                 .message = steering_msg,
                                 .steering = true,
                             } });
-                            try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                         }
                         const mutable_msgs: []ai_types.Message = @constCast(steering_msgs);
                         allocator.free(mutable_msgs);
@@ -2301,8 +2274,6 @@ fn runLoop(
             }
         }
     }
-
-    const result_messages = try state.messages.toOwnedSlice(allocator);
 
     const termination: ?types.AgentTermination = if (cancelled_run)
         .cancelled
@@ -2327,8 +2298,7 @@ fn runLoop(
         };
     };
 
-    var result = AgentLoopResult{
-        .messages = owned_slice_mod.OwnedSlice(ai_types.Message).initOwned(result_messages),
+    const result = AgentLoopResult{
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
@@ -2338,7 +2308,6 @@ fn runLoop(
 
     try pushAgentEvent(event_stream, .{
         .agent_end = .{
-            .messages = types.OwnedSlice(ai_types.Message).initBorrowed(result.messages.slice()),
             .termination = termination,
             .final_message = result_final_message,
         },
@@ -3552,7 +3521,6 @@ test "a message already in the results list is not freed again when the stream c
     events.* = AgentEventStream.init(std.testing.allocator);
     defer events.deinit();
     events.complete(.{
-        .messages = types.OwnedSlice(ai_types.Message).initBorrowed(&.{}),
         .final_message = .{ .content = &.{}, .api = "a", .provider = "p", .model = "m", .usage = .{}, .stop_reason = .stop, .timestamp = 0 },
         .iterations = 0,
     });
