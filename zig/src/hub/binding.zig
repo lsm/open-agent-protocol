@@ -543,3 +543,67 @@ test "a backend that answers sessions with every row is read as one latest entry
     try testing.expectEqualStrings("t", listed[1].record.session_id);
     try testing.expectEqual(Action.opened, listed[1].action);
 }
+
+test "appends after the first one add their lines to the file it wrote rather than replacing it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const io = compat.fs.defaultIo();
+    var written: std.ArrayList(u8) = .empty;
+    var first_inode: ?std.Io.File.INode = null;
+    for ([_]Entry{
+        .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } },
+        .{ .action = .opened, .time_ms = 2, .record = .{ .session_id = "other", .adapter = "pi" } },
+        .{ .action = .closed, .time_ms = 3, .record = .{ .session_id = "s", .adapter = "pi" } },
+    }) |entry| {
+        try store.append(entry);
+        try written.appendSlice(arena.allocator(), try encode(arena.allocator(), entry));
+        const inode = (try compat.fs.getCwd().statFile(io, path, .{})).inode;
+        if (first_inode) |first| try testing.expectEqual(first, inode) else first_inode = inode;
+    }
+    try testing.expectEqualStrings(written.items, try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
+}
+
+test "a torn tail that appears after the store opened is cut before the next append" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const first: Entry = .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } };
+    const second: Entry = .{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } };
+    try store.append(first);
+    const line = try encode(arena.allocator(), first);
+    try compat.fs.writeFile(compat.fs.getCwd(), path, try std.mem.concat(arena.allocator(), u8, &.{ line, line[0 .. line.len / 2] }));
+    try store.append(second);
+    try testing.expectEqualStrings(try std.mem.concat(arena.allocator(), u8, &.{ line, try encode(arena.allocator(), second) }), try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
+}
+
+test "the first append after an open leaves the session history readable by its owner alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const io = compat.fs.defaultIo();
+    {
+        var file = try compat.fs.getCwd().createFile(io, path, .{ .permissions = @fromBackingInt(@intCast(0o644)) });
+        defer file.close(io);
+        try file.writeStreamingAll(io, try encode(arena.allocator(), .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } }));
+    }
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } });
+    const stat = try compat.fs.getCwd().statFile(io, path, .{});
+    try testing.expectEqual(@as(u32, 0o600), @as(u32, @intCast(@backingInt(stat.permissions))) & 0o777);
+}
