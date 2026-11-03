@@ -142,6 +142,8 @@ pub const Store = struct {
     staging: []u8,
     last_failure: ?anyerror = null,
     held: ?compat.fs.File = null,
+    validated: ?u64 = null,
+    mutex: std.Io.Mutex = .init,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.BindingStoreNeedsAPath;
@@ -158,7 +160,7 @@ pub const Store = struct {
         };
         errdefer held.close(compat.fs.defaultIo());
         var store = Store{ .allocator = allocator, .path = owned, .staging = staging, .held = held };
-        try store.rewrite(null);
+        _ = try store.rewrite(null);
         return store;
     }
 
@@ -176,18 +178,23 @@ pub const Store = struct {
         };
     }
 
-    fn rewrite(self: *Store, line: ?[]const u8) !void {
+    fn rewrite(self: *Store, line: ?[]const u8) !u64 {
         const bytes = try self.contents();
         defer self.allocator.free(bytes);
         const keep = try validPrefix(self.allocator, bytes);
         const exists = compat.fs.fileKind(compat.fs.getCwd(), self.path) == .file;
-        if (line == null and keep == bytes.len and exists) return;
+        if (line == null and keep == bytes.len and exists) return keep;
+        if (keep + (if (line) |given| given.len else 0) > max_store_bytes) return error.StreamTooLong;
         const next = try std.mem.concat(self.allocator, u8, &.{ bytes[0..keep], line orelse "" });
         defer self.allocator.free(next);
         try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next);
+        return next.len;
     }
 
     pub fn append(self: *Store, entry: Entry) !void {
+        const io = compat.fs.defaultIo();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         self.write(entry) catch |err| {
             self.last_failure = err;
             return err;
@@ -195,13 +202,33 @@ pub const Store = struct {
         self.last_failure = null;
     }
 
+    fn unchangedLength(self: *Store, io: std.Io) ?u64 {
+        const known = self.validated orelse return null;
+        const stat = compat.fs.getCwd().statFile(io, self.path, .{}) catch return null;
+        return if (stat.size == known) known else null;
+    }
+
     fn write(self: *Store, entry: Entry) !void {
         const line = try encode(self.allocator, entry);
         defer self.allocator.free(line);
-        try self.rewrite(line);
+        const io = compat.fs.defaultIo();
+        const known = self.unchangedLength(io) orelse {
+            self.validated = try self.rewrite(line);
+            return;
+        };
+        if (known + line.len > max_store_bytes) return error.StreamTooLong;
+        var file = try compat.fs.getCwd().createFile(io, self.path, .{ .truncate = false, .permissions = compat.fs.default_file_mode });
+        defer file.close(io);
+        errdefer file.setLength(io, known) catch {};
+        try file.writePositionalAll(io, line, known);
+        try file.sync(io);
+        self.validated = known + line.len;
     }
 
     pub fn latest(self: *Store, arena: std.mem.Allocator, session_id: []const u8) !?Entry {
+        const io = compat.fs.defaultIo();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, max_store_bytes) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
@@ -218,6 +245,9 @@ pub const Store = struct {
     }
 
     pub fn sessions(self: *Store, arena: std.mem.Allocator) ![]Entry {
+        const io = compat.fs.defaultIo();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, max_store_bytes) catch |err| switch (err) {
             error.FileNotFound => return &.{},
             else => return err,
@@ -542,4 +572,173 @@ test "a backend that answers sessions with every row is read as one latest entry
     try testing.expectEqual(Action.closed, listed[0].action);
     try testing.expectEqualStrings("t", listed[1].record.session_id);
     try testing.expectEqual(Action.opened, listed[1].action);
+}
+
+test "appends after the first one add their lines to the file it wrote rather than replacing it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const io = compat.fs.defaultIo();
+    var written: std.ArrayList(u8) = .empty;
+    var first_inode: ?std.Io.File.INode = null;
+    for ([_]Entry{
+        .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } },
+        .{ .action = .opened, .time_ms = 2, .record = .{ .session_id = "other", .adapter = "pi" } },
+        .{ .action = .closed, .time_ms = 3, .record = .{ .session_id = "s", .adapter = "pi" } },
+    }) |entry| {
+        try store.append(entry);
+        try written.appendSlice(arena.allocator(), try encode(arena.allocator(), entry));
+        const inode = (try compat.fs.getCwd().statFile(io, path, .{})).inode;
+        if (first_inode) |first| try testing.expectEqual(first, inode) else first_inode = inode;
+    }
+    try testing.expectEqualStrings(written.items, try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
+}
+
+test "a torn tail that appears after the store opened is cut before the next append" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const first: Entry = .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } };
+    const second: Entry = .{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } };
+    try store.append(first);
+    const line = try encode(arena.allocator(), first);
+    const torn = try arena.allocator().alloc(u8, 2 * line.len);
+    @memset(torn, 'x');
+    try compat.fs.writeFile(compat.fs.getCwd(), path, try std.mem.concat(arena.allocator(), u8, &.{ line, torn }));
+    try store.append(second);
+    try testing.expectEqualStrings(try std.mem.concat(arena.allocator(), u8, &.{ line, try encode(arena.allocator(), second) }), try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
+}
+
+test "the first append after an open leaves the session history readable by its owner alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const io = compat.fs.defaultIo();
+    {
+        var file = try compat.fs.getCwd().createFile(io, path, .{ .permissions = @fromBackingInt(@intCast(0o644)) });
+        defer file.close(io);
+        try file.writeStreamingAll(io, try encode(arena.allocator(), .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } }));
+    }
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } });
+    const stat = try compat.fs.getCwd().statFile(io, path, .{});
+    try testing.expectEqual(@as(u32, 0o600), @as(u32, @intCast(@backingInt(stat.permissions))) & 0o777);
+}
+
+const LockedOut = struct {
+    store: *Store,
+    finished: std.atomic.Value(usize) = .init(0),
+
+    const Call = enum { latest, sessions, append };
+
+    fn run(self: *LockedOut, call: Call) void {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        switch (call) {
+            .latest => _ = self.store.latest(arena.allocator(), "s") catch {},
+            .sessions => _ = self.store.sessions(arena.allocator()) catch {},
+            .append => self.store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } }) catch {},
+        }
+        _ = self.finished.fetchAdd(1, .seq_cst);
+    }
+};
+
+test "reads and appends each wait for the store's lock" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } });
+    const io = compat.fs.defaultIo();
+    for ([_]LockedOut.Call{ .latest, .sessions, .append }) |call| {
+        var locked_out = LockedOut{ .store = &store };
+        store.mutex.lockUncancelable(io);
+        const caller = try std.Thread.spawn(.{}, LockedOut.run, .{ &locked_out, call });
+        compat.time.sleepMs(100);
+        const while_locked = locked_out.finished.load(.seq_cst);
+        store.mutex.unlock(io);
+        caller.join();
+        try testing.expectEqual(@as(usize, 0), while_locked);
+        try testing.expectEqual(@as(usize, 1), locked_out.finished.load(.seq_cst));
+    }
+}
+
+test "an append after the file shrank or vanished keeps what survives and pads nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const first: Entry = .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } };
+    const second: Entry = .{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } };
+    const third: Entry = .{ .action = .reopened, .time_ms = 3, .record = .{ .session_id = "s", .adapter = "pi" } };
+    try store.append(first);
+    try store.append(second);
+    const first_line = try encode(arena.allocator(), first);
+    try compat.fs.writeFile(compat.fs.getCwd(), path, first_line);
+    try store.append(third);
+    const third_line = try encode(arena.allocator(), third);
+    try testing.expectEqualStrings(try std.mem.concat(arena.allocator(), u8, &.{ first_line, third_line }), try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
+    compat.fs.removeFile(path);
+    try store.append(second);
+    try testing.expectEqualStrings(try encode(arena.allocator(), second), try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
+}
+
+test "an append that would pass the read cap fails and leaves the history readable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const home = try arena.allocator().alloc(u8, max_store_bytes - 1024);
+    @memset(home, 'h');
+    try store.append(.{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi", .home = home } });
+    const directory = try arena.allocator().alloc(u8, 2048);
+    @memset(directory, 'd');
+    try testing.expectError(error.StreamTooLong, store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi", .directory = directory } }));
+    try testing.expectEqual(@as(?anyerror, error.StreamTooLong), store.last_failure);
+    try testing.expectEqual(Action.opened, (try store.latest(arena.allocator(), "s")).?.action);
+}
+
+test "the first append after an open that would pass the read cap fails and changes nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "bindings.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const home = try arena.allocator().alloc(u8, max_store_bytes - 1024);
+    @memset(home, 'h');
+    const seeded = try encode(arena.allocator(), .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi", .home = home } });
+    try compat.fs.writeFile(compat.fs.getCwd(), path, seeded);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    const directory = try arena.allocator().alloc(u8, 2048);
+    @memset(directory, 'd');
+    try testing.expectError(error.StreamTooLong, store.append(.{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi", .directory = directory } }));
+    try testing.expectEqual(seeded.len, (try compat.fs.getCwd().statFile(compat.fs.defaultIo(), path, .{})).size);
+    try testing.expectEqual(Action.opened, (try store.latest(arena.allocator(), "s")).?.action);
 }

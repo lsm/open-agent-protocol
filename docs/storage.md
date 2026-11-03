@@ -6,7 +6,7 @@ OAP's durable state is written by two hard-wired file stores today:
 
 - **Bindings.** `zig/src/hub/binding.zig` `Store`: one JSONL file
   (`~/.oapx/sessions.jsonl` by default), a CRC-32 per line, an exclusive
-  `<path>.lock`, and an atomic rewrite on every append. Go already has the
+  `<path>.lock`, and a durable in-place append. Go already has the
   interface, `go/binding.Store` (`Append`, `Latest`, `History`, `Sessions`),
   with a file and a memory implementation.
 - **`oapx` sessions.** `zig/src/tui/session_store.zig` `Store`: per session an
@@ -94,9 +94,10 @@ twin, so both hubs refuse a second writer the way they do today.
 - **Durability before the answer.** An append returns only once the entry
   survives a crash. Decision 0050 depends on this: an accepted submit is
   answered only after its `admitted` record is durable. The Go file store
-  meets this (`go/binding/file.go` syncs). Neither Zig store does today:
-  `compat.fs.atomicReplace` writes and renames without a sync, and
-  `session_store` appends and closes. Landing step 2 adds the syncs.
+  meets this (`go/binding/file.go` syncs). The Zig binding store syncs every
+  append, but the replace its first append after an open goes through does not
+  sync the directory, and `session_store` appends and closes. Landing step 2
+  adds those syncs.
 - **Stable cursors.** A cursor stays valid for as long as its entry exists,
   and a backend that loses one reports the gap rather than restarting the read.
 - **No secrets.** A backend never receives a credential or a resolved
