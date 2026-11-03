@@ -1237,6 +1237,7 @@ and the run it wants is usually the one that just ended under it.
 | A run the session never had is `run_not_found` | `TestSSERefusesARunTheSessionNeverHad`, `TestEventsRefusesARunTheSessionNeverHad` |
 | `run_id` belongs to the `events` op alone; no other op accepts it | `TestRunIDBelongsToTheEventsOpAlone` |
 | A resumed stream delivers the replayed suffix, then live events, and ends at the run's terminal | `TestHubResumeFromCursorMidStream`, `TestSSEReplayAfterCursor` |
+| A subscriber behind a session close still reads to its run's terminal, and nothing of a later run follows it | Zig: `a seeded interleaving of hub calls keeps every run's sequence contiguous and its terminal last` |
 | A cursor the journal no longer retains is `oap-replay-gap`, naming what was lost and where to resume | `TestHubReplayGap`, `TestEventsOpReportsAReplayGap`, `TestSSEReplayGap` |
 | An overflow names the run it happened on, so a reconnect reaches the right events | `TestHubOverflowSignalNamesOverflowedRun` |
 | An overflow during replay seeds the cursor rather than losing it | `TestHubReplayOverflowSeedsCursor` |

@@ -364,6 +364,9 @@ pub const Subscription = struct {
         if (self.ending == .open and event.terminal) {
             self.ending = .run_terminal;
             self.hub.leave(self);
+        } else if (self.ending == .session_closed and event.terminal) {
+            self.replay_at = self.replay.items.len;
+            self.queue_at = self.queue.items.len;
         }
         return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
     }
@@ -5190,7 +5193,7 @@ const Reader = struct {
     session: usize,
     run: u64 = 0,
     sequence: u64 = 0,
-    from_start: bool,
+    from_start: ?u64,
     finished: bool = false,
 };
 
@@ -5254,8 +5257,11 @@ const Interleaving = struct {
 
     fn subscribe(self: *Interleaving, arena: std.mem.Allocator, slot: usize, from_start: bool) !void {
         const options: SubscribeOptions = if (from_start) .{ .run_id = "", .after = 0 } else .{};
-        const subscription = try self.hub.subscribe(arena, self.name(slot), options);
-        try self.readers.append(testing.allocator, .{ .subscription = subscription, .session = self.generations[slot], .from_start = from_start });
+        const subscription = self.hub.subscribe(arena, self.name(slot), options) catch |err| switch (err) {
+            error.NoRunToResume => return,
+            else => |failure| return failure,
+        };
+        try self.readers.append(testing.allocator, .{ .subscription = subscription, .session = self.generations[slot], .from_start = if (from_start) std.hash.Wyhash.hash(0, subscription.run_id) else null });
     }
 
     fn witness(self: *Interleaving, session: usize, run: u64, sequence: u64, line: []const u8, ended: bool) !void {
@@ -5278,7 +5284,7 @@ const Interleaving = struct {
                 if (run != reader.run) {
                     reader.run = run;
                     reader.sequence = 0;
-                    if (reader.from_start) try testing.expectEqual(@as(u64, 1), delivery.sequence);
+                    if (reader.from_start == run) try testing.expectEqual(@as(u64, 1), delivery.sequence);
                 } else {
                     try testing.expectEqual(reader.sequence + 1, delivery.sequence);
                 }
@@ -5337,5 +5343,8 @@ test "a seeded interleaving of hub calls keeps every run's sequence contiguous a
             _ = scratch.reset(.retain_capacity);
         }
         try driver.settle(scratch.allocator());
+        var ends: usize = 0;
+        for (driver.witnessed.items) |seen| ends += @intFromBool(seen.terminal);
+        try testing.expect(ends > 0);
     }
 }
