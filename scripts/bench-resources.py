@@ -331,6 +331,16 @@ def percentile(values, fraction):
     return ordered[min(len(ordered) - 1, int(fraction * len(ordered)))] if ordered else 0.0
 
 
+def cpu_seconds(pid):
+    text = subprocess.run(["ps", "-o", "cputime=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    if not text:
+        return 0.0
+    total = 0.0
+    for part in text.replace("-", ":").split(":"):
+        total = total * 60 + float(part)
+    return total
+
+
 def run_case(target, binary, scenario, n, scratch, timeout, cap):
     root = Path(tempfile.mkdtemp(prefix=f"{target}-{scenario}-{n}-", dir=scratch))
     home, work, data = root / "home", root / "work", root / "data"
@@ -381,9 +391,13 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap):
         result["wall_s"] = time.perf_counter() - started
         result.update(base_rss=base["rss"], steps=len(steps), p50_ms=percentile(steps, 0.5) * 1e3,
                       p99_ms=percentile(steps, 0.99) * 1e3)
+        result["busy_cpu_s"] = cpu_seconds(hub.process.pid)
         if result["status"] == "ok":
             time.sleep(1.0)
         sampler.stop()
+        before_idle = cpu_seconds(hub.process.pid)
+        time.sleep(5.0)
+        result["idle_cpu_pct"] = (cpu_seconds(hub.process.pid) - before_idle) / 5.0 * 100
         result.update(peak_rss=sampler.peak["rss"], peak_threads=sampler.peak["threads"])
         if hub.process.poll() is None:
             settled = probe.sample()
