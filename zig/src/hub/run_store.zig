@@ -66,6 +66,16 @@ fn stamped(arena: std.mem.Allocator, held: []const Record, record: Record) !Reco
     return record;
 }
 
+fn own(arena: std.mem.Allocator, record: Record) !Record {
+    var owned = record;
+    owned.session_id = try arena.dupe(u8, record.session_id);
+    owned.run_id = try arena.dupe(u8, record.run_id);
+    if (record.request) |given| owned.request = try arena.dupe(u8, given);
+    if (record.replaces) |given| owned.replaces = try arena.dupe(u8, given);
+    if (record.root) |given| owned.root = try arena.dupe(u8, given);
+    return owned;
+}
+
 fn compact(arena: std.mem.Allocator, all: []const Record) ![]Record {
     var sessions: std.ArrayList([]const u8) = .empty;
     for (all) |record| {
@@ -131,6 +141,14 @@ pub const Store = struct {
     path: []u8,
     staging: []u8,
     held: ?compat.fs.File = null,
+    log: ?Log = null,
+
+    const Log = struct {
+        arena: std.heap.ArenaAllocator,
+        records: std.ArrayList(Record),
+        length: u64,
+        kept: usize,
+    };
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.RunStoreNeedsAPath;
@@ -151,14 +169,15 @@ pub const Store = struct {
 
     pub fn deinit(self: *Store) void {
         if (self.held) |held| held.close(compat.fs.defaultIo());
+        if (self.log) |*log| log.arena.deinit();
         self.allocator.free(self.path);
         self.allocator.free(self.staging);
         self.* = undefined;
     }
 
-    fn records(self: *Store, arena: std.mem.Allocator) ![]Record {
+    fn records(self: *Store, arena: std.mem.Allocator) !struct { std.ArrayList(Record), u64 } {
         const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, binding.max_store_bytes) catch |err| switch (err) {
-            error.FileNotFound => return &.{},
+            error.FileNotFound => return .{ .empty, 0 },
             else => return err,
         };
         var kept: std.ArrayList(Record) = .empty;
@@ -170,22 +189,59 @@ pub const Store = struct {
             };
             try kept.append(arena, record);
         }
-        return kept.items;
+        return .{ kept, start };
+    }
+
+    fn load(self: *Store) !*Log {
+        if (self.log) |*log| return log;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const held, const length = try self.records(arena.allocator());
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const kept = (try compact(scratch.allocator(), held.items)).len;
+        self.log = .{ .arena = arena, .records = held, .length = length, .kept = kept };
+        return &self.log.?;
     }
 
     pub fn append(self: *Store, record: Record) !void {
+        const log = try self.load();
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
-        const held = try self.records(arena);
-        const all = try std.mem.concat(arena, Record, &.{ held, &.{try stamped(arena, held, record)} });
-        var next: std.ArrayList(u8) = .empty;
-        for (try compact(arena, all)) |kept| try next.appendSlice(arena, try encode(arena, kept));
-        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next.items);
+        const next = try stamped(arena, log.records.items, record);
+        if (log.records.items.len + 1 > 2 * log.kept + compact_slack) return self.compactWith(arena, log, next);
+        const line = try encode(arena, next);
+        const owned = try own(log.arena.allocator(), next);
+        try log.records.ensureUnusedCapacity(log.arena.allocator(), 1);
+        const io = compat.fs.defaultIo();
+        var file = try compat.fs.getCwd().createFile(io, self.path, .{ .truncate = false, .permissions = compat.fs.default_file_mode });
+        defer file.close(io);
+        try file.setLength(io, log.length);
+        try file.writePositionalAll(io, line, log.length);
+        try file.sync(io);
+        log.records.appendAssumeCapacity(owned);
+        log.length += line.len;
+    }
+
+    fn compactWith(self: *Store, arena: std.mem.Allocator, log: *Log, next: Record) !void {
+        const all = try std.mem.concat(arena, Record, &.{ log.records.items, &.{next} });
+        var fresh = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer fresh.deinit();
+        var kept: std.ArrayList(Record) = .empty;
+        var bytes: std.ArrayList(u8) = .empty;
+        for (try compact(arena, all)) |held| {
+            try kept.append(fresh.allocator(), try own(fresh.allocator(), held));
+            try bytes.appendSlice(arena, try encode(arena, held));
+        }
+        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, bytes.items);
+        log.arena.deinit();
+        log.* = .{ .arena = fresh, .records = kept, .length = bytes.items.len, .kept = kept.items.len };
     }
 
     pub fn openRuns(self: *Store, arena: std.mem.Allocator, session_id: []const u8) ![]Open {
-        return collectOpen(arena, try self.records(arena), session_id);
+        const held, _ = try self.records(arena);
+        return collectOpen(arena, held.items, session_id);
     }
 
     pub fn runs(self: *Store) Runs {
@@ -227,14 +283,9 @@ pub const Memory = struct {
     fn memoryAppend(ctx: *anyopaque, record: Record) anyerror!void {
         const self: *Memory = @ptrCast(@alignCast(ctx));
         const arena = self.arena.allocator();
-        const session_id = try arena.dupe(u8, record.session_id);
-        const run_id = try arena.dupe(u8, record.run_id);
-        const request = if (record.request) |given| try arena.dupe(u8, given) else null;
-        const replaces = if (record.replaces) |given| try arena.dupe(u8, given) else null;
-        const root = if (record.root) |given| try arena.dupe(u8, given) else null;
         var scratch = std.heap.ArenaAllocator.init(self.arena.child_allocator);
         defer scratch.deinit();
-        const owned = try stamped(scratch.allocator(), self.records.items, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request, .replaces = replaces, .root = root });
+        const owned = try stamped(scratch.allocator(), self.records.items, try own(arena, record));
         const all = try std.mem.concat(scratch.allocator(), Record, &.{ self.records.items, &.{owned} });
         const kept = try compact(scratch.allocator(), all);
         var next: std.ArrayList(Record) = .empty;
