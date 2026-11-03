@@ -210,8 +210,8 @@ pub const Store = struct {
         defer scratch.deinit();
         const arena = scratch.allocator();
         const next = try stamped(arena, log.records.items, record);
-        if (log.records.items.len + 1 > 2 * log.kept + compact_slack) return self.compactWith(arena, log, next);
         const line = try encode(arena, next);
+        if (log.records.items.len + 1 > 2 * log.kept + compact_slack or log.length + line.len > binding.max_store_bytes / 2) return self.compactWith(arena, log, next);
         const owned = try own(log.arena.allocator(), next);
         try log.records.ensureUnusedCapacity(log.arena.allocator(), 1);
         const io = compat.fs.defaultIo();
