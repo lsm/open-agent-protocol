@@ -68,6 +68,7 @@ pub const Jobs = struct {
         var dir = try common.openWorkspace(workspace_root, false);
         defer dir.close(common.defaultIo());
         try dir.createDirPath(common.defaultIo(), jobs_dir);
+        self.reap();
         self.lock();
         defer self.mutex.unlock();
         try self.list.ensureUnusedCapacity(self.allocator, 1);
@@ -103,6 +104,7 @@ pub const Jobs = struct {
     }
 
     pub fn report(self: *Jobs, output_path: []const u8, kill: bool) !Report {
+        self.reap();
         self.lock();
         const job = self.find(output_path) orelse {
             self.mutex.unlock();
@@ -142,6 +144,20 @@ pub const Jobs = struct {
     fn find(self: *Jobs, output_path: []const u8) ?*Job {
         for (self.list.items) |job| if (std.mem.eql(u8, job.output, output_path)) return job;
         return null;
+    }
+
+    fn reap(self: *Jobs) void {
+        while (true) {
+            self.lock();
+            const watcher = for (self.list.items) |job| {
+                if (job.term == null) continue;
+                const thread = job.watcher orelse continue;
+                job.watcher = null;
+                break thread;
+            } else null;
+            self.mutex.unlock();
+            (watcher orelse return).join();
+        }
     }
 
     fn end(self: *Jobs, job: *Job) void {
