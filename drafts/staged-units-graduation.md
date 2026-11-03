@@ -2817,7 +2817,11 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   `run` parameter. `?run=` is still needed even with ordered
   delivery: a drop between one run's terminal and the next run's first
   envelope leaves the client holding the finished run's cursor while the
-  next run is already the started one. Stream end changes with it: today
+  next run is already the started one. ([Decision
+  0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+  supersedes the rest of this stream-end design: every subscription lasts as
+  long as its connection, with no `?follow=session`, `oap-run-boundary` or
+  `oap-stream-end`.) Stream end changes with it: today
   the daemon ends a stream at a run terminal unless a resubmit already
   landed, and both clients read a terminal as the stream's clean end. Under
   T2 a following subscription (`?follow=session`, below) continues past a

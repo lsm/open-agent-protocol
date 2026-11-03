@@ -347,11 +347,12 @@ subscription. The other five each end it, and each is a named line because this
 framing has no end to observe: the SSE body simply stops, while the pipe here
 stays open and carries every other subscription.
 
-Two endings need no line. A healthy stream ends at the run's terminal envelope
-— `run.completed`, `run.failed` or `run.cancelled` — delivered as an ordinary
-envelope line, which is the marker, exactly as the SSE response ends after it.
-And the daemon's own shutdown ends the session the host is watching, which the
-host observes directly.
+Two endings need no line. `unsubscribe` ends a subscription because the host
+asked, and its answer says so. And the daemon's own shutdown ends the session the
+host is watching, which the host observes directly. A run's terminal envelope —
+`run.completed`, `run.failed` or `run.cancelled` — ends nothing: it is an ordinary
+envelope line, and the subscription carries on into the session's next run
+([Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)).
 
 | subscription rule | pinned by |
 | --- | --- |
@@ -699,9 +700,9 @@ bytes, excluding the wrapper and surrounding whitespace; Zig's real-process
 
 `GET /sessions/{id}/events` answers `200` with `Content-Type:
 text/event-stream` and `Cache-Control: no-cache`, flushed before the first
-frame. An envelope is written `id: <sequence>\ndata: <envelope>\n\n`; `id` is the
-bare sequence, so a client may reconnect with `Last-Event-ID` and land on the
-same cursor. A named signal is written `event: <name>\ndata: {...}\n\n` with no
+frame. An envelope is written `id: <run_id>:<sequence>\ndata: <envelope>\n\n`, so a
+client may reconnect with `Last-Event-ID` and land on the same cursor; the id
+splits at its last colon, and a bare sequence is still read as the current run's. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 `id`, because a signal is not a position in the stream.
 
 | signal | meaning | pinned by |
@@ -710,9 +711,11 @@ same cursor. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 | `oap-overflow` | the connection's bounded buffer fell behind; `last_sequence` names the last sequence this connection delivered | `TestSSEOverflowSignalLive`, `TestSSEOverflowSignalReplay` |
 | `oap-replay-gap` | the requested cursor is no longer retained; `oldest_available` and `latest_available` bound what is | `TestSSEReplayGap` |
 
-A stream ends at the run's terminal envelope, at an overflow or a replay gap, at
-the client's hangup, or when the session closes — a stream open when the session
-closes receives the events already in flight and then ends. A connection made to
+A stream ends at an overflow or a replay gap, at the client's hangup, or when the
+session closes — a stream open when the session closes receives the events
+already in flight and then ends. A run's terminal envelope does not end it. A
+stream with nothing to say writes the comment `: keepalive` every 15 seconds, so a
+client can tell quiet from dead, and a write that fails ends the subscription. A connection made to
 a session that has closed is refused `404 unknown_session` rather than parked:
 close releases the session ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)).
 
@@ -1223,7 +1226,9 @@ Resume, reconciliation and replay are distinct, and an expired cursor is
 `oap-replay-gap` rather than fake continuity.
 
 A cursor is `(run, sequence)`. **Sequences are per-run and restart at 1**, so a
-cursor without a run is ambiguous. A request may therefore name the run it was
+cursor without a run is ambiguous. Resuming delivers the rest of the cursor's
+run, then every later run of the session in admission order, each from sequence
+1, then live events, with nothing lost or repeated. A request may therefore name the run it was
 cut from; an unqualified cursor resolves onto the session's current run, which
 is right until a second run is admitted. Naming a settled run replays that
 run's suffix — a host that names a run has said exactly which events it wants,
@@ -1236,7 +1241,7 @@ and the run it wants is usually the one that just ended under it.
 | `run_id` without a cursor is `invalid_cursor` — a live subscription is always the current run, so a run on a request with no cursor names a position that does not exist | `TestSSERefusesARunWithoutACursor`, `TestEventsRefusesARunWithoutACursor` |
 | A run the session never had is `run_not_found` | `TestSSERefusesARunTheSessionNeverHad`, `TestEventsRefusesARunTheSessionNeverHad` |
 | `run_id` belongs to the `events` op alone; no other op accepts it | `TestRunIDBelongsToTheEventsOpAlone` |
-| A resumed stream delivers the replayed suffix, then live events, and ends at the run's terminal | `TestHubResumeFromCursorMidStream`, `TestSSEReplayAfterCursor` |
+| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | `TestHubResumeFromCursorMidStream`, `TestSSEReplayAfterCursor` |
 | A cursor the journal no longer retains is `oap-replay-gap`, naming what was lost and where to resume | `TestHubReplayGap`, `TestEventsOpReportsAReplayGap`, `TestSSEReplayGap` |
 | An overflow names the run it happened on, so a reconnect reaches the right events | `TestHubOverflowSignalNamesOverflowedRun` |
 | An overflow during replay seeds the cursor rather than losing it | `TestHubReplayOverflowSeedsCursor` |
@@ -1748,6 +1753,19 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
   `TestHubSessionCloseSemantics` finds the session absent from the listing and
   the hub answering `unknown_session` for it.
 
+### `unsubscribe`
+
+Stdio only; over HTTP the client hangs up.
+
+- **params:** `subscription`, the `id` of the `events` or subscribing `open`
+  request that started it, and nothing else.
+- **answer:** `{"id":N,"ok":true,"result":null}`. No line carries that
+  subscription's id after the answer, and its slot under the ceiling is free. An
+  id naming no live subscription answers the same, because a subscription can end
+  on its own while the request is in flight.
+- **errors:** `invalid_request` (a missing or unreadable `subscription`, or a
+  parameter the op does not define).
+
 ### `events`
 
 - **params:** `session_id`, `after` (an unsigned sequence) and `run_id`, and
@@ -1775,7 +1793,7 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
   `TestSSECursorErrors`, `TestSSEReplayGap`, `TestSSENoRunToResume`,
   `TestSSEUnknownSession`, `TestSSEOnClosedSession`, `TestEventsOpRefusals`
   (the `busy` refusal at the subscription ceiling, whose message names the
-  ending paths rather than implying the host can bring one about). The release
+  ending paths, `unsubscribe` among them). The release
   is pinned: `TestEventsOpRefusals` answers a session that has been released
   with `unknown_session`, apart from the one that never existed, and
   `TestSSEOnClosedSession` answers a live stream and a cursor stream on a
@@ -1856,12 +1874,11 @@ whole reason for existing:
    `TestAdapterOverflowScopesByAcknowledgedRun`, `TestNewerPendingRunExposesOverflow`,
    `TestAcknowledgedOrderStaysMonotonic`, `TestExposureByAdmissionOrder`.
 
-A subscription ends at exactly one of: its run's terminal envelope, an overflow,
-a stream failure, its session closing, the frontend tearing down, or — over
-HTTP — the client's hangup. **Over stdio there is no host-initiated way to end
-one subscription**, and that is a decision rather than an omission: see
-[G3](#known-gaps), where [#53](https://github.com/lsm/open-agent-protocol/issues/53)'s
-three options are weighed and the third is taken in both trees.
+A subscription ends at exactly one of: an overflow, a stream failure, its session
+closing, the frontend tearing down, or the client ending it — `unsubscribe` over
+stdio, hangup over HTTP. Its lifetime is its connection's: a run's terminal is an
+ordinary envelope, and an idle session keeps its subscribers
+([Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)).
 
 The rest of the fan-out is about the runs, not the subscribers: an admitted run
 is ordered by admission, a run that settles is remembered as settled, a queued
@@ -1940,8 +1957,7 @@ for the next exit. Go's context cancels the same call, which is why Go's
 The rules this document specifies that a Go test did not pin when it was
 written, and where each is pinned now. Every entry but G3's names the test
 that closes it, because a port implementing this draft should be able to check
-itself against the same list; G3 is a decided question with no rule left to
-pin, and points at the issue that carries it. A port must implement every rule
+itself against the same list; G3 was a decided question, since reversed. A port must implement every rule
 here; each was a place a differential test would otherwise not see.
 
 - **G1 — closed.** The status was pinned and nothing else: a `text/plain`
@@ -1972,42 +1988,13 @@ here; each was a place a differential test would otherwise not see.
   `a client that hangs up mid-stream releases its subscription without an event
   to write` closes the client's socket while nothing is being written and waits
   for the hub's subscription count to reach zero ([#399](https://github.com/lsm/open-agent-protocol/issues/399)).
-- **G3 — #53, decided: stdio has no `unsubscribe`, and the ceiling is not a
-  trap.** The pipe carries every subscription at once and has no per-stream
-  hangup, and no op detaches a single pump. [Issue
-  #53](https://github.com/lsm/open-agent-protocol/issues/53) weighed an
-  `unsubscribe` op, id-reuse replacement, and leaving it; **this draft takes the
-  third, in both trees.**
-
-  The reason #53 had a case was that a host at the ceiling could only free a slot
-  through a side effect on a session it might not want to end. That is no longer
-  true, and the reason is a rule this draft already had: **a subscription ends
-  at its run's terminal envelope.** A host that subscribes per run — the shape
-  that actually fills the ceiling — has each subscription end on its own, without
-  touching the session, and it ends without the host asking. The ceiling of 64
-  therefore bounds live streams.
-
-  The ceiling holds because an ended subscription stops counting. Go needs nothing
-  from the consumer: once a session's last reader has gone and no reservation is
-  outstanding, `detachSubsLocked` takes every subscriber off it. The Zig core
-  leaves the session's subscriber list at the moment a subscription ends — when its
-  consumer reads the terminal envelope, and, for a replay that already overflowed,
-  before it is ever added — and neither needs a `close()` from anyone, so a
-  finished subscription is reclaimed rather than retained and the ceiling of 64
-  bounds live streams.
-
-  The remaining two options both cost more than they buy. An `unsubscribe` op is
-  a wire verb with no HTTP counterpart, and the honest HTTP form of "drop the
-  connection" is not expressible on a pipe that carries every subscription at
-  once — so it would be the one op the parity job could never check, which is the
-  thing the stdio transport exists to prevent. Id-reuse replacement overloads
-  correlation with lifecycle and still cannot reach zero subscriptions.
-
-  So the ending paths stay as they are, the `busy` refusal at the ceiling names
-  them, and `close` — with its `POST /sessions/{id}/close` counterpart — remains
-  the one verb that ends every subscription on a session, in both trees. **A
-  port may not add an `unsubscribe` op alone**; if this decision is ever revisited
-  it has to be revisited for both, and the HTTP form has to be settled first.
+- **G3 — #53, closed by Decision 0066: stdio has `unsubscribe`.** This entry used
+  to keep stdio without the op, because a subscription ended at its run's terminal
+  and so freed its slot under the ceiling of 64. Subscriptions now last as long as
+  their connection, so the host needs a way to end one, and [`unsubscribe`](#unsubscribe)
+  is it. The old objection was that a verb with no HTTP counterpart is one the
+  parity job could never check. The counterpart is the client's hangup, and parity
+  is stated on the outcome: no further lines, and the slot is free.
 - **G4 — closed, and one claim in it was wrong.** The gate compares a
   request's cited revision against the probed one on both the attachment and
   the subscribe path, and the **attachment** path was pinned end to end on
@@ -2565,6 +2552,15 @@ do. Zig's `oversizedOpen` in `zig/src/hub/stdio.zig` keeps every named
 session, so a named compound open leaves its session and run live behind
 `response_too_large`. Cancelling the admitted run and discarding the session
 when the open carried a message closes this.
+
+### D35 — Decision 0066 is not in any tree yet
+
+[Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+lands one pull request at a time, so this document is ahead of the code. Until
+each part is built, Zig ends a subscription at its run's terminal, Go and Rust
+end it when the session has no run left to follow, no hub has `unsubscribe` or
+writes a keepalive, SSE ids are bare sequences, and a cursor resumes one run.
+This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences
 

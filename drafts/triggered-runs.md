@@ -464,8 +464,12 @@ open question answered here:
   `session.state.updated` comes from the same channel.
 - **The hub** journals a triggered run like any run, so its replay and
   resume are a run's.
-- **A subscription that follows the session.** A hub subscription today ends
-  at its run's terminal envelope ([hub.md](hub.md)), so nothing in it can
+- **A subscription that follows the session.** [Decision
+  0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+  makes this every subscription's behaviour, so it replaces the opt-in below:
+  there is no `?follow=session`, and no `oap-run-boundary` or `oap-stream-end`.
+  The rest stands. As first designed, a hub subscription ended
+  at its run's terminal envelope ([hub.md](hub.md)), so nothing in it could
   carry a run nobody subscribed to. This reuses the recorded T2 design in
   [staged-units-graduation.md](staged-units-graduation.md) rather than a new
   one:
