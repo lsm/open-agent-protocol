@@ -179,6 +179,7 @@ func (d *interleaving) settle() {
 			}
 			d.cancel(slot)
 		}
+		d.replayEveryRun(slot)
 		if err := d.slots[slot].Close(d.ctx); err != nil {
 			d.t.Fatalf("close %s: %v", d.slots[slot].ID(), err)
 		}
@@ -188,6 +189,32 @@ func (d *interleaving) settle() {
 		case <-reader.done:
 		case <-time.After(testTimeout):
 			d.t.Fatalf("a reader of %s never ended", reader.session)
+		}
+	}
+}
+
+func (d *interleaving) replayEveryRun(slot int) {
+	d.t.Helper()
+	session := d.slots[slot].ID()
+	for run := range d.admitted[session] {
+		subscription, err := d.hub.Subscribe(d.ctx, session, serve.After(run, 0))
+		if err != nil {
+			d.t.Fatalf("replay %s: %v", run, err)
+		}
+		reader := &interleavingReader{session: session, done: make(chan struct{})}
+		go reader.read(subscription)
+		select {
+		case <-reader.done:
+		case <-time.After(testTimeout):
+			d.t.Fatalf("%s never replayed to an end", run)
+		}
+		if len(reader.events) == 0 || !reader.events[len(reader.events)-1].terminal {
+			d.t.Fatalf("%s replayed %d events and no terminal", run, len(reader.events))
+		}
+		for index, event := range reader.events {
+			if event.sequence != uint64(index+1) || event.terminal != (index == len(reader.events)-1) {
+				d.t.Fatalf("%s replayed #%d at %d, terminal %v", run, event.sequence, index, event.terminal)
+			}
 		}
 	}
 }
@@ -205,7 +232,8 @@ func (d *interleaving) check() {
 	for _, reader := range d.readers {
 		if reader.err != nil && !errors.Is(reader.err, io.EOF) {
 			var closed *serve.SessionClosedError
-			if !errors.As(reader.err, &closed) {
+			var overflow *serve.OverflowError
+			if !errors.As(reader.err, &closed) && !errors.As(reader.err, &overflow) {
 				d.t.Fatalf("a reader of %s ended with %v", reader.session, reader.err)
 			}
 		}
