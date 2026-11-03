@@ -364,9 +364,6 @@ pub const Subscription = struct {
         if (self.ending == .open and event.terminal) {
             self.ending = .run_terminal;
             self.hub.leave(self);
-        } else if (self.ending == .session_closed and event.terminal) {
-            self.replay_at = self.replay.items.len;
-            self.queue_at = self.queue.items.len;
         }
         return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
     }
@@ -5302,8 +5299,8 @@ const Interleaving = struct {
     fn read(self: *Interleaving) !void {
         for (self.readers.items) |*reader| {
             while (reader.subscription.next()) |delivery| {
-                try testing.expect(!reader.finished);
                 const run = std.hash.Wyhash.hash(0, delivery.run_id);
+                if (run == reader.run) try testing.expect(!reader.finished);
                 if (run != reader.run) {
                     reader.run = run;
                     reader.sequence = 0;
