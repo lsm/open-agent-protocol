@@ -47,7 +47,7 @@ fn read(mut subscription: Subscription) -> JoinHandle<Vec<Delivered>> {
         while let Some(item) = block_on(subscription.next()) {
             let envelope = match item {
                 Ok(envelope) => envelope,
-                Err(HubError::SessionClosed(_)) => break,
+                Err(HubError::SessionClosed(_) | HubError::Overflow { .. }) => break,
                 Err(err) => panic!("a reader ended with {err}"),
             };
             let (Some(run), Some(sequence)) = (envelope.run_id.clone(), envelope.sequence) else {
@@ -217,7 +217,30 @@ impl Driver {
                 assert!(Instant::now() < deadline, "a run never settled");
                 self.cancel(slot);
             }
+            self.replay_every_run(slot, deadline);
             block_on(self.slots[slot].close()).unwrap();
+        }
+    }
+
+    fn replay_every_run(&self, slot: usize, deadline: Instant) {
+        let session = self.slots[slot].id();
+        for run in self.admitted.get(session).into_iter().flatten() {
+            let subscription =
+                block_on(self.hub.subscribe_after(session, Some(run.clone()), 0)).unwrap();
+            let thread = read(subscription);
+            while !thread.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "{run:?} never replayed to an end"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            let events = thread.join().unwrap();
+            assert!(events.last().is_some_and(|event| event.terminal), "{run:?}");
+            for (index, event) in events.iter().enumerate() {
+                assert_eq!(event.sequence, index as u64 + 1, "{run:?}");
+                assert_eq!(event.terminal, index + 1 == events.len(), "{run:?}");
+            }
         }
     }
 
