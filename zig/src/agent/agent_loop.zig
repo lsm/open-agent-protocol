@@ -1060,17 +1060,22 @@ fn executeToolCalls(
 
 const max_turn_retries: u8 = 2;
 const turn_retry_base_delay_ms: u32 = 1000;
+const failed_after_output_note = "after output was shown, so it was not retried";
 
 const TurnRetry = struct {
     attempt: u8 = 0,
     delay_ms: u64 = 0,
 
+    fn eligible(error_text: []const u8) bool {
+        if (retry.httpStatus(error_text) != null) return false;
+        return switch (retry.classifyError(error_text)) {
+            .transient, .throttled => true,
+            .context_overflow, .fatal => false,
+        };
+    }
+
     fn claim(self: *TurnRetry, error_text: []const u8, max_delay_ms: u32) bool {
-        if (self.attempt >= max_turn_retries or retry.httpStatus(error_text) != null) return false;
-        switch (retry.classifyError(error_text)) {
-            .transient, .throttled => {},
-            .context_overflow, .fatal => return false,
-        }
+        if (self.attempt >= max_turn_retries or !eligible(error_text)) return false;
         const backoff = retry.calculateDelay(self.attempt, turn_retry_base_delay_ms, max_delay_ms);
         const asked = retry.extractRetryDelayFromBody(error_text) orelse 0;
         self.delay_ms = @max(backoff, @min(asked, max_delay_ms));
@@ -1273,6 +1278,11 @@ fn streamAssistantResponse(
 
     if (final_message == null) {
         if (provider_stream.getError()) |provider_error| {
+            if (message_started and TurnRetry.eligible(provider_error)) {
+                const noted = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ provider_error, failed_after_output_note });
+                defer allocator.free(noted);
+                return try makeProviderErrorAssistantMessage(allocator, config.model, noted);
+            }
             return try makeProviderErrorAssistantMessage(allocator, config.model, provider_error);
         }
     }
@@ -1517,7 +1527,7 @@ fn flakyStream(
     return stream_ptr;
 }
 
-const FlakyOutcome = struct { message_starts: usize = 0, final_text: bool = false, final_error: bool = false };
+const FlakyOutcome = struct { message_starts: usize = 0, final_text: bool = false, final_error: bool = false, noted_after_output: bool = false };
 
 fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
     var events_storage: AgentEventStream = undefined;
@@ -1542,6 +1552,7 @@ fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
             .message_start => outcome.message_starts += 1,
             .turn_end => |payload| {
                 outcome.final_error = payload.message.stop_reason == .@"error";
+                outcome.noted_after_output = std.mem.indexOf(u8, payload.message.error_message.slice(), failed_after_output_note) != null;
                 outcome.final_text = payload.message.content.len > 0 and payload.message.content[0] == .text and std.mem.eql(u8, payload.message.content[0].text.text, "recovered");
             },
             else => {},
@@ -1565,11 +1576,19 @@ test "the turn retry is bounded and the last failure ends the run" {
     try std.testing.expect(outcome.final_error);
 }
 
-test "a stream that drops after visible output does not retry" {
+test "a stream that drops after visible output does not retry and says so" {
     var flaky = FlakyCtx{ .failure = "read error", .failures_left = 1, .show_text = true };
     const outcome = try runFlakyTurn(&flaky);
     try std.testing.expectEqual(@as(usize, 1), flaky.calls);
     try std.testing.expect(outcome.final_error);
+    try std.testing.expect(outcome.noted_after_output);
+}
+
+test "a fatal failure after visible output carries no retry note" {
+    var flaky = FlakyCtx{ .failure = "provider said no", .failures_left = 1, .show_text = true };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(!outcome.noted_after_output);
 }
 
 test "a failure the provider already retried is not retried again" {
