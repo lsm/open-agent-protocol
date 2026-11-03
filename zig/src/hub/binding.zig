@@ -142,6 +142,7 @@ pub const Store = struct {
     staging: []u8,
     last_failure: ?anyerror = null,
     held: ?compat.fs.File = null,
+    validated: ?u64 = null,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.BindingStoreNeedsAPath;
@@ -158,7 +159,7 @@ pub const Store = struct {
         };
         errdefer held.close(compat.fs.defaultIo());
         var store = Store{ .allocator = allocator, .path = owned, .staging = staging, .held = held };
-        try store.rewrite(null);
+        _ = try store.rewrite(null);
         return store;
     }
 
@@ -176,15 +177,16 @@ pub const Store = struct {
         };
     }
 
-    fn rewrite(self: *Store, line: ?[]const u8) !void {
+    fn rewrite(self: *Store, line: ?[]const u8) !u64 {
         const bytes = try self.contents();
         defer self.allocator.free(bytes);
         const keep = try validPrefix(self.allocator, bytes);
         const exists = compat.fs.fileKind(compat.fs.getCwd(), self.path) == .file;
-        if (line == null and keep == bytes.len and exists) return;
+        if (line == null and keep == bytes.len and exists) return keep;
         const next = try std.mem.concat(self.allocator, u8, &.{ bytes[0..keep], line orelse "" });
         defer self.allocator.free(next);
         try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next);
+        return next.len;
     }
 
     pub fn append(self: *Store, entry: Entry) !void {
@@ -198,7 +200,17 @@ pub const Store = struct {
     fn write(self: *Store, entry: Entry) !void {
         const line = try encode(self.allocator, entry);
         defer self.allocator.free(line);
-        try self.rewrite(line);
+        const known = self.validated orelse {
+            self.validated = try self.rewrite(line);
+            return;
+        };
+        const io = compat.fs.defaultIo();
+        var file = try compat.fs.getCwd().createFile(io, self.path, .{ .truncate = false, .permissions = compat.fs.default_file_mode });
+        defer file.close(io);
+        try file.setLength(io, known);
+        try file.writePositionalAll(io, line, known);
+        try file.sync(io);
+        self.validated = known + line.len;
     }
 
     pub fn latest(self: *Store, arena: std.mem.Allocator, session_id: []const u8) !?Entry {
@@ -582,7 +594,9 @@ test "a torn tail that appears after the store opened is cut before the next app
     const second: Entry = .{ .action = .closed, .time_ms = 2, .record = .{ .session_id = "s", .adapter = "pi" } };
     try store.append(first);
     const line = try encode(arena.allocator(), first);
-    try compat.fs.writeFile(compat.fs.getCwd(), path, try std.mem.concat(arena.allocator(), u8, &.{ line, line[0 .. line.len / 2] }));
+    const torn = try arena.allocator().alloc(u8, 2 * line.len);
+    @memset(torn, 'x');
+    try compat.fs.writeFile(compat.fs.getCwd(), path, try std.mem.concat(arena.allocator(), u8, &.{ line, torn }));
     try store.append(second);
     try testing.expectEqualStrings(try std.mem.concat(arena.allocator(), u8, &.{ line, try encode(arena.allocator(), second) }), try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, max_store_bytes));
 }
