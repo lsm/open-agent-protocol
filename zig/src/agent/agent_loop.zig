@@ -1162,7 +1162,8 @@ fn streamAssistantResponse(
     const max_delay_ms = config.max_retry_delay_ms orelse 60_000;
 
     while (provider_stream.wait()) |provider_event| {
-        if (provider_event == .@"error" and !message_started and turn_retry.claim(provider_event.@"error".err.error_message.slice(), max_delay_ms)) {
+        const output_shown = message_started;
+        if (provider_event == .@"error" and !output_shown and turn_retry.claim(provider_event.@"error".err.error_message.slice(), max_delay_ms)) {
             if (provider_stream.ownership.isOwned()) {
                 var owned_error_event = provider_event;
                 ai_types.deinitAssistantMessageEvent(allocator, &owned_error_event);
@@ -1243,11 +1244,19 @@ fn streamAssistantResponse(
                 errdefer if (provider_stream.ownership.isOwned() and !final_transferred) {
                     ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
                 };
-                final_message = e.err;
-                const msg: ai_types.Message = .{ .assistant = e.err };
+                var noted: ?ai_types.AssistantMessage = null;
+                errdefer if (noted) |*message| message.deinit(allocator);
+                if (output_shown and TurnRetry.eligible(e.err.error_message.slice())) {
+                    noted = try notedAfterOutput(allocator, e.err);
+                    if (provider_stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
+                    final_transferred = true;
+                }
+                final_message = noted orelse e.err;
+                const msg: ai_types.Message = .{ .assistant = final_message.? };
                 try pushAgentEvent(event_stream, .{ .message_end = .{
                     .message = msg,
                 } });
+                noted = null;
                 final_transferred = true;
             },
             .keepalive => {},
@@ -1288,6 +1297,15 @@ fn streamAssistantResponse(
     }
 
     return final_message orelse error.NoFinalMessage;
+}
+
+fn notedAfterOutput(allocator: std.mem.Allocator, message: ai_types.AssistantMessage) !ai_types.AssistantMessage {
+    var noted = try ai_types.cloneAssistantMessage(allocator, message);
+    errdefer noted.deinit(allocator);
+    const text = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ message.error_message.slice(), failed_after_output_note });
+    noted.error_message.deinit(allocator);
+    noted.error_message = ai_types.OwnedSlice(u8).initOwned(text);
+    return noted;
 }
 
 fn makeProviderErrorAssistantMessage(
@@ -1491,6 +1509,7 @@ const FlakyCtx = struct {
     failure: []const u8,
     failures_left: usize,
     show_text: bool = false,
+    error_event: bool = false,
     calls: usize = 0,
 };
 
@@ -1511,6 +1530,7 @@ fn flakyStream(
     const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
     errdefer allocator.destroy(stream_ptr);
     stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    if (flaky.error_event) stream_ptr.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     const partial = ai_types.AssistantMessage{
         .content = &.{},
         .api = model.api,
@@ -1523,6 +1543,12 @@ fn flakyStream(
     };
     try stream_ptr.push(.{ .start = .{ .partial = partial } });
     if (flaky.show_text) try stream_ptr.push(.{ .text_delta = .{ .content_index = 0, .delta = "half an ans", .partial = partial } });
+    if (flaky.error_event) {
+        var failed = partial;
+        failed.stop_reason = .@"error";
+        failed.error_message = ai_types.OwnedSlice(u8).initBorrowed(flaky.failure);
+        try stream_ptr.push(.{ .@"error" = .{ .reason = .@"error", .err = failed } });
+    }
     stream_ptr.completeWithError(flaky.failure);
     return stream_ptr;
 }
@@ -1582,6 +1608,27 @@ test "a stream that drops after visible output does not retry and says so" {
     try std.testing.expectEqual(@as(usize, 1), flaky.calls);
     try std.testing.expect(outcome.final_error);
     try std.testing.expect(outcome.noted_after_output);
+}
+
+test "an error event after visible output does not retry and says so" {
+    var flaky = FlakyCtx{ .failure = "read error", .failures_left = 1, .show_text = true, .error_event = true };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expectEqual(@as(usize, 1), flaky.calls);
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(outcome.noted_after_output);
+}
+
+test "an error event before any output retries, and running out of retries carries no note" {
+    var recovered = FlakyCtx{ .failure = "read error", .failures_left = 2, .error_event = true };
+    const recovered_outcome = try runFlakyTurn(&recovered);
+    try std.testing.expectEqual(@as(usize, 3), recovered.calls);
+    try std.testing.expect(recovered_outcome.final_text);
+
+    var exhausted = FlakyCtx{ .failure = "read error", .failures_left = 10, .error_event = true };
+    const exhausted_outcome = try runFlakyTurn(&exhausted);
+    try std.testing.expectEqual(@as(usize, max_turn_retries + 1), exhausted.calls);
+    try std.testing.expect(exhausted_outcome.final_error);
+    try std.testing.expect(!exhausted_outcome.noted_after_output);
 }
 
 test "a fatal failure after visible output carries no retry note" {
