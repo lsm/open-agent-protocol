@@ -122,6 +122,7 @@ export class EventStream implements AsyncIterable<Envelope> {
           await wake;
           continue;
         }
+        if (this.terminal && !this.inflight) return;
         if (!this.conn) await this.connect();
         let envelope: Envelope;
         try {

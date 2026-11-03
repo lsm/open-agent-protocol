@@ -13,6 +13,7 @@ export interface ScriptedResponse {
   body?: string | ((call: { url: string; init?: FetchInit }) => string);
   chunks?: (string | Uint8Array)[];
   chunkDelayMs?: number;
+  holdOpen?: boolean;
   streamError?: Error;
   rejectWith?: Error;
   delayMs?: number;
@@ -25,18 +26,21 @@ function sleep(ms: number): Promise<void> {
 class FakeReader implements StreamReader {
   private index = 0;
   private closed = false;
+  private release: (() => void) | undefined;
 
   constructor(
     private chunks: (string | Uint8Array)[],
     private readonly delayMs: number,
     private readonly streamError: Error | undefined,
     private readonly signal: AbortSignal | undefined,
+    private readonly holdOpen: boolean = false,
   ) {}
 
   async read(): Promise<{ done: boolean; value?: Uint8Array }> {
     if (this.closed) return { done: true };
     if (this.index >= this.chunks.length) {
       if (this.streamError) throw this.streamError;
+      if (this.holdOpen) await new Promise<void>((resolve) => (this.release = resolve));
       return { done: true };
     }
     const chunk = this.chunks[this.index];
@@ -64,6 +68,7 @@ class FakeReader implements StreamReader {
   async cancel(): Promise<void> {
     this.closed = true;
     this.chunks = [];
+    this.release?.();
   }
 }
 
@@ -99,7 +104,7 @@ export class FakeTransport {
       headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null },
       body: {
         getReader: () =>
-          new FakeReader(streamed ? (entry.chunks as (string | Uint8Array)[]) : [bodyText], entry.chunkDelayMs ?? 0, entry.streamError, init?.signal),
+          new FakeReader(streamed ? (entry.chunks as (string | Uint8Array)[]) : [bodyText], entry.chunkDelayMs ?? 0, entry.streamError, init?.signal, entry.holdOpen),
       },
       text: streamed ? () => Promise.reject(new Error('test transport: streamed response')) : () => Promise.resolve(bodyText),
     };

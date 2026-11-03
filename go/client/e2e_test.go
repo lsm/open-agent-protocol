@@ -1217,6 +1217,27 @@ func TestClientRejectsLiveSequenceGap(t *testing.T) {
 	}
 }
 
+func TestClientEndsAtTheTerminalOfAStreamThatStaysOpen(t *testing.T) {
+	terminal := validEventEnvelope(t, protocol.TypeRunCompleted, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "id: 1\ndata: %s\n\n", terminal)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	stream := openDefectSession(t, New(server.URL)).Events(ctx)
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("after the terminal: %v, want io.EOF", err)
+	}
+}
+
 func TestClientRunChangedUnderCursor(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	transport := newDroppingTransport(1, 4)
