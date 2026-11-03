@@ -4,8 +4,8 @@ Status: accepted 2026-11-03
 Date: 2026-11-03
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Amends: `drafts/hub.md`, `drafts/triggered-runs.md` and
-`drafts/staged-units-graduation.md`
+Amends: `drafts/hub.md`, `drafts/triggered-runs.md`,
+`drafts/staged-units-graduation.md` and `drafts/harness-initiated-state.md`
 
 ## Context
 

@@ -1244,7 +1244,7 @@ and the run it wants is usually the one that just ended under it.
 | `run_id` without a cursor is `invalid_cursor` — a live subscription is always the current run, so a run on a request with no cursor names a position that does not exist | `TestSSERefusesARunWithoutACursor`, `TestEventsRefusesARunWithoutACursor` |
 | A run the session never had is `run_not_found` | `TestSSERefusesARunTheSessionNeverHad`, `TestEventsRefusesARunTheSessionNeverHad` |
 | `run_id` belongs to the `events` op alone; no other op accepts it | `TestRunIDBelongsToTheEventsOpAlone` |
-| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | `TestHubResumeFromCursorMidStream`, `TestSSEReplayAfterCursor` |
+| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | not pinned yet; see D36 |
 | A cursor the journal no longer retains is `oap-replay-gap`, naming what was lost and where to resume | `TestHubReplayGap`, `TestEventsOpReportsAReplayGap`, `TestSSEReplayGap` |
 | An overflow names the run it happened on, so a reconnect reaches the right events | `TestHubOverflowSignalNamesOverflowedRun` |
 | An overflow during replay seeds the cursor rather than losing it | `TestHubReplayOverflowSeedsCursor` |
@@ -1796,7 +1796,7 @@ Stdio only; over HTTP the client hangs up.
   `TestSSECursorErrors`, `TestSSEReplayGap`, `TestSSENoRunToResume`,
   `TestSSEUnknownSession`, `TestSSEOnClosedSession`, `TestEventsOpRefusals`
   (the `busy` refusal at the subscription ceiling, whose message names the
-  ending paths, `unsubscribe` among them). The release
+  ending paths; its text still names a run's terminal until D36 closes). The release
   is pinned: `TestEventsOpRefusals` answers a session that has been released
   with `unknown_session`, apart from the one that never existed, and
   `TestSSEOnClosedSession` answers a live stream and a cursor stream on a
