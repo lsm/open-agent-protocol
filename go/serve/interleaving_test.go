@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"testing"
 	"time"
@@ -23,7 +24,9 @@ type deliveredEvent struct {
 
 type interleavingReader struct {
 	session protocol.SessionID
-	cursor  protocol.RunID
+	joined  protocol.RunID
+	after   uint64
+	earlier map[protocol.RunID]bool
 	events  []deliveredEvent
 	err     error
 	done    chan struct{}
@@ -56,6 +59,8 @@ type interleaving struct {
 	slots   [3]*serve.Session
 	opened  int
 	readers []*interleavingReader
+
+	admitted map[protocol.SessionID]map[protocol.RunID]bool
 }
 
 func (d *interleaving) open(slot int) {
@@ -98,6 +103,10 @@ func (d *interleaving) submit(slot int) {
 	if admission.Admission != protocol.AdmissionStarted && admission.Admission != protocol.AdmissionQueued {
 		d.t.Fatalf("submit %s admitted as %s", session.ID(), admission.Admission)
 	}
+	if d.admitted[session.ID()] == nil {
+		d.admitted[session.ID()] = make(map[protocol.RunID]bool)
+	}
+	d.admitted[session.ID()][admission.RunID] = true
 }
 
 func (d *interleaving) cancel(slot int) {
@@ -139,10 +148,8 @@ func (d *interleaving) subscribe(slot int, fromStart bool) {
 	if err != nil {
 		d.t.Fatalf("subscribe %s: %v", session.ID(), err)
 	}
-	reader := &interleavingReader{session: session.ID(), done: make(chan struct{})}
-	if fromStart {
-		reader.cursor = subscription.RunID()
-	}
+	reader := &interleavingReader{session: session.ID(), earlier: maps.Clone(d.admitted[session.ID()]), done: make(chan struct{})}
+	reader.joined, reader.after, _ = subscription.JoinedAt()
 	d.readers = append(d.readers, reader)
 	go reader.read(subscription)
 }
@@ -212,8 +219,14 @@ func (d *interleaving) check() {
 			if reading && event.sequence != previous+1 {
 				d.t.Fatalf("%s run %s went from #%d to #%d", reader.session, event.run, previous, event.sequence)
 			}
-			if !reading && reader.cursor == event.run && event.sequence != 1 {
-				d.t.Fatalf("%s replay of %s began at #%d", reader.session, event.run, event.sequence)
+			if !reading && (event.run == reader.joined || !reader.earlier[event.run]) {
+				first := uint64(1)
+				if event.run == reader.joined {
+					first = reader.after + 1
+				}
+				if event.sequence != first {
+					d.t.Fatalf("%s reader of %s began at #%d, want #%d", reader.session, event.run, event.sequence, first)
+				}
 			}
 			last[event.run] = event.sequence
 			finished[event.run] = event.terminal
@@ -245,7 +258,7 @@ func TestASeededInterleavingKeepsEveryRunContiguousAndItsTerminalLast(t *testing
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 4*testTimeout)
 			defer cancel()
-			driver := &interleaving{t: t, ctx: ctx, hub: memoryHub(t, 4096)}
+			driver := &interleaving{t: t, ctx: ctx, hub: memoryHub(t, 4096), admitted: make(map[protocol.SessionID]map[protocol.RunID]bool)}
 			for slot := range driver.slots {
 				driver.open(slot)
 			}
