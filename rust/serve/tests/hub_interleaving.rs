@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -36,6 +36,8 @@ struct Delivered {
 struct Reader {
     session: SessionId,
     cursor: Option<RunId>,
+    joined: Option<(RunId, u64)>,
+    earlier: HashSet<RunId>,
     thread: JoinHandle<Vec<Delivered>>,
 }
 
@@ -72,6 +74,7 @@ struct Driver {
     slots: Vec<Arc<HubSession>>,
     opened: usize,
     readers: Vec<Reader>,
+    admitted: HashMap<SessionId, HashSet<RunId>>,
 }
 
 impl Driver {
@@ -91,6 +94,7 @@ impl Driver {
             slots: Vec::new(),
             opened: 0,
             readers: Vec::new(),
+            admitted: HashMap::new(),
         };
         for _ in 0..3 {
             let session = driver.fresh();
@@ -118,7 +122,7 @@ impl Driver {
         state.active_runs.first().map(|run| run.run_id.clone())
     }
 
-    fn submit(&self, slot: usize) {
+    fn submit(&mut self, slot: usize) {
         let session = &self.slots[slot];
         let request = SubmitRequest {
             request: MessageSubmitRequest {
@@ -134,9 +138,16 @@ impl Driver {
             ..SubmitRequest::default()
         };
         match block_on(session.submit(request)) {
-            Ok(admitted) => assert!(
-                admitted.admission == Admission::STARTED || admitted.admission == Admission::QUEUED
-            ),
+            Ok(admitted) => {
+                assert!(
+                    admitted.admission == Admission::STARTED
+                        || admitted.admission == Admission::QUEUED
+                );
+                self.admitted
+                    .entry(session.id().clone())
+                    .or_default()
+                    .extend(admitted.run_id);
+            }
             Err(HubError::Adapter(Error::RunActive)) => {}
             Err(err) => panic!("submit: {err}"),
         }
@@ -175,9 +186,13 @@ impl Driver {
             Err(err) => panic!("subscribe: {err}"),
         };
         let cursor = from_start.then(|| subscription.run_id().clone());
+        let joined = subscription.joined_at();
+        let earlier = self.admitted.get(&session).cloned().unwrap_or_default();
         self.readers.push(Reader {
             session,
             cursor,
+            joined,
+            earlier,
             thread: read(subscription),
         });
     }
@@ -222,10 +237,17 @@ impl Driver {
                 assert!(!finished.get(&run).copied().unwrap_or(false));
                 match last.get(&run) {
                     Some(previous) => assert_eq!(event.sequence, previous + 1),
-                    None if reader.cursor.as_ref() == Some(&run) => {
-                        assert_eq!(event.sequence, 1)
-                    }
-                    None => {}
+                    None => match &reader.joined {
+                        Some((joined, after)) if *joined == run => {
+                            assert_eq!(event.sequence, after + 1)
+                        }
+                        _ if reader.cursor.as_ref() == Some(&run)
+                            || !reader.earlier.contains(&run) =>
+                        {
+                            assert_eq!(event.sequence, 1)
+                        }
+                        _ => {}
+                    },
                 }
                 last.insert(run.clone(), event.sequence);
                 finished.insert(run.clone(), event.terminal);
