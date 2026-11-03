@@ -904,6 +904,49 @@ test "MCP execution honors cancellation while waiting" {
 }
 
 
+fn cancelAfterTheRequestIsWritten(cancelled: *std.atomic.Value(bool)) void {
+    compat.time.sleepMs(200);
+    cancelled.store(true, .seq_cst);
+}
+
+test "cancelling an MCP call in flight tells the server which request stopped" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(std.testing.io, std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "cancelled" });
+    defer std.testing.allocator.free(marker);
+    const script = try std.mem.concat(std.testing.allocator, u8, &.{
+        "python3 -u -c 'import json,sys\n" ++
+            "for line in sys.stdin:\n" ++
+            " msg=json.loads(line)\n" ++
+            " if msg.get(\"method\")==\"notifications/cancelled\": open(sys.argv[1],\"w\").write(str(msg[\"params\"][\"requestId\"]))' ",
+        marker,
+    });
+    defer std.testing.allocator.free(script);
+    const config_json = try makeShellConfigJson(std.testing.allocator, script);
+    defer std.testing.allocator.free(config_json);
+    var bridge = McpBridge.init(std.testing.allocator);
+    bridge.bind();
+    defer bridge.deinit();
+    try bridge.loadConfigJson(config_json);
+    const tool = try makeTestTool(&bridge, "echo");
+    var cancelled = std.atomic.Value(bool).init(false);
+    const token = ai_types.CancelToken{ .cancelled = &cancelled };
+    const canceller = try std.Thread.spawn(.{}, cancelAfterTheRequestIsWritten, .{&cancelled});
+    defer canceller.join();
+    try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) : (compat.time.sleepMs(20)) {
+        const told = tmp.dir.readFileAlloc(common.defaultIo(), "cancelled", std.testing.allocator, .limited(64)) catch continue;
+        defer std.testing.allocator.free(told);
+        if (told.len == 0) continue;
+        return std.testing.expectEqualStrings("1", told);
+    }
+    return error.ServerNeverToldOfTheCancel;
+}
+
 test "MCP discovery times out when server never responds" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const config_json = try makeShellConfigJson(std.testing.allocator, hangingMcpServerScript());
