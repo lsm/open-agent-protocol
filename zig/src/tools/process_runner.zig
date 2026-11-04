@@ -45,6 +45,7 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
 
     var pipes_closed = false;
     var term: ?std.process.Child.Term = null;
+    var reap_wait_ms: u64 = 1;
     while (true) {
         if (common.isCancelled(cancel_token)) return error.Cancelled;
         if (common.durationMs(start_ms) >= timeout_ms) return error.Timeout;
@@ -59,7 +60,10 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
             };
             if (stdout_reader.buffered().len > common.process_output_bytes) return error.StreamTooLong;
             if (stderr_reader.buffered().len > common.process_output_bytes) return error.StreamTooLong;
-        } else io.sleep(.fromMilliseconds(common.process_poll_ms), .boot) catch {};
+        } else {
+            io.sleep(.fromMilliseconds(@intCast(reap_wait_ms)), .boot) catch {};
+            reap_wait_ms = @min(reap_wait_ms * 2, common.process_poll_ms);
+        }
         if (term) |t| if (pipes_closed) return finish(allocator, &multi_reader, t, true);
     }
 }
