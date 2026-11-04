@@ -976,12 +976,11 @@ func (s *Server) serveUnsubscribe(ctx context.Context, run *runState, request re
 		s.respond(ctx, lines, request, nil, werr)
 		return
 	}
-	id, err := strconv.ParseInt(string(request.Subscription), 10, 64)
-	if err != nil {
+	if request.Subscription == nil {
 		s.respond(ctx, lines, request, nil, &wireError{Code: "invalid_request", Message: "subscription is the id of the request that started it"})
 		return
 	}
-	run.unsubscribe(ctx, id)
+	run.unsubscribe(ctx, *request.Subscription)
 	s.respond(ctx, lines, request, json.RawMessage("null"), nil)
 }
 

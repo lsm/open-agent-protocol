@@ -863,7 +863,6 @@ func TestUnsubscribeAnswersTheSameForAnIDWithNoSubscription(t *testing.T) {
 	}
 	for id, line := range map[int64]string{
 		2: `{"id":2,"op":"unsubscribe"}`,
-		3: `{"id":3,"op":"unsubscribe","subscription":"two"}`,
 		4: `{"id":4,"op":"unsubscribe","subscription":2,"session_id":"s1"}`,
 	} {
 		f.send(line)
@@ -873,6 +872,12 @@ func TestUnsubscribeAnswersTheSameForAnIDWithNoSubscription(t *testing.T) {
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUnsubscribeNamingANonIntegerIsAFramingDefect(t *testing.T) {
+	if _, err := decodeRequest([]byte(`{"id":1,"op":"unsubscribe","subscription":"two"}`)); err == nil {
+		t.Fatal("a subscription that is not an integer decoded")
 	}
 }
 

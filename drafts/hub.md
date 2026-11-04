@@ -1768,8 +1768,8 @@ Stdio only; over HTTP the client hangs up.
   on its own while the request is in flight. A host sends this after it has read
   the subscription's acknowledgement: requests on the pipe may run in parallel, so
   one sent earlier can run first and find nothing.
-- **errors:** `invalid_request` (a missing or unreadable `subscription`, or a
-  parameter the op does not define), `busy` (the subscription has not stopped,
+- **errors:** `invalid_request` (a missing `subscription`, or a parameter the op
+  does not define; a `subscription` that is not an integer is a framing defect), `busy` (the subscription has not stopped,
   because its output is stalled; it stays counted, and the host sends the request
   again).
 - **pinned by:** `TestUnsubscribeEndsOneSubscriptionAndFreesItsSlot`,

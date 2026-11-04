@@ -659,7 +659,7 @@ type requestLine struct {
 	Cursor    string          `json:"cursor,omitempty"`
 	Limit     *int            `json:"limit,omitempty"`
 
-	Subscription json.RawMessage `json:"subscription,omitempty"`
+	Subscription *int64 `json:"subscription,omitempty"`
 
 	AllowDegradedFeatures []string `json:"allow_degraded_features,omitempty"`
 
