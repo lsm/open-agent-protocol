@@ -1180,6 +1180,7 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.store) |store| self.recorder.saveHeldInput(self.allocator, store, self.currentSessionMetadata());
         self.saveEndpointRecords();
         self.forgetLoginOverrides();
         for (self.deferred_commands.items) |text| self.allocator.free(text);
@@ -7843,6 +7844,7 @@ test "App indexes where a completed compaction starts" {
     var before = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
     defer before.deinit(std.testing.allocator);
     app.saveEvent(before);
+    app.recorder.saveHeldInput(std.testing.allocator, app.store.?, app.currentSessionMetadata());
     const offset = try app.store.?.conversationBytes("compaction-index");
     var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
@@ -7873,6 +7875,7 @@ test "App keeps the last compaction offset when a compaction record is not writt
     var before = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
     defer before.deinit(std.testing.allocator);
     app.saveEvent(before);
+    app.recorder.saveHeldInput(std.testing.allocator, app.store.?, app.currentSessionMetadata());
     const offset = try app.store.?.conversationBytes("unwritten-compaction");
     var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,

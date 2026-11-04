@@ -508,7 +508,8 @@ draws the provider's own overflow error. The loop then withholds the largest too
 from the request, replacing each with a short note and leaving the history as it was, and
 retries. If that cannot make it fit, the turn fails and `/compact` is the way out. When a
 new message is what overflowed, it is dropped from the history so it cannot fail every later
-turn, and the error says so.
+turn, and the error says so. The transcript holds a new message back until the model answers, or
+the run fails some other way, or the app quits, so a dropped one is never saved.
 
 A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
 it is still there next session, and `/context default` removes the member rather than

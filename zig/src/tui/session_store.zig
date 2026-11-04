@@ -1,4 +1,5 @@
 const std = @import("std");
+const overflow = @import("overflow");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const session_events = @import("session_events");
@@ -199,10 +200,13 @@ pub const Recorder = struct {
     written_model: []u8 = &.{},
     written_provider: []u8 = &.{},
     pending_thinking: std.ArrayList(u8) = .empty,
+    held_input: std.ArrayList(session_events.SessionEvent) = .empty,
 
     pub const Saved = struct { metadata: bool, compaction_offset: ?u64 };
 
     pub fn deinit(self: *Recorder, allocator: std.mem.Allocator) void {
+        self.dropHeldInput(allocator);
+        self.held_input.deinit(allocator);
         if (self.written_model.len > 0) allocator.free(self.written_model);
         if (self.written_provider.len > 0) allocator.free(self.written_provider);
         self.pending_thinking.deinit(allocator);
@@ -213,9 +217,54 @@ pub const Recorder = struct {
         try self.remember(allocator, metadata.model, metadata.provider);
         self.written = true;
         self.pending_thinking.clearRetainingCapacity();
+        self.dropHeldInput(allocator);
     }
 
     pub fn record(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata, event: session_events.SessionEvent) ?Saved {
+        if (event == .message_end and event.message_end.role == .user) {
+            if (self.hold(allocator, event)) return .{ .metadata = false, .compaction_offset = null };
+        } else if (self.held_input.items.len > 0) {
+            if (reportsDroppedInput(event)) {
+                self.dropHeldInput(allocator);
+            } else if (confirmsInput(event)) {
+                self.saveHeldInput(allocator, store, meta);
+            }
+        }
+        return self.recordNow(allocator, store, meta, event);
+    }
+
+    fn hold(self: *Recorder, allocator: std.mem.Allocator, event: session_events.SessionEvent) bool {
+        var copy = event.clone(allocator) catch return false;
+        self.held_input.append(allocator, copy) catch {
+            copy.deinit(allocator);
+            return false;
+        };
+        return true;
+    }
+
+    fn dropHeldInput(self: *Recorder, allocator: std.mem.Allocator) void {
+        for (self.held_input.items) |*event| event.deinit(allocator);
+        self.held_input.clearRetainingCapacity();
+    }
+
+    pub fn saveHeldInput(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata) void {
+        for (self.held_input.items) |event| _ = self.recordNow(allocator, store, meta, event);
+        self.dropHeldInput(allocator);
+    }
+
+    fn reportsDroppedInput(event: session_events.SessionEvent) bool {
+        return event == .@"error" and std.mem.indexOf(u8, event.@"error".message.slice(), overflow.input_dropped_note) != null;
+    }
+
+    fn confirmsInput(event: session_events.SessionEvent) bool {
+        return switch (event) {
+            .text_delta, .thinking_delta, .tool_call_delta, .tool_execution_start, .compaction_end, .agent_end, .@"error" => true,
+            .message_end => |payload| payload.stop_reason != .@"error",
+            else => false,
+        };
+    }
+
+    fn recordNow(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata, event: session_events.SessionEvent) ?Saved {
         if (event == .message_end and event.message_end.role == .assistant) self.flushThinking(allocator, store, meta);
         if (!eventFits(event)) return null;
         switch (event) {
@@ -2821,4 +2870,65 @@ test "a message keeps the time its end was recorded at when the session loads, a
     try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
     try std.testing.expectEqual(@as(i64, 1_700_000_000_000), loaded.messages.items[0].user.timestamp);
     try std.testing.expect(loaded.messages.items[1].user.timestamp >= before);
+}
+
+test "a new input is saved once the model answers, and not before" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("held");
+    defer meta.deinit(std.testing.allocator);
+    var recorder = Recorder{};
+    defer recorder.deinit(std.testing.allocator);
+
+    var input = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "question") } };
+    defer input.deinit(std.testing.allocator);
+    _ = recorder.record(std.testing.allocator, store, meta, input);
+    try std.testing.expectEqual(@as(usize, 1), recorder.held_input.items.len);
+
+    var answer = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "hi") } };
+    defer answer.deinit(std.testing.allocator);
+    _ = recorder.record(std.testing.allocator, store, meta, answer);
+    try std.testing.expectEqual(@as(usize, 0), recorder.held_input.items.len);
+
+    var loaded = try store.load("held");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expect(loaded.events.items.len == 1);
+    try std.testing.expectEqualStrings("question", loaded.events.items[0].message_end.text.slice());
+}
+
+test "a dropped input is never saved, and any other failure keeps it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    const cases = [_]struct { id: []const u8, text: []const u8, kept: bool }{
+        .{ .id = "dropped", .text = "prompt is too long (" ++ overflow.input_dropped_note ++ ")", .kept = false },
+        .{ .id = "kept", .text = "read error", .kept = true },
+    };
+    for (cases) |case| {
+        var meta = try testMeta(case.id);
+        defer meta.deinit(std.testing.allocator);
+        var recorder = Recorder{};
+        defer recorder.deinit(std.testing.allocator);
+        var input = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "oversized") } };
+        defer input.deinit(std.testing.allocator);
+        _ = recorder.record(std.testing.allocator, store, meta, input);
+        var failure = session_events.SessionEvent{ .@"error" = .{ .message = try owned(std.testing.allocator, case.text) } };
+        defer failure.deinit(std.testing.allocator);
+        _ = recorder.record(std.testing.allocator, store, meta, failure);
+
+        var loaded = try store.load(case.id);
+        defer loaded.deinit(std.testing.allocator);
+        var saved_input = false;
+        for (loaded.events.items) |event| {
+            if (event == .message_end) saved_input = true;
+        }
+        try std.testing.expectEqual(case.kept, saved_input);
+    }
 }
