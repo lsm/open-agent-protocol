@@ -328,6 +328,7 @@ def scenario_flight(agents, n, steps, shape, work, poll_s, phases):
     for part in chunks(sessions):
         hub.batch([agents.open_call(s, "ask" if s in gated else "bypass", str(work / s)) for s in part])
     started, left, due = {}, {s: shape["rounds"] for s in sessions}, {}
+    phases["left"], phases["last_state"] = left, {}
     for part in chunks(sessions):
         hub.batch([agents.submit_call(s, prompts[s]) for s in part])
         started.update((s, time.perf_counter()) for s in part)
@@ -339,6 +340,7 @@ def scenario_flight(agents, n, steps, shape, work, poll_s, phases):
             for s, reply in zip(part, hub.batch([("state", {"session_id": s}) for s in part])):
                 phases["polls"] += 1
                 state = reply["result"]["payload"]
+                phases["last_state"][s] = state
                 runs = state.get("active_runs") or []
                 now = time.perf_counter()
                 for run in runs:
@@ -634,6 +636,29 @@ def flight_summary(rows, trace, steps, n, shape, stats, phases, scenario, work):
     return summary
 
 
+def capture_stall(pid, phases, directory):
+    """Records what a stalled hub is doing while it is still stalled, for a run that never settled."""
+    directory.mkdir(parents=True, exist_ok=True)
+
+    def save(name, command, wait=30):
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=wait)
+            (directory / name).write_text(done.stdout + done.stderr)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            (directory / name).write_text(f"{command[0]}: {error}\n")
+
+    left = dict(phases.get("left") or {})
+    states = phases.get("last_state") or {}
+    (directory / "stuck.json").write_text(json.dumps({"left": left, "states": {s: states.get(s) for s in list(left)[:50]}}, indent=1))
+    save("processes.txt", ["ps", "-A", "-o", "pid,ppid,pgid,etime,stat,command"])
+    save("sockets.txt", ["lsof", "-nP", "-p", str(pid)])
+    save("time-wait.txt", ["sh", "-c", "netstat -an -p tcp 2>/dev/null | grep -c TIME_WAIT; uptime"])
+    if sys.platform == "darwin":
+        save("sample.txt", ["sample", str(pid), "5", "-mayDie"], wait=60)
+    else:
+        save("sample.txt", ["gdb", "-p", str(pid), "-batch", "-ex", "thread apply all bt"], wait=60)
+
+
 def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
     root = Path(tempfile.mkdtemp(prefix=f"{target}-{scenario}-{n}-", dir=scratch))
     home, work, data = root / "home", root / "work", root / "data"
@@ -690,6 +715,10 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             result["status"] = f"stopped: RSS over {cap >> 20} MiB at step {len(steps)}"
         elif worker.is_alive():
             result["status"] = f"timeout after {timeout}s at step {len(steps)}"
+            if options.capture_stalls:
+                kept = Path(options.capture_stalls) / root.name
+                capture_stall(hub.process.pid, phases, kept)
+                result["stall_capture"] = str(kept)
         elif outcome.get("error"):
             result["status"] = f"failed at step {len(steps)}: {outcome['error']}"[:300]
         result["wall_s"] = time.perf_counter() - started
@@ -729,7 +758,10 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             except (ProcessLookupError, PermissionError):
                 pass
             provider.wait(timeout=10)
-        shutil.rmtree(root, ignore_errors=True)
+        if "stall_capture" in result:
+            shutil.move(str(root), str(Path(result["stall_capture"]) / "run"))
+        else:
+            shutil.rmtree(root, ignore_errors=True)
     return result
 
 
@@ -875,6 +907,7 @@ def main():
     parser.add_argument("--targets", default=",".join(TARGETS))
     parser.add_argument("--scenarios", default=",".join(SCENARIOS))
     parser.add_argument("--n", default="10,100,1000,10000")
+    parser.add_argument("--capture-stalls", help="directory for a live stack sample, process and socket state, and the kept run directory of a case that times out")
     parser.add_argument("--timeout", type=float, default=600, help="seconds per case before it is reported as a timeout")
     parser.add_argument("--rss-cap-mib", type=int, default=4096, help="kill a hub whose RSS passes this and report the step")
     parser.add_argument("--model-workers", type=int, default=4, help="asyncio processes behind a flight's model endpoint")
