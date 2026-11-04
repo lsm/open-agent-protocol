@@ -1,11 +1,11 @@
 # Event-Driven Agent Loop
 
 Status: proposal, not adopted. The owner has not decided on this plan, and
-nothing in it has started. Section 14 lists two open decisions.
+nothing in it has started. Two decisions are open, listed at the end.
 
 Scope: the Zig runtime (`zig/src/agent`, `adapter/oapx`, `hub`, `providers`,
-`tools`). This draft changes no wire behaviour. Section 8 names the protocol
-questions that parking raises, and those would need their own decision.
+`tools`). This draft changes no wire behaviour. The Parking section names the
+protocol questions that parking raises, and those would need their own decision.
 
 ## Goal
 
@@ -140,8 +140,8 @@ adapter. Five things are not:
    `StreamRetention` and `_retired_messages` exist. A run must own its messages,
    and events must carry copies or indexes. This is the riskiest refactor here,
    because a mistake is a use-after-free.
-3. **In-flight I/O.** A socket or a child process cannot be saved. Section 8
-   defines what a resumed run does instead.
+3. **In-flight I/O.** A socket or a child process cannot be saved. The Parking
+   section defines what a resumed run does instead.
 4. **Session-lifetime processes.** Background jobs and MCP servers outlive a run.
 5. **Implicit state.** The permission engine, the credential refresh lock and the
    title thread.
@@ -249,7 +249,8 @@ need about 79 GB, which does not fit in 48 GiB. All of these must hold:
 
 Tools run behind one queue with a global limit, so 100,000 agents never means
 100,000 children. A `Shell` call costs two processes against the per-user limit of
-8,000, so the ceiling is about 2,000 concurrent calls.
+8,000, so the hard ceiling is 4,000 concurrent calls. Everything else the user
+runs shares that limit, so about half of it, 2,000 calls, is the practical ceiling.
 
 The limit is a real trade-off. With a limit of 64, `working` at N=1,000 fell to 15
 runs per second, because a `sleep`-style tool holds a slot while doing nothing.
