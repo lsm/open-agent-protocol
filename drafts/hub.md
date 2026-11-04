@@ -1231,7 +1231,10 @@ Resume, reconciliation and replay are distinct, and an expired cursor is
 A cursor is `(run, sequence)`. **Sequences are per-run and restart at 1**, so a
 cursor without a run is ambiguous. Resuming delivers the rest of the cursor's
 run, then every later run of the session in admission order, each from sequence
-1, then live events, with nothing lost or repeated. A request may therefore name the run it was
+1, then live events, with nothing lost or repeated. A hub may attach the live
+subscriber before it replays, so a session that publishes more than the
+subscriber's queue during a long replay overflows it like any other reader, and
+`oap-overflow` names where to resume. A request may therefore name the run it was
 cut from; an unqualified cursor resolves onto the session's current run, which
 is right until a second run is admitted. Naming a settled run replays that
 run's suffix — a host that names a run has said exactly which events it wants,
