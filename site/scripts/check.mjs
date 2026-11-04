@@ -26,7 +26,7 @@ for (const name of staged.schemas) {
 }
 const manifest = JSON.parse(await read('contracts/manifest.json'))
 assert.equal(staged.manifestEntries, manifest.fixtures.length)
-assert.ok((await read('reference/index.html')).includes(String(manifest.fixtures.length)))
+assert.ok((await read('reference.html')).includes(String(manifest.fixtures.length)))
 const htmlFiles = (await readdir(dist, { recursive: true })).filter(file => file.endsWith('.html'))
 for (const file of htmlFiles) {
   const html = await read(file)
@@ -60,7 +60,7 @@ for (const link of links) {
   }
 }
 for (const section of ['start', 'concepts', 'reference', 'sdks', 'decisions', 'drafts']) {
-  assert.match(await read(`${section}/index.html`), /OXAP/)
+  assert.match(await read(`${section}.html`), /OXAP/)
 }
 assert.match(await read('conflicts.html'), /Open conflict/)
 console.log(`PASS: ${staged.sources.length} staged source pages, ${staged.schemas.length} exact schemas, ${links.length} base-prefixed LLM pages; conflicts and live inventory retained`)

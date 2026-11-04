@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const root = path.dirname(site)
 const out = path.join(site, '.content')
+const base = '/open-agent-protocol/'
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
 const blob = `https://github.com/lsm/open-agent-protocol/blob/${revision}/`
 const audit = JSON.parse(await readFile(path.join(site, 'conflicts.json'), 'utf8'))
@@ -27,6 +28,20 @@ await rm(out, { recursive: true, force: true })
 async function put(name, content) {
   const dest = path.join(out, name)
   await mkdir(path.dirname(dest), { recursive: true })
+  if (name.endsWith('.md')) {
+    let fence = false
+    content = content.split('\n').map(line => {
+      if (/^\s*(```|~~~)/.test(line)) fence = !fence
+      if (fence) return line
+      return line.replace(/(!?\[[^\]]*\]\()([^\s)]+)(\))/g, (match, open, target, close) => {
+        if (open.startsWith('!') || /^(?:[a-z]+:|#|\/\/)/i.test(target)) return match
+        const [file, fragment] = target.split('#')
+        let resolved = file.startsWith('/') ? file.replace(base, '/').slice(1) : path.posix.normalize(path.posix.join(path.posix.dirname(name), file))
+        if (!path.posix.extname(resolved)) resolved = resolved.replace(/\/$/, '') + '.md'
+        return `${open}/${resolved}${fragment ? `#${fragment}` : ''}${close}`
+      })
+    }).join('\n')
+  }
   await writeFile(dest, content)
 }
 function rewrite(text, source) {
@@ -54,6 +69,8 @@ for (const source of sources) {
 for (const asset of assets) {
   await mkdir(path.dirname(path.join(out, 'source', asset)), { recursive: true })
   await cp(path.join(root, asset), path.join(out, 'source', asset))
+  await mkdir(path.dirname(path.join(out, 'public/source', asset)), { recursive: true })
+  await cp(path.join(root, asset), path.join(out, 'public/source', asset))
 }
 await mkdir(path.join(out, 'public/schemas'), { recursive: true })
 const schemas = (await readdir(path.join(root, 'schema/v0.1'))).filter(n => n.endsWith('.json')).sort()
@@ -83,7 +100,7 @@ for (const name of schemas) {
     lines.push('', '### Complete definition', '', '```json', JSON.stringify(node, null, 2), '```', '', '### Declared examples', '', node.examples?.length ? `\`\`\`json\n${JSON.stringify(node.examples, null, 2)}\n\`\`\`` : 'No examples are declared in this definition.', '')
   }
   await put(`reference/schema/${name.replace(/\.json$/, '.md')}`, lines.join('\n'))
-  index.push(`- [${name}](./schema/${name.replace(/\.json$/, '.md')}) · [raw JSON](/schemas/${name})`)
+  index.push(`- [${name}](./reference/schema/${name.replace(/\.json$/, '.md')}) · [raw JSON](/schemas/${name})`)
 }
 const manifest = JSON.parse(await readFile(path.join(root, 'fixtures/manifest.json'), 'utf8'))
 const gaps = JSON.parse(await readFile(path.join(root, 'fixtures/known-gaps.json'), 'utf8'))
@@ -91,12 +108,12 @@ const counts = `| Inventory | Count |\n| --- | --- |\n| Manifest entries (includ
 for (const name of ['manifest.json', 'known-gaps.json']) await put(`public/contracts/${name}`, await readFile(path.join(root, 'fixtures', name)))
 for (const name of ['index', 'start', 'concepts', 'reference', 'sdks']) {
   const source = await readFile(path.join(site, `pages/${name}.md`), 'utf8')
-  await put(name === 'index' ? 'index.md' : `${name}/index.md`, source.replace('<!-- schema-index -->', index.join('\n')).replace('<!-- manifest-summary -->', counts))
+  await put(`${name}.md`, source.replace('<!-- schema-index -->', index.join('\n')).replace('<!-- manifest-summary -->', counts))
 }
 for (const dir of ['decisions', 'drafts']) {
   const entries = sources.filter(s => s.startsWith(`${dir}/`))
-  const list = entries.map(s => `- [${s.slice(dir.length + 1).replace(/\.md$/, '')}](../source/${s})`).join('\n')
-  await put(`${dir}/index.md`, `# ${dir === 'decisions' ? 'Decisions' : 'Drafts'}\n\nOriginal records are staged without changing their status. Read each record's own Status and amendment chain.\n\n${list}\n`)
+  const list = entries.map(s => `- [${s.slice(dir.length + 1).replace(/\.md$/, '')}](./source/${s})`).join('\n')
+  await put(`${dir}.md`, `# ${dir === 'decisions' ? 'Decisions' : 'Drafts'}\n\nOriginal records are staged without changing their status. Read each record's own Status and amendment chain.\n\n${list}\n`)
 }
 const conflictLines = ['# Open conflicts', '', `Audit snapshot: \`${audit.auditCommit}\`. Each ID comes from the reviewed conflicts.md audit. These are **open conflicts**, not resolved corrections. Source documents and implementation observations are retained separately.`, '', ...audit.items.flatMap(item => [`## ${item.id}: ${item.area} {#${item.id.toLowerCase()}}`, '', '::: warning Open conflict', 'This site does not choose a side. Consult both sources before relying on this behavior.', ':::', '', `**Document claim:** ${item.claim}`, '', item.document, '', `**Implementation observation:** ${item.observation}`, '', item.implementation, ''])]
 await put('conflicts.md', conflictLines.join('\n'))

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "stage": "node scripts/stage.mjs",
-    "build": "npm run stage && vitepress build .",
+    "build": "npm run stage && vitepress build . && node scripts/llm-links.mjs",
     "preview": "vitepress preview . --host 127.0.0.1",
     "check": "node scripts/check.mjs",
     "browser-check": "node scripts/browser-check.mjs"

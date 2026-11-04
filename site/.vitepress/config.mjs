@@ -14,21 +14,21 @@ export default withMermaid(defineConfig({
   themeConfig: {
     siteTitle: 'OXAP',
     nav: [
-      { text: 'Start', link: '/start/' },
-      { text: 'Concepts', link: '/concepts/' },
-      { text: 'Protocol reference', link: '/reference/' },
-      { text: 'SDKs', link: '/sdks/' },
-      { text: 'Decisions', link: '/decisions/' },
-      { text: 'Drafts', link: '/drafts/' }
+      { text: 'Start', link: '/start.html' },
+      { text: 'Concepts', link: '/concepts.html' },
+      { text: 'Protocol reference', link: '/reference.html' },
+      { text: 'SDKs', link: '/sdks.html' },
+      { text: 'Decisions', link: '/decisions.html' },
+      { text: 'Drafts', link: '/drafts.html' }
     ],
     sidebar: [
       { text: 'Read OXAP', items: [
-        { text: 'Start', link: '/start/' },
-        { text: 'Concepts', link: '/concepts/' },
-        { text: 'Protocol reference', link: '/reference/' },
-        { text: 'SDKs', link: '/sdks/' },
-        { text: 'Decisions', link: '/decisions/' },
-        { text: 'Drafts', link: '/drafts/' },
+        { text: 'Start', link: '/start.html' },
+        { text: 'Concepts', link: '/concepts.html' },
+        { text: 'Protocol reference', link: '/reference.html' },
+        { text: 'SDKs', link: '/sdks.html' },
+        { text: 'Decisions', link: '/decisions.html' },
+        { text: 'Drafts', link: '/drafts.html' },
         { text: 'Open conflicts', link: '/conflicts' }
       ] }
     ],

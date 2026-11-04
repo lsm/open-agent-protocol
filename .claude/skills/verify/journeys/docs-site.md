@@ -19,7 +19,8 @@ under the supplied artifact directory, and closes its browser and server.
 Use `OAP_DOCS_ARTIFACTS=/tmp/oxap-docs-<unique>` to retain the browser evidence.
 
 The structural check verifies every generated page, source conflict ID, schema
-copy, manifest inventory and base-prefixed LLM URL. Search and visible layout
+copy, manifest inventory, base-prefixed LLM URL and links inside exported
+Markdown. Search and visible layout
 must also pass in the browser: a successful build alone is insufficient.
 
 Hosted Pages verification is pending until an administrator enables GitHub

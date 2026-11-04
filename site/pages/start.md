@@ -1,6 +1,6 @@
 # Start with OXAP
 
-OXAP is the project name. The released command remains `oapx`; the v0.1 protocol ID remains `open-agent-protocol`. See [Decision 0067](../source/decisions/0067-the-project-is-named-oxap.md) for the planned compatibility boundaries.
+OXAP is the project name. The released command remains `oapx`; the v0.1 protocol ID remains `open-agent-protocol`. See [Decision 0067](./source/decisions/0067-the-project-is-named-oxap.md) for the planned compatibility boundaries.
 
 Choose the boundary before choosing a client:
 
@@ -8,10 +8,10 @@ Choose the boundary before choosing a client:
 - A **Hub** manages multiple sessions over stdio operations or HTTP/SSE.
 - A **provider endpoint** carries model inference rather than agent runs.
 
-Read the [source README](../source/README.md), [backend guide](../source/docs/choosing-a-backend.md), and [SDK guide](../sdks/index.md). The copied source pages retain their original wording and disclose audited conflicts.
+Read the [source README](./source/README.md), [backend guide](./source/docs/choosing-a-backend.md), and [SDK guide](./sdks.md). The copied source pages retain their original wording and disclose audited conflicts.
 
 ::: warning Open conflict — C01, C05, C06, C40, C42
-The README examples, command inventory, decision index, operation count and handshake diagram have documented disagreements with implementation. Consult [both sides](../conflicts.md) before using them as an integration recipe. This site does not adjudicate them.
+The README examples, command inventory, decision index, operation count and handshake diagram have documented disagreements with implementation. Consult [both sides](./conflicts.md) before using them as an integration recipe. This site does not adjudicate them.
 :::
 
 ## Hosting this documentation

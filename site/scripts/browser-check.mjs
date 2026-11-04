@@ -72,6 +72,9 @@ try {
     const response = await page.request.get(`${url}${file}`)
     assert.equal(response.status(), 200, file)
   }
+  const exported = await (await page.request.get(`${url}start.md`)).text()
+  const target = exported.match(/\]\(([^)]+0067[^)]+\.md)\)/)[1]
+  assert.equal((await page.request.get(new URL(target, url).href)).status(), 200)
   assert.deepEqual(failures, [])
   const result = 'PASS: desktop/mobile navigation, deep links, local search, Open conflict C41, schema + raw JSON, LLM URLs and no-JS body under repository base'
   console.log(result)
