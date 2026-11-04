@@ -49,6 +49,16 @@ for (const link of links) {
   assert.ok(link.startsWith(base), link)
   assert.ok((await stat(path.join(dist, link.slice(base.length)))).isFile(), link)
 }
+for (const link of links) {
+  const markdown = await read(link.slice(base.length))
+  const prose = markdown.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '')
+  for (const match of prose.matchAll(/\]\(([^\s)]+)\)/g)) {
+    if (/^(?:[a-z]+:|#|\/\/)/i.test(match[1])) continue
+    const target = new URL(match[1], `http://docs.test${link}`)
+    assert.ok(target.pathname.startsWith(base), `${link}: ${match[1]}`)
+    assert.ok((await stat(path.join(dist, decodeURIComponent(target.pathname.slice(base.length))))).isFile(), `${link}: ${match[1]}`)
+  }
+}
 for (const section of ['start', 'concepts', 'reference', 'sdks', 'decisions', 'drafts']) {
   assert.match(await read(`${section}/index.html`), /OXAP/)
 }
