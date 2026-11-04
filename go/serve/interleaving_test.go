@@ -27,6 +27,7 @@ type interleavingReader struct {
 	joined  protocol.RunID
 	after   uint64
 	earlier map[protocol.RunID]bool
+	once    bool
 	events  []deliveredEvent
 	err     error
 	done    chan struct{}
@@ -49,6 +50,10 @@ func (r *interleavingReader) read(subscription *serve.Subscription) {
 			event.terminal = true
 		}
 		r.events = append(r.events, event)
+		if r.once && event.terminal {
+			subscription.Close()
+			return
+		}
 	}
 }
 
@@ -201,7 +206,7 @@ func (d *interleaving) replayEveryRun(slot int) {
 		if err != nil {
 			d.t.Fatalf("replay %s: %v", run, err)
 		}
-		reader := &interleavingReader{session: session, done: make(chan struct{})}
+		reader := &interleavingReader{session: session, once: true, done: make(chan struct{})}
 		go reader.read(subscription)
 		select {
 		case <-reader.done:

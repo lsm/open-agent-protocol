@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -14,11 +15,24 @@ const eventBuffer = 64
 
 const roomPoll = time.Millisecond
 
+const (
+	maxTurnRetries          = 2
+	defaultRetryDelay       = time.Second
+	defaultFirstByteTimeout = 180 * time.Second
+	defaultIdleTimeout      = 600 * time.Second
+	firstByteFailure        = "the provider timed out before the first byte"
+	idleFailure             = "the provider stream timed out"
+	providerCancelled       = "request cancelled"
+)
+
 type Config struct {
-	Model         provider.Model
-	Streamer      Streamer
-	MaxIterations int
-	Options       provider.StreamOptions
+	Model            provider.Model
+	Streamer         Streamer
+	MaxIterations    int
+	Options          provider.StreamOptions
+	RetryDelay       time.Duration
+	FirstByteTimeout time.Duration
+	IdleTimeout      time.Duration
 }
 
 type Result struct {
@@ -356,18 +370,76 @@ func (r *Run) errorContent(reason string) provider.AssistantContent {
 }
 
 func (r *Run) streamTurn(history []provider.Message) (provider.AssistantContent, string) {
-	turn := r.config.Streamer.Stream(r.ctx, TurnRequest{
+	for attempt := 0; ; attempt++ {
+		outcome := r.streamOnce(history)
+		if outcome.refusal == "" || outcome.shown || attempt >= maxTurnRetries || !retryable(outcome.refusal) {
+			return outcome.assistant, outcome.closedWithout
+		}
+		if !r.waitToRetry(attempt) {
+			return r.errorContent("the run was cancelled"), ""
+		}
+	}
+}
+
+func (r *Run) waitToRetry(attempt int) bool {
+	delay := r.config.RetryDelay
+	if delay == 0 {
+		delay = defaultRetryDelay
+	}
+	timer := time.NewTimer(delay << attempt)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-r.ctx.Done():
+		return false
+	}
+}
+
+type turnOutcome struct {
+	assistant     provider.AssistantContent
+	closedWithout string
+	refusal       string
+	shown         bool
+}
+
+func (r *Run) streamOnce(history []provider.Message) turnOutcome {
+	limit := r.config.FirstByteTimeout
+	if limit == 0 {
+		limit = defaultFirstByteTimeout
+	}
+	ctx, cancel := context.WithCancel(r.ctx)
+	defer cancel()
+	idle := r.config.IdleTimeout
+	if idle == 0 {
+		idle = defaultIdleTimeout
+	}
+	var stalled atomic.Bool
+	watchdog := time.AfterFunc(limit, func() {
+		stalled.Store(true)
+		cancel()
+	})
+	defer watchdog.Stop()
+	turn := r.config.Streamer.Stream(ctx, TurnRequest{
 		Model:    r.config.Model,
 		Messages: history,
 		Options:  r.config.Options,
 	})
 	var assistant *provider.AssistantContent
 	refusal := ""
+	shown := false
+	started := false
 	for event := range turn.Events {
+		if event.Kind != provider.EventStart && event.Kind != provider.EventKeepalive {
+			started = true
+			watchdog.Reset(idle)
+		}
 		switch event.Kind {
 		case provider.EventTextDelta:
+			shown = true
 			r.emit(Event{Kind: TextDelta, Delta: event.Delta})
 		case provider.EventThinkingDelta:
+			shown = true
 			r.emit(Event{Kind: ReasoningDelta, Delta: event.Delta})
 		case provider.EventDone:
 			if event.Message != nil {
@@ -378,15 +450,21 @@ func (r *Run) streamTurn(history []provider.Message) (provider.AssistantContent,
 		}
 	}
 	if assistant != nil {
-		return *assistant, ""
+		return turnOutcome{assistant: *assistant}
 	}
 	if r.ctx.Err() != nil {
-		return r.errorContent("the run was cancelled"), ""
+		return turnOutcome{assistant: r.errorContent("the run was cancelled")}
+	}
+	if stalled.Load() && (refusal == "" || refusal == providerCancelled) {
+		refusal = firstByteFailure
+		if started {
+			refusal = idleFailure
+		}
 	}
 	if refusal != "" {
-		return r.errorContent(refusal), ""
+		return turnOutcome{assistant: r.errorContent(refusal), refusal: refusal, shown: shown}
 	}
-	return r.errorContent(closedWithoutTerminal), closedWithoutTerminal
+	return turnOutcome{assistant: r.errorContent(closedWithoutTerminal), closedWithout: closedWithoutTerminal}
 }
 
 func contentOf(message provider.AssistantMessage) *provider.AssistantContent {

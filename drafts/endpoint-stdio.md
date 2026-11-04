@@ -318,6 +318,12 @@ could not be framed, or `stream_failed` for anything else. `after` is a cursor:
 the host replays from it to continue. A clean end needs no such frame, because
 the run's terminal envelope is already the marker.
 
+A replay here is one run's and ends at that run's terminal, as does the stream a
+submit starts. [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+is about hub subscriptions and does not reach this binding: each run already has
+its own stream on the one pipe, so a replay that followed later runs would write
+them twice.
+
 Replay is distinct from reconciliation. `session.state.request` returns
 authoritative state — what is true now — while replay returns a journal suffix
 — what happened. v0.1 keeps resume, reconciliation, and replay separate, and a

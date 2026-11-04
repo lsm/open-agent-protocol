@@ -450,6 +450,12 @@ pub const ProtocolServer = struct {
         cleanup_list.deinit(self.allocator);
     }
 
+    pub fn soleActiveStream(self: *ProtocolServer) ?*event_stream.AssistantMessageEventStream {
+        if (self.active_streams.count() != 1) return null;
+        var streams = self.active_streams.valueIterator();
+        return streams.next().?.event_stream;
+    }
+
     pub fn activeStreamCount(self: *ProtocolServer) usize {
         return self.active_streams.count();
     }

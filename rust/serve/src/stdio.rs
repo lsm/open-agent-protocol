@@ -180,6 +180,7 @@ pub fn serve(
             .any(|pump| pump.attached.load(std::sync::atomic::Ordering::SeqCst) > 0)
     };
     if matches!(served, Ok(true)) {
+        hub.end_subscriptions();
         while streaming(&pumps) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -750,7 +751,7 @@ impl Attached {
         }
         Err(wire(
             "busy",
-            format!("the frontend is already serving {cap} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes \u{2014} send this request again once one has"),
+            format!("the frontend is already serving {cap} subscriptions; a subscription ends when the host unsubscribes it, at an overflow or stream failure, or when its session closes \u{2014} send this request again once one has"),
         ))
     }
 }

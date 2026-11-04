@@ -30,6 +30,7 @@ struct Mailbox {
     queue: VecDeque<Envelope>,
     attached: Option<RunId>,
     last_read: Option<RunId>,
+    first_run: u64,
     stopped: bool,
     terminal: Option<Terminal>,
     waker: Option<Waker>,
@@ -41,8 +42,11 @@ pub(crate) struct Subscriber {
 }
 
 impl Subscriber {
-    fn offer(&self, envelope: &Envelope, capacity: usize) -> bool {
+    fn offer(&self, envelope: &Envelope, serial: u64, capacity: usize) -> bool {
         let mut mailbox = lock(&self.mailbox);
+        if serial < mailbox.first_run {
+            return true;
+        }
         if mailbox.queue.len() >= capacity {
             return false;
         }
@@ -178,9 +182,10 @@ impl Live {
             let seen = self.sequences.entry(run.clone()).or_default();
             *seen = (*seen).max(sequence);
         }
+        let serial = self.serials.get(&run).copied().unwrap_or(0);
         let mut dropped = Vec::new();
         self.subs.retain(|sub| {
-            let kept = sub.offer(envelope, capacity);
+            let kept = sub.offer(envelope, serial, capacity);
             if !kept {
                 dropped.push(sub.clone());
             }
@@ -243,6 +248,9 @@ impl Live {
             _ => Vec::new(),
         };
         let end = end.filter(|_| current);
+        if end.is_none() && !self.closed && self.pending_end.is_none() && !self.finish_due {
+            return stopped;
+        }
         if self.readers > 0 || self.reservations > 0 {
             if let Some(failure) = end {
                 self.pending_end = Some((self.subs.clone(), failure));
@@ -300,6 +308,30 @@ impl Live {
                 (sequence > 0).then(|| (run.clone(), sequence))
             });
         Some((sub, joined))
+    }
+
+    pub(crate) fn subscribe_from(&mut self, run: &RunId) -> Option<Arc<Subscriber>> {
+        let (sub, _) = self.subscribe()?;
+        lock(&sub.mailbox).first_run = self.serials.get(run).copied().unwrap_or(0);
+        Some(sub)
+    }
+
+    pub(crate) fn later_runs(&self, run: &RunId) -> Vec<RunId> {
+        let Some(first) = self.serials.get(run) else {
+            return Vec::new();
+        };
+        let mut later: Vec<(u64, RunId)> = self
+            .serials
+            .iter()
+            .filter(|(_, serial)| *serial > first)
+            .map(|(run, serial)| (*serial, run.clone()))
+            .collect();
+        later.sort_by_key(|(serial, _)| *serial);
+        later.into_iter().map(|(_, run)| run).collect()
+    }
+
+    pub(crate) fn end_subscriptions(&mut self) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {
+        self.detach().into_iter().map(|sub| (sub, None)).collect()
     }
 
     fn unsubscribe(&mut self, sub: &Arc<Subscriber>) {
@@ -374,19 +406,13 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-enum Source {
-    Replay(EventStream),
-    Live {
-        sub: Arc<Subscriber>,
-        session: Arc<HubSession>,
-    },
-}
-
 pub struct Subscription {
     run: RunId,
     joined: Option<(RunId, u64)>,
     positions: HashMap<RunId, u64>,
-    source: Source,
+    replays: VecDeque<(RunId, EventStream)>,
+    sub: Arc<Subscriber>,
+    session: Arc<HubSession>,
     done: bool,
     cancel: Arc<Cancel>,
 }
@@ -419,17 +445,6 @@ impl Canceller {
 }
 
 impl Subscription {
-    pub(crate) fn replay(run: RunId, after: u64, stream: EventStream) -> Self {
-        Self {
-            positions: HashMap::from([(run.clone(), after)]),
-            run,
-            joined: None,
-            source: Source::Replay(stream),
-            done: false,
-            cancel: Arc::default(),
-        }
-    }
-
     pub(crate) fn live(
         session: Arc<HubSession>,
         sub: Arc<Subscriber>,
@@ -439,10 +454,28 @@ impl Subscription {
             run: RunId::default(),
             joined,
             positions: HashMap::new(),
-            source: Source::Live { sub, session },
+            replays: VecDeque::new(),
+            sub,
+            session,
             done: false,
             cancel: Arc::default(),
         }
+    }
+
+    pub(crate) fn after(
+        session: Arc<HubSession>,
+        sub: Arc<Subscriber>,
+        run: RunId,
+        after: u64,
+    ) -> Self {
+        let mut subscription = Self::live(session, sub, None);
+        subscription.positions.insert(run.clone(), after);
+        subscription.run = run;
+        subscription
+    }
+
+    pub(crate) fn replaying(&mut self, run: RunId, stream: EventStream) {
+        self.replays.push_back((run, stream));
     }
 
     pub fn canceller(&self) -> Canceller {
@@ -458,11 +491,18 @@ impl Subscription {
     }
 
     pub fn close(&mut self) {
-        if let Source::Live { sub, session } = &self.source {
-            session.with_live(|live| live.unsubscribe(sub));
-            sub.stop(None);
-        }
+        self.session.with_live(|live| live.unsubscribe(&self.sub));
+        self.sub.stop(None);
+        self.replays.clear();
         self.done = true;
+    }
+
+    fn delivered(&self, envelope: &Envelope) -> bool {
+        let seen = envelope
+            .run_id
+            .as_ref()
+            .and_then(|run| self.positions.get(run));
+        matches!((envelope.sequence, seen), (Some(sequence), Some(seen)) if sequence <= *seen)
     }
 
     fn observe(&mut self, envelope: &Envelope) {
@@ -502,19 +542,33 @@ impl Stream for Subscription {
         if self.done {
             return Poll::Ready(None);
         }
-        let replayed = self.run.clone();
         let cancel = self.cancel.clone();
-        let polled = match &mut self.source {
-            Source::Replay(stream) => match stream.as_mut().poll_next(context) {
-                Poll::Pending if !cancel.cancelled(context) => return Poll::Pending,
-                Poll::Pending => Polled::End,
-                Poll::Ready(None) => Polled::End,
-                Poll::Ready(Some(Ok(envelope))) => Polled::Item(Box::new(envelope)),
-                Poll::Ready(Some(Err(Error::EventStreamOverflow))) => Polled::Overflow(replayed),
-                Poll::Ready(Some(Err(err))) => Polled::Failed(err),
-            },
-            Source::Live { sub, .. } => {
-                let mut mailbox = lock(&sub.mailbox);
+        loop {
+            let polled = if let Some((run, stream)) = self.replays.front_mut() {
+                match stream.as_mut().poll_next(context) {
+                    Poll::Pending if cancel.cancelled(context) => Polled::End,
+                    Poll::Pending => {
+                        let mut mailbox = lock(&self.sub.mailbox);
+                        if !mailbox.stopped {
+                            mailbox.waker = Some(context.waker().clone());
+                            return Poll::Pending;
+                        }
+                        drop(mailbox);
+                        self.replays.clear();
+                        continue;
+                    }
+                    Poll::Ready(None) => {
+                        self.replays.pop_front();
+                        continue;
+                    }
+                    Poll::Ready(Some(Ok(envelope))) => Polled::Item(Box::new(envelope)),
+                    Poll::Ready(Some(Err(Error::EventStreamOverflow))) => {
+                        Polled::Overflow(run.clone())
+                    }
+                    Poll::Ready(Some(Err(err))) => Polled::Failed(err),
+                }
+            } else {
+                let mut mailbox = lock(&self.sub.mailbox);
                 if let Some(envelope) = mailbox.queue.pop_front() {
                     mailbox.last_read = envelope.run_id.clone();
                     Polled::Item(Box::new(envelope))
@@ -530,18 +584,19 @@ impl Stream for Subscription {
                     mailbox.waker = Some(context.waker().clone());
                     return Poll::Pending;
                 }
-            }
-        };
-        let item = match polled {
-            Polled::Item(envelope) => {
-                self.observe(&envelope);
-                return Poll::Ready(Some(Ok(*envelope)));
-            }
-            Polled::End => None,
-            Polled::Overflow(run) => Some(Err(self.overflowed(run))),
-            Polled::Failed(err) => Some(Err(HubError::Adapter(err))),
-        };
-        self.done = true;
-        Poll::Ready(item)
+            };
+            let item = match polled {
+                Polled::Item(envelope) if self.delivered(&envelope) => continue,
+                Polled::Item(envelope) => {
+                    self.observe(&envelope);
+                    return Poll::Ready(Some(Ok(*envelope)));
+                }
+                Polled::End => None,
+                Polled::Overflow(run) => Some(Err(self.overflowed(run))),
+                Polled::Failed(err) => Some(Err(HubError::Adapter(err))),
+            };
+            self.close();
+            return Poll::Ready(item);
+        }
     }
 }

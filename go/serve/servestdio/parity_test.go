@@ -582,6 +582,7 @@ func TestRunQualifiedCursorMatchesHTTP(t *testing.T) {
 		t.Fatalf("http resumed at %v, stdio at %v", overHTTP.Sequence, overStdio.Sequence)
 	}
 	f.drainSubscription(6)
+	f.drainSubscription(6)
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}

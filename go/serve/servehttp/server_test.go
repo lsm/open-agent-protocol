@@ -476,7 +476,6 @@ func goldenRun(t *testing.T, server *httptest.Server, sessionID, requestID strin
 		t.Fatalf("final events %d, want 3", len(final))
 	}
 	requireSequence(t, final, 10)
-	stream.expectEnd()
 
 	envelopes := append(append(append([]protocol.Envelope{}, initial...), middle...), final...)
 	if envelopes[len(envelopes)-1].Type != protocol.TypeRunCompleted {
@@ -583,7 +582,6 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 	middle := stream.drainUntil(protocol.TypeRunStatusUpdated)
 	resolveInput(t, server, inputRequestAt(t, middle), "resolve-listing-2")
 	stream.drainUntil(protocol.TypeRunCompleted)
-	stream.expectEnd()
 
 	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "idle" || entry.ActiveRunID != "" {
 		t.Fatalf("settled listing: %+v", entry)
@@ -902,7 +900,6 @@ func TestCloseAfterCancellation(t *testing.T) {
 	}
 	envelopes := stream.drainUntil(protocol.TypeRunCancelled)
 	requireSequence(t, envelopes, 1)
-	stream.expectEnd()
 
 	response, data = post(t, server, "/sessions/close-cancel/close", "", nil)
 	if response.StatusCode != http.StatusNoContent {

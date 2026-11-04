@@ -1232,7 +1232,10 @@ Resume, reconciliation and replay are distinct, and an expired cursor is
 A cursor is `(run, sequence)`. **Sequences are per-run and restart at 1**, so a
 cursor without a run is ambiguous. Resuming delivers the rest of the cursor's
 run, then every later run of the session in admission order, each from sequence
-1, then live events, with nothing lost or repeated. A request may therefore name the run it was
+1, then live events, with nothing lost or repeated. A hub may attach the live
+subscriber before it replays, so a session that publishes more than the
+subscriber's queue during a long replay overflows it like any other reader, and
+`oap-overflow` names where to resume. A request may therefore name the run it was
 cut from; an unqualified cursor resolves onto the session's current run, which
 is right until a second run is admitted. Naming a settled run replays that
 run's suffix — a host that names a run has said exactly which events it wants,
@@ -1245,7 +1248,7 @@ and the run it wants is usually the one that just ended under it.
 | `run_id` without a cursor is `invalid_cursor` — a live subscription starts from now, so a run on a request with no cursor names a position that does not exist | `TestSSERefusesARunWithoutACursor`, `TestEventsRefusesARunWithoutACursor` |
 | A run the session never had is `run_not_found` | `TestSSERefusesARunTheSessionNeverHad`, `TestEventsRefusesARunTheSessionNeverHad` |
 | `run_id` belongs to the `events` op alone; no other op accepts it | `TestRunIDBelongsToTheEventsOpAlone` |
-| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | not pinned yet; see D36 |
+| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | `TestACursorReplaysALaterRunThatSettledBeforeItSubscribed`, `TestEventsCursorFollowsTheRunItNames` |
 | A cursor the journal no longer retains is `oap-replay-gap`, naming what was lost and where to resume | `TestHubReplayGap`, `TestEventsOpReportsAReplayGap`, `TestSSEReplayGap` |
 | An overflow names the run it happened on, so a reconnect reaches the right events | `TestHubOverflowSignalNamesOverflowedRun` |
 | An overflow during replay seeds the cursor rather than losing it | `TestHubReplayOverflowSeedsCursor` |
@@ -2225,7 +2228,7 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
 | **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
 | **Over HTTP** | The subscribing half is served: `POST /adapters/{name}/sessions` holds the subscription the open registered, and the `events` request with no cursor adopts it — Zig: `a subscribing open holds its subscription, and the events request with no cursor adopts it from the first envelope`. Both halves are now served on both transports: the `message` half by the `Zig does` row, the stdio `subscribe` half by the last row. |
-| **Stdio events, 2026-10-06** | `oapx serve --stdio` serves `events`: it acknowledges with `null`, then writes each envelope as `{"event":"envelope","id":N,"session_id":…,"sequence":…,"envelope":…}` on the request's id, and ends at the run's terminal, or with `oap-replay-gap`, `oap-subscribed` first when it joined mid-run, `oap-overflow`, `oap-session-closed`, `oap-stream-failed` or `oap-frame-limit`, in Go's shapes. Zig: `events acknowledges, then streams the run's envelopes on its own id and ends at the terminal`, `events refuses an absent session ahead of everything, an unreadable cursor, a run without a cursor and a parameter it does not take` (an `after` that is not an unsigned sequence is `invalid_cursor`), `a subscription whose session closes ends with oap-session-closed`. A subscribing open hands its subscription to the same stream (the last row). |
+| **Stdio events, 2026-10-06** | `oapx serve --stdio` serves `events`: it acknowledges with `null`, then writes each envelope as `{"event":"envelope","id":N,"session_id":…,"sequence":…,"envelope":…}` on the request's id, and ends with `oap-replay-gap`, `oap-subscribed` first when it joined mid-run, `oap-overflow`, `oap-session-closed`, `oap-stream-failed` or `oap-frame-limit`, in Go's shapes. Zig: `events acknowledges, then streams the run's envelopes on its own id and stays open past the terminal`, `events refuses an absent session ahead of everything, an unreadable cursor, a run without a cursor and a parameter it does not take` (an `after` that is not an unsigned sequence is `invalid_cursor`), `a subscription whose session closes ends with oap-session-closed`. A subscribing open hands its subscription to the same stream (the last row). |
 | **Stdio controls, 2026-10-06** | `oapx serve --stdio` now serves `submit`, `resolve`, `cancel` and `settings`, each through the `Frontend` function the daemon route calls (`submitControl`, `resolveControl`, `cancelControl`, `settingsControl`), so the two transports answer one implementation. Zig: `submit, resolve and cancel answer over stdio as they do over HTTP, each correlated to its request` and `the control ops refuse as the HTTP routes do`. `events` followed in the next change (the row above). |
 | **No longer refused, 2026-10-06** | A subscribing open was refused over stdio, because the op discarded the subscription the hub registered and stdio had no `events` to drain it. It now answers, then streams that subscription on the open's own id, as Go's `serveOpen` does; it counts against the frontend's subscription ceiling and is `busy` past it, and an answer too large to frame closes the subscription and is `response_too_large`, rolling an unnamed session back. Zig: `a subscribing open answers, then streams the session's envelopes on the open's own id` and `a subscribing open past the subscription ceiling is busy, and one whose answer cannot be framed streams nothing`. |
 
@@ -2576,9 +2579,7 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
-each part is built, Zig ends a subscription at its run's terminal, Go and Rust
-end it when the session has no run left to follow, `unsubscribe` is not in every
-tree yet, no hub writes a keepalive, SSE ids are bare sequences, and a cursor resumes one run.
+each part is built, no hub writes a keepalive and SSE ids are bare sequences.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences
