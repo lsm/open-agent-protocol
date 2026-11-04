@@ -910,7 +910,7 @@ def main():
                 if scenario in LOOP_ONLY and target != "zig-loop":
                     continue
                 for n in counts:
-                    if scenario in FLIGHTS and user_processes() + 2 * n >= arguments.max_user_processes:
+                    if scenario in FLIGHTS and user_processes() + 2 * min(n, int(os.environ.get("BENCH_TOOL_BOUND", n))) >= arguments.max_user_processes:
                         results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: N tools at once would pass --max-user-processes"})
                         continue
                     result = run_case(target, binaries[target], scenario, n, scratch, arguments.timeout,
