@@ -91,7 +91,7 @@ fn next_event(reader: &mut BufReader<TcpStream>) -> (Option<String>, Option<Stri
 }
 
 #[test]
-fn a_subscriber_receives_the_runs_envelopes_as_sse_events_keyed_by_sequence() {
+fn a_subscriber_receives_the_runs_envelopes_as_sse_events_keyed_by_run_and_sequence() {
     let (hub, addr) = started();
     let mut reader = open_stream(addr, "/sessions/s/events");
     let (status, headers) = status_and_headers(&mut reader);
@@ -105,10 +105,72 @@ fn a_subscriber_receives_the_runs_envelopes_as_sse_events_keyed_by_sequence() {
     let (id, event, data) = next_event(&mut reader);
     assert_eq!(event, None);
     assert_eq!(data["type"], "run.started", "{data}");
-    assert_eq!(
-        id.as_deref(),
-        data["sequence"].as_u64().map(|n| n.to_string()).as_deref()
+    let keyed = format!(
+        "{}:{}",
+        data["run_id"].as_str().unwrap(),
+        data["sequence"].as_u64().unwrap()
     );
+    assert_eq!(id.as_deref(), Some(keyed.as_str()));
+}
+
+fn open_with_last_event_id(addr: SocketAddr, id: &str) -> BufReader<TcpStream> {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET /sessions/s/events HTTP/1.1\r\nHost: {addr}\r\nLast-Event-ID: {id}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    BufReader::new(stream)
+}
+
+#[test]
+fn last_event_id_reads_a_run_qualified_id_back_at_its_last_colon() {
+    let (hub, addr) = started();
+    let mut reader = open_stream(addr, "/sessions/s/events");
+    assert_eq!(status_and_headers(&mut reader).0, 200);
+    std::thread::sleep(Duration::from_millis(100));
+    submit(&hub);
+    let (id, _, _) = next_event(&mut reader);
+    let id = id.unwrap();
+    next_event(&mut reader);
+    let mut resumed = open_with_last_event_id(addr, &id);
+    assert_eq!(status_and_headers(&mut resumed).0, 200);
+    let (next, _, data) = next_event(&mut resumed);
+    assert_eq!(data["sequence"], 2, "{data}");
+    assert_eq!(next.unwrap(), id.replace(":1", ":2"));
+    let mut stale = TcpStream::connect(addr).unwrap();
+    stale
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stale
+        .write_all(
+            format!(
+                "GET /sessions/s/events?run_id=elsewhere HTTP/1.1\r\nHost: {addr}\r\nLast-Event-ID: {id}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut stale = BufReader::new(stale);
+    assert_eq!(status_and_headers(&mut stale).0, 200);
+    assert_eq!(next_event(&mut stale).2["sequence"], 2);
+}
+
+#[test]
+fn a_run_qualified_cursor_with_no_run_no_sequence_or_in_the_query_is_refused() {
+    let (hub, addr) = started();
+    submit(&hub);
+    for id in [":1", "run:x"] {
+        let mut reader = open_with_last_event_id(addr, id);
+        assert_eq!(status_and_headers(&mut reader).0, 400, "{id}");
+    }
+    let mut reader = open_stream(addr, "/sessions/s/events?after=run:1");
+    assert_eq!(status_and_headers(&mut reader).0, 400);
 }
 
 #[test]

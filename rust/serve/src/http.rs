@@ -950,13 +950,12 @@ impl Served {
         if entry.is_closed() {
             return refuse("session_closed", "the session is closed".into());
         }
-        let cursor = asked
-            .query("after")
-            .filter(|after| !after.is_empty())
+        let queried = asked.query("after").filter(|after| !after.is_empty());
+        let cursor = queried
             .map(str::to_owned)
             .or_else(|| asked.header("Last-Event-ID").map(|id| id.trim().to_owned()))
             .unwrap_or_default();
-        let run = asked.query("run_id").unwrap_or_default().to_owned();
+        let mut run = asked.query("run_id").unwrap_or_default().to_owned();
         let subscribed = if cursor.is_empty() {
             if !run.is_empty() {
                 return refuse(
@@ -976,10 +975,18 @@ impl Served {
             }
             self.hub.subscribe(entry.id())
         } else {
-            let Some(after) = cursor
+            let position = match cursor.rsplit_once(':').filter(|_| queried.is_none()) {
+                Some(("", _)) => "",
+                Some((named, position)) => {
+                    named.clone_into(&mut run);
+                    position
+                }
+                None => cursor.as_str(),
+            };
+            let Some(after) = position
                 .parse::<u64>()
                 .ok()
-                .filter(|_| cursor.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|_| position.bytes().all(|byte| byte.is_ascii_digit()))
             else {
                 return refuse(
                     "invalid_cursor",
@@ -1194,6 +1201,14 @@ fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<
     stream.flush()
 }
 
+fn event_id(run: Option<&oap_protocol::RunId>, sequence: u64) -> Option<String> {
+    match run.map(oap_protocol::RunId::as_str) {
+        Some(run) if run.contains(['\r', '\n', '\0']) => None,
+        Some(run) if !run.is_empty() => Some(format!("{run}:{sequence}")),
+        _ => Some(sequence.to_string()),
+    }
+}
+
 fn stream_events(
     mut stream: &TcpStream,
     events: Events,
@@ -1262,8 +1277,11 @@ fn stream_events(
         match next {
             Some(Ok(envelope)) => {
                 let mut frame = String::new();
-                if let Some(sequence) = envelope.sequence {
-                    frame.push_str(&format!("id: {sequence}\n"));
+                let id = envelope
+                    .sequence
+                    .and_then(|sequence| event_id(envelope.run_id.as_ref(), sequence));
+                if let Some(id) = id {
+                    frame.push_str(&format!("id: {id}\n"));
                 }
                 frame.push_str(&format!("data: {}\n\n", serde_json::to_string(&envelope)?));
                 stream.write_all(frame.as_bytes())?;
@@ -1310,8 +1328,18 @@ fn respond(mut stream: &TcpStream, answer: &Answer, with_body: bool) -> std::io:
 
 #[cfg(test)]
 mod tests {
-    use super::{accepted, Accept};
+    use super::{accepted, event_id, Accept};
     use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn an_event_id_names_its_run_only_when_it_has_one() {
+        assert_eq!(event_id(Some(&"run-1".into()), 3).unwrap(), "run-1:3");
+        assert_eq!(event_id(Some(&"".into()), 3).unwrap(), "3");
+        assert_eq!(event_id(None, 3).unwrap(), "3");
+        for forged in ["a\ndata: x", "a\rb", "a\0b"] {
+            assert_eq!(event_id(Some(&forged.into()), 3), None);
+        }
+    }
 
     #[test]
     fn a_refusal_carries_the_status_go_answers_it_with() {
