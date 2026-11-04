@@ -13,13 +13,21 @@ pub const Request = struct {
     published: bool = false,
 };
 
+const gate_poll = std.Io.Timeout{ .duration = .{ .raw = .fromMilliseconds(1000), .clock = .boot } };
+
 pub const Gate = struct {
+    wakes: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     mutex: std.atomic.Mutex = .unlocked,
     request: ?*Request = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn lock(self: *Gate) void {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    pub fn wake(self: *Gate) void {
+        _ = self.wakes.fetchAdd(1, .release);
+        compat.fs.defaultIo().futexWake(u32, &self.wakes.raw, std.math.maxInt(u32));
     }
 
     pub fn wait(self: *Gate, allocator: std.mem.Allocator, kind: Kind, tool_call_id: []const u8, tool_name: []const u8, arguments: []const u8, cancel_token: ?ai_types.CancelToken) ![]const u8 {
@@ -43,6 +51,7 @@ pub const Gate = struct {
             self.mutex.unlock();
         }
         while (true) {
+            const seen = self.wakes.load(.acquire);
             self.lock();
             const response = request.response;
             self.mutex.unlock();
@@ -51,7 +60,7 @@ pub const Gate = struct {
             if (cancel_token) |token| {
                 if (token.isCancelled()) return error.Cancelled;
             }
-            compat.time.sleepNs(std.time.ns_per_ms);
+            compat.fs.defaultIo().futexWaitTimeout(u32, &self.wakes.raw, seen, gate_poll) catch {};
         }
     }
 };

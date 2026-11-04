@@ -1119,6 +1119,7 @@ pub const Session = struct {
         if (native.response != null or self.gate.cancelled.load(.acquire)) return error.InteractionNotFound;
         try self.emit(run, if (pending.kind == .permission) "action.permission.resolved" else "user.input.resolved", resolved.value(), false);
         native.response = response;
+        self.gate.wake();
         self.pending = null;
         run.status = .running;
     }
@@ -1388,6 +1389,7 @@ pub const Session = struct {
         }
         run.status = .cancelling;
         self.gate.cancelled.store(true, .release);
+        self.gate.wake();
         self.call_gate.cancelled.store(true, .release);
         self.runtime.cancel();
 
@@ -1712,6 +1714,7 @@ pub const Session = struct {
         const self = cast(ptr);
         if (!force and (self.live() != null or self.queuedCount() > 0)) return error.RunActive;
         self.gate.cancelled.store(true, .release);
+        self.gate.wake();
         self.call_gate.cancelled.store(true, .release);
         if (self.live() != null) self.runtime.cancel();
         self.destroy();
