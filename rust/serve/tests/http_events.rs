@@ -237,6 +237,6 @@ fn a_quiet_stream_writes_a_keepalive_comment() {
 }
 
 #[test]
-fn a_stream_stays_quiet_for_fifteen_seconds_before_its_keepalive() {
+fn a_keepalive_defaults_to_fifteen_seconds() {
     assert_eq!(DEFAULT_KEEPALIVE, Duration::from_secs(15));
 }
