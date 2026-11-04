@@ -756,9 +756,10 @@ the summary request is an ordinary model call.
 
 A session is `~/.oapx/sessions/<session>.jsonl`, the conversation records a resume
 replays. Streamed chunks (text, thinking and tool-call deltas, raw provider events,
-tool progress) go to `<session>.stream.jsonl`, which a resume does not read; a reply's
-thinking is also written to the conversation when the reply ends, folded into records
-of up to about 700 KB. The model and provider are written with the first record and
+tool progress) are not written to disk; a reply's thinking is written to the
+conversation when the reply ends, folded into records of up to about 700 KB. A
+`<session>.stream.jsonl` an older build left is skipped by the session list and
+removed with its session. The model and provider are written with the first record and
 again when they change, and `<session>.meta.json` holds them with the creation and
 last-active times, the thinking level, and the offset of the last completed compaction.
 `/resume` restores the session's thinking level (a session saved before it was recorded

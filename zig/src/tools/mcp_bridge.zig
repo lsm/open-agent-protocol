@@ -158,7 +158,7 @@ const McpServerSession = struct {
         const request = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":{s},\"params\":{s}}}\n", .{ id, escaped_method, params_json });
         defer allocator.free(request);
         if (std.mem.indexOfScalar(u8, request[0 .. request.len - 1], '\n') != null) return error.InvalidMcpRequest;
-        try child.stdin.?.writeStreamingAll(common.defaultIo(), request);
+        try writeUnlessCancelled(child, request, cancel_token);
 
         const start_ms = common.nowMs();
         const poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(common.process_poll_ms), .clock = .boot } };
@@ -166,7 +166,10 @@ const McpServerSession = struct {
         errdefer if (matched_response) |*response| response.deinit();
 
         while (true) {
-            if (common.isCancelled(cancel_token)) return error.Cancelled;
+            if (common.isCancelled(cancel_token)) {
+                self.notifyCancelled(allocator, id);
+                return error.Cancelled;
+            }
             while (try takePendingLine(allocator, &self.stdout_pending)) |line| {
                 defer allocator.free(line);
                 const trimmed = std.mem.trim(u8, line, " \t\r\n");
@@ -200,6 +203,17 @@ const McpServerSession = struct {
             };
             try self.stdout_pending.appendSlice(allocator, reader.buffered());
         }
+    }
+
+    fn writeUnlessCancelled(child: *std.process.Child, request: []const u8, cancel_token: ?ai_types.CancelToken) !void {
+        if (common.isCancelled(cancel_token)) return error.Cancelled;
+        try child.stdin.?.writeStreamingAll(common.defaultIo(), request);
+    }
+
+    fn notifyCancelled(self: *McpServerSession, allocator: std.mem.Allocator, id: u64) void {
+        const params = std.fmt.allocPrint(allocator, "{{\"requestId\":{d},\"reason\":\"cancelled\"}}", .{id}) catch return;
+        defer allocator.free(params);
+        self.sendNotification(allocator, "notifications/cancelled", params) catch {};
     }
 
     fn sendNotification(self: *McpServerSession, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) !void {
@@ -933,6 +947,107 @@ test "MCP execution honors cancellation while waiting" {
     try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
 }
 
+
+fn cancelOnceTheServerHasTheRequest(dir: std.Io.Dir, cancelled: *std.atomic.Value(bool)) void {
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) : (compat.time.sleepMs(10)) {
+        const file = dir.openFile(common.defaultIo(), "cancelled.received", .{}) catch continue;
+        file.close(common.defaultIo());
+        break;
+    }
+    cancelled.store(true, .seq_cst);
+}
+
+test "a call cancelled before it is written never reaches the server" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(std.testing.io, std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "received" });
+    defer std.testing.allocator.free(marker);
+    const script = try std.mem.concat(std.testing.allocator, u8, &.{
+        "python3 -u -c 'import sys\n" ++
+            "for line in sys.stdin: open(sys.argv[1],\"w\").write(line)' ",
+        marker,
+    });
+    defer std.testing.allocator.free(script);
+    const config_json = try makeShellConfigJson(std.testing.allocator, script);
+    defer std.testing.allocator.free(config_json);
+    var bridge = McpBridge.init(std.testing.allocator);
+    bridge.bind();
+    defer bridge.deinit();
+    try bridge.loadConfigJson(config_json);
+    const server = &bridge.servers.items[0];
+    try server.start(std.testing.allocator);
+    var cancelled = std.atomic.Value(bool).init(true);
+    const token = ai_types.CancelToken{ .cancelled = &cancelled };
+    try std.testing.expectError(error.Cancelled, McpServerSession.writeUnlessCancelled(&server.child.?, "{}\n", token));
+    compat.time.sleepMs(300);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(common.defaultIo(), "received", .{}));
+    cancelled.store(false, .seq_cst);
+    try McpServerSession.writeUnlessCancelled(&server.child.?, "{}\n", token);
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) : (compat.time.sleepMs(20)) {
+        tmp.dir.access(common.defaultIo(), "received", .{}) catch continue;
+        return;
+    }
+    return error.ServerNeverGotTheRequest;
+}
+
+test "a call already cancelled launches no server" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const config_json = try makeShellConfigJson(std.testing.allocator, hangingMcpServerScript());
+    defer std.testing.allocator.free(config_json);
+    var bridge = McpBridge.init(std.testing.allocator);
+    bridge.bind();
+    defer bridge.deinit();
+    try bridge.loadConfigJson(config_json);
+    const tool = try makeTestTool(&bridge, "echo");
+    var cancelled = std.atomic.Value(bool).init(true);
+    const token = ai_types.CancelToken{ .cancelled = &cancelled };
+    try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
+    try std.testing.expect(bridge.servers.items[0].child == null);
+}
+
+test "cancelling an MCP call in flight tells the server which request stopped" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(std.testing.io, std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "cancelled" });
+    defer std.testing.allocator.free(marker);
+    const script = try std.mem.concat(std.testing.allocator, u8, &.{
+        "python3 -u -c 'import json,sys\n" ++
+            "for line in sys.stdin:\n" ++
+            " msg=json.loads(line)\n" ++
+            " if msg.get(\"method\")==\"tools/call\": open(sys.argv[1]+\".received\",\"w\").close()\n" ++
+            " if msg.get(\"method\")==\"notifications/cancelled\": open(sys.argv[1],\"w\").write(str(msg[\"params\"][\"requestId\"]))' ",
+        marker,
+    });
+    defer std.testing.allocator.free(script);
+    const config_json = try makeShellConfigJson(std.testing.allocator, script);
+    defer std.testing.allocator.free(config_json);
+    var bridge = McpBridge.init(std.testing.allocator);
+    bridge.bind();
+    defer bridge.deinit();
+    try bridge.loadConfigJson(config_json);
+    const tool = try makeTestTool(&bridge, "echo");
+    var cancelled = std.atomic.Value(bool).init(false);
+    const token = ai_types.CancelToken{ .cancelled = &cancelled };
+    const canceller = try std.Thread.spawn(.{}, cancelOnceTheServerHasTheRequest, .{ tmp.dir, &cancelled });
+    defer canceller.join();
+    try std.testing.expectError(error.Cancelled, tool.runtime_execute.?(tool.runtime_ctx, "call_1", "{}", token, null, null, std.testing.allocator));
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) : (compat.time.sleepMs(20)) {
+        const told = tmp.dir.readFileAlloc(common.defaultIo(), "cancelled", std.testing.allocator, .limited(64)) catch continue;
+        defer std.testing.allocator.free(told);
+        if (told.len == 0) continue;
+        return std.testing.expectEqualStrings("1", told);
+    }
+    return error.ServerNeverToldOfTheCancel;
+}
 
 test "MCP discovery times out when server never responds" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;

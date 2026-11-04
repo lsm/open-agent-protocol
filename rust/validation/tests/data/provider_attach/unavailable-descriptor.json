@@ -1,0 +1,55 @@
+[
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "capabilities.request",
+  "id": "attach-caps-request",
+  "payload": {}
+ },
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "capabilities.response",
+  "id": "attach-caps-response",
+  "in_reply_to": "attach-caps-request",
+  "capability_revision": "attach-rev-1",
+  "payload": {
+   "endpoint": {
+    "id": "attach-fixture"
+   },
+   "features": {
+    "action.providers.attach": {
+     "level": "unavailable"
+    }
+   }
+  }
+ },
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "session.open.request",
+  "id": "attach-open-request",
+  "capability_revision": "attach-rev-1",
+  "session_id": "attach-session",
+  "payload": {
+   "session_id": "attach-session"
+  }
+ },
+ {
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "profile": "open-agent-protocol.agent-control-core",
+  "type": "session.open.response",
+  "id": "attach-open-response",
+  "in_reply_to": "attach-open-request",
+  "capability_revision": "attach-rev-1",
+  "session_id": "attach-session",
+  "payload": {
+   "session_id": "attach-session",
+   "status": "idle"
+  }
+ }
+]
