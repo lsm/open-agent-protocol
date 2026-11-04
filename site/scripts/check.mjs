@@ -19,11 +19,12 @@ for (const source of staged.sources) {
   }
 }
 for (const name of staged.schemas) {
-  assert.deepEqual(JSON.parse(await read(`schemas/${name}`)), JSON.parse(await readFile(path.join(root, 'schema/v0.1', name))))
+  assert.equal(await read(`schemas/${name}`), await readFile(path.join(root, 'schema/v0.1', name), 'utf8'))
   const html = await read(`reference/schema/${name.replace(/\.json$/, '.html')}`)
   assert.match(html, /Complete definition/)
   assert.match(html, /Declared examples/)
 }
+assert.ok((await read('reference/schema/common.schema.md')).includes('\"maximum\": 18446744073709551615'), 'schema reference must retain the exact uint64 maximum')
 const manifest = JSON.parse(await read('contracts/manifest.json'))
 assert.equal(staged.manifestEntries, manifest.fixtures.length)
 assert.ok((await read('reference.html')).includes(String(manifest.fixtures.length)))
