@@ -67,6 +67,131 @@ fn drain(subscription: &mut Subscription) -> Vec<Envelope> {
     seen
 }
 
+fn until(subscription: &mut Subscription, stop: impl Fn(&Envelope) -> bool) -> Vec<Envelope> {
+    let mut seen = Vec::new();
+    loop {
+        let envelope = block_on(subscription.next()).unwrap().unwrap();
+        let stopping = stop(&envelope);
+        seen.push(envelope);
+        if stopping {
+            return seen;
+        }
+    }
+}
+
+fn of_type(kind: EnvelopeType) -> impl Fn(&Envelope) -> bool {
+    move |envelope| envelope.envelope_type == kind
+}
+
+#[test]
+fn a_resumed_stream_carries_on_into_the_sessions_next_run() {
+    let hub = hub(64);
+    let session = open(&hub, "next-run");
+    let mut watcher = hub.subscribe(session.id()).unwrap();
+    let first = cancelled_run(&session);
+    until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let mut resumed = block_on(hub.subscribe_after(session.id(), Some(first.clone()), 0)).unwrap();
+    let replayed = until(&mut resumed, of_type(EnvelopeType::RUN_CANCELLED));
+    assert_eq!(replayed[0].run_id.as_ref(), Some(&first));
+    assert_eq!(replayed[0].sequence, Some(1));
+    let second = cancelled_run(&session);
+    let carried = until(&mut resumed, of_type(EnvelopeType::RUN_CANCELLED));
+    assert_eq!(carried[0].run_id.as_ref(), Some(&second));
+    assert_eq!(carried[0].sequence, Some(1));
+    assert_eq!(
+        carried.last().and_then(|last| last.run_id.as_ref()),
+        Some(&second)
+    );
+}
+
+#[test]
+fn a_cursor_replays_a_later_run_that_settled_before_it_subscribed() {
+    let hub = hub(64);
+    let session = open(&hub, "later-run");
+    let mut watcher = hub.subscribe(session.id()).unwrap();
+    let first = cancelled_run(&session);
+    until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let second = cancelled_run(&session);
+    until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let mut resumed = block_on(hub.subscribe_after(session.id(), Some(first), 0)).unwrap();
+    until(&mut resumed, of_type(EnvelopeType::RUN_CANCELLED));
+    let replayed = until(&mut resumed, of_type(EnvelopeType::RUN_CANCELLED));
+    for (index, envelope) in replayed.iter().enumerate() {
+        assert_eq!(envelope.run_id.as_ref(), Some(&second));
+        assert_eq!(envelope.sequence, Some(index as u64 + 1));
+    }
+    let third = cancelled_run(&session);
+    let carried = until(&mut resumed, of_type(EnvelopeType::RUN_CANCELLED));
+    assert_eq!(carried[0].run_id.as_ref(), Some(&third));
+    assert_eq!(carried[0].sequence, Some(1));
+}
+
+#[test]
+fn a_cursor_is_a_replay_gap_when_a_later_run_has_left_the_journal() {
+    let hub = hub(2);
+    let session = open(&hub, "lost-run");
+    let mut watcher = hub.subscribe(session.id()).unwrap();
+    let first = cancelled_run(&session);
+    let settled = until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let reached = settled.last().unwrap().sequence.unwrap();
+    cancelled_run(&session);
+    until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    match block_on(hub.subscribe_after(session.id(), Some(first), reached)) {
+        Err(HubError::Adapter(Error::ReplayGap(gap))) => assert_eq!(gap.requested_after, 0),
+        Err(err) => panic!("{err}"),
+        Ok(_) => panic!("a cursor over a lost run was accepted"),
+    }
+}
+
+#[test]
+fn ending_subscriptions_stops_a_replay_still_following_a_run() {
+    let hub = hub(64);
+    let session = open(&hub, "following");
+    let run = block_on(session.submit(prompt("following")))
+        .unwrap()
+        .run_id
+        .unwrap();
+    let mut cursor = block_on(hub.subscribe_after(session.id(), Some(run), 0)).unwrap();
+    until(
+        &mut cursor,
+        of_type(EnvelopeType::ACTION_PERMISSION_REQUESTED),
+    );
+    hub.end_subscriptions();
+    assert!(block_on(cursor.next()).is_none());
+}
+
+#[test]
+fn a_cursor_skips_a_run_admitted_before_its_own() {
+    let hub = hub(64);
+    let session = open(&hub, "earlier-run");
+    let mut watcher = hub.subscribe(session.id()).unwrap();
+    let earlier = block_on(session.submit(prompt("earlier-run")))
+        .unwrap()
+        .run_id
+        .unwrap();
+    until(
+        &mut watcher,
+        of_type(EnvelopeType::ACTION_PERMISSION_REQUESTED),
+    );
+    let mut queued = prompt("earlier-run");
+    queued.request.delivery = RequestedDeliveryMode::QUEUE;
+    let queued = block_on(session.submit(queued)).unwrap().run_id.unwrap();
+    block_on(session.cancel(queued.clone())).unwrap();
+    until(&mut watcher, |envelope| {
+        envelope.run_id.as_ref() == Some(&queued)
+    });
+    let mut cursor = block_on(hub.subscribe_after(session.id(), Some(queued.clone()), 0)).unwrap();
+    until(&mut cursor, |envelope| {
+        envelope.run_id.as_ref() == Some(&queued)
+    });
+    block_on(session.cancel(earlier)).unwrap();
+    until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let later = cancelled_run(&session);
+    for envelope in until(&mut cursor, of_type(EnvelopeType::RUN_CANCELLED)) {
+        assert_eq!(envelope.run_id.as_ref(), Some(&later));
+    }
+}
+
 #[test]
 fn a_cursor_replays_the_run_after_it_through_the_terminal() {
     let hub = hub(64);

@@ -41,7 +41,11 @@ struct Reader {
     thread: JoinHandle<Vec<Delivered>>,
 }
 
-fn read(mut subscription: Subscription) -> JoinHandle<Vec<Delivered>> {
+fn read(subscription: Subscription) -> JoinHandle<Vec<Delivered>> {
+    read_until(subscription, false)
+}
+
+fn read_until(mut subscription: Subscription, once: bool) -> JoinHandle<Vec<Delivered>> {
     thread::spawn(move || {
         let mut events = Vec::new();
         while let Some(item) = block_on(subscription.next()) {
@@ -53,17 +57,21 @@ fn read(mut subscription: Subscription) -> JoinHandle<Vec<Delivered>> {
             let (Some(run), Some(sequence)) = (envelope.run_id.clone(), envelope.sequence) else {
                 continue;
             };
+            let terminal = [
+                EnvelopeType::RUN_COMPLETED,
+                EnvelopeType::RUN_FAILED,
+                EnvelopeType::RUN_CANCELLED,
+            ]
+            .contains(&envelope.envelope_type);
             events.push(Delivered {
                 run,
                 sequence,
                 id: envelope.id.to_string(),
-                terminal: [
-                    EnvelopeType::RUN_COMPLETED,
-                    EnvelopeType::RUN_FAILED,
-                    EnvelopeType::RUN_CANCELLED,
-                ]
-                .contains(&envelope.envelope_type),
+                terminal,
             });
+            if once && terminal {
+                break;
+            }
         }
         events
     })
@@ -227,7 +235,7 @@ impl Driver {
         for run in self.admitted.get(session).into_iter().flatten() {
             let subscription =
                 block_on(self.hub.subscribe_after(session, Some(run.clone()), 0)).unwrap();
-            let thread = read(subscription);
+            let thread = read_until(subscription, true);
             while !thread.is_finished() {
                 assert!(
                     Instant::now() < deadline,

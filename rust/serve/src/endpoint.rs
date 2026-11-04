@@ -1232,12 +1232,21 @@ fn pump(out: &Out, gate: &Gate, subscription: &mut Subscription, run: &oap_proto
                 if !run.as_str().is_empty() && envelope.run_id.as_ref() != Some(run) {
                     continue;
                 }
+                let settled = [
+                    EnvelopeType::RUN_COMPLETED,
+                    EnvelopeType::RUN_FAILED,
+                    EnvelopeType::RUN_CANCELLED,
+                ]
+                .contains(&envelope.envelope_type);
                 let holding = !withheld.is_empty() || gate.holds(envelope.run_id.as_ref());
                 withheld.push_back(envelope);
-                if holding {
+                if settled {
+                    Some(None)
+                } else if holding {
                     continue;
+                } else {
+                    None
                 }
-                None
             }
             Some(None) => Some(None),
             Some(Some(Err(HubError::Overflow { .. }))) => Some(Some("overflow")),

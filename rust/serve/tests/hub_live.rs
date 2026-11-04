@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures::channel::mpsc::{unbounded, UnboundedSender};
 use futures::executor::block_on;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use oap_adapter::{
     Adapter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
     Recovery, ResumeRequest, Session, SubmitRequest,
@@ -231,8 +231,13 @@ fn settle() {
     thread::sleep(Duration::from_millis(50));
 }
 
+fn assert_open(subscription: &mut Subscription) {
+    settle();
+    assert!(subscription.next().now_or_never().is_none());
+}
+
 #[test]
-fn every_subscriber_sees_the_run_in_order_and_then_its_end() {
+fn every_subscriber_sees_the_run_in_order_and_stays_open_past_its_end() {
     let script = script(64);
     let mut subscriptions: Vec<Subscription> = (0..4).map(|_| script.subscribe()).collect();
     let run = script.submit();
@@ -246,8 +251,36 @@ fn every_subscriber_sees_the_run_in_order_and_then_its_end() {
             assert_eq!(envelope.run_id.as_ref(), Some(&run));
             assert_eq!(envelope.sequence, Some(sequence));
         }
-        assert!(next(subscription).is_none());
+        assert_open(subscription);
     }
+}
+
+#[test]
+fn a_subscriber_carries_on_into_the_sessions_next_run() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let first = script.submit();
+    script.emit(&first, 1);
+    script.end(&first);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().run_id, Some(first));
+    assert_open(&mut watcher);
+    let second = script.submit();
+    script.emit(&second, 1);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().run_id, Some(second));
+}
+
+#[test]
+fn ending_subscriptions_delivers_what_is_queued_and_leaves_the_session_open() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let run = script.submit();
+    script.emit(&run, 1);
+    settle();
+    script.hub.end_subscriptions();
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(1));
+    assert!(next(&mut watcher).is_none());
+    assert!(!script.session.is_closed());
+    script.subscribe();
 }
 
 #[test]
@@ -280,8 +313,6 @@ fn a_subscriber_that_falls_behind_is_ended_with_an_overflow_naming_its_run_and_p
     }
     assert!(next(&mut slow).is_none());
     assert_eq!(next(&mut fast).unwrap().unwrap().sequence, Some(3));
-    script.end(&run);
-    assert!(next(&mut fast).is_none());
 }
 
 #[test]
@@ -313,7 +344,7 @@ fn a_subscription_reports_where_it_joined_a_run_and_nothing_between_runs() {
     assert_eq!(mid.joined_at(), Some((run.clone(), 2)));
     drop(mid);
     script.end(&run);
-    assert!(next(&mut watcher).is_none());
+    settle();
     let second = script.submit();
     let late = script.subscribe();
     assert_eq!(late.joined_at(), None);
@@ -368,9 +399,7 @@ fn an_adapter_overflow_cuts_only_the_subscribers_still_exposed_to_its_run() {
         }
         other => panic!("{other:?}"),
     }
-    script.end(&old);
-    script.end(&newer);
-    assert!(next(&mut moved_on).is_none());
+    assert_open(&mut moved_on);
 }
 
 #[test]
@@ -384,9 +413,7 @@ fn a_run_admitted_without_its_id_is_bound_from_its_first_envelope() {
         next(&mut watcher).unwrap().unwrap().run_id.as_ref(),
         Some(&run)
     );
-    assert_eq!(script.session.current_run(), Some(run.clone()));
-    script.end(&run);
-    assert!(next(&mut watcher).is_none());
+    assert_eq!(script.session.current_run(), Some(run));
 }
 
 #[test]
@@ -448,8 +475,7 @@ fn a_failure_of_an_older_run_ends_only_the_subscribers_still_on_it() {
         next(&mut lagging),
         Some(Err(HubError::Adapter(Error::Harness(_))))
     ));
-    script.end(&second);
-    assert!(next(&mut on_second).is_none());
+    assert_open(&mut on_second);
 }
 
 #[test]
@@ -486,8 +512,7 @@ fn a_held_failure_does_not_carry_into_a_run_promoted_after_it() {
         next(&mut on_queued).unwrap().unwrap().run_id.as_ref(),
         Some(&queued)
     );
-    script.end(&queued);
-    assert!(next(&mut on_queued).is_none());
+    assert_open(&mut on_queued);
 }
 
 #[test]
@@ -513,9 +538,7 @@ fn a_late_envelope_of_an_older_run_does_not_expose_a_subscriber_reading_a_newer_
         next(&mut reader).unwrap().unwrap().run_id.as_ref(),
         Some(&newer)
     );
-    script.end(&old);
-    script.end(&newer);
-    assert!(next(&mut reader).is_none());
+    assert_open(&mut reader);
 }
 
 #[test]
@@ -528,7 +551,7 @@ fn a_subscription_after_a_run_ended_reports_no_join_point() {
     next(&mut watcher).unwrap().unwrap();
     next(&mut watcher).unwrap().unwrap();
     script.end(&run);
-    assert!(next(&mut watcher).is_none());
+    settle();
     assert_eq!(script.subscribe().joined_at(), None);
 }
 
@@ -579,8 +602,6 @@ fn a_submission_still_in_flight_keeps_the_subscribers_open_for_its_run() {
     script.emit(&queued, 1);
     let delivered = next(&mut watcher).unwrap().unwrap();
     assert_eq!(delivered.run_id.as_ref(), Some(&queued));
-    script.end(&queued);
-    assert!(next(&mut watcher).is_none());
 }
 
 #[test]
@@ -601,8 +622,11 @@ fn a_submission_dropped_while_in_flight_releases_its_reservation() {
             ..SubmitRequest::default()
         }));
         assert!(futures::FutureExt::now_or_never(pending.as_mut()).is_none());
+        script.end(&first);
+        settle();
+        block_on(script.session.close()).unwrap();
+        assert_open(&mut watcher);
     }
-    script.end(&first);
     assert!(next(&mut watcher).is_none());
 }
 
@@ -681,5 +705,5 @@ fn an_older_run_failing_after_the_current_run_ended_still_reaches_its_exposed_su
         "{:?}",
         got.map(|item| item.map(|e| (e.run_id, e.sequence)))
     );
-    assert!(next(&mut on_current).is_none());
+    assert_open(&mut on_current);
 }
