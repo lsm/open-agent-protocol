@@ -7,9 +7,9 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         const Self = @This();
         pub const DEINIT_THREAD_JOIN_TIMEOUT_MS = 120_000;
         pub const THREAD_DONE_POLL_INTERVAL_MS = 5;
-        const RING_BUFFER_SIZE = 1024;
-        const RING_BUFFER_MASK = RING_BUFFER_SIZE - 1;
-        pub const usable_capacity = RING_BUFFER_SIZE - 1;
+        const min_ring_len = 16;
+        const max_ring_len = 1024;
+        pub const usable_capacity = max_ring_len - 1;
 
         pub const Ownership = union(enum) {
             borrowed,
@@ -20,10 +20,9 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             }
         };
 
-        ring_buffer: [RING_BUFFER_SIZE]T,
-        published: [RING_BUFFER_SIZE]std.atomic.Value(bool),
-        head: std.atomic.Value(usize),
-        tail: std.atomic.Value(usize),
+        ring: []T = &.{},
+        first: usize = 0,
+        queued: usize = 0,
         result: ?R = null,
         completed: std.atomic.Value(bool),
         err_msg: ?[]const u8 = null,
@@ -40,15 +39,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         retention: Retention,
 
         pub fn init(allocator: std.mem.Allocator) Self {
-            var published: [RING_BUFFER_SIZE]std.atomic.Value(bool) = undefined;
-            for (&published) |*p| {
-                p.* = std.atomic.Value(bool).init(false);
-            }
             return Self{
-                .ring_buffer = undefined,
-                .published = published,
-                .head = std.atomic.Value(usize).init(0),
-                .tail = std.atomic.Value(usize).init(0),
                 .completed = std.atomic.Value(bool).init(false),
                 .futex = std.atomic.Value(u32).init(0),
                 .thread_done = std.atomic.Value(bool).init(false),
@@ -170,56 +161,52 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
 
             if (Retention != void) self.retention.deinit();
 
+            self.allocator.free(self.ring);
             self.* = undefined;
         }
 
-        pub fn push(self: *Self, event: T) !void {
-            var owned_event: ?T = null;
-            defer if (owned_event) |*e| self.deinitGenericEvent(e);
+        fn slot(self: *const Self, index: usize) usize {
+            return (self.first + index) & (self.ring.len - 1);
+        }
 
-            while (true) {
-                if (self.completed.load(.acquire)) return error.StreamCompleted;
-                const current_head = self.head.load(.acquire);
-                const current_tail = self.tail.load(.acquire);
+        fn growRing(self: *Self) error{OutOfMemory}!void {
+            const grown = try self.allocator.alloc(T, @max(self.ring.len * 2, min_ring_len));
+            for (0..self.queued) |index| grown[index] = self.ring[self.slot(index)];
+            self.allocator.free(self.ring);
+            self.ring = grown;
+            self.first = 0;
+        }
 
-                const next_head = (current_head + 1) & RING_BUFFER_MASK;
-
-                if (next_head == current_tail) {
-                    return error.QueueFull;
+        fn takeFirst(self: *Self) T {
+            const event = self.ring[self.first];
+            self.first = self.slot(1);
+            self.queued -= 1;
+            if (self.queued == 0) {
+                self.first = 0;
+                if (self.ring.len > min_ring_len) {
+                    self.allocator.free(self.ring);
+                    self.ring = &.{};
                 }
-
-                switch (self.ownership) {
-                    .borrowed => {},
-                    .owned => |clone_fn| {
-                        if (owned_event == null) {
-                            owned_event = try clone_fn(self.allocator, event);
-                        }
-                    },
-                }
-
-                if (self.head.cmpxchgWeak(current_head, next_head, .acquire, .acquire)) |_| {
-                    continue;
-                }
-
-                var event_to_store = event;
-                switch (self.ownership) {
-                    .borrowed => {},
-                    .owned => {
-                        if (owned_event) |*owned| {
-                            event_to_store = owned.*;
-                            owned_event = null;
-                        }
-                    },
-                }
-                self.ring_buffer[current_head] = event_to_store;
-
-                self.published[current_head].store(true, .release);
-
-                _ = self.futex.fetchAdd(1, .release);
-                self.wake(1);
-
-                return;
             }
+            return event;
+        }
+
+        pub fn push(self: *Self, event: T) !void {
+            self.mutex.lockUncancelable(defaultIo());
+            defer self.mutex.unlock(defaultIo());
+
+            if (self.completed.load(.acquire)) return error.StreamCompleted;
+            if (self.queued == usable_capacity) return error.QueueFull;
+            if (self.queued == self.ring.len) try self.growRing();
+
+            self.ring[self.slot(self.queued)] = switch (self.ownership) {
+                .borrowed => event,
+                .owned => |clone_fn| try clone_fn(self.allocator, event),
+            };
+            self.queued += 1;
+
+            _ = self.futex.fetchAdd(1, .release);
+            self.wake(1);
         }
 
         pub fn pushBlocking(self: *Self, event: T) bool {
@@ -367,23 +354,8 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
 
-            const current_tail = self.tail.load(.acquire);
-            const current_head = self.head.load(.acquire);
-
-            if (current_tail == current_head) {
-                return null;
-            }
-
-            while (!self.published[current_tail].load(.acquire)) {
-                std.Thread.yield() catch {};
-            }
-
-            const event = self.ring_buffer[current_tail];
-
-            self.published[current_tail].store(false, .release);
-            self.tail.store((current_tail + 1) & RING_BUFFER_MASK, .release);
-
-            return event;
+            if (self.queued == 0) return null;
+            return self.takeFirst();
         }
 
         pub fn pollBatch(self: *Self, buffer: []T) usize {
@@ -391,25 +363,9 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             defer self.mutex.unlock(defaultIo());
 
             var count: usize = 0;
-            var current_tail = self.tail.load(.acquire);
-            const current_head = self.head.load(.acquire);
-
-            while (count < buffer.len and current_tail != current_head) {
-                while (!self.published[current_tail].load(.acquire)) {
-                    std.Thread.yield() catch {};
-                }
-
-                buffer[count] = self.ring_buffer[current_tail];
-
-                self.published[current_tail].store(false, .release);
-                current_tail = (current_tail + 1) & RING_BUFFER_MASK;
-                count += 1;
+            while (count < buffer.len and self.queued > 0) : (count += 1) {
+                buffer[count] = self.takeFirst();
             }
-
-            if (count > 0) {
-                self.tail.store(current_tail, .release);
-            }
-
             return count;
         }
 
@@ -417,25 +373,18 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
 
-            const current_tail = self.tail.load(.acquire);
-            const current_head = self.head.load(.acquire);
-            var read = current_tail;
-            var write = current_tail;
+            var kept: usize = 0;
             var evicted: usize = 0;
-            while (read != current_head) : (read = (read + 1) & RING_BUFFER_MASK) {
-                while (!self.published[read].load(.acquire)) {
-                    std.Thread.yield() catch {};
-                }
-                self.published[read].store(false, .release);
-                if (evicts(context, &self.ring_buffer[read])) {
+            for (0..self.queued) |index| {
+                const read = self.slot(index);
+                if (evicts(context, &self.ring[read])) {
                     evicted += 1;
                     continue;
                 }
-                if (write != read) self.ring_buffer[write] = self.ring_buffer[read];
-                self.published[write].store(true, .release);
-                write = (write + 1) & RING_BUFFER_MASK;
+                self.ring[self.slot(kept)] = self.ring[read];
+                kept += 1;
             }
-            self.head.store(write, .release);
+            self.queued = kept;
             return evicted;
         }
 
@@ -445,18 +394,8 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             while (true) {
                 self.mutex.lockUncancelable(defaultIo());
 
-                const current_tail = self.tail.load(.acquire);
-                const current_head = self.head.load(.acquire);
-
-                if (current_tail != current_head) {
-                    while (!self.published[current_tail].load(.acquire)) {
-                        std.Thread.yield() catch {};
-                    }
-
-                    const event = self.ring_buffer[current_tail];
-
-                    self.published[current_tail].store(false, .release);
-                    self.tail.store((current_tail + 1) & RING_BUFFER_MASK, .release);
+                if (self.queued > 0) {
+                    const event = self.takeFirst();
                     self.mutex.unlock(defaultIo());
                     return event;
                 }
@@ -492,24 +431,19 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         pub fn hasPending(self: *Self) bool {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
-            return self.head.load(.acquire) != self.tail.load(.acquire);
+            return self.queued > 0;
         }
 
         pub fn isFull(self: *Self) bool {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
-            const current_head = self.head.load(.acquire);
-            const current_tail = self.tail.load(.acquire);
-            return ((current_head + 1) & RING_BUFFER_MASK) == current_tail;
+            return self.queued == usable_capacity;
         }
 
         pub fn freeSlots(self: *Self) usize {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
-            const current_head = self.head.load(.acquire);
-            const current_tail = self.tail.load(.acquire);
-            const used = (current_head -% current_tail) & RING_BUFFER_MASK;
-            return (RING_BUFFER_SIZE - 1) - used;
+            return usable_capacity - self.queued;
         }
 
         pub fn getResult(self: *Self) ?R {
@@ -542,6 +476,44 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
 pub const AssistantMessageStream = EventStream(ai_types.AssistantMessageEvent, ai_types.AssistantMessage);
 
 pub const AssistantMessageEventStream = AssistantMessageStream;
+
+test "a stream holds no ring until an event arrives, and gives a large one back once drained" {
+    const TestStream = EventStream(u32, bool);
+    var stream = TestStream.init(std.testing.allocator);
+    defer stream.deinit();
+    try std.testing.expectEqual(@as(usize, 0), stream.ring.len);
+    try std.testing.expect(@sizeOf(TestStream) < 1024);
+
+    try stream.push(1);
+    try std.testing.expectEqual(@as(usize, TestStream.min_ring_len), stream.ring.len);
+    try std.testing.expectEqual(@as(?u32, 1), stream.poll());
+    try std.testing.expectEqual(@as(usize, TestStream.min_ring_len), stream.ring.len);
+
+    for (0..TestStream.usable_capacity) |i| try stream.push(@intCast(i));
+    try std.testing.expectEqual(@as(usize, TestStream.max_ring_len), stream.ring.len);
+    for (0..TestStream.usable_capacity) |i| try std.testing.expectEqual(@as(?u32, @intCast(i)), stream.poll());
+    try std.testing.expectEqual(@as(usize, 0), stream.ring.len);
+}
+
+test "growing keeps order when the queue has wrapped" {
+    const TestStream = EventStream(u32, bool);
+    var stream = TestStream.init(std.testing.allocator);
+    defer stream.deinit();
+    for (0..TestStream.min_ring_len) |i| try stream.push(@intCast(i));
+    for (0..10) |i| try std.testing.expectEqual(@as(?u32, @intCast(i)), stream.poll());
+    for (TestStream.min_ring_len..TestStream.min_ring_len + 40) |i| try stream.push(@intCast(i));
+    for (10..TestStream.min_ring_len + 40) |i| try std.testing.expectEqual(@as(?u32, @intCast(i)), stream.poll());
+}
+
+test "a failed growth leaves the queue intact" {
+    const TestStream = EventStream(u32, bool);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var stream = TestStream.init(failing.allocator());
+    defer stream.deinit();
+    for (0..TestStream.min_ring_len) |i| try stream.push(@intCast(i));
+    try std.testing.expectError(error.OutOfMemory, stream.push(99));
+    for (0..TestStream.min_ring_len) |i| try std.testing.expectEqual(@as(?u32, @intCast(i)), stream.poll());
+}
 
 test "EventStream push and poll" {
     const TestStream = EventStream(u32, bool);
