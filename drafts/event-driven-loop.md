@@ -251,9 +251,20 @@ need about 79 GB, which does not fit in 48 GiB. All of these must hold:
 ## Global tool budget
 
 Tools run behind one queue with a global limit, so 100,000 agents never means
-100,000 children. A `Shell` call costs two processes against the per-user limit of
-8,000, so the hard ceiling is 4,000 concurrent calls. Everything else the user
-runs shares that limit, so about half of it, 2,000 calls, is the practical ceiling.
+100,000 children. A simple foreground `Shell` call costs two processes against
+the per-user limit of 8,000, which suggests about 4,000 concurrent calls. Everything
+else the user runs shares that limit, so about half of it, 2,000 calls, is the
+practical figure. Both are estimates, not bounds:
+
+- A command can spawn any number of descendants, and nothing here limits them.
+- A background job (`run_in_background`) returns at once and its process group
+  lives until the session closes, so it would release its slot while its processes
+  stay. Background jobs need a separate quota, held for the job's lifetime.
+- Bounding descendants needs a per-call limit from the operating system, which is
+  not designed here.
+
+A process guard should therefore watch the real count and stop admitting tools
+near the limit, rather than trusting the arithmetic.
 
 The limit is a real trade-off. With a limit of 64, `working` at N=1,000 fell to 15
 runs per second, because a `sleep`-style tool holds a slot while doing nothing.
@@ -369,7 +380,7 @@ Read these numbers as a ceiling, not a forecast.
 
 The old loop keeps working through every stage until one switch-over. Line counts
 are changed production lines, and the ranges reflect uncertainty in the providers
-and the Hub. The total is about 8,400-14,500 lines in 60-100 pull requests.
+and the Hub. The total is about 8,500-14,700 lines in 60-100 pull requests.
 
 | Stage | Work | Lines | Merges alone | Gain |
 |---|---|---:|---|---|
@@ -378,7 +389,7 @@ and the Hub. The total is about 8,400-14,500 lines in 60-100 pull requests.
 | 2 | Extract `step` from `runLoop`, with a blocking driver executing actions | 1,500-2,500 | Yes, no behaviour change | Exhaustive tests |
 | 3 | Gates, timers and cancel as events | 400-700 | Yes | Gate threads go |
 | 4 | Non-blocking HTTP and TLS, split six providers, remove the bridges | 2,500-4,000 | Per provider | Model threads go |
-| 5 | `Shell`, file tools, MCP, background jobs, global tool budget | 800-1,500 | Per tool | Tool threads go |
+| 5 | `Shell`, file tools, MCP, background jobs, global tool budget, background-job quota, process guard | 900-1,700 | Per tool | Tool threads go |
 | 6 | Hub ready queue, group commit, `state` off the central thread | 1,000-2,000 | Yes | Removes the first bottleneck |
 | 7 | Make the new driver the default and delete the thread path | 300-600, and about 2,000 removed | Switch-over | Fixed threads |
 | 8 | Parking, journal on disk, session summaries, eviction | 800-1,500 | Yes | 100,000 agents |
