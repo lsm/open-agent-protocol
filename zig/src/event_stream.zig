@@ -35,6 +35,8 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         abandoned: std.atomic.Value(bool),
         allocator: std.mem.Allocator,
         wait_for_thread_on_deinit: bool = false,
+        inline_sink: ?*const fn (ctx: ?*anyopaque, event: T) bool = null,
+        inline_sink_ctx: ?*anyopaque = null,
         join_timeout_ms: u64 = DEINIT_THREAD_JOIN_TIMEOUT_MS,
         ownership: Ownership = .borrowed,
         retention: Retention,
@@ -223,6 +225,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         }
 
         pub fn pushBlocking(self: *Self, event: T) bool {
+            if (self.inline_sink) |sink| return sink(self.inline_sink_ctx, event);
             while (true) {
                 self.push(event) catch |err| switch (err) {
                     error.QueueFull => {

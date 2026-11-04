@@ -1304,64 +1304,76 @@ pub const Agent = struct {
         const initial_message_count = context.messages.items.len;
         var compacted_in_run = false;
 
-        const stream = if (messages.*) |msgs|
-            try agent_loop.agentLoop(self._allocator, msgs, &context, config)
-        else
-            try agent_loop.agentLoopContinue(self._allocator, &context, config);
+        const Sink = struct {
+            agent: *Agent,
+            model: ai_types.Model,
+            compacted_in_run: *bool,
 
-        defer {
-            if (stream.deinitAndDestroy()) self.freeRetiredMessages();
-        }
+            fn receive(ctx: ?*anyopaque, event: AgentEvent) bool {
+                const sink: *@This() = @ptrCast(@alignCast(ctx.?));
+                sink.handle(event) catch return false;
+                return true;
+            }
 
-        while (stream.wait()) |event| {
+            fn handle(sink: *@This(), event: AgentEvent) !void {
+                const agent = sink.agent;
+                const model_held = sink.model;
+                const compacted = sink.compacted_in_run;
             var owned_event = event;
-            defer owned_event.deinit(self._allocator);
+            defer owned_event.deinit(agent._allocator);
 
             switch (owned_event) {
                 .message_start => |e| {
-                    try self.setStreamMessage(e.message);
+                    try agent.setStreamMessage(e.message);
                 },
                 .message_update => |e| {
-                    try self.setStreamMessage(.{ .assistant = e.message });
+                    try agent.setStreamMessage(.{ .assistant = e.message });
                 },
                 .message_end => |e| {
-                    var cloned_message = try self.cloneMessage(e.message);
-                    errdefer cloned_message.deinit(self._allocator);
-                    try self._state.messages.append(self._allocator, cloned_message);
-                    self._state.clearStreamMessage();
+                    var cloned_message = try agent.cloneMessage(e.message);
+                    errdefer cloned_message.deinit(agent._allocator);
+                    try agent._state.messages.append(agent._allocator, cloned_message);
+                    agent._state.clearStreamMessage();
                 },
                 .tool_execution_start => |e| {
-                    try self._state.pending_tool_calls.put(e.tool_call_id, {});
+                    try agent._state.pending_tool_calls.put(e.tool_call_id, {});
                 },
                 .tool_execution_end => |e| {
-                    _ = self._state.pending_tool_calls.remove(e.tool_call_id);
+                    _ = agent._state.pending_tool_calls.remove(e.tool_call_id);
                 },
                 .compaction_end => |e| {
                     if (e.outcome == .completed) {
                         const current = current: {
-                            self._mutex.lockUncancelable(defaultIo());
-                            defer self._mutex.unlock(defaultIo());
-                            break :current self._state.model orelse model;
+                            agent._mutex.lockUncancelable(defaultIo());
+                            defer agent._mutex.unlock(defaultIo());
+                            break :current agent._state.model orelse model_held;
                         };
-                        try self.adoptCompactedHistory(e.text.slice(), current);
-                        compacted_in_run = true;
+                        try agent.adoptCompactedHistory(e.text.slice(), current);
+                        compacted.* = true;
                     }
                 },
                 .turn_end => |e| {
                     if (e.message.getErrorMessage()) |err| {
-                        self._state.error_message.deinit(self._allocator);
-                        self._state.error_message = types.OwnedSlice(u8).initOwned(try self._allocator.dupe(u8, err));
+                        agent._state.error_message.deinit(agent._allocator);
+                        agent._state.error_message = types.OwnedSlice(u8).initOwned(try agent._allocator.dupe(u8, err));
                     }
                 },
                 .agent_end => {
-                    self._state.is_streaming = false;
-                    self._state.terminal_sent = true;
-                    self._state.clearStreamMessage();
+                    agent._state.is_streaming = false;
+                    agent._state.terminal_sent = true;
+                    agent._state.clearStreamMessage();
                 },
                 else => {},
             }
 
-            self.emit(owned_event);
+            agent.emit(owned_event);
+            }
+        };
+        var sink = Sink{ .agent = self, .model = model, .compacted_in_run = &compacted_in_run };
+        const stream = try agent_loop.agentLoopInline(self._allocator, messages.*, &context, config, Sink.receive, &sink);
+
+        defer {
+            if (stream.deinitAndDestroy()) self.freeRetiredMessages();
         }
 
         if (compacted_in_run or context.messages.items.len > initial_message_count) {

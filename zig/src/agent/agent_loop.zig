@@ -2431,6 +2431,24 @@ pub fn agentLoop(
     return stream;
 }
 
+pub fn agentLoopInline(
+    allocator: std.mem.Allocator,
+    prompts: ?[]const ai_types.Message,
+    context: *AgentContext,
+    config: AgentLoopConfig,
+    sink: *const fn (ctx: ?*anyopaque, event: AgentEvent) bool,
+    sink_ctx: ?*anyopaque,
+) !*AgentEventStream {
+    const stream = try allocator.create(AgentEventStream);
+    stream.* = AgentEventStream.init(allocator);
+    stream.inline_sink = sink;
+    stream.inline_sink_ctx = sink_ctx;
+    runLoop(allocator, prompts, context, config, stream, &stream.retention) catch |err| {
+        stream.completeWithError(@errorName(err));
+    };
+    return stream;
+}
+
 pub fn agentLoopContinue(
     allocator: std.mem.Allocator,
     context: *AgentContext,
