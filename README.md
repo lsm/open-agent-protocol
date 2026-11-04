@@ -1,5 +1,7 @@
 # Open Agent Protocol
 
+**OXAP (formerly OAP)** is the project's name; the CLI rename to `oxap` with an `oapx` compatibility alias is planned in [Decision 0067](decisions/0067-the-project-is-named-oxap.md).
+
 Draft public-domain semantic protocol for agent software layers, agent loops,
 model IO, tools, resources, and adapters for existing agent SDKs.
 
