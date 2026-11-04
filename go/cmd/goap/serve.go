@@ -122,6 +122,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 
 	lines.flush(time.Second)
 	fmt.Fprintln(stderr, "goap: shutting down")
+	hub.EndSubscriptions()
 	httpShutdown, cancelHTTP := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelHTTP()
 	if err := httpServer.Shutdown(httpShutdown); err != nil {

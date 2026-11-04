@@ -67,7 +67,7 @@ func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	if err != nil {
 		return s.writeControl(streams, s.replayFailure(frame, err))
 	}
-	subscription, err := s.hub.Subscribe(streams, entry.ID(), serve.After(frame.RunID, after))
+	subscription, err := s.hub.Subscribe(streams, entry.ID(), serve.After(frame.RunID, after), serve.OneRun())
 	if err != nil {
 		return s.writeControl(streams, s.replayFailure(frame, err))
 	}

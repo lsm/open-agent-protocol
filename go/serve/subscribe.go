@@ -14,8 +14,9 @@ import (
 type SubscribeOption func(*subscribeOptions)
 
 type subscribeOptions struct {
-	runID protocol.RunID
-	after *uint64
+	runID  protocol.RunID
+	after  *uint64
+	oneRun bool
 }
 
 func After(runID protocol.RunID, sequence uint64) SubscribeOption {
@@ -24,6 +25,10 @@ func After(runID protocol.RunID, sequence uint64) SubscribeOption {
 		options.after = &value
 		options.runID = runID
 	}
+}
+
+func OneRun() SubscribeOption {
+	return func(options *subscribeOptions) { options.oneRun = true }
 }
 
 func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...SubscribeOption) (*Subscription, error) {
@@ -36,7 +41,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		option(&config)
 	}
 	if config.after == nil {
-		sub, joinedRun, joinedAt, open := entry.subscribe(h.queue)
+		sub, joinedRun, joinedAt, open := h.attach(entry)
 		if !open {
 			return nil, &SessionClosedError{ID: id}
 		}
@@ -53,7 +58,22 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 			return nil, ErrNoRunToResume
 		}
 	}
-	_, replay, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: runID, AfterSequence: *config.after})
+	sub := newSubscriber(h.queue, runID, 0)
+	if !config.oneRun {
+		var open bool
+		if sub, _, _, open = h.attach(entry); !open {
+			return nil, &SessionClosedError{ID: id}
+		}
+	}
+	runs := []protocol.RunID{runID}
+	if !config.oneRun {
+		runs = append(runs, entry.laterRuns(runID)...)
+	}
+	replays, err := resumeRuns(ctx, entry, runs, *config.after)
+	if err != nil {
+		entry.unsubscribe(sub)
+		sub.stop(nil)
+	}
 	var gap *base.ReplayGap
 	if errors.As(err, &gap) {
 		return nil, gap
@@ -61,20 +81,63 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	if err != nil {
 		return nil, err
 	}
-	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID, last: *config.after}, nil
+	positions := map[protocol.RunID]uint64{runID: *config.after}
+	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replays[0].stream, replaying: runID, later: replays[1:], oneRun: config.oneRun, run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
+}
+
+func (h *Hub) attach(entry *Session) (*subscriber, protocol.RunID, uint64, bool) {
+	sub, joinedRun, joinedAt, open := entry.subscribe(h.queue)
+	if open && h.ended.Load() {
+		entry.unsubscribe(sub)
+		sub.stop(nil)
+		return nil, "", 0, false
+	}
+	return sub, joinedRun, joinedAt, open
+}
+
+type resumedRun struct {
+	run    protocol.RunID
+	stream base.EventStream
+}
+
+func resumeRuns(ctx context.Context, entry *Session, runs []protocol.RunID, after uint64) ([]resumedRun, error) {
+	var replays []resumedRun
+	for _, run := range runs {
+		_, stream, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: run, AfterSequence: after})
+		if err != nil {
+			abandon(replays)
+			return nil, err
+		}
+		replays = append(replays, resumedRun{run: run, stream: stream})
+		after = 0
+	}
+	return replays, nil
+}
+
+func abandon(replays []resumedRun) {
+	for _, replay := range replays {
+		go func() {
+			for range replay.stream {
+			}
+		}()
+	}
 }
 
 type Subscription struct {
 	session *Session
 	ctx     context.Context
 
-	sub    *subscriber
-	replay base.EventStream
-	run    protocol.RunID
+	sub       *subscriber
+	replay    base.EventStream
+	replaying protocol.RunID
+	later     []resumedRun
+	oneRun    bool
+	run       protocol.RunID
 
 	last      uint64
 	lastRun   protocol.RunID
 	positions map[protocol.RunID]uint64
+	firstRun  uint64
 
 	joinedRun protocol.RunID
 	joinedAt  uint64
@@ -97,10 +160,22 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 		}
 		return protocol.Envelope{}, io.EOF
 	}
-	if s.sub != nil {
-		return s.nextLive()
+	for s.replay != nil {
+		envelope, err := s.nextReplay()
+		if !errors.Is(err, io.EOF) {
+			return envelope, err
+		}
+		s.replay = nil
+		if len(s.later) > 0 {
+			s.replay, s.replaying, s.last = s.later[0].stream, s.later[0].run, 0
+			s.later = s.later[1:]
+		}
 	}
-	return s.nextReplay()
+	if s.oneRun {
+		s.Close()
+		return protocol.Envelope{}, io.EOF
+	}
+	return s.nextLive()
 }
 
 func (s *Subscription) Close() {
@@ -114,15 +189,17 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 	for {
 		select {
 		case envelope := <-s.sub.ch:
-			s.observe(envelope)
-			return envelope, nil
+			if s.observe(envelope) {
+				return envelope, nil
+			}
 		case <-s.sub.finish:
 
 			for {
 				select {
 				case envelope := <-s.sub.ch:
-					s.observe(envelope)
-					return envelope, nil
+					if s.observe(envelope) {
+						return envelope, nil
+					}
 				default:
 					s.finished = true
 					if state := s.sub.terminal.Load(); state != nil {
@@ -153,23 +230,16 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 	select {
 	case result, ok := <-s.replay:
-		if !ok {
-			s.finished = true
+		return s.replayed(result, ok)
+	case <-s.sub.finish:
+		select {
+		case result, ok := <-s.replay:
+			return s.replayed(result, ok)
+		default:
+			abandon(append(s.later, resumedRun{stream: s.replay}))
+			s.later = nil
 			return protocol.Envelope{}, io.EOF
 		}
-		if result.Error != nil {
-
-			s.Close()
-			s.finished = true
-			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
-				s.err = &OverflowError{RunID: s.run, LastSequence: s.last}
-			} else {
-				s.err = result.Error
-			}
-			return protocol.Envelope{}, s.err
-		}
-		s.last = observedSequence(result.Envelope, s.last)
-		return result.Envelope, nil
 	case <-s.ctx.Done():
 		s.Close()
 		s.finished, s.err = true, s.ctx.Err()
@@ -177,37 +247,59 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 	}
 }
 
-func (s *Subscription) observe(envelope protocol.Envelope) {
+func (s *Subscription) replayed(result base.Result, ok bool) (protocol.Envelope, error) {
+	if !ok {
+		return protocol.Envelope{}, io.EOF
+	}
+	if result.Error != nil {
+
+		s.Close()
+		s.finished = true
+		if errors.Is(result.Error, base.ErrEventStreamOverflow) {
+			s.err = &OverflowError{RunID: s.replaying, LastSequence: s.last}
+		} else {
+			s.err = result.Error
+		}
+		return protocol.Envelope{}, s.err
+	}
+	s.last = observedSequence(result.Envelope, s.last)
+	if result.Envelope.Sequence != nil {
+		s.positions[result.Envelope.RunID] = *result.Envelope.Sequence
+	}
+	return result.Envelope, nil
+}
+
+func (s *Subscription) observe(envelope protocol.Envelope) bool {
+	if s.firstRun > 0 && s.session.serial(envelope.RunID) < s.firstRun {
+		s.sub.untrack(envelope.RunID)
+		return false
+	}
 	s.sub.acknowledge(envelope.RunID)
+	if envelope.Sequence != nil && *envelope.Sequence <= s.positions[envelope.RunID] {
+		return false
+	}
 	if envelope.RunID != s.lastRun {
 		s.lastRun = envelope.RunID
 		s.last = 0
 	}
 	s.last = observedSequence(envelope, s.last)
 	if envelope.Sequence == nil {
-		return
+		return true
 	}
 	if s.positions == nil {
 		s.positions = make(map[protocol.RunID]uint64)
 	}
-	if *envelope.Sequence > s.positions[envelope.RunID] {
-		s.positions[envelope.RunID] = *envelope.Sequence
-	}
+	s.positions[envelope.RunID] = *envelope.Sequence
+	return true
 }
 
 func (s *Subscription) detach() {
-	if s.sub != nil {
-		s.session.unsubscribe(s.sub)
-		s.sub.stop(nil)
-		return
-	}
+	s.session.unsubscribe(s.sub)
+	s.sub.stop(nil)
 	if s.replay != nil {
-		stream := s.replay
-		go func() {
-			for range stream {
-			}
-		}()
+		abandon([]resumedRun{{stream: s.replay}})
 	}
+	abandon(s.later)
 }
 
 type OverflowError struct {
