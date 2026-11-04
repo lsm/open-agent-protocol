@@ -1123,3 +1123,32 @@ func TestAProviderSilentPastTheFirstByteLimitIsRetried(t *testing.T) {
 		t.Fatalf("the provider was asked %d times, want 2", len(script.seen))
 	}
 }
+
+type silentChunks struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *silentChunks) Stream(ctx context.Context, request TurnRequest) Turn {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	request.Read = func() ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return ChunkStreamer{}.Stream(ctx, request)
+}
+
+func TestAChunkStreamWhoseOnlyEventIsItsStartStillTimesOut(t *testing.T) {
+	streamer := &silentChunks{}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: streamer, RetryDelay: time.Millisecond, FirstByteTimeout: 20 * time.Millisecond}, prompts("hi"))
+	drain(t, run)
+	if streamer.calls != maxTurnRetries+1 {
+		t.Fatalf("the provider was asked %d times, want %d: the start event must not count as a first byte", streamer.calls, maxTurnRetries+1)
+	}
+	final := run.Result().FinalMessage
+	if len(final.Parts) == 0 || final.Parts[0].Text == nil || final.Parts[0].Text.Text != firstByteFailure {
+		t.Errorf("the turn ended with %+v, want the first byte failure", final.Parts)
+	}
+}
