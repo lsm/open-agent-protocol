@@ -339,6 +339,7 @@ pub const Subscription = struct {
     held: bool = false,
     expires_ns: u64 = 0,
     detached: bool = false,
+    first_run: usize = 0,
 
     pub fn next(self: *Subscription) ?Delivery {
         const allocator = self.hub.allocator;
@@ -1809,6 +1810,10 @@ pub const Hub = struct {
                 _ = entry.subscribers.orderedRemove(index);
                 continue;
             }
+            if (cursor_index < subscription.first_run) {
+                index += 1;
+                continue;
+            }
             if (subscription.queue.items.len >= self.stream_queue) {
                 try self.markOverflow(entry, subscription, owned_run, subscription.highest);
                 _ = entry.subscribers.orderedRemove(index);
@@ -2046,6 +2051,10 @@ pub const Hub = struct {
         if (subscription.run_id.len > 0) self.allocator.free(subscription.run_id);
         subscription.run_id = owned;
         subscription.highest = after;
+        subscription.first_run = entry.cursors.items.len;
+        for (entry.cursors.items, 0..) |cursor, index| {
+            if (std.mem.eql(u8, cursor.run_id, named)) subscription.first_run = index;
+        }
         for (entry.journal.items) |kept| {
             if (!std.mem.eql(u8, kept.run_id, named)) continue;
             if (kept.sequence <= after) continue;
@@ -2916,7 +2925,7 @@ test "an any_directory entry opens a session in the directory asked for, through
     try testing.expectEqualStrings("/fixed", (try hub.work(arena, fixed)).directory);
 }
 
-test "a cursor sitting on a settled run's terminal stays open and hears the next run" {
+test "a cursor sitting on a settled run's terminal stays open, skips an earlier run and hears the next" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 3 });
@@ -2942,8 +2951,12 @@ test "a cursor sitting on a settled run's terminal stays open and hears the next
 
     _ = try hub.cancel(arena, "at-terminal", first.run_id.?);
     try hub.pump(testing.allocator, 0);
+    try testing.expect(settled.next() == null);
+
+    const later = try hub.submit(arena, "at-terminal", &request, "");
+    try hub.pump(testing.allocator, 0);
     const next = settled.next().?;
-    try testing.expectEqualStrings(first.run_id.?, next.run_id);
+    try testing.expectEqualStrings(later.run_id.?, next.run_id);
     try testing.expectEqual(Ending.open, settled.ending);
 }
 
