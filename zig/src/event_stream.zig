@@ -8,6 +8,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         pub const DEINIT_THREAD_JOIN_TIMEOUT_MS = 120_000;
         pub const THREAD_DONE_POLL_INTERVAL_MS = 5;
         const min_ring_len = 16;
+        const shrink_ring_len = 256;
         const max_ring_len = 1024;
         pub const usable_capacity = max_ring_len - 1;
 
@@ -183,7 +184,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             self.queued -= 1;
             if (self.queued == 0) {
                 self.first = 0;
-                if (self.ring.len > min_ring_len) {
+                if (self.ring.len >= shrink_ring_len) {
                     self.allocator.free(self.ring);
                     self.ring = &.{};
                 }
@@ -191,18 +192,32 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             return event;
         }
 
+        fn hasRoom(self: *Self) error{ StreamCompleted, QueueFull }!void {
+            if (self.completed.load(.acquire)) return error.StreamCompleted;
+            if (self.queued == usable_capacity) return error.QueueFull;
+        }
+
         pub fn push(self: *Self, event: T) !void {
+            var stored = event;
+            var owned = false;
+            errdefer if (owned) self.deinitGenericEvent(&stored);
+            if (self.ownership == .owned) {
+                {
+                    self.mutex.lockUncancelable(defaultIo());
+                    defer self.mutex.unlock(defaultIo());
+                    try self.hasRoom();
+                }
+                stored = try self.ownership.owned(self.allocator, event);
+                owned = true;
+            }
+
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
 
-            if (self.completed.load(.acquire)) return error.StreamCompleted;
-            if (self.queued == usable_capacity) return error.QueueFull;
+            try self.hasRoom();
             if (self.queued == self.ring.len) try self.growRing();
 
-            self.ring[self.slot(self.queued)] = switch (self.ownership) {
-                .borrowed => event,
-                .owned => |clone_fn| try clone_fn(self.allocator, event),
-            };
+            self.ring[self.slot(self.queued)] = stored;
             self.queued += 1;
 
             _ = self.futex.fetchAdd(1, .release);
@@ -488,6 +503,10 @@ test "a stream holds no ring until an event arrives, and gives a large one back 
     try std.testing.expectEqual(@as(usize, TestStream.min_ring_len), stream.ring.len);
     try std.testing.expectEqual(@as(?u32, 1), stream.poll());
     try std.testing.expectEqual(@as(usize, TestStream.min_ring_len), stream.ring.len);
+
+    for (0..TestStream.shrink_ring_len / 2) |i| try stream.push(@intCast(i));
+    for (0..TestStream.shrink_ring_len / 2) |i| try std.testing.expectEqual(@as(?u32, @intCast(i)), stream.poll());
+    try std.testing.expectEqual(@as(usize, TestStream.shrink_ring_len / 2), stream.ring.len);
 
     for (0..TestStream.usable_capacity) |i| try stream.push(@intCast(i));
     try std.testing.expectEqual(@as(usize, TestStream.max_ring_len), stream.ring.len);
