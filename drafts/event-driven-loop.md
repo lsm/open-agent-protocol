@@ -75,8 +75,11 @@ is the loop after the polling fixes (#1588, #1592).
 - Shrinking the ring cuts memory by 58-72% for parked agents and 20% in
   `working`. For a parked agent the ring costs more than its threads do.
 - The outer-thread and ring builds were throwaway experiments. They ran the
-  benchmark but not the full test suite, and a smaller ring has an untested effect
-  on slow consumers.
+  benchmark but not the full test suite.
+- A smaller fixed ring is not safe to ship. `SessionRuntime.push` drops events on
+  a full queue, so 64 slots would lose streamed output under load, and the
+  benchmark does not check for that. Stage 0 keeps the 1,024 limit and makes the
+  storage grow on demand instead, which saves nearly as much (#1612).
 
 These fixes are worth doing first, but thread count stays linear. They top out at
 about 6,100 agents at a gate or 3,000-4,000 in a model call.
@@ -370,7 +373,7 @@ and the Hub. The total is about 8,400-14,500 lines in 60-100 pull requests.
 
 | Stage | Work | Lines | Merges alone | Gain |
 |---|---|---:|---|---|
-| 0 | Smaller event ring, HTTP connection reuse | 300-500 | Yes | Memory and `TIME_WAIT` improve at once |
+| 0 | Event ring that grows on demand, HTTP connection reuse | 300-500 | Yes | Memory and `TIME_WAIT` improve at once |
 | 1 | Reactor and bounded pool on `kqueue` and `epoll`, unused | 800-1,200 | Yes | None yet |
 | 2 | Extract `step` from `runLoop`, with a blocking driver executing actions | 1,500-2,500 | Yes, no behaviour change | Exhaustive tests |
 | 3 | Gates, timers and cancel as events | 400-700 | Yes | Gate threads go |
