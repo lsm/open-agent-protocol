@@ -591,22 +591,34 @@ impl Serving {
                 "subscription is the id of the request that started it",
             )
         })?;
-        let mut ending = Vec::new();
-        if let Some(pumps) = lock(&self.pumps).as_mut() {
-            let (matched, kept) = std::mem::take(pumps)
-                .into_iter()
-                .partition(|pump| pump.id == id);
-            ending = matched;
-            *pumps = kept;
-        }
+        let ending: Vec<_> = lock(&self.pumps)
+            .iter()
+            .flatten()
+            .filter(|pump| pump.id == id)
+            .map(|pump| {
+                pump.canceller.cancel();
+                pump.stopped.clone()
+            })
+            .collect();
         let deadline = std::time::Instant::now() + SHUTDOWN_WINDOW;
-        for pump in &ending {
-            pump.canceller.cancel();
-            while !pump.stopped.load(std::sync::atomic::Ordering::SeqCst)
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+        let all_stopped = || {
+            ending
+                .iter()
+                .all(|stopped| stopped.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        while !all_stopped() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if let Some(pumps) = lock(&self.pumps).as_mut() {
+            pumps.retain(|pump| {
+                pump.id != id || !pump.stopped.load(std::sync::atomic::Ordering::SeqCst)
+            });
+        }
+        if !all_stopped() {
+            return Err(wire(
+                "busy",
+                "the subscription has not stopped because its output is stalled; send this request again",
+            ));
         }
         Ok(Value::Null)
     }
