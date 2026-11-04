@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1042,13 +1043,16 @@ func TestARunThatIsCancelledWhileTheBufferIsFullStopsRatherThanWaitsForever(t *t
 func TestClassifySortsProviderFailuresIntoFourClasses(t *testing.T) {
 	cases := map[string]errorClass{
 		"read error": errorTransient,
-		"the provider timed out before the first byte": errorTransient,
-		"openai request failed: HTTP 503":              errorTransient,
-		"openai request failed: HTTP 429":              errorThrottled,
-		"Rate limit reached":                           errorThrottled,
-		"HTTP 400 (prompt is too long)":                errorContextOverflow,
-		"HTTP 401 (read error in the prompt)":          errorFatal,
-		"provider said no":                             errorFatal,
+		"the provider timed out before the first byte":                       errorTransient,
+		"openai request failed: HTTP 503":                                    errorTransient,
+		"openai request failed: HTTP 429":                                    errorThrottled,
+		"Rate limit reached":                                                 errorThrottled,
+		"HTTP 400 (prompt is too long)":                                      errorContextOverflow,
+		"HTTP 401 (read error in the prompt)":                                errorFatal,
+		"provider said no":                                                   errorFatal,
+		"the input token count (9000) exceeds the maximum; please try again": errorContextOverflow,
+		"HTTP 413 status code (no body)":                                     errorContextOverflow,
+		"too many tokens":                                                    errorContextOverflow,
 	}
 	for reason, want := range cases {
 		if got := classify(reason); got != want {
@@ -1109,6 +1113,10 @@ func TestACancelDuringTheRetryWaitStartsNoFurtherAttempt(t *testing.T) {
 	if len(script.seen) != 1 {
 		t.Fatalf("the provider was asked %d times, want 1", len(script.seen))
 	}
+	final := run.Result().FinalMessage
+	if len(final.Parts) == 0 || final.Parts[0].Text == nil || final.Parts[0].Text.Text != "the run was cancelled" {
+		t.Errorf("the turn ended with %+v, want it to say the run was cancelled", final.Parts)
+	}
 }
 
 func TestAProviderSilentPastTheFirstByteLimitIsRetried(t *testing.T) {
@@ -1151,5 +1159,61 @@ func TestAChunkStreamWhoseOnlyEventIsItsStartStillTimesOut(t *testing.T) {
 	final := run.Result().FinalMessage
 	if len(final.Parts) == 0 || final.Parts[0].Text == nil || final.Parts[0].Text.Text != firstByteFailure {
 		t.Errorf("the turn ended with %+v, want the first byte failure", final.Parts)
+	}
+}
+
+type lateRefusal struct {
+	calls atomic.Int32
+}
+
+func (s *lateRefusal) Stream(ctx context.Context, request TurnRequest) Turn {
+	s.calls.Add(1)
+	out := make(chan provider.Event, 1)
+	go func() {
+		defer close(out)
+		<-ctx.Done()
+		out <- provider.Event{Kind: provider.EventError, Reason: "HTTP 401 (bad key)"}
+	}()
+	return Turn{Events: out}
+}
+
+func TestARefusalThatArrivesAfterTheWatchdogKeepsItsOwnReason(t *testing.T) {
+	streamer := &lateRefusal{}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: streamer, RetryDelay: time.Millisecond, FirstByteTimeout: 10 * time.Millisecond}, prompts("hi"))
+	drain(t, run)
+	if got := streamer.calls.Load(); got != 1 {
+		t.Fatalf("the provider was asked %d times, want 1: its refusal is fatal", got)
+	}
+	final := run.Result().FinalMessage
+	if len(final.Parts) == 0 || final.Parts[0].Text == nil || final.Parts[0].Text.Text != "HTTP 401 (bad key)" {
+		t.Errorf("the turn ended with %+v, want the provider's reason", final.Parts)
+	}
+}
+
+type silentAfterDelta struct {
+	calls atomic.Int32
+}
+
+func (s *silentAfterDelta) Stream(ctx context.Context, request TurnRequest) Turn {
+	s.calls.Add(1)
+	out := make(chan provider.Event, 1)
+	go func() {
+		defer close(out)
+		out <- provider.Event{Kind: provider.EventTextDelta, Delta: "half"}
+		<-ctx.Done()
+	}()
+	return Turn{Events: out}
+}
+
+func TestAStreamThatGoesSilentAfterOutputFailsAtTheIdleLimit(t *testing.T) {
+	streamer := &silentAfterDelta{}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: streamer, RetryDelay: time.Millisecond, IdleTimeout: 20 * time.Millisecond}, prompts("hi"))
+	drain(t, run)
+	if got := streamer.calls.Load(); got != 1 {
+		t.Fatalf("the provider was asked %d times, want 1: output was already shown", got)
+	}
+	final := run.Result().FinalMessage
+	if len(final.Parts) == 0 || final.Parts[0].Text == nil || final.Parts[0].Text.Text != idleFailure {
+		t.Errorf("the turn ended with %+v, want the idle failure", final.Parts)
 	}
 }

@@ -17,7 +17,25 @@ const (
 
 var httpStatus = regexp.MustCompile(`HTTP (\d+)`)
 
-var overflowTexts = []string{"prompt is too long", "context_length_exceeded", "maximum context length", "context window"}
+var statusWithoutBody = regexp.MustCompile(`(400|413).*\(no body\)`)
+
+var overflowTexts = []string{
+	"prompt is too long",
+	"input is too long for requested model",
+	"exceeds the context window",
+	"maximum prompt length is",
+	"reduce the length of the messages",
+	"maximum context length is",
+	"exceeds the limit of",
+	"exceeds the available context size",
+	"greater than the context length",
+	"context window exceeds limit",
+	"exceeded model token limit",
+	"context_length_exceeded",
+	"context length exceeded",
+	"too many tokens",
+	"token limit exceeded",
+}
 
 var throttledTexts = []string{"rate limit", "ratelimit", "too many requests", "resource exhausted"}
 
@@ -25,7 +43,7 @@ var transientTexts = []string{"overloaded", "service unavailable", "temporarily 
 
 func classify(reason string) errorClass {
 	text := strings.ToLower(reason)
-	if containsAny(text, overflowTexts) {
+	if containsAny(text, overflowTexts) || statusWithoutBody.MatchString(text) || strings.Contains(text, "input token count") && strings.Contains(text, "exceeds the maximum") {
 		return errorContextOverflow
 	}
 	if match := httpStatus.FindStringSubmatch(reason); match != nil {

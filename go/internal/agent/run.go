@@ -19,7 +19,9 @@ const (
 	maxTurnRetries          = 2
 	defaultRetryDelay       = time.Second
 	defaultFirstByteTimeout = 180 * time.Second
+	defaultIdleTimeout      = 600 * time.Second
 	firstByteFailure        = "the provider timed out before the first byte"
+	idleFailure             = "the provider stream timed out"
 )
 
 type Config struct {
@@ -29,6 +31,7 @@ type Config struct {
 	Options          provider.StreamOptions
 	RetryDelay       time.Duration
 	FirstByteTimeout time.Duration
+	IdleTimeout      time.Duration
 }
 
 type Result struct {
@@ -368,8 +371,11 @@ func (r *Run) errorContent(reason string) provider.AssistantContent {
 func (r *Run) streamTurn(history []provider.Message) (provider.AssistantContent, string) {
 	for attempt := 0; ; attempt++ {
 		outcome := r.streamOnce(history)
-		if outcome.refusal == "" || outcome.shown || attempt >= maxTurnRetries || !retryable(outcome.refusal) || !r.waitToRetry(attempt) {
+		if outcome.refusal == "" || outcome.shown || attempt >= maxTurnRetries || !retryable(outcome.refusal) {
 			return outcome.assistant, outcome.closedWithout
+		}
+		if !r.waitToRetry(attempt) {
+			return r.errorContent("the run was cancelled"), ""
 		}
 	}
 }
@@ -403,6 +409,10 @@ func (r *Run) streamOnce(history []provider.Message) turnOutcome {
 	}
 	ctx, cancel := context.WithCancel(r.ctx)
 	defer cancel()
+	idle := r.config.IdleTimeout
+	if idle == 0 {
+		idle = defaultIdleTimeout
+	}
 	var stalled atomic.Bool
 	watchdog := time.AfterFunc(limit, func() {
 		stalled.Store(true)
@@ -417,9 +427,11 @@ func (r *Run) streamOnce(history []provider.Message) turnOutcome {
 	var assistant *provider.AssistantContent
 	refusal := ""
 	shown := false
+	started := false
 	for event := range turn.Events {
 		if event.Kind != provider.EventStart && event.Kind != provider.EventKeepalive {
-			watchdog.Stop()
+			started = true
+			watchdog.Reset(idle)
 		}
 		switch event.Kind {
 		case provider.EventTextDelta:
@@ -442,8 +454,11 @@ func (r *Run) streamOnce(history []provider.Message) turnOutcome {
 	if r.ctx.Err() != nil {
 		return turnOutcome{assistant: r.errorContent("the run was cancelled")}
 	}
-	if stalled.Load() {
+	if refusal == "" && stalled.Load() {
 		refusal = firstByteFailure
+		if started {
+			refusal = idleFailure
+		}
 	}
 	if refusal != "" {
 		return turnOutcome{assistant: r.errorContent(refusal), refusal: refusal, shown: shown}
