@@ -115,6 +115,9 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 			}
 		}
 		if es.inflight == nil {
+			if es.terminal {
+				return protocol.Envelope{}, es.stop(io.EOF)
+			}
 			if es.response == nil {
 				if err := es.connect(); err != nil {
 					return protocol.Envelope{}, es.stop(err)

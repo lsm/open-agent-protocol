@@ -504,7 +504,9 @@ because the window such a model arrives with is this repository's generic defaul
 than a statement about the model — the reply says so, and with it that the provider may
 refuse a request that size. A refusal is a limit on what this repository will ask for,
 not a claim about what the provider accepts: a window above what a model reports still
-fails the turn with the provider's own overflow error, and `/compact` is the way out.
+draws the provider's own overflow error. The loop then withholds the largest tool results
+from the request, replacing each with a short note and leaving the history as it was, and
+retries. If that cannot make it fit, the turn fails and `/compact` is the way out.
 
 A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
 it is still there next session, and `/context default` removes the member rather than

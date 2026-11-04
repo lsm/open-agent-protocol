@@ -8,7 +8,6 @@ const event_stream_module = @import("event_stream");
 const types = @import("agent_types");
 const permission = @import("permission");
 const json_writer = @import("json_writer");
-const owned_slice_mod = @import("owned_slice");
 
 pub const AgentEvent = types.AgentEvent;
 pub const AgentEventStream = types.AgentEventStream;
@@ -1063,8 +1062,61 @@ const turn_retry_base_delay_ms: u32 = 1000;
 const turn_retry_budget_ms: i64 = 600_000;
 const failed_after_output_note = "after output was shown, so it was not retried";
 
+const withheld_result_text = "[This tool result was too large for the model's context window and was withheld.]";
+const withheld_result_parts = [_]ai_types.UserContentPart{.{ .text = .{ .text = withheld_result_text } }};
+const min_withheld_result_bytes: usize = 4096;
+const max_withheld_results: usize = 4;
+
+fn toolResultBytes(message: ai_types.ToolResultMessage) usize {
+    var total: usize = 0;
+    for (message.content) |part| total += switch (part) {
+        .text => |text| text.text.len,
+        .image => |image| image.data.len,
+    };
+    return total;
+}
+
+const WithheldResults = struct {
+    ids: [max_withheld_results][]const u8 = undefined,
+    len: usize = 0,
+
+    fn holds(self: *const WithheldResults, tool_call_id: []const u8) bool {
+        for (self.ids[0..self.len]) |id| {
+            if (std.mem.eql(u8, id, tool_call_id)) return true;
+        }
+        return false;
+    }
+
+    fn withholdLargest(self: *WithheldResults, history: []const ai_types.Message) bool {
+        if (self.len == max_withheld_results) return false;
+        var largest: ?[]const u8 = null;
+        var largest_bytes: usize = min_withheld_result_bytes - 1;
+        for (history) |message| {
+            if (message != .tool_result or self.holds(message.tool_result.tool_call_id)) continue;
+            const bytes = toolResultBytes(message.tool_result);
+            if (bytes <= largest_bytes) continue;
+            largest_bytes = bytes;
+            largest = message.tool_result.tool_call_id;
+        }
+        self.ids[self.len] = largest orelse return false;
+        self.len += 1;
+        return true;
+    }
+
+    fn apply(self: *const WithheldResults, allocator: std.mem.Allocator, history: []const ai_types.Message) ![]ai_types.Message {
+        const copy = try allocator.dupe(ai_types.Message, history);
+        for (copy) |*message| {
+            if (message.* != .tool_result or !self.holds(message.tool_result.tool_call_id)) continue;
+            message.tool_result.content = &withheld_result_parts;
+            message.tool_result.details_json = ai_types.OwnedSlice(u8).initBorrowed("");
+        }
+        return copy;
+    }
+};
+
 const TurnRetry = struct {
     started_ms: i64,
+    withheld: *WithheldResults,
     attempt: u8 = 0,
     delay_ms: u64 = 0,
 
@@ -1076,7 +1128,11 @@ const TurnRetry = struct {
         };
     }
 
-    fn claim(self: *TurnRetry, error_text: []const u8, max_delay_ms: u32) bool {
+    fn claim(self: *TurnRetry, error_text: []const u8, max_delay_ms: u32, history: []const ai_types.Message) bool {
+        if (retry.classifyError(error_text) == .context_overflow) {
+            self.delay_ms = 0;
+            return self.withheld.withholdLargest(history);
+        }
         if (self.attempt >= max_turn_retries or !eligible(error_text)) return false;
         if (compat.time.nowMillis() - self.started_ms >= turn_retry_budget_ms) return false;
         const backoff = retry.calculateDelay(self.attempt, turn_retry_base_delay_ms, max_delay_ms);
@@ -1091,8 +1147,9 @@ fn streamRetriedTurn(
     context: *AgentContext,
     config: AgentLoopConfig,
     event_stream: *AgentEventStream,
+    withheld: *WithheldResults,
 ) !ai_types.AssistantMessage {
-    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis() };
+    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis(), .withheld = withheld };
     while (true) {
         return streamAssistantResponse(allocator, context, config, event_stream, &turn_retry) catch |err| {
             if (err != error.TurnRetryable) return err;
@@ -1113,6 +1170,14 @@ fn streamAssistantResponse(
     turn_retry: *TurnRetry,
 ) !ai_types.AssistantMessage {
     var messages = context.messagesSlice();
+
+    var request_messages: ?[]ai_types.Message = null;
+    defer if (request_messages) |copy| allocator.free(copy);
+
+    if (turn_retry.withheld.len > 0) {
+        request_messages = try turn_retry.withheld.apply(allocator, messages);
+        messages = request_messages.?;
+    }
 
     var transformed_messages: ?[]const ai_types.Message = null;
     defer if (transformed_messages) |tm| allocator.free(tm);
@@ -1168,7 +1233,7 @@ fn streamAssistantResponse(
 
     while (provider_stream.wait()) |provider_event| {
         const output_shown = message_started;
-        if (provider_event == .@"error" and !output_shown and turn_retry.claim(provider_event.@"error".err.error_message.slice(), max_delay_ms)) {
+        if (provider_event == .@"error" and !output_shown and turn_retry.claim(provider_event.@"error".err.error_message.slice(), max_delay_ms, context.messagesSlice())) {
             if (provider_stream.ownership.isOwned()) {
                 var owned_error_event = provider_event;
                 ai_types.deinitAssistantMessageEvent(allocator, &owned_error_event);
@@ -1270,7 +1335,7 @@ fn streamAssistantResponse(
 
     if (final_message == null and !message_started) {
         if (provider_stream.getError()) |provider_error| {
-            if (turn_retry.claim(provider_error, max_delay_ms)) return error.TurnRetryable;
+            if (turn_retry.claim(provider_error, max_delay_ms, context.messagesSlice())) return error.TurnRetryable;
         }
     }
 
@@ -1339,30 +1404,15 @@ fn makeProviderErrorAssistantMessage(
 }
 
 const LoopState = struct {
-    messages: std.ArrayList(ai_types.Message),
     iterations: u32,
     final_message: ?ai_types.AssistantMessage,
 
     fn deinit(self: *LoopState, allocator: std.mem.Allocator) void {
-        for (self.messages.items) |*msg| {
-            msg.deinit(allocator);
-        }
-        self.messages.deinit(allocator);
         if (self.final_message) |*fm| {
             fm.deinit(allocator);
         }
     }
 };
-
-fn appendClonedStateMessage(
-    messages: *std.ArrayList(ai_types.Message),
-    allocator: std.mem.Allocator,
-    msg: ai_types.Message,
-) !void {
-    var cloned = try ai_types.cloneMessage(allocator, msg);
-    errdefer cloned.deinit(allocator);
-    try messages.append(allocator, cloned);
-}
 
 fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_types.AssistantMessage) !void {
     var cloned = try ai_types.cloneAssistantMessage(allocator, msg);
@@ -1654,12 +1704,147 @@ test "an error event before any output retries, and running out of retries carri
     try std.testing.expect(!exhausted_outcome.noted_after_output);
 }
 
+const OverflowCtx = struct {
+    limit: usize = 6000,
+    rename_ids: bool = false,
+    calls: usize = 0,
+    placeholders_seen: usize = 0,
+    small_result_intact: bool = true,
+};
+
+fn overflowStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    const overflow: *OverflowCtx = @ptrCast(@alignCast(ctx.?));
+    overflow.calls += 1;
+    overflow.placeholders_seen = 0;
+    var total: usize = 0;
+    for (context.messages) |message| {
+        if (message != .tool_result) continue;
+        total += toolResultBytes(message.tool_result);
+        const text = message.tool_result.content[0].text.text;
+        if (std.mem.eql(u8, text, withheld_result_text)) overflow.placeholders_seen += 1;
+        if (std.mem.eql(u8, message.tool_result.tool_call_id, "small") and !std.mem.eql(u8, text, "small output")) overflow.small_result_intact = false;
+    }
+    if (total <= overflow.limit) {
+        var answered = ReplyCtx{ .text = "recovered", .stop_reason = .stop };
+        return replyStream(&answered, model, context, options, allocator);
+    }
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    stream_ptr.completeWithError("anthropic request failed: HTTP 400 (invalid_request_error: prompt is too long)");
+    return stream_ptr;
+}
+
+fn renameToolResults(ctx: ?*anyopaque, messages: []const ai_types.Message, allocator: std.mem.Allocator) anyerror![]const ai_types.Message {
+    _ = ctx;
+    const renamed = try allocator.dupe(ai_types.Message, messages);
+    for (renamed) |*message| {
+        if (message.* == .tool_result) message.tool_result.tool_call_id = "renamed";
+    }
+    return renamed;
+}
+
+fn appendToolResult(context: *AgentContext, id: []const u8, text: []const u8) !void {
+    const parts = [_]ai_types.UserContentPart{.{ .text = .{ .text = text } }};
+    try context.appendMessage(try ai_types.cloneMessage(std.testing.allocator, .{ .tool_result = .{
+        .tool_call_id = id,
+        .tool_name = "read",
+        .content = &parts,
+        .is_error = false,
+        .timestamp = 0,
+    } }));
+}
+
+fn runOverflowTurn(overflow: *OverflowCtx, sizes: []const usize) !FlakyOutcome {
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    try appendToolResult(&context, "small", "small output");
+    const ids = [_][]const u8{ "big-0", "big-1", "big-2", "big-3", "big-4", "big-5" };
+    for (sizes, 0..) |size, index| {
+        const text = try std.testing.allocator.alloc(u8, size);
+        defer std.testing.allocator.free(text);
+        @memset(text, 'x');
+        try appendToolResult(&context, ids[index], text);
+    }
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = testModel(),
+        .protocol = .{ .stream_fn = overflowStream, .ctx = overflow },
+        .max_iterations = 1,
+        .transform_context_fn = if (overflow.rename_ids) renameToolResults else null,
+    }, events, &events.retention);
+
+    for (sizes, 0..) |size, index| {
+        try std.testing.expectEqual(size, toolResultBytes(context.messages.items[index + 1].tool_result));
+    }
+
+    var outcome = FlakyOutcome{};
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        if (mutable == .turn_end) {
+            outcome.final_error = mutable.turn_end.message.stop_reason == .@"error";
+            outcome.final_text = mutable.turn_end.message.content.len > 0 and mutable.turn_end.message.content[0] == .text and std.mem.eql(u8, mutable.turn_end.message.content[0].text.text, "recovered");
+        }
+    }
+    return outcome;
+}
+
+test "an overflow withholds the largest tool result from the request and leaves the history alone" {
+    var overflow = OverflowCtx{};
+    const outcome = try runOverflowTurn(&overflow, &.{ 5000, 9000 });
+    try std.testing.expectEqual(@as(usize, 2), overflow.calls);
+    try std.testing.expectEqual(@as(usize, 1), overflow.placeholders_seen);
+    try std.testing.expect(overflow.small_result_intact);
+    try std.testing.expect(outcome.final_text);
+}
+
+test "withholding reaches a result whose id a context transform changes" {
+    var overflow = OverflowCtx{ .rename_ids = true };
+    const outcome = try runOverflowTurn(&overflow, &.{9000});
+    try std.testing.expectEqual(@as(usize, 2), overflow.calls);
+    try std.testing.expectEqual(@as(usize, 1), overflow.placeholders_seen);
+    try std.testing.expect(outcome.final_text);
+}
+
+test "an overflow keeps withholding results until the request fits" {
+    var overflow = OverflowCtx{};
+    const outcome = try runOverflowTurn(&overflow, &.{ 5000, 6000, 7000 });
+    try std.testing.expectEqual(@as(usize, 3), overflow.calls);
+    try std.testing.expectEqual(@as(usize, 2), overflow.placeholders_seen);
+    try std.testing.expect(outcome.final_text);
+}
+
+test "withholding stops at its limit and the overflow ends the run" {
+    var overflow = OverflowCtx{ .limit = 100 };
+    const outcome = try runOverflowTurn(&overflow, &.{ 5000, 5000, 5000, 5000, 5000, 5000 });
+    try std.testing.expectEqual(@as(usize, max_withheld_results + 1), overflow.calls);
+    try std.testing.expect(outcome.final_error);
+}
+
+test "an overflow with no large tool result ends the run" {
+    var overflow = OverflowCtx{ .limit = 5 };
+    const outcome = try runOverflowTurn(&overflow, &.{});
+    try std.testing.expectEqual(@as(usize, 1), overflow.calls);
+    try std.testing.expect(outcome.final_error);
+}
+
 test "no retry starts once the turn has used its time budget" {
     const now = compat.time.nowMillis();
-    var fresh = TurnRetry{ .started_ms = now };
-    try std.testing.expect(fresh.claim("Provider protocol stream timed out", 1));
-    var spent = TurnRetry{ .started_ms = now - turn_retry_budget_ms };
-    try std.testing.expect(!spent.claim("Provider protocol stream timed out", 1));
+    var withheld = WithheldResults{};
+    var fresh = TurnRetry{ .started_ms = now, .withheld = &withheld };
+    try std.testing.expect(fresh.claim("Provider protocol stream timed out", 1, &.{}));
+    var spent = TurnRetry{ .started_ms = now - turn_retry_budget_ms, .withheld = &withheld };
+    try std.testing.expect(!spent.claim("Provider protocol stream timed out", 1, &.{}));
 }
 
 test "a fatal failure after visible output carries no retry note" {
@@ -1676,7 +1861,7 @@ test "a failure the provider already retried is not retried again" {
     try std.testing.expect(outcome.final_error);
 }
 
-test "a fatal or overflow failure is not retried" {
+test "a fatal failure, or an overflow with nothing to withhold, is not retried" {
     for ([_][]const u8{ "provider said no", "prompt is too long: 9000 tokens > 8192 maximum" }) |failure| {
         var flaky = FlakyCtx{ .failure = failure, .failures_left = 1 };
         const outcome = try runFlakyTurn(&flaky);
@@ -2004,8 +2189,8 @@ fn runLoop(
     event_stream: *AgentEventStream,
     retained: *types.StreamRetention,
 ) !void {
+    var withheld = WithheldResults{};
     var state = LoopState{
-        .messages = std.ArrayList(ai_types.Message).empty,
         .iterations = 0,
         .final_message = null,
     };
@@ -2027,7 +2212,6 @@ fn runLoop(
                 .steering = config.prompts_are_steering,
             } });
 
-            try appendClonedStateMessage(&state.messages, allocator, prompt);
         }
     }
 
@@ -2077,7 +2261,6 @@ fn runLoop(
                         try pushAgentEvent(event_stream, .{ .message_end = .{
                             .message = request,
                         } });
-                        try appendClonedStateMessage(&state.messages, allocator, request);
                     }
                     if (runCancelled(config)) {
                         ended_before_cap = true;
@@ -2102,7 +2285,6 @@ fn runLoop(
                             .message = steering_msg,
                             .steering = true,
                         } });
-                        try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                     }
                     allocator.free(msgs);
                 } else {
@@ -2117,6 +2299,7 @@ fn runLoop(
                 context,
                 turn_config,
                 event_stream,
+                &withheld,
             ) catch |err| {
                 const error_content = [_]ai_types.AssistantContent{.{
                     .text = .{ .text = "" },
@@ -2133,7 +2316,6 @@ fn runLoop(
                     .is_owned = false,
                 };
                 try setFinalMessage(&state, allocator, error_msg);
-                try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = error_msg });
 
                 const final_error_msg = state.final_message orelse error_msg;
                 try pushAgentEvent(event_stream, .{ .turn_end = .{
@@ -2151,7 +2333,6 @@ fn runLoop(
             var message_transferred = false;
             errdefer if (loop_owns_message and !message_transferred) retained.park(assistant_message);
             try setFinalMessage(&state, allocator, assistant_message);
-            try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
             const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, turn_config.model) else null;
             if (raised) |higher| turn_config.max_tokens = higher;
@@ -2197,7 +2378,6 @@ fn runLoop(
                                         .message = steering_msg,
                                         .steering = true,
                                     } });
-                                    try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                                 }
                                 allocator.free(queued_steering);
                                 continue;
@@ -2217,7 +2397,6 @@ fn runLoop(
                                     try pushAgentEvent(event_stream, .{ .message_end = .{
                                         .message = follow_up,
                                     } });
-                                    try appendClonedStateMessage(&state.messages, allocator, follow_up);
                                 }
                                 allocator.free(follow_ups);
                                 continue :outer;
@@ -2250,7 +2429,6 @@ fn runLoop(
                     try pushAgentEvent(event_stream, .{ .message_end = .{
                         .message = request,
                     } });
-                    try appendClonedStateMessage(&state.messages, allocator, request);
                 },
                 .called_tools => {
                     var tool_result = try executeToolCalls(
@@ -2278,7 +2456,6 @@ fn runLoop(
                         try pushAgentEvent(event_stream, .{ .message_end = .{
                             .message = msg,
                         } });
-                        try appendClonedStateMessage(&state.messages, allocator, msg);
                     }
 
                     if (tool_result.steering_messages) |steering_msgs| {
@@ -2292,7 +2469,6 @@ fn runLoop(
                                 .message = steering_msg,
                                 .steering = true,
                             } });
-                            try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                         }
                         const mutable_msgs: []ai_types.Message = @constCast(steering_msgs);
                         allocator.free(mutable_msgs);
@@ -2301,8 +2477,6 @@ fn runLoop(
             }
         }
     }
-
-    const result_messages = try state.messages.toOwnedSlice(allocator);
 
     const termination: ?types.AgentTermination = if (cancelled_run)
         .cancelled
@@ -2327,8 +2501,7 @@ fn runLoop(
         };
     };
 
-    var result = AgentLoopResult{
-        .messages = owned_slice_mod.OwnedSlice(ai_types.Message).initOwned(result_messages),
+    const result = AgentLoopResult{
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
@@ -2338,7 +2511,6 @@ fn runLoop(
 
     try pushAgentEvent(event_stream, .{
         .agent_end = .{
-            .messages = types.OwnedSlice(ai_types.Message).initBorrowed(result.messages.slice()),
             .termination = termination,
             .final_message = result_final_message,
         },
@@ -2599,7 +2771,8 @@ test "streamAssistantResponse emits context and prompt segment usage" {
     var agent_events = AgentEventStream.init(allocator);
     defer agent_events.deinit();
 
-    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis() };
+    var withheld = WithheldResults{};
+    var turn_retry = TurnRetry{ .started_ms = compat.time.nowMillis(), .withheld = &withheld };
     var final = try streamAssistantResponse(
         allocator,
         &context,
@@ -3552,7 +3725,6 @@ test "a message already in the results list is not freed again when the stream c
     events.* = AgentEventStream.init(std.testing.allocator);
     defer events.deinit();
     events.complete(.{
-        .messages = types.OwnedSlice(ai_types.Message).initBorrowed(&.{}),
         .final_message = .{ .content = &.{}, .api = "a", .provider = "p", .model = "m", .usage = .{}, .stop_reason = .stop, .timestamp = 0 },
         .iterations = 0,
     });
