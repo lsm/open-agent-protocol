@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
@@ -82,14 +82,37 @@ func writeSSESignal(w io.Writer, flusher http.Flusher, event string, data any) {
 	flusher.Flush()
 }
 
+func splitEventID(id string) (run, position string) {
+	at := strings.LastIndexByte(id, ':')
+	switch {
+	case at < 0:
+		return "", id
+	case at == 0:
+		return "", ""
+	}
+	return id[:at], id[at+1:]
+}
+
+func eventID(run protocol.RunID, sequence uint64) (string, bool) {
+	if strings.ContainsAny(string(run), "\r\n\x00") {
+		return "", false
+	}
+	if run == "" {
+		return fmt.Sprint(sequence), true
+	}
+	return fmt.Sprintf("%s:%d", run, sequence), true
+}
+
 func writeSSE(w io.Writer, envelope protocol.Envelope) error {
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return err
 	}
 	if envelope.Sequence != nil {
-		if _, err := fmt.Fprintf(w, "id: %s\n", strconv.FormatUint(*envelope.Sequence, 10)); err != nil {
-			return err
+		if id, writable := eventID(envelope.RunID, *envelope.Sequence); writable {
+			if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+				return err
+			}
 		}
 	}
 	_, err = fmt.Fprintf(w, "data: %s\n\n", data)

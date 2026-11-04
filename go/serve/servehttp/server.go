@@ -741,13 +741,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cursor := r.URL.Query().Get("after")
+	run := r.URL.Query().Get("run_id")
+	position := cursor
 	if cursor == "" {
 		cursor = r.Header.Get("Last-Event-ID")
+		var named string
+		named, position = splitEventID(cursor)
+		if named != "" {
+			run = named
+		}
 	}
-	run := r.URL.Query().Get("run_id")
 	var options []serve.SubscribeOption
 	if cursor != "" {
-		after, err := strconv.ParseUint(cursor, 10, 64)
+		after, err := strconv.ParseUint(position, 10, 64)
 		if err != nil {
 			s.writeError(w, http.StatusBadRequest, "invalid_cursor", fmt.Sprintf("cursor %q is not an unsigned sequence", cursor), protocol.Envelope{SessionID: entry.ID()})
 			return
