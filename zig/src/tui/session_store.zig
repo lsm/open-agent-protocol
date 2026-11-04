@@ -253,7 +253,7 @@ pub const Recorder = struct {
     }
 
     fn reportsDroppedInput(event: session_events.SessionEvent) bool {
-        return event == .@"error" and std.mem.indexOf(u8, event.@"error".message.slice(), overflow.input_dropped_note) != null;
+        return event == .@"error" and std.mem.endsWith(u8, event.@"error".message.slice(), " (" ++ overflow.input_dropped_note ++ ")");
     }
 
     fn confirmsInput(event: session_events.SessionEvent) bool {
@@ -2909,6 +2909,7 @@ test "a dropped input is never saved, and any other failure keeps it" {
     defer store.deinit();
     const cases = [_]struct { id: []const u8, text: []const u8, kept: bool }{
         .{ .id = "dropped", .text = "prompt is too long (" ++ overflow.input_dropped_note ++ ")", .kept = false },
+        .{ .id = "quoted", .text = "provider said: " ++ overflow.input_dropped_note, .kept = true },
         .{ .id = "kept", .text = "read error", .kept = true },
     };
     for (cases) |case| {

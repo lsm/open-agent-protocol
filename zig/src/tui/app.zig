@@ -1180,8 +1180,8 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
-        if (self.store) |store| self.recorder.saveHeldInput(self.allocator, store, self.currentSessionMetadata());
         self.saveEndpointRecords();
+        if (self.store) |store| self.recorder.saveHeldInput(self.allocator, store, self.currentSessionMetadata());
         self.forgetLoginOverrides();
         for (self.deferred_commands.items) |text| self.allocator.free(text);
         self.deferred_commands.deinit(self.allocator);
@@ -1598,6 +1598,7 @@ pub const App = struct {
         }
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
+        self.recorder.saveHeldInput(self.allocator, store, self.currentSessionMetadata());
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         self.dropHeldCompaction();
         self.state.clearHeldAfterAbort();
