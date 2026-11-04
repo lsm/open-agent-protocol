@@ -416,7 +416,7 @@ pub const Daemon = struct {
 fn appendEventId(allocator: std.mem.Allocator, out: *std.ArrayList(u8), run: []const u8, sequence: u64) !void {
     var counted: [32]u8 = undefined;
     try out.appendSlice(allocator, "id: ");
-    if (run.len > 0) {
+    if (run.len > 0 and std.mem.indexOfAny(u8, run, "\r\n\x00") == null) {
         try out.appendSlice(allocator, run);
         try out.append(allocator, ':');
     }
@@ -1623,6 +1623,11 @@ test "an event id names its run only when it has one" {
     try appendEventId(testing.allocator, &out, "run-1", 3);
     try appendEventId(testing.allocator, &out, "", 3);
     try testing.expectEqualStrings("id: run-1:3\nid: 3\n", out.items);
+    for ([_][]const u8{ "a\ndata: x", "a\rb", "a\x00b" }) |forged| {
+        out.clearRetainingCapacity();
+        try appendEventId(testing.allocator, &out, forged, 3);
+        try testing.expectEqualStrings("id: 3\n", out.items);
+    }
 }
 
 test "a run-qualified cursor with no run, no sequence, or in the query is refused" {
