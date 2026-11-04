@@ -142,6 +142,9 @@ jobs:
       - name: Run checker self-tests
         run: node --test scripts/check-no-comments.test.mjs
 
+      - name: Test the wait for this workflow
+        run: node --test scripts/await-ci-zig.test.mjs
+
       - name: Verify readme temporary-directory cleanup
         run: node --test scripts/check-readme-samples-cleanup.test.mjs
 

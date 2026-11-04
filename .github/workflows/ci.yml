@@ -98,3 +98,30 @@ jobs:
           cache: true
       - run: npm ci
       - run: npm test
+
+  all-tests-pass:
+    name: All Tests Pass
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [test, go-sdk-smoke, ts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require every job of this workflow
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            test "$result" = success
+          done
+      - uses: actions/checkout@v4
+      - name: Require ci-zig.yml unless its path filter skipped it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/await-ci-zig.sh
