@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
+
+var ErrQuiet = errors.New("serve: nothing to deliver within the limit")
 
 type SubscribeOption func(*subscribeOptions)
 
@@ -154,6 +157,16 @@ func (s *Subscription) JoinedAt() (protocol.RunID, uint64, bool) {
 }
 
 func (s *Subscription) Next() (protocol.Envelope, error) {
+	return s.next(nil)
+}
+
+func (s *Subscription) NextWithin(limit time.Duration) (protocol.Envelope, error) {
+	quiet := time.NewTimer(limit)
+	defer quiet.Stop()
+	return s.next(quiet.C)
+}
+
+func (s *Subscription) next(quiet <-chan time.Time) (protocol.Envelope, error) {
 	if s.finished {
 		if s.err != nil {
 			return protocol.Envelope{}, s.err
@@ -161,7 +174,7 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 		return protocol.Envelope{}, io.EOF
 	}
 	for s.replay != nil {
-		envelope, err := s.nextReplay()
+		envelope, err := s.nextReplay(quiet)
 		if !errors.Is(err, io.EOF) {
 			return envelope, err
 		}
@@ -175,7 +188,7 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 		s.Close()
 		return protocol.Envelope{}, io.EOF
 	}
-	return s.nextLive()
+	return s.nextLive(quiet)
 }
 
 func (s *Subscription) Close() {
@@ -185,7 +198,7 @@ func (s *Subscription) Close() {
 	})
 }
 
-func (s *Subscription) nextLive() (protocol.Envelope, error) {
+func (s *Subscription) nextLive(quiet <-chan time.Time) (protocol.Envelope, error) {
 	for {
 		select {
 		case envelope := <-s.sub.ch:
@@ -219,6 +232,8 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 					return protocol.Envelope{}, io.EOF
 				}
 			}
+		case <-quiet:
+			return protocol.Envelope{}, ErrQuiet
 		case <-s.ctx.Done():
 			s.Close()
 			s.finished, s.err = true, s.ctx.Err()
@@ -227,7 +242,7 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 	}
 }
 
-func (s *Subscription) nextReplay() (protocol.Envelope, error) {
+func (s *Subscription) nextReplay(quiet <-chan time.Time) (protocol.Envelope, error) {
 	select {
 	case result, ok := <-s.replay:
 		return s.replayed(result, ok)
@@ -240,6 +255,8 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 			s.later = nil
 			return protocol.Envelope{}, io.EOF
 		}
+	case <-quiet:
+		return protocol.Envelope{}, ErrQuiet
 	case <-s.ctx.Done():
 		s.Close()
 		s.finished, s.err = true, s.ctx.Err()

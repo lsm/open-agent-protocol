@@ -735,6 +735,8 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | A live subscription mid-run is not handed a prefix it did not ask for | `TestSSELiveSubscriptionMidRun` |
 | A stream ends when the client closes the connection | structural: the request context — `TestACancelledSubscriptionEndsTheStream` (a cancelled context ends the stream and leaves it finished) and `TestASubscriptionClosedByItsOwnerEndsTheStream` (`Close` ends it with `io.EOF`) at the hub, where it is observable; nothing in the hub reports subscriber accounting, so the HTTP handler is not itself under test |
 | A stream ends when the session closes | `TestSSEStreamEndsOnSessionClose` |
+| A stream ends at the client's hangup, even while it is quiet | `TestSSEHangupOnAnIdleStreamEndsItsHandler` |
+| A quiet stream writes `: keepalive` every 15 seconds | `TestSSEWritesAKeepaliveOnAQuietStream`, `TestAKeepaliveDefaultsToFifteenSeconds` |
 | A connection to a session that has closed is refused `404 unknown_session` | `TestSSEOnClosedSession`, for a live stream and a cursor stream |
 | A cursor that is neither an unsigned sequence nor, in `Last-Event-ID`, `<run_id>:<sequence>` is refused `400 invalid_cursor` | `TestSSECursorErrors` for the unsigned form; the run-qualified form is not pinned yet, see D36 |
 | A session with no run to replay is refused `409 no_run_to_resume` | `TestSSENoRunToResume` |

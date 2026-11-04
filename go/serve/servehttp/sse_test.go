@@ -1,6 +1,7 @@
 package servehttp
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net/http"
@@ -239,6 +240,40 @@ func TestSSEHangupOnAnIdleStreamEndsItsHandler(t *testing.T) {
 	case <-ended:
 	case <-time.After(testTimeout):
 		t.Fatal("the handler outlived its client on an idle stream")
+	}
+}
+
+func TestSSEWritesAKeepaliveOnAQuietStream(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{Keepalive: 20 * time.Millisecond})
+	openSession(t, server, "memory", "sse-quiet")
+
+	response, err := server.Client().Get(server.URL + "/sessions/sse-quiet/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	for range 2 {
+		comment, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if comment != ": keepalive\n" {
+			t.Fatalf("line %q, want the keepalive comment", comment)
+		}
+		if blank, err := reader.ReadString('\n'); err != nil || blank != "\n" {
+			t.Fatalf("line %q, %v, want the end of the comment", blank, err)
+		}
+	}
+}
+
+func TestAKeepaliveDefaultsToFifteenSeconds(t *testing.T) {
+	daemon, err := New(serve.New(memoryRegistry(0), serve.Options{}), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if daemon.keepalive != 15*time.Second {
+		t.Fatalf("keepalive %s", daemon.keepalive)
 	}
 }
 

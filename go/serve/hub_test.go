@@ -1451,6 +1451,29 @@ func TestAOneRunCursorEndsWithItsRunAndIgnoresALaterRunsGap(t *testing.T) {
 	}
 }
 
+func TestNextWithinReportsQuietAndLosesNothing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "quiet")
+	subscription, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	if _, err := subscription.NextWithin(time.Millisecond); !errors.Is(err, serve.ErrQuiet) {
+		t.Fatalf("next: %v, want quiet", err)
+	}
+	run := submitGolden(t, session, "run the golden script")
+	envelope, err := subscription.NextWithin(testTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.RunID != run || *envelope.Sequence != 1 {
+		t.Fatalf("next: %s #%d, want %s #1", envelope.RunID, *envelope.Sequence, run)
+	}
+}
+
 func TestACursorIsAReplayGapWhenALaterRunHasLeftTheJournal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
