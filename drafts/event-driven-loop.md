@@ -268,6 +268,24 @@ queue, and that entry loads it when the retry is due.
 A session with a live background job or MCP server does not park, at least at
 first.
 
+### Two levels of parking
+
+There are two kinds of park, and one rule decides both, written once in
+`drafts/hub.md`:
+
+| Level | What it does | Condition |
+|---|---|---|
+| Session (#1615) | Stops an idle session's harness and keeps the session in Hub memory | No active run, no pending interaction, no live tool source or job. A third-party adapter parks only if it declares it can report live background work |
+| Run (stage 7) | Saves a run to disk and frees it, on the new loop | The run is in `idle`, `gate` or `backoff`, and no tool source or job is live |
+
+A subscriber blocks neither level. Both use one resident summary, so `state` can
+answer for a parked session without waking it: its status and its active runs with
+their pending interaction ids. A run park adds the saved phase. A pending
+interaction stays answerable, and resolving it loads the run first.
+
+A cursor from before a session park gets `oap-replay-gap`. A run park should not
+need that, because the journal is on disk by then.
+
 Crash recovery of in-flight runs is a separate subject, and this draft does not
 cover it.
 
