@@ -342,13 +342,18 @@ pub const Daemon = struct {
         }
         const named_after = try queryValue(arena, request.split.query, "after");
         const cursor = if (named_after) |text| (if (text.len > 0) text else request.last_event_id) else request.last_event_id;
-        const run = (try queryValue(arena, request.split.query, "run_id")) orelse "";
+        var run = (try queryValue(arena, request.split.query, "run_id")) orelse "";
         var after: ?u64 = null;
         if (cursor) |text| {
             if (text.len > 0) {
-                after = std.fmt.parseInt(u64, text, 10) catch {
+                const from_header = named_after == null or named_after.?.len == 0;
+                const colon = if (from_header) std.mem.lastIndexOfScalar(u8, text, ':') else null;
+                const position = if (colon) |at| text[at + 1 ..] else text;
+                after = std.fmt.parseInt(u64, position, 10) catch null;
+                if (after == null or colon == 0) {
                     return self.refusal(arena, .{ .code = "invalid_cursor", .message = try std.fmt.allocPrint(arena, "cursor \"{s}\" is not an unsigned sequence", .{text}) }, scoped);
-                };
+                }
+                if (colon) |at| run = text[0..at];
             }
         }
         if (after == null and run.len > 0) {
@@ -384,8 +389,8 @@ pub const Daemon = struct {
     pub fn fill(self: *Daemon, out: *std.ArrayList(u8), subscription: *hubmod.Subscription, budget: usize) !Fill {
         while (out.items.len < budget) {
             const delivered = subscription.next() orelse break;
-            var counted: [32]u8 = undefined;
-            try out.appendSlice(self.allocator, try std.fmt.bufPrint(&counted, "id: {d}\ndata: ", .{delivered.sequence}));
+            try appendEventId(self.allocator, out, delivered.run_id, delivered.sequence);
+            try out.appendSlice(self.allocator, "data: ");
             try out.appendSlice(self.allocator, delivered.line);
             try out.appendSlice(self.allocator, "\n\n");
         }
@@ -407,6 +412,17 @@ pub const Daemon = struct {
         }
     }
 };
+
+fn appendEventId(allocator: std.mem.Allocator, out: *std.ArrayList(u8), run: []const u8, sequence: u64) !void {
+    if (std.mem.indexOfAny(u8, run, "\r\n\x00") != null) return;
+    var counted: [32]u8 = undefined;
+    try out.appendSlice(allocator, "id: ");
+    if (run.len > 0) {
+        try out.appendSlice(allocator, run);
+        try out.append(allocator, ':');
+    }
+    try out.appendSlice(allocator, try std.fmt.bufPrint(&counted, "{d}\n", .{sequence}));
+}
 
 pub const sse_head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
 
@@ -1563,6 +1579,80 @@ test "a cursor reads the query first and Last-Event-ID only when the query names
     fixture.daemon.leave(by_header.stream);
 }
 
+test "an event's id names its run and sequence, and Last-Event-ID reads that form back" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{ .journal_capacity = 256 });
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    _ = try fixture.answer("POST", "/sessions/demo/submit", submit_demo);
+    try fixture.pump();
+
+    const arena = fixture.scratch.allocator();
+    var request = hub_http.Request{ .method = "GET", .split = try hub_http.splitTarget(arena, "/sessions/demo/events?after=0"), .last_event_id = null };
+    const replay = try fixture.daemon.respond(arena, request);
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(testing.allocator);
+    _ = try fixture.daemon.fill(&out, replay.stream, 1);
+    const run = try arena.dupe(u8, replay.stream.run_id);
+    fixture.daemon.leave(replay.stream);
+    const written = try std.fmt.allocPrint(arena, "id: {s}:1\ndata: {{", .{run});
+    try testing.expect(std.mem.startsWith(u8, out.items, written));
+
+    request.split = try hub_http.splitTarget(arena, "/sessions/demo/events");
+    request.last_event_id = try std.fmt.allocPrint(arena, "{s}:1", .{run});
+    const resumed = try fixture.daemon.respond(arena, request);
+    const next = resumed.stream.next().?;
+    try testing.expectEqual(@as(u64, 2), next.sequence);
+    try testing.expectEqualStrings(run, next.run_id);
+    fixture.daemon.leave(resumed.stream);
+
+    const stale = try std.fmt.allocPrint(arena, "/sessions/demo/events?run_id={s}-elsewhere", .{run});
+    request.split = try hub_http.splitTarget(arena, stale);
+    const header_wins = try fixture.daemon.respond(arena, request);
+    try testing.expectEqualStrings(run, header_wins.stream.next().?.run_id);
+    fixture.daemon.leave(header_wins.stream);
+
+    request.split = try hub_http.splitTarget(arena, "/sessions/demo/events?after=3");
+    const by_query = try fixture.daemon.respond(arena, request);
+    try testing.expectEqual(@as(u64, 4), by_query.stream.next().?.sequence);
+    fixture.daemon.leave(by_query.stream);
+}
+
+test "an event id names its run only when it has one" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(testing.allocator);
+    try appendEventId(testing.allocator, &out, "run-1", 3);
+    try appendEventId(testing.allocator, &out, "", 3);
+    try testing.expectEqualStrings("id: run-1:3\nid: 3\n", out.items);
+    for ([_][]const u8{ "a\ndata: x", "a\rb", "a\x00b" }) |forged| {
+        out.clearRetainingCapacity();
+        try appendEventId(testing.allocator, &out, forged, 3);
+        try testing.expectEqualStrings("", out.items);
+    }
+}
+
+test "a run-qualified cursor with no run, no sequence, or in the query is refused" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{ .journal_capacity = 256 });
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    _ = try fixture.answer("POST", "/sessions/demo/submit", submit_demo);
+    try fixture.pump();
+
+    const arena = fixture.scratch.allocator();
+    const cases = [_]struct { target: []const u8, header: ?[]const u8 }{
+        .{ .target = "/sessions/demo/events", .header = ":1" },
+        .{ .target = "/sessions/demo/events", .header = "run-1:x" },
+        .{ .target = "/sessions/demo/events?after=run-1:1", .header = null },
+    };
+    for (cases) |case| {
+        const request = hub_http.Request{ .method = "GET", .split = try hub_http.splitTarget(arena, case.target), .last_event_id = case.header };
+        const reply = try fixture.daemon.respond(arena, request);
+        try testing.expectEqualStrings(hub_http.bad_request, reply.answer.status);
+        try testing.expect(std.mem.indexOf(u8, reply.answer.body, "invalid_cursor") != null);
+    }
+}
+
 test "a cursor the journal no longer holds is answered as a replay gap naming what is kept" {
     var fixture: Fixture = undefined;
     try fixture.init(.{ .journal_capacity = 2 });
@@ -1731,7 +1821,7 @@ test "an open event stream does not hold the daemon: another connection is answe
     var admitted = std.ArrayList(u8).empty;
     defer admitted.deinit(testing.allocator);
     try testing.expect(try readFor(&submitter, &admitted, "session.message.submit.response", 2000));
-    try testing.expect(try readFor(&stream, &streamed, "id: 1\ndata: {", 2000));
+    try testing.expect(try readFor(&stream, &streamed, ":1\ndata: {", 2000));
     try testing.expect(std.mem.indexOf(u8, streamed.items, "run.started") != null);
 }
 

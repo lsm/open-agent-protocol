@@ -703,7 +703,10 @@ bytes, excluding the wrapper and surrounding whitespace; Zig's real-process
 text/event-stream` and `Cache-Control: no-cache`, flushed before the first
 frame. An envelope is written `id: <run_id>:<sequence>\ndata: <envelope>\n\n`, so a
 client may reconnect with `Last-Event-ID` and land on the same cursor; the id
-splits at its last colon, and a bare sequence is still read as the current run's. A named signal is written `event: <name>\ndata: {...}\n\n` with no
+splits at its last colon, and a bare sequence is still read as the current run's.
+A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
+with no `id`: a reconnect then resumes from the last id it saw, which can repeat
+events but never lands on another run. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 `id`, because a signal is not a position in the stream.
 
 | signal | meaning | pinned by |
@@ -2581,7 +2584,7 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
-each part is built, not every hub writes a keepalive and SSE ids are bare sequences.
+each part is built, not every hub writes a run-qualified SSE id.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences
