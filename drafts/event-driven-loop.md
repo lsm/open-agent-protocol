@@ -246,16 +246,24 @@ The per-session journal, up to 65,536 events in memory, moves to disk with parki
 Replay then reads a file, which has to be designed together with subscription
 resume across runs.
 
+`drafts/hub.md` pins how events are saved, how the Hub wakes and how replay works,
+with named tests. Each pull request in stages 2 and 7 that changes one of these
+updates that draft and its tests in the same change.
+
 ## Parking
 
 Parking saves a cold run and frees it. A resident session keeps a small summary,
-and an event for a parked run loads it first. A parked run needs no thread, socket
-or timer.
+and an event for a parked run loads it first. A parked run needs no thread or
+socket.
 
 **Only cold runs park:** `idle`, `gate` and `backoff`. These resume exactly. A run
 in `model` or `tool` is active and stays resident, so nothing restarts a model
 call and no tool outcome is ever unknown. This needs no wire change. A run waiting
 in `model_queued` or `tool_queued` also stays resident at first.
+
+`idle` wakes on a submit and `gate` on a resolution, but `backoff` wakes only on
+time. A parked `backoff` run therefore leaves one entry in its reactor's deadline
+queue, and that entry loads it when the retry is due.
 
 A session with a live background job or MCP server does not park, at least at
 first.
