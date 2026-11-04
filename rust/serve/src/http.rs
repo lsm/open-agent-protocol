@@ -1203,6 +1203,13 @@ fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<
     stream.flush()
 }
 
+fn event_id(run: Option<&oap_protocol::RunId>, sequence: u64) -> String {
+    match run.filter(|run| !run.as_str().is_empty()) {
+        Some(run) => format!("{run}:{sequence}"),
+        None => sequence.to_string(),
+    }
+}
+
 fn stream_events(
     mut stream: &TcpStream,
     events: Events,
@@ -1272,8 +1279,10 @@ fn stream_events(
             Some(Ok(envelope)) => {
                 let mut frame = String::new();
                 if let Some(sequence) = envelope.sequence {
-                    let run = envelope.run_id.as_ref().map_or("", |run| run.as_str());
-                    frame.push_str(&format!("id: {run}:{sequence}\n"));
+                    frame.push_str(&format!(
+                        "id: {}\n",
+                        event_id(envelope.run_id.as_ref(), sequence)
+                    ));
                 }
                 frame.push_str(&format!("data: {}\n\n", serde_json::to_string(&envelope)?));
                 stream.write_all(frame.as_bytes())?;
@@ -1320,8 +1329,15 @@ fn respond(mut stream: &TcpStream, answer: &Answer, with_body: bool) -> std::io:
 
 #[cfg(test)]
 mod tests {
-    use super::{accepted, Accept};
+    use super::{accepted, event_id, Accept};
     use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn an_event_id_names_its_run_only_when_it_has_one() {
+        assert_eq!(event_id(Some(&"run-1".into()), 3), "run-1:3");
+        assert_eq!(event_id(Some(&"".into()), 3), "3");
+        assert_eq!(event_id(None, 3), "3");
+    }
 
     #[test]
     fn a_refusal_carries_the_status_go_answers_it_with() {
