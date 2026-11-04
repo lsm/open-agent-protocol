@@ -36,7 +36,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		option(&config)
 	}
 	if config.after == nil {
-		sub, joinedRun, joinedAt, open := entry.subscribe(h.queue)
+		sub, joinedRun, joinedAt, open := h.attach(entry)
 		if !open {
 			return nil, &SessionClosedError{ID: id}
 		}
@@ -53,7 +53,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 			return nil, ErrNoRunToResume
 		}
 	}
-	sub, _, _, open := entry.subscribe(h.queue)
+	sub, _, _, open := h.attach(entry)
 	if !open {
 		return nil, &SessionClosedError{ID: id}
 	}
@@ -71,6 +71,16 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	}
 	positions := map[protocol.RunID]uint64{runID: *config.after}
 	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replays[0].stream, replaying: runID, later: replays[1:], run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
+}
+
+func (h *Hub) attach(entry *Session) (*subscriber, protocol.RunID, uint64, bool) {
+	sub, joinedRun, joinedAt, open := entry.subscribe(h.queue)
+	if open && h.ended.Load() {
+		entry.unsubscribe(sub)
+		sub.stop(nil)
+		return nil, "", 0, false
+	}
+	return sub, joinedRun, joinedAt, open
 }
 
 type resumedRun struct {

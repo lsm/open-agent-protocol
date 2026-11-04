@@ -44,6 +44,7 @@ type Hub struct {
 	home      string
 	bindingMu sync.Mutex
 	stopping  atomic.Bool
+	ended     atomic.Bool
 }
 
 func New(registry *Registry, options Options) *Hub {
@@ -318,6 +319,7 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 }
 
 func (h *Hub) EndSubscriptions() {
+	h.ended.Store(true)
 	for _, entry := range h.sessions.list() {
 		entry.finishSubs(nil)
 	}

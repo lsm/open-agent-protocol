@@ -1406,6 +1406,22 @@ func TestEndingSubscriptionsStopsAReplayStillFollowingARun(t *testing.T) {
 	}
 }
 
+func TestNoSubscriptionAttachesOnceSubscriptionsHaveEnded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "ended")
+	run := submitGolden(t, session, "run the golden script")
+	hub.EndSubscriptions()
+	var closed *serve.SessionClosedError
+	if _, err := hub.Subscribe(ctx, session.ID()); !errors.As(err, &closed) {
+		t.Fatalf("a live subscribe answered %v", err)
+	}
+	if _, err := hub.Subscribe(ctx, session.ID(), serve.After(run, 0)); !errors.As(err, &closed) {
+		t.Fatalf("a cursor subscribe answered %v", err)
+	}
+}
+
 func TestACursorIsAReplayGapWhenALaterRunHasLeftTheJournal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
