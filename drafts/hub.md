@@ -1232,7 +1232,10 @@ Resume, reconciliation and replay are distinct, and an expired cursor is
 A cursor is `(run, sequence)`. **Sequences are per-run and restart at 1**, so a
 cursor without a run is ambiguous. Resuming delivers the rest of the cursor's
 run, then every later run of the session in admission order, each from sequence
-1, then live events, with nothing lost or repeated. A request may therefore name the run it was
+1, then live events, with nothing lost or repeated. A hub may attach the live
+subscriber before it replays, so a session that publishes more than the
+subscriber's queue during a long replay overflows it like any other reader, and
+`oap-overflow` names where to resume. A request may therefore name the run it was
 cut from; an unqualified cursor resolves onto the session's current run, which
 is right until a second run is admitted. Naming a settled run replays that
 run's suffix — a host that names a run has said exactly which events it wants,
@@ -1245,7 +1248,7 @@ and the run it wants is usually the one that just ended under it.
 | `run_id` without a cursor is `invalid_cursor` — a live subscription starts from now, so a run on a request with no cursor names a position that does not exist | `TestSSERefusesARunWithoutACursor`, `TestEventsRefusesARunWithoutACursor` |
 | A run the session never had is `run_not_found` | `TestSSERefusesARunTheSessionNeverHad`, `TestEventsRefusesARunTheSessionNeverHad` |
 | `run_id` belongs to the `events` op alone; no other op accepts it | `TestRunIDBelongsToTheEventsOpAlone` |
-| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | not pinned yet; see D36 |
+| A resumed stream delivers the replayed suffix, then later runs in admission order, then live events | `TestACursorReplaysALaterRunThatSettledBeforeItSubscribed`, `TestEventsCursorFollowsTheRunItNames` |
 | A cursor the journal no longer retains is `oap-replay-gap`, naming what was lost and where to resume | `TestHubReplayGap`, `TestEventsOpReportsAReplayGap`, `TestSSEReplayGap` |
 | An overflow names the run it happened on, so a reconnect reaches the right events | `TestHubOverflowSignalNamesOverflowedRun` |
 | An overflow during replay seeds the cursor rather than losing it | `TestHubReplayOverflowSeedsCursor` |
@@ -2576,9 +2579,7 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
-each part is built, Go ends a subscription when the session has no run left to
-follow and replays one run, only Zig writes a keepalive, and SSE ids are bare
-sequences.
+each part is built, not every hub writes a keepalive and SSE ids are bare sequences.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences

@@ -1025,7 +1025,7 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 		return
 	case refused:
 
-		fail(&wireError{Code: "busy", Message: why + "; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has"})
+		fail(&wireError{Code: "busy", Message: why + "; a subscription ends when the host unsubscribes it, at an overflow or stream failure, or when its session closes — send this request again once one has"})
 		return
 	}
 
@@ -1323,7 +1323,7 @@ func (s *Server) serveOpen(ctx context.Context, run *runState, request requestLi
 		s.respond(ctx, lines, request, nil, &wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
 		return ""
 	case refused:
-		s.respond(ctx, lines, request, nil, &wireError{Code: "busy", Message: why + "; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has"})
+		s.respond(ctx, lines, request, nil, &wireError{Code: "busy", Message: why + "; a subscription ends when the host unsubscribes it, at an overflow or stream failure, or when its session closes — send this request again once one has"})
 		return ""
 	}
 	result, subscription, werr := s.openOp(ctx, request, stream.ctx)
