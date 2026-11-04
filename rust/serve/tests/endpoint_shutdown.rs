@@ -155,6 +155,29 @@ fn a_settled_runs_stream_ends_at_its_terminal_and_holds_no_shutdown_open() {
 }
 
 #[test]
+fn a_replay_at_its_runs_terminal_ends_and_holds_no_shutdown_open() {
+    let mut serving = Serving::within(Duration::from_secs(30));
+    let run = running(&mut serving);
+    serving.send(request(
+        "run.cancel.request",
+        "c",
+        json!({"session_id": "s", "run_id": run}),
+    ));
+    let terminal = serving.wait_for(|line| line["type"] == "run.cancelled");
+    serving.send(json!({
+        "control": "replay",
+        "id": "r",
+        "session_id": "s",
+        "run_id": run,
+        "after": terminal["sequence"],
+    }));
+    serving.wait_for(|line| line["control"] == "replay.accepted");
+    serving.send(shutdown("x", json!({"mode": "graceful"})));
+    assert_eq!(serving.answer("x")["payload"]["outcome"], "stopping");
+    serving.ends_with_input_open();
+}
+
+#[test]
 fn a_forced_shutdown_stops_at_once_over_a_live_run() {
     let mut serving = Serving::start();
     running(&mut serving);
