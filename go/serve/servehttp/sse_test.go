@@ -121,6 +121,15 @@ func TestSSERefusesARunQualifiedCursorItCannotRead(t *testing.T) {
 	}
 }
 
+func TestAnEventIDNamesItsRunOnlyWhenItHasOne(t *testing.T) {
+	if id := eventID("run-1", 3); id != "run-1:3" {
+		t.Fatalf("id %q", id)
+	}
+	if id := eventID("", 3); id != "3" {
+		t.Fatalf("id %q", id)
+	}
+}
+
 func TestSSEQueryCursorWinsOverHeader(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "sse-cursor-precedence")

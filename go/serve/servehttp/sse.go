@@ -93,13 +93,20 @@ func splitEventID(id string) (run, position string) {
 	return id[:at], id[at+1:]
 }
 
+func eventID(run protocol.RunID, sequence uint64) string {
+	if run == "" {
+		return fmt.Sprint(sequence)
+	}
+	return fmt.Sprintf("%s:%d", run, sequence)
+}
+
 func writeSSE(w io.Writer, envelope protocol.Envelope) error {
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return err
 	}
 	if envelope.Sequence != nil {
-		if _, err := fmt.Fprintf(w, "id: %s:%d\n", envelope.RunID, *envelope.Sequence); err != nil {
+		if _, err := fmt.Fprintf(w, "id: %s\n", eventID(envelope.RunID, *envelope.Sequence)); err != nil {
 			return err
 		}
 	}
