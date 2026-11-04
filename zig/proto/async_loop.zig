@@ -3,6 +3,7 @@ const c = std.c;
 
 const gpa = std.heap.smp_allocator;
 const default_park = false;
+const default_tool_limit = 1024;
 
 const Role = enum { user, assistant, tool };
 
@@ -456,7 +457,7 @@ const Config = struct {
     reactors: usize = 4,
     workers: usize = 4,
     model_limit: usize = 4096,
-    tool_limit: usize = 64,
+    tool_limit: usize = default_tool_limit,
     first_byte_ms: u32 = 180_000,
     park: bool = false,
     park_dir: []const u8 = "",
@@ -962,7 +963,11 @@ const Reactor = struct {
                 if (s.phase != .tool) _ = c.kill(p.pid, .KILL);
                 _ = c.fcntl(p.fd, c.F.SETFL, @as(c_int, 0x0004));
                 self.change(@intCast(p.fd), c.EVFILT.READ, c.EV.ADD, 0, 0, @intFromPtr(s));
-                self.change(@intCast(p.pid), c.EVFILT.PROC, c.EV.ADD | c.EV.ONESHOT, c.NOTE.EXIT, 0, @intFromPtr(s));
+                var watch = [_]c.Kevent{.{ .ident = @intCast(p.pid), .filter = c.EVFILT.PROC, .flags = c.EV.ADD | c.EV.ONESHOT, .fflags = c.NOTE.EXIT, .data = 0, .udata = @intFromPtr(s) }};
+                if (c.kevent(self.kq, &watch, 1, undefined, 0, null) != 0) {
+                    child.exited = true;
+                    try self.finishChild(s);
+                }
             },
             .saved => |s| {
                 s.saving = false;
@@ -1234,7 +1239,7 @@ pub fn main() !void {
     config.reactors = envNumber("PROTO_REACTORS", 4);
     config.workers = envNumber("PROTO_WORKERS", 4);
     config.model_limit = envNumber("PROTO_MODEL_LIMIT", 4096);
-    config.tool_limit = envNumber("PROTO_TOOL_LIMIT", 64);
+    config.tool_limit = envNumber("PROTO_TOOL_LIMIT", default_tool_limit);
     config.park = default_park or c.getenv("PROTO_PARK") != null;
     if (config.park) {
         const dir = std.mem.span(c.getenv("TMPDIR") orelse return error.NoTmp);
