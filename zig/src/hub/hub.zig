@@ -5182,3 +5182,210 @@ test "native targets keep only the named adapters and ask an any-directory one f
     try testing.expectEqualStrings("/placed", all[0].directory);
     try testing.expectEqual(native_list_limit, all[2].limit);
 }
+
+const Witness = struct { session: usize, run: u64, sequence: u64, line: u64, terminal: bool };
+
+const Reader = struct {
+    subscription: *Subscription,
+    session: usize,
+    run: u64 = 0,
+    sequence: u64 = 0,
+    from_start: ?u64,
+    joined: ?u64,
+    after: u64,
+    earlier: usize,
+    finished: bool = false,
+};
+
+const Interleaving = struct {
+    hub: *Hub,
+    witnessed: std.ArrayList(Witness) = .empty,
+    readers: std.ArrayList(Reader) = .empty,
+    admitted: std.ArrayList(struct { session: usize, run: u64, id: []u8 }) = .empty,
+    names: [3][16]u8 = undefined,
+    lengths: [3]usize = @splat(0),
+    generations: [3]usize = @splat(0),
+    opened: usize = 0,
+
+    fn deinit(self: *Interleaving) void {
+        self.witnessed.deinit(testing.allocator);
+        self.readers.deinit(testing.allocator);
+        for (self.admitted.items) |known| testing.allocator.free(known.id);
+        self.admitted.deinit(testing.allocator);
+    }
+
+    fn name(self: *const Interleaving, slot: usize) []const u8 {
+        return self.names[slot][0..self.lengths[slot]];
+    }
+
+    fn openSlot(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !void {
+        self.lengths[slot] = (try std.fmt.bufPrint(&self.names[slot], "seeded-{d}", .{self.opened})).len;
+        self.generations[slot] = self.opened;
+        self.opened += 1;
+        _ = try self.hub.open(arena, "memory", .{ .session_id = self.name(slot) });
+    }
+
+    fn active(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !?[]const u8 {
+        const reported = try self.hub.state(arena, self.name(slot));
+        return if (reported.active_runs.len > 0) reported.active_runs[0].run_id else null;
+    }
+
+    fn submit(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !void {
+        const request = try submitFor(arena, self.name(slot));
+        const admitted = self.hub.submit(arena, self.name(slot), &request, "") catch |err| switch (err) {
+            error.RunActive => return,
+            else => |failure| return failure,
+        };
+        try testing.expect(admitted.admission == .started or admitted.admission == .queued);
+        const id = try testing.allocator.dupe(u8, admitted.run_id.?);
+        errdefer testing.allocator.free(id);
+        try self.admitted.append(testing.allocator, .{ .session = self.generations[slot], .run = std.hash.Wyhash.hash(0, id), .id = id });
+    }
+
+    fn cancel(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !void {
+        const run = (try self.active(arena, slot)) orelse return;
+        _ = self.hub.cancel(arena, self.name(slot), run) catch |err| switch (err) {
+            error.RunNotFound, error.RunTerminal => return,
+            else => |failure| return failure,
+        };
+    }
+
+    fn close(self: *Interleaving, arena: std.mem.Allocator, slot: usize) !void {
+        const busy = (try self.active(arena, slot)) != null;
+        self.hub.close(arena, self.name(slot)) catch |err| {
+            try testing.expect(busy);
+            try testing.expectEqual(error.RunActive, err);
+            return;
+        };
+        try testing.expect(!busy);
+        try self.openSlot(arena, slot);
+    }
+
+    fn subscribe(self: *Interleaving, arena: std.mem.Allocator, slot: usize, from_start: bool) !void {
+        const options: SubscribeOptions = if (from_start) .{ .run_id = "", .after = 0 } else .{};
+        const subscription = self.hub.subscribe(arena, self.name(slot), options) catch |err| switch (err) {
+            error.NoRunToResume => return,
+            else => |failure| return failure,
+        };
+        try self.readers.append(testing.allocator, .{
+            .subscription = subscription,
+            .session = self.generations[slot],
+            .from_start = if (from_start) std.hash.Wyhash.hash(0, subscription.run_id) else null,
+            .joined = if (subscription.joined) std.hash.Wyhash.hash(0, subscription.joined_run) else null,
+            .after = subscription.joined_after,
+            .earlier = self.admitted.items.len,
+        });
+    }
+
+    fn witness(self: *Interleaving, session: usize, run: u64, sequence: u64, line: []const u8, ended: bool) !void {
+        const printed = std.hash.Wyhash.hash(0, line);
+        for (self.witnessed.items) |seen| {
+            if (seen.session != session or seen.run != run) continue;
+            if (seen.terminal) try testing.expect(sequence <= seen.sequence);
+            if (seen.sequence != sequence) continue;
+            try testing.expectEqual(seen.line, printed);
+            return;
+        }
+        try self.witnessed.append(testing.allocator, .{ .session = session, .run = run, .sequence = sequence, .line = printed, .terminal = ended });
+    }
+
+    fn admittedBefore(self: *const Interleaving, reader: *const Reader, run: u64) bool {
+        for (self.admitted.items[0..reader.earlier]) |known| {
+            if (known.session == reader.session and known.run == run) return true;
+        }
+        return false;
+    }
+
+    fn read(self: *Interleaving) !void {
+        for (self.readers.items) |*reader| {
+            while (reader.subscription.next()) |delivery| {
+                const run = std.hash.Wyhash.hash(0, delivery.run_id);
+                if (run == reader.run) try testing.expect(!reader.finished);
+                if (run != reader.run) {
+                    reader.run = run;
+                    reader.sequence = 0;
+                    if (reader.joined == run) {
+                        try testing.expectEqual(reader.after + 1, delivery.sequence);
+                    } else if (reader.from_start == run or !self.admittedBefore(reader, run)) {
+                        try testing.expectEqual(@as(u64, 1), delivery.sequence);
+                    }
+                } else {
+                    try testing.expectEqual(reader.sequence + 1, delivery.sequence);
+                }
+                reader.sequence = delivery.sequence;
+                const ended = try Hub.terminal(testing.allocator, delivery.line);
+                try self.witness(reader.session, run, delivery.sequence, delivery.line, ended);
+                reader.finished = ended;
+            }
+        }
+    }
+
+    fn step(self: *Interleaving, arena: std.mem.Allocator, random: std.Random) !void {
+        const slot = random.uintLessThan(usize, self.names.len);
+        switch (random.uintLessThan(u8, 7)) {
+            0, 1 => try self.submit(arena, slot),
+            2 => try self.cancel(arena, slot),
+            3 => try self.close(arena, slot),
+            4 => try self.subscribe(arena, slot, random.boolean()),
+            5 => try self.hub.pump(testing.allocator, 0),
+            else => try self.read(),
+        }
+    }
+
+    fn settle(self: *Interleaving, arena: std.mem.Allocator) !void {
+        var rounds: usize = 0;
+        while (rounds < 64) : (rounds += 1) {
+            var busy = false;
+            for (0..self.names.len) |slot| {
+                if ((try self.active(arena, slot)) != null) busy = true;
+                try self.cancel(arena, slot);
+            }
+            try self.hub.pump(testing.allocator, 0);
+            try self.read();
+            if (!busy) return self.replayEveryRun(arena);
+        }
+        return error.RunsNeverSettled;
+    }
+
+    fn replayEveryRun(self: *Interleaving, arena: std.mem.Allocator) !void {
+        for (0..self.names.len) |slot| {
+            for (self.admitted.items) |known| {
+                if (known.session != self.generations[slot]) continue;
+                const replay = try self.hub.subscribe(arena, self.name(slot), .{ .run_id = known.id, .after = 0 });
+                var expected: u64 = 1;
+                var ended = false;
+                while (replay.next()) |delivery| : (expected += 1) {
+                    try testing.expect(!ended);
+                    try testing.expectEqual(expected, delivery.sequence);
+                    ended = try Hub.terminal(testing.allocator, delivery.line);
+                }
+                try testing.expect(ended);
+            }
+        }
+    }
+};
+
+test "a seeded interleaving of hub calls keeps every run's sequence contiguous and its terminal last" {
+    for (0..64) |seed| {
+        errdefer std.debug.print("interleaving seed {d}\n", .{seed});
+        var prng = std.Random.DefaultPrng.init(seed);
+        var adapter = memory.Adapter.init(testing.allocator);
+        defer adapter.deinit();
+        var hub = Hub.init(testing.allocator, testClock, .{});
+        defer hub.deinit();
+        try hub.register("memory", adapter.adapter());
+        var driver = Interleaving{ .hub = &hub };
+        defer driver.deinit();
+        var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+        defer scratch.deinit();
+        for (0..driver.names.len) |slot| try driver.openSlot(scratch.allocator(), slot);
+        for (0..200) |_| {
+            try driver.step(scratch.allocator(), prng.random());
+            _ = scratch.reset(.retain_capacity);
+        }
+        try driver.settle(scratch.allocator());
+        var ends: usize = 0;
+        for (driver.witnessed.items) |seen| ends += @intFromBool(seen.terminal);
+        try testing.expect(ends > 0);
+    }
+}
