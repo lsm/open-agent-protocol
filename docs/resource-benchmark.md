@@ -108,8 +108,9 @@ on the hub. Turn figures come from the model endpoint's clock instead:
   `sleep` the tool was told to do. With gates it includes the time held.
 - **hold threads, cores, switches/s**: the median thread count and the rates
   while at least 98% of agents sit in the held phase.
-- **model worker peak cores**, **driver cores**: read these first. Near 1.0, the
-  benchmark rather than the hub is the limit.
+- **model worker peak cores**, **driver peak cores**: the busiest second of any
+  one worker, and of the driver. Read these first: near 1.0, the benchmark
+  rather than the hub is the limit.
 
 `results.json` also keeps a timeline sampled every 250 ms. Because tools are
 real processes, two per `Shell` call, a flight is skipped when 2N on top of what the user already runs
