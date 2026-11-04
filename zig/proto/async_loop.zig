@@ -2,6 +2,7 @@ const std = @import("std");
 const c = std.c;
 
 const gpa = std.heap.smp_allocator;
+const default_park = false;
 
 const Role = enum { user, assistant, tool };
 
@@ -341,18 +342,31 @@ fn refuse(id: i64, text: []const u8) void {
     writeAll(1, body);
 }
 
-const Http = struct {
-    send: []u8,
+const Conn = struct {
+    fd: c.fd_t,
+    owner: ?*Session = null,
+    send: []u8 = "",
     sent: usize = 0,
     recv: std.ArrayList(u8) = .empty,
     sse: std.ArrayList(u8) = .empty,
     head_done: bool = false,
     chunk_left: usize = 0,
     first_byte: bool = false,
-    connected: bool = false,
+    idle: bool = false,
 
-    fn destroy(self: *Http) void {
-        gpa.free(self.send);
+    fn reset(self: *Conn) void {
+        if (self.send.len > 0) gpa.free(self.send);
+        self.send = "";
+        self.sent = 0;
+        self.recv.clearRetainingCapacity();
+        self.sse.clearRetainingCapacity();
+        self.head_done = false;
+        self.chunk_left = 0;
+        self.first_byte = false;
+    }
+
+    fn destroy(self: *Conn) void {
+        self.reset();
         self.recv.deinit(gpa);
         self.sse.deinit(gpa);
         gpa.destroy(self);
@@ -384,8 +398,7 @@ const Session = struct {
     saving: bool = false,
     loading: bool = false,
     pending: Pending = .none,
-    model_fd: c.fd_t = -1,
-    http: ?*Http = null,
+    conn: ?*Conn = null,
     child: ?*Child = null,
     next_wait: ?*Session = null,
 };
@@ -462,6 +475,9 @@ const Reactor = struct {
     tool_wait: Fifo = .{},
     model_running: usize = 0,
     tool_running: usize = 0,
+    idle_conns: std.ArrayList(*Conn) = .empty,
+    conns_opened: usize = 0,
+    dead_conns: std.ArrayList(*Conn) = .empty,
 
     fn post(self: *Reactor, cmd: Cmd) void {
         self.lock.acquire();
@@ -489,9 +505,16 @@ const Reactor = struct {
                     self.drain();
                     continue;
                 }
+                if (ev.udata & 1 == 1) {
+                    const conn: *Conn = @ptrFromInt(ev.udata & ~@as(usize, 1));
+                    self.dispatchConn(conn, ev, &scratch) catch |err| std.debug.panic("conn: {s}", .{@errorName(err)});
+                    continue;
+                }
                 const s: *Session = @ptrFromInt(ev.udata);
                 self.dispatch(s, ev, &scratch) catch |err| std.debug.panic("dispatch: {s}", .{@errorName(err)});
             }
+            for (self.dead_conns.items) |conn| conn.destroy();
+            self.dead_conns.clearRetainingCapacity();
         }
     }
 
@@ -529,7 +552,7 @@ const Reactor = struct {
             },
             .send_model => try self.sendModel(s),
             .release_model => {
-                self.closeModel(s);
+                self.detachConn(s);
                 self.model_running -= 1;
                 try self.admitModels();
             },
@@ -547,7 +570,7 @@ const Reactor = struct {
             .abort_io => {
                 self.model_wait.remove(s);
                 self.tool_wait.remove(s);
-                self.closeModel(s);
+                if (s.conn) |conn| self.closeConn(conn);
                 if (s.child) |child| if (child.pid != 0) {
                     _ = c.kill(child.pid, .KILL);
                 };
@@ -571,39 +594,68 @@ const Reactor = struct {
         }
     }
 
-    fn closeModel(self: *Reactor, s: *Session) void {
-        if (s.model_fd >= 0) {
-            self.change(@intFromPtr(s) | 1, c.EVFILT.TIMER, c.EV.DELETE, 0, 0, 0);
-            _ = c.close(s.model_fd);
-            s.model_fd = -1;
+    fn firstByteTimer(self: *Reactor, s: *Session, flags: u16, ms: u32) void {
+        self.change(@intFromPtr(s) | 1, c.EVFILT.TIMER, flags, 0, ms, @intFromPtr(s));
+    }
+
+    fn detachConn(self: *Reactor, s: *Session) void {
+        const conn = s.conn orelse return;
+        self.firstByteTimer(s, c.EV.DELETE, 0);
+        conn.owner = null;
+        s.conn = null;
+    }
+
+    fn closeConn(self: *Reactor, conn: *Conn) void {
+        if (conn.owner) |s| self.detachConn(s);
+        if (conn.idle) {
+            for (self.idle_conns.items, 0..) |held, index| {
+                if (held == conn) {
+                    _ = self.idle_conns.swapRemove(index);
+                    break;
+                }
+            }
         }
-        if (s.http) |http| http.destroy();
-        s.http = null;
+        _ = c.close(conn.fd);
+        conn.fd = -1;
+        self.dead_conns.append(gpa, conn) catch @panic("oom");
+    }
+
+    fn failConn(self: *Reactor, conn: *Conn, text: []const u8, transient: bool) anyerror!void {
+        const owner = conn.owner;
+        self.closeConn(conn);
+        if (owner) |s| try self.feed(s, .{ .failed = .{ .transient = transient, .text = text } });
     }
 
     fn sendModel(self: *Reactor, s: *Session) anyerror!void {
         const run = s.run.?;
-        const http = try gpa.create(Http);
-        http.* = .{ .send = try requestBytes(run) };
-        s.http = http;
-        const fd = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
-        if (fd < 0) return self.feed(s, .{ .failed = .{ .transient = true, .text = "socket failed" } });
-        _ = c.fcntl(fd, c.F.SETFL, @as(c_int, 0x0004));
-        var address = std.mem.zeroes(c.sockaddr.in);
-        address.family = c.AF.INET;
-        address.port = std.mem.nativeToBig(u16, config.host_port);
-        address.addr = std.mem.nativeToBig(u32, 0x7f000001);
-        _ = c.connect(fd, @ptrCast(&address), @sizeOf(c.sockaddr.in));
-        s.model_fd = fd;
-        self.change(@intCast(fd), c.EVFILT.WRITE, c.EV.ADD, 0, 0, @intFromPtr(s));
-        self.change(@intCast(fd), c.EVFILT.READ, c.EV.ADD, 0, 0, @intFromPtr(s));
-        self.change(@intFromPtr(s) | 1, c.EVFILT.TIMER, c.EV.ADD | c.EV.ONESHOT, 0, config.first_byte_ms, @intFromPtr(s));
+        const conn = if (self.idle_conns.pop()) |held| held else fresh: {
+            const fd = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
+            if (fd < 0) return self.feed(s, .{ .failed = .{ .transient = true, .text = "socket failed" } });
+            _ = c.fcntl(fd, c.F.SETFL, @as(c_int, 0x0004));
+            var address = std.mem.zeroes(c.sockaddr.in);
+            address.family = c.AF.INET;
+            address.port = std.mem.nativeToBig(u16, config.host_port);
+            address.addr = std.mem.nativeToBig(u32, 0x7f000001);
+            _ = c.connect(fd, @ptrCast(&address), @sizeOf(c.sockaddr.in));
+            const made = try gpa.create(Conn);
+            made.* = .{ .fd = fd };
+            self.conns_opened += 1;
+            self.change(@intCast(fd), c.EVFILT.READ, c.EV.ADD, 0, 0, @intFromPtr(made) | 1);
+            break :fresh made;
+        };
+        conn.idle = false;
+        conn.reset();
+        conn.send = try requestBytes(run);
+        conn.owner = s;
+        s.conn = conn;
+        self.change(@intCast(conn.fd), c.EVFILT.WRITE, c.EV.ADD, 0, 0, @intFromPtr(conn) | 1);
+        self.firstByteTimer(s, c.EV.ADD | c.EV.ONESHOT, config.first_byte_ms);
     }
 
     fn dispatch(self: *Reactor, s: *Session, ev: c.Kevent, scratch: []u8) anyerror!void {
         if (ev.filter == c.EVFILT.TIMER) {
             if (ev.ident & 1 == 1) {
-                if (s.http) |http| if (!http.first_byte) try self.feed(s, .{ .failed = .{ .transient = true, .text = "timed out before the first byte" } });
+                if (s.conn) |conn| if (!conn.first_byte) try self.failConn(conn, "timed out before the first byte", true);
                 return;
             }
             return self.feed(s, .timer);
@@ -616,90 +668,96 @@ const Reactor = struct {
             return;
         }
         if (s.child) |child| if (child.fd == @as(c.fd_t, @intCast(ev.ident))) return self.readChild(s, child, scratch);
-        if (s.model_fd != @as(c.fd_t, @intCast(ev.ident))) return;
-        if (ev.filter == c.EVFILT.WRITE) return self.writeModel(s);
-        return self.readModel(s, scratch);
     }
 
-    fn writeModel(self: *Reactor, s: *Session) anyerror!void {
-        const http = s.http orelse return;
-        while (http.sent < http.send.len) {
-            const rest = http.send[http.sent..];
-            const n = c.write(s.model_fd, rest.ptr, rest.len);
+    fn dispatchConn(self: *Reactor, conn: *Conn, ev: c.Kevent, scratch: []u8) anyerror!void {
+        if (conn.fd < 0) return;
+        if (ev.filter == c.EVFILT.WRITE) return self.writeConn(conn);
+        return self.readConn(conn, scratch);
+    }
+
+    fn writeConn(self: *Reactor, conn: *Conn) anyerror!void {
+        while (conn.sent < conn.send.len) {
+            const rest = conn.send[conn.sent..];
+            const n = c.write(conn.fd, rest.ptr, rest.len);
             if (n < 0) {
                 if (std.c._errno().* == @intFromEnum(c.E.AGAIN)) return;
-                return self.feed(s, .{ .failed = .{ .transient = true, .text = "send failed" } });
+                return self.failConn(conn, "send failed", true);
             }
-            http.sent += @intCast(n);
+            conn.sent += @intCast(n);
         }
-        self.change(@intCast(s.model_fd), c.EVFILT.WRITE, c.EV.DELETE, 0, 0, 0);
+        self.change(@intCast(conn.fd), c.EVFILT.WRITE, c.EV.DELETE, 0, 0, 0);
     }
 
-    fn readModel(self: *Reactor, s: *Session, scratch: []u8) anyerror!void {
-        while (s.http != null) {
-            const n = c.read(s.model_fd, scratch.ptr, scratch.len);
+    fn readConn(self: *Reactor, conn: *Conn, scratch: []u8) anyerror!void {
+        while (true) {
+            const n = c.read(conn.fd, scratch.ptr, scratch.len);
             if (n < 0) {
                 if (std.c._errno().* == @intFromEnum(c.E.AGAIN)) return;
-                return self.feed(s, .{ .failed = .{ .transient = true, .text = "read error" } });
+                return self.failConn(conn, "read error", true);
             }
-            if (n == 0) return self.feed(s, .{ .failed = .{ .transient = true, .text = "read error" } });
-            const http = s.http.?;
-            http.first_byte = true;
-            try http.recv.appendSlice(gpa, scratch[0..@intCast(n)]);
-            try self.parseHttp(s);
+            if (n == 0) return self.failConn(conn, "read error", true);
+            conn.first_byte = true;
+            try conn.recv.appendSlice(gpa, scratch[0..@intCast(n)]);
+            if (try self.parseHttp(conn)) return;
         }
     }
 
-    fn parseHttp(self: *Reactor, s: *Session) anyerror!void {
-        const http = s.http orelse return;
-        if (!http.head_done) {
-            const end = std.mem.indexOf(u8, http.recv.items, "\r\n\r\n") orelse return;
-            if (std.mem.indexOf(u8, http.recv.items[0..end], " 200 ") == null) {
-                return self.feed(s, .{ .failed = .{ .transient = false, .text = "model request failed" } });
+    fn parseHttp(self: *Reactor, conn: *Conn) anyerror!bool {
+        if (!conn.head_done) {
+            const end = std.mem.indexOf(u8, conn.recv.items, "\r\n\r\n") orelse return false;
+            if (std.mem.indexOf(u8, conn.recv.items[0..end], " 200 ") == null) {
+                try self.failConn(conn, "model request failed", false);
+                return true;
             }
-            http.head_done = true;
-            http.recv.replaceRange(gpa, 0, end + 4, &.{}) catch unreachable;
+            conn.head_done = true;
+            conn.recv.replaceRange(gpa, 0, end + 4, &.{}) catch unreachable;
         }
         var at: usize = 0;
-        defer if (s.http) |still| still.recv.replaceRange(gpa, 0, at, &.{}) catch unreachable;
-        while (at < http.recv.items.len) {
-            if (http.chunk_left == 0) {
-                const line = std.mem.indexOfPos(u8, http.recv.items, at, "\r\n") orelse return;
+        while (at < conn.recv.items.len) {
+            if (conn.chunk_left == 0) {
+                const line = std.mem.indexOfPos(u8, conn.recv.items, at, "\r\n") orelse break;
                 if (line == at) {
                     at += 2;
                     continue;
                 }
-                http.chunk_left = std.fmt.parseInt(usize, http.recv.items[at..line], 16) catch return error.BadChunk;
+                conn.chunk_left = std.fmt.parseInt(usize, conn.recv.items[at..line], 16) catch return error.BadChunk;
                 at = line + 2;
-                if (http.chunk_left == 0) return;
+                if (conn.chunk_left == 0) {
+                    if (conn.owner != null) {
+                        try self.failConn(conn, "read error", true);
+                        return true;
+                    }
+                    conn.reset();
+                    conn.idle = true;
+                    try self.idle_conns.append(gpa, conn);
+                    return true;
+                }
             }
-            const take = @min(http.chunk_left, http.recv.items.len - at);
-            try http.sse.appendSlice(gpa, http.recv.items[at .. at + take]);
-            http.chunk_left -= take;
+            const take = @min(conn.chunk_left, conn.recv.items.len - at);
+            try conn.sse.appendSlice(gpa, conn.recv.items[at .. at + take]);
+            conn.chunk_left -= take;
             at += take;
-            if (try self.parseSse(s)) {
-                at = 0;
-                return;
-            }
+            try self.parseSse(conn);
         }
+        conn.recv.replaceRange(gpa, 0, at, &.{}) catch unreachable;
+        return false;
     }
 
-    fn parseSse(self: *Reactor, s: *Session) anyerror!bool {
-        const http = s.http.?;
+    fn parseSse(self: *Reactor, conn: *Conn) anyerror!void {
         var at: usize = 0;
-        while (std.mem.indexOfPos(u8, http.sse.items, at, "\n\n")) |end| {
-            const frame = http.sse.items[at..end];
+        while (std.mem.indexOfPos(u8, conn.sse.items, at, "\n\n")) |end| {
+            const frame = conn.sse.items[at..end];
             at = end + 2;
             if (!std.mem.startsWith(u8, frame, "data: ")) continue;
             const data = frame[6..];
             if (std.mem.eql(u8, data, "[DONE]")) continue;
-            if (try self.handleFrame(s, data)) return true;
+            if (conn.owner) |s| try self.handleFrame(s, data);
         }
-        http.sse.replaceRange(gpa, 0, at, &.{}) catch unreachable;
-        return false;
+        conn.sse.replaceRange(gpa, 0, at, &.{}) catch unreachable;
     }
 
-    fn handleFrame(self: *Reactor, s: *Session, data: []const u8) anyerror!bool {
+    fn handleFrame(self: *Reactor, s: *Session, data: []const u8) anyerror!void {
         var parsed = try std.json.parseFromSlice(std.json.Value, gpa, data, .{});
         defer parsed.deinit();
         const choice = parsed.value.object.get("choices").?.array.items[0].object;
@@ -716,11 +774,7 @@ const Reactor = struct {
                 }
             }
         }
-        if (choice.get("finish_reason")) |reason| if (reason == .string) {
-            try self.feed(s, .finished);
-            return true;
-        };
-        return false;
+        if (choice.get("finish_reason")) |reason| if (reason == .string) try self.feed(s, .finished);
     }
 
     fn runTool(self: *Reactor, s: *Session) anyerror!void {
@@ -917,7 +971,7 @@ fn requestBytes(run: *const Run) ![]u8 {
         try body.append(a, '}');
     }
     try body.appendSlice(a, "]}");
-    return std.fmt.allocPrint(gpa, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.items.len, body.items });
+    return std.fmt.allocPrint(gpa, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.items.len, body.items });
 }
 
 const Job = struct {
@@ -1145,7 +1199,7 @@ pub fn main() !void {
     config.workers = envNumber("PROTO_WORKERS", 4);
     config.model_limit = envNumber("PROTO_MODEL_LIMIT", 4096);
     config.tool_limit = envNumber("PROTO_TOOL_LIMIT", 64);
-    config.park = c.getenv("PROTO_PARK") != null;
+    config.park = default_park or c.getenv("PROTO_PARK") != null;
     if (config.park) {
         const dir = std.mem.span(c.getenv("TMPDIR") orelse return error.NoTmp);
         const path = try std.fmt.allocPrintSentinel(gpa, "{s}/park", .{dir}, 0);
