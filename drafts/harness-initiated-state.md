@@ -83,8 +83,8 @@ not been surveyed.
    `after` cursor stays a run cursor, since session events are not replayed.
    A host that reconnects reads `state`, which the draft already makes
    authoritative. "Between runs" needs a subscription that outlives a
-   run, which is T2's `?follow=session`, kept open across idle gaps by
-   [triggered-runs.md](triggered-runs.md).
+   run, which every subscription now does ([Decision
+   0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)).
 4. **Validator.** Keep `unapplied_control` for an endpoint whose own default
    moved while a per-run selection was active, and exempt a state update the
    endpoint marks as the harness's own. Two ways to mark it: a
