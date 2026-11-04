@@ -507,7 +507,7 @@ impl Endpoint {
             .hub
             .session(&asked.session_id.as_str().into())
             .and_then(|entry| {
-                block_on(self.hub.subscribe_after(entry.id(), run, after)).map(|sub| (entry, sub))
+                block_on(self.hub.subscribe_one_run(entry.id(), run, after)).map(|sub| (entry, sub))
             });
         let (entry, subscription) = match subscribed {
             Ok(subscribed) => subscribed,
