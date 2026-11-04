@@ -36,22 +36,24 @@ a model call adds a bridge thread and a provider thread. Measured per agent:
 
 macOS allows 12,288 threads per task (`kern.num_taskthreads`), 8,000 processes
 per user (`kern.maxprocperuid`), and about 16,000 ephemeral ports to one
-destination. Those limits were reached in practice:
+destination. These limits were reached in practice. The measurements predate stage
+0, which has since fixed the ports and most of the memory, as noted below:
 
 - **Threads.** A sequential `waiting` run stopped at agent 6,142 with 12,286
   threads and 11.7 GB. That build still polled gates every 1 ms and used 24 cores
   while idle.
-- **Ports.** Each model call opens a new connection, because every provider
-  creates its own `HttpClient`, and each closed connection stays in `TIME_WAIT`
-  for about 30 s. That caps a host at about 540 calls per second. One `zig-loop`
+- **Ports (fixed by #1613).** Each model call opened a new connection, because
+  every provider created its own `HttpClient`, and each closed connection stayed in
+  `TIME_WAIT` for about 30 s. That capped a host at about 540 calls per second. One `zig-loop`
   run at N=1,500 left about 12,000 sockets in `TIME_WAIT`. With a second run
   alongside it the machine reached 14,998, and unrelated programs failed with
-  "can't assign requested address".
+  "can't assign requested address". The shared client now reuses connections, so what
+remains is one connection per in-flight call, bounded later by the in-flight limit.
 - **The Hub.** `Hub.pump` walks every session on one thread. At N=1,000 that
   thread is saturated, and 67% of its time goes to saving each streamed event.
-- **Memory.** `EventStream` embeds a 1,024-slot ring, about 265 KiB for an
-  `AssistantMessageEventStream`, so a parked agent holds several hundred KiB
-  even when it does nothing.
+- **Memory (mostly fixed by #1612).** `EventStream` embedded a 1,024-slot ring,
+  about 265 KiB for an `AssistantMessageEventStream`, so a parked agent held several
+  hundred KiB even when it did nothing.
 
 ### What cheap fixes buy
 
