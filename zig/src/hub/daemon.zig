@@ -1751,7 +1751,7 @@ test "a quiet event stream writes a keepalive comment" {
     try testing.expect(try readFor(&stream, &streamed, "\r\n\r\n: keepalive\n\n: keepalive\n\n", 2000));
 }
 
-test "a stream stays quiet for fifteen seconds before its keepalive" {
+test "a keepalive defaults to fifteen seconds" {
     var fixture: Fixture = undefined;
     try fixture.init(.{});
     defer fixture.deinit();
