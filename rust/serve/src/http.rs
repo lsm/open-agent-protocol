@@ -950,13 +950,12 @@ impl Served {
         if entry.is_closed() {
             return refuse("session_closed", "the session is closed".into());
         }
-        let cursor = asked
-            .query("after")
-            .filter(|after| !after.is_empty())
+        let queried = asked.query("after").filter(|after| !after.is_empty());
+        let cursor = queried
             .map(str::to_owned)
             .or_else(|| asked.header("Last-Event-ID").map(|id| id.trim().to_owned()))
             .unwrap_or_default();
-        let run = asked.query("run_id").unwrap_or_default().to_owned();
+        let mut run = asked.query("run_id").unwrap_or_default().to_owned();
         let subscribed = if cursor.is_empty() {
             if !run.is_empty() {
                 return refuse(
@@ -976,10 +975,20 @@ impl Served {
             }
             self.hub.subscribe(entry.id())
         } else {
-            let Some(after) = cursor
+            let position = match cursor.rsplit_once(':').filter(|_| queried.is_none()) {
+                Some(("", _)) => "",
+                Some((named, position)) => {
+                    if run.is_empty() {
+                        named.clone_into(&mut run);
+                    }
+                    position
+                }
+                None => cursor.as_str(),
+            };
+            let Some(after) = position
                 .parse::<u64>()
                 .ok()
-                .filter(|_| cursor.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|_| position.bytes().all(|byte| byte.is_ascii_digit()))
             else {
                 return refuse(
                     "invalid_cursor",
@@ -1263,7 +1272,8 @@ fn stream_events(
             Some(Ok(envelope)) => {
                 let mut frame = String::new();
                 if let Some(sequence) = envelope.sequence {
-                    frame.push_str(&format!("id: {sequence}\n"));
+                    let run = envelope.run_id.as_ref().map_or("", |run| run.as_str());
+                    frame.push_str(&format!("id: {run}:{sequence}\n"));
                 }
                 frame.push_str(&format!("data: {}\n\n", serde_json::to_string(&envelope)?));
                 stream.write_all(frame.as_bytes())?;
