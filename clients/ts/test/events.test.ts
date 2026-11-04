@@ -60,6 +60,13 @@ test('a live run delivers in order and ends cleanly at its terminal event', { ti
   assert.equal(envelopes[11].type, EnvelopeType.RunCompleted);
 });
 
+test('iteration ends at the terminal event of a stream that stays open', { timeout: 3000 }, async () => {
+  const { session } = sessionWith([{ match: LIVE, chunks: goldenFrames(SESSION, RUN, 1, 12), holdOpen: true }]);
+  const envelopes = await collect(session.events());
+  assert.equal(envelopes.length, 12);
+  assert.equal(envelopes[11].type, EnvelopeType.RunCompleted);
+});
+
 test('a mid-stream drop resumes from the cursor with no duplicates', { timeout: 10000 }, async () => {
   const { session, transport } = sessionWith([
     { match: LIVE, chunks: goldenFrames(SESSION, RUN, 1, 3) },
