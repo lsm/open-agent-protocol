@@ -2579,7 +2579,7 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
-each part is built, no hub writes a keepalive and SSE ids are bare sequences.
+each part is built, not every hub writes a keepalive and SSE ids are bare sequences.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences
