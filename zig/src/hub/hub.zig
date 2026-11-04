@@ -2631,7 +2631,7 @@ test "a subscription that closes with events queued leaves the hub with nothing 
     try testing.expectEqual(staying, hub.subscriptions.items[0]);
 }
 
-test "a resumed subscription ends at the terminal it replays" {
+test "a resumed subscription stays open past the terminal it replays" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
