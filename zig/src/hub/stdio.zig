@@ -405,7 +405,11 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     request.supplied.limit = member(root, "limit") != null;
     request.supplied.subscription = member(root, "subscription") != null;
     if (member(root, "subscription")) |subscription| {
-        if (subscription == .integer) request.subscription = subscription.integer;
+        if (subscription == .integer) {
+            request.subscription = subscription.integer;
+        } else if (subscription != .null) {
+            return Error.MalformedLine;
+        }
     }
     try requireStringOrNull(root, "cursor");
     request.cursor = stringMember(root, "cursor");
@@ -5588,10 +5592,10 @@ test "unsubscribe answers the same for an id with no subscription and refuses a 
     try testing.expectEqualStrings("{\"id\":1,\"ok\":true,\"result\":null}", harness.recorder.last());
     for ([_][]const u8{
         "{\"id\":2,\"op\":\"unsubscribe\"}",
-        "{\"id\":3,\"op\":\"unsubscribe\",\"subscription\":\"two\"}",
         "{\"id\":4,\"op\":\"unsubscribe\",\"subscription\":2,\"session_id\":\"s1\"}",
     }) |line| {
         try harness.send(line);
         try testing.expectEqualStrings("invalid_request", try harness.code());
     }
+    try testing.expectError(Error.MalformedLine, harness.send("{\"id\":5,\"op\":\"unsubscribe\",\"subscription\":\"two\"}"));
 }
