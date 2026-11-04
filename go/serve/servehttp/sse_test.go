@@ -127,12 +127,15 @@ func TestSSERefusesARunQualifiedCursorItCannotRead(t *testing.T) {
 }
 
 func TestAnEventIDNamesItsRunOnlyWhenItHasOne(t *testing.T) {
-	if id := eventID("run-1", 3); id != "run-1:3" {
-		t.Fatalf("id %q", id)
+	if id, writable := eventID("run-1", 3); id != "run-1:3" || !writable {
+		t.Fatalf("id %q, %v", id, writable)
 	}
-	for _, run := range []protocol.RunID{"", "a\ndata: x", "a\rb", "a\x00b"} {
-		if id := eventID(run, 3); id != "3" {
-			t.Fatalf("run %q: id %q", run, id)
+	if id, writable := eventID("", 3); id != "3" || !writable {
+		t.Fatalf("id %q, %v", id, writable)
+	}
+	for _, run := range []protocol.RunID{"a\ndata: x", "a\rb", "a\x00b"} {
+		if id, writable := eventID(run, 3); writable {
+			t.Fatalf("run %q wrote id %q", run, id)
 		}
 	}
 }
