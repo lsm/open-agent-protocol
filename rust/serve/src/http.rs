@@ -95,7 +95,10 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
         hold_for: options
             .subscription_hold
             .unwrap_or(DEFAULT_SUBSCRIPTION_HOLD),
-        keepalive: options.keepalive.unwrap_or(DEFAULT_KEEPALIVE),
+        keepalive: options
+            .keepalive
+            .filter(|keepalive| !keepalive.is_zero())
+            .unwrap_or(DEFAULT_KEEPALIVE),
         held: Arc::default(),
         stopping: std::sync::RwLock::default(),
         finishing: std::sync::atomic::AtomicBool::new(false),
