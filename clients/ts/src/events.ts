@@ -394,12 +394,18 @@ export class EventStream implements AsyncIterable<Envelope> {
       throw new MalformedFrameError('event envelope carries no sequence');
     }
     if (frame.hasId) {
-      if (!/^\d+$/.test(frame.lastId)) {
+      const at = frame.lastId.lastIndexOf(':');
+      const named = frame.lastId.slice(0, Math.max(at, 0));
+      const position = frame.lastId.slice(at + 1);
+      if (!/^\d+$/.test(position) || at === 0) {
         throw new MalformedFrameError(`frame id "${frame.lastId}" is not a sequence`);
       }
-      const id = BigInt(frame.lastId);
+      const id = BigInt(position);
       if (sequence !== id) {
         throw new MalformedFrameError(`frame id ${id} disagrees with envelope sequence ${sequence}`);
+      }
+      if (named !== '' && named !== envelope.run_id) {
+        throw new MalformedFrameError(`frame id names run "${named}", envelope "${envelope.run_id ?? ''}"`);
       }
     }
     if (!RUN_EVENT_TYPES.has(envelope.type)) {

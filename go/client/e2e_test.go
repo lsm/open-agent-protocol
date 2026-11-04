@@ -818,6 +818,31 @@ func TestClientRejectsFrameIDDisagreement(t *testing.T) {
 	}
 }
 
+func TestClientReadsARunQualifiedFrameID(t *testing.T) {
+	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "wire:run", 3)
+	c := defectServer(t, fmt.Sprintf("id: wire:run:3\ndata: %s\n\n", envelope))
+	stream := openDefectSession(t, c).EventsAfter(context.Background(), "wire:run", 2)
+	got, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunID != "wire:run" || *got.Sequence != 3 {
+		t.Fatalf("delivered %s #%d", got.RunID, *got.Sequence)
+	}
+}
+
+func TestClientRejectsAFrameIDNamingAnotherRun(t *testing.T) {
+	for _, id := range []string{"other-run:3", ":3", "wire-run:x"} {
+		c := defectServer(t, fmt.Sprintf("id: %s\ndata: %s\n\n", id, validEventEnvelope(t, protocol.TypeRunStatusUpdated, 3)))
+		stream := openDefectSession(t, c).Events(context.Background())
+		_, err := stream.Next()
+		var malformed *MalformedFrameError
+		if !errors.As(err, &malformed) {
+			t.Fatalf("id %q: error %v (%T), want MalformedFrameError", id, err, err)
+		}
+	}
+}
+
 func TestClientRejectsDuplicateSequence(t *testing.T) {
 	envelope := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 2)
 	c := defectServer(t, fmt.Sprintf("id: 2\ndata: %s\n\nid: 2\ndata: %s\n\n", envelope, envelope))

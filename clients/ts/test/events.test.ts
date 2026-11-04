@@ -385,6 +385,51 @@ test('a frame id disagreeing with its envelope sequence is malformed', { timeout
   );
 });
 
+test('a run-qualified frame id splits at its last colon', { timeout: 10000 }, async () => {
+  const runId = `${RUN}:part`;
+  const envelope = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 1n,
+    sessionId: SESSION,
+    runId,
+    payload: {},
+  });
+  const frame = `id: ${runId}:1\ndata: ${serializeEnvelope(envelope)}\n\n`;
+  const { session } = sessionWith([{ match: LIVE, chunks: [frame] }]);
+  const delivered = await collect(session.events());
+  assert.equal(delivered[0]?.run_id, runId);
+});
+
+test('a frame id naming another run is malformed', { timeout: 10000 }, async () => {
+  const envelope = testEnvelope({
+    type: EnvelopeType.RunStarted,
+    sequence: 1n,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {},
+  });
+  const frame = `id: other-run:1\ndata: ${serializeEnvelope(envelope)}\n\n`;
+  const { session } = sessionWith([{ match: LIVE, chunks: [frame] }]);
+  await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /frame id names run "other-run"/),
+  );
+});
+
+test('a frame id with no run before its colon is malformed', { timeout: 10000 }, async () => {
+  const envelope = testEnvelope({
+    type: EnvelopeType.RunStarted,
+    sequence: 1n,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {},
+  });
+  const frame = `id: :1\ndata: ${serializeEnvelope(envelope)}\n\n`;
+  const { session } = sessionWith([{ match: LIVE, chunks: [frame] }]);
+  await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /is not a sequence/),
+  );
+});
+
 test('a non-numeric frame id is malformed', { timeout: 10000 }, async () => {
   const envelope = testEnvelope({
     type: EnvelopeType.RunStarted,

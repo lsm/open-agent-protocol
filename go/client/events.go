@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -347,6 +348,18 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 	return envelope, nil
 }
 
+func parseFrameID(id string) (protocol.RunID, uint64, error) {
+	run, sequence := "", id
+	if at := strings.LastIndexByte(id, ':'); at >= 0 {
+		run, sequence = id[:at], id[at+1:]
+		if run == "" {
+			return "", 0, errors.New("the run before the colon is empty")
+		}
+	}
+	parsed, err := strconv.ParseUint(sequence, 10, 64)
+	return protocol.RunID(run), parsed, err
+}
+
 func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 
 	if envelope.SessionID != es.session.id {
@@ -361,12 +374,15 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		return &MalformedFrameError{Detail: "event envelope carries no sequence"}
 	}
 	if f.hasID {
-		id, err := strconv.ParseUint(f.lastID, 10, 64)
+		run, id, err := parseFrameID(f.lastID)
 		if err != nil {
 			return &MalformedFrameError{Detail: fmt.Sprintf("frame id %q is not a sequence", f.lastID), Cause: err}
 		}
 		if *envelope.Sequence != id {
 			return &MalformedFrameError{Detail: fmt.Sprintf("frame id %d disagrees with envelope sequence %d", id, *envelope.Sequence)}
+		}
+		if run != "" && run != envelope.RunID {
+			return &MalformedFrameError{Detail: fmt.Sprintf("frame id names run %q, envelope %q", run, envelope.RunID)}
 		}
 	}
 	resumed := es.resumed
