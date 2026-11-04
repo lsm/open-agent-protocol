@@ -463,6 +463,12 @@ func (s *Server) pump(ctx context.Context, subscription *serve.Subscription, run
 		if envelope.Sequence != nil {
 			delivered = *envelope.Sequence
 		}
+		switch envelope.Type {
+		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+			if run != "" {
+				return
+			}
+		}
 	}
 }
 

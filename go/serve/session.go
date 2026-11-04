@@ -1,10 +1,12 @@
 package serve
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1099,6 +1101,29 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 	s.exitReader(runID, end)
 }
 
+func (s *Session) serial(runID protocol.RunID) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serials[runID]
+}
+
+func (s *Session) laterRuns(runID protocol.RunID) []protocol.RunID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	first := s.serials[runID]
+	if first == 0 {
+		return nil
+	}
+	var later []protocol.RunID
+	for run, serial := range s.serials {
+		if serial > first {
+			later = append(later, run)
+		}
+	}
+	slices.SortFunc(later, func(a, b protocol.RunID) int { return cmp.Compare(s.serials[a], s.serials[b]) })
+	return later
+}
+
 func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 	s.mu.Lock()
 	affected := s.detachExposedLocked(runID)
@@ -1127,6 +1152,10 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	s.readers--
 	s.finished[runID] = true
 	current := s.runID
+	if end == nil && !s.closed && s.pendingEnd == nil && s.deferred == nil && !s.finishDue {
+		s.mu.Unlock()
+		return
+	}
 
 	if end != nil && end.err != nil && current != runID {
 		exposed = s.detachExposedLocked(runID)

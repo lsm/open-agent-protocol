@@ -336,6 +336,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 
 	if stopping.drained() {
+		s.hub.EndSubscriptions()
 		run.awaitPumps(s.shutdown)
 	}
 	run.closeAdmission()

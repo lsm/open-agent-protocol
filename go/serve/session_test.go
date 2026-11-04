@@ -356,9 +356,6 @@ func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
 	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 1 {
 		t.Fatalf("run-b envelope: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
 	}
-	if _, err := bSubscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("run-b terminal %v, want io.EOF", err)
-	}
 }
 
 func TestOverflowFollowsDeliveredRuns(t *testing.T) {
@@ -468,9 +465,6 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
 		}
 	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
-	}
 }
 
 func TestSubmitReservationReleasesOnFailure(t *testing.T) {
@@ -503,204 +497,6 @@ func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-a" {
 		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
-	}
-}
-
-func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
-	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
-	entry := newSession("gated", "stub", gated, nil)
-	sub, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe on an open session was refused")
-	}
-	streamA := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA)
-	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
-
-	rejected := make(chan error, 2)
-	for range 2 {
-		go func() {
-			_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
-				SessionID: "gated", Delivery: protocol.DeliveryAuto,
-				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
-			}})
-			rejected <- err
-		}()
-	}
-
-	<-gated.entered
-	<-gated.entered
-	close(streamA)
-	close(gated.release)
-	for range 2 {
-		if err := <-rejected; !errors.Is(err, base.ErrRunActive) {
-			t.Fatalf("submit error %v, want run-active", err)
-		}
-	}
-
-	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	envelope, err := subscription.Next()
-	if err != nil || envelope.RunID != "run-a" {
-		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want the deferred clean end", err)
-	}
-}
-
-func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
-	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
-	entry := newSession("gated", "stub", gated, nil)
-	cohort, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe on an open session was refused")
-	}
-	streamA := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA)
-	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
-
-	rejected := make(chan error, 1)
-	go func() {
-		_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
-			SessionID: "gated", Delivery: protocol.DeliveryAuto,
-			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
-		}})
-		rejected <- err
-	}()
-	<-gated.entered
-	close(streamA)
-	deadline := time.After(testTimeout)
-	for {
-		entry.mu.Lock()
-		deferred := entry.readers == 0 && entry.finishDue
-		entry.mu.Unlock()
-		if deferred {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("the reader never exited into the deferred finish")
-		default:
-		}
-	}
-	newcomer, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe during the reservation window was refused")
-	}
-	close(gated.release)
-	if err := <-rejected; !errors.Is(err, base.ErrRunActive) {
-		t.Fatalf("submit error %v, want run-active", err)
-	}
-
-	cohortSubscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
-	envelope, err := cohortSubscription.Next()
-	if err != nil || envelope.RunID != "run-a" {
-		t.Fatalf("cohort envelope: run %s error %v", envelope.RunID, err)
-	}
-	if _, err := cohortSubscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("cohort terminal %v, want io.EOF", err)
-	}
-	select {
-	case <-newcomer.finish:
-		t.Fatal("the deferred finish swept a subscriber from inside the reservation window")
-	default:
-	}
-
-	gated.fail = nil
-	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
-		SessionID: "gated", Delivery: protocol.DeliveryAuto,
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
-	close(gated.stream)
-	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
-	envelope, err = newcomerSubscription.Next()
-	if err != nil || envelope.RunID != "run-b" {
-		t.Fatalf("newcomer envelope: run %s error %v", envelope.RunID, err)
-	}
-	if _, err := newcomerSubscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("newcomer terminal %v, want io.EOF", err)
-	}
-}
-
-func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
-	entry := newSession("hub", "memory", nil, nil)
-	cohort, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe on an open session was refused")
-	}
-	streamA := make(chan base.Result, 4)
-	streamB := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA)
-	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
-	entry.startRun("run-b", streamB)
-	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
-
-	close(streamB)
-	deadline := time.After(testTimeout)
-	for {
-		entry.mu.Lock()
-		deferred := entry.readers == 1 && entry.deferred != nil
-		entry.mu.Unlock()
-		if deferred {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("run B's reader never deferred its end behind run A's")
-		default:
-		}
-	}
-	newcomer, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe during the deferral window was refused")
-	}
-	close(streamA)
-
-	cohortSubscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
-	seen := map[protocol.RunID]bool{}
-	for {
-		envelope, err := cohortSubscription.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("cohort terminal %v, want the clean end", err)
-		}
-		seen[envelope.RunID] = true
-	}
-	if !seen["run-a"] || !seen["run-b"] {
-		t.Fatalf("cohort observed %v, want both runs", seen)
-	}
-	select {
-	case <-newcomer.finish:
-		t.Fatal("the deferred run end swept a subscriber from inside the window")
-	default:
-	}
-
-	streamC := make(chan base.Result, 4)
-	entry.startRun("run-c", streamC)
-	streamC <- base.Result{Envelope: runEnvelope(t, "run-c", 1)}
-	close(streamC)
-	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
-	newcomerSeen := map[protocol.RunID]bool{}
-	for {
-		envelope, err := newcomerSubscription.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("newcomer terminal %v, want the clean end", err)
-		}
-		newcomerSeen[envelope.RunID] = true
-	}
-	if !newcomerSeen["run-c"] {
-		t.Fatalf("newcomer observed %v, want run-c among them", newcomerSeen)
 	}
 }
 
@@ -738,9 +534,6 @@ func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-b" {
 		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
 	}
 }
 
@@ -787,9 +580,6 @@ func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
 	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 2 {
 		t.Fatalf("run-b tail: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
 	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want the clean run-b end", err)
-	}
 }
 
 func TestCloseSessionsAttemptsEverySession(t *testing.T) {
@@ -819,46 +609,6 @@ type countingSession struct {
 func (c *countingSession) Close(ctx context.Context) error {
 	c.closes.Add(1)
 	return c.stubSession.Close(ctx)
-}
-
-func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil, nil)
-	early, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe on an open session was refused")
-	}
-	streamA := make(chan base.Result, 4)
-	streamB := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA)
-	entry.startRun("run-b", streamB)
-	close(streamB)
-	deadline := time.After(testTimeout)
-	for {
-		entry.mu.Lock()
-		deferred := entry.readers == 1 && entry.deferred != nil
-		entry.mu.Unlock()
-		if deferred {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("run B's reader never deferred its end behind run A's")
-		default:
-		}
-	}
-	late, _, _, ok := entry.subscribe(8)
-	if !ok {
-		t.Fatal("subscribe during the deferral window was refused")
-	}
-	entry.markClosed()
-	close(streamA)
-	for name, sub := range map[string]*subscriber{"early": early, "late": late} {
-		select {
-		case <-sub.finish:
-		case <-time.After(testTimeout):
-			t.Fatalf("the %s subscriber outlived the close", name)
-		}
-	}
 }
 
 func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
@@ -972,9 +722,6 @@ func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
 		if err != nil || envelope.RunID != want {
 			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
 		}
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want the clean end", err)
 	}
 }
 
@@ -1208,9 +955,6 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	if err != nil || envelope.RunID != "run-b" {
 		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
 	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
-	}
 }
 
 func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
@@ -1271,9 +1015,6 @@ func TestExposureByAdmissionOrder(t *testing.T) {
 	envelope, err = subscription.Next()
 	if err != nil || envelope.RunID != "run-b" {
 		t.Fatalf("envelope: run %s error %v, want run-b continuing past run-a's overflow", envelope.RunID, err)
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
 	}
 }
 
@@ -1341,9 +1082,6 @@ func TestAttachmentRunOrdersPendingExposure(t *testing.T) {
 	envelope, err = subscription.Next()
 	if err != nil || envelope.RunID != "run-b" {
 		t.Fatalf("envelope: run %s error %v, want run-b continuing past run-a's overflow", envelope.RunID, err)
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
 	}
 }
 

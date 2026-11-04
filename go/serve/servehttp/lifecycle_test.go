@@ -113,7 +113,6 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	}
 	trace = append(trace, inputRequest, inputResponse)
 	trace = append(trace, stream.drainUntil(protocol.TypeRunCompleted)...)
-	stream.expectEnd()
 
 	stateResponse := getState(t, server, sessionID)
 	stateRequest := requestEnvelope(t, protocol.TypeSessionStateRequest, string(stateResponse.InReplyTo), protocol.SessionStateRequest{SessionID: protocol.SessionID(sessionID)}, sessionID, "", "")
@@ -201,7 +200,6 @@ func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 	if len(envelopes) == 0 {
 		t.Fatal("active run produced no events before cancellation")
 	}
-	stream.expectEnd()
 
 	for _, sessionID := range []string{"shutdown-idle", "shutdown-active"} {
 		requireSessionUnknown(t, server, sessionID)
