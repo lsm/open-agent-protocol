@@ -2578,8 +2578,9 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 lands one pull request at a time, so this document is ahead of the code. Until
 each part is built, Zig ends a subscription at its run's terminal, Rust ends it
 when the session has no run left to follow, `unsubscribe` is not in every tree
-yet, no hub writes a keepalive, SSE ids are bare sequences, and a cursor resumes
-one run.
+yet, no hub writes a keepalive, SSE ids are bare sequences, and no hub replays
+across runs. A Go cursor follows later runs live but skips a run that settled
+between its own and the subscribe.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences
