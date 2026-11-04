@@ -14,6 +14,8 @@ const afd_poll = @import("afd_poll.zig");
 pub const max_connections: usize = 64;
 pub const io_cycle_ms: i32 = 50;
 pub const shutdown_flush_ms: u64 = 5_000;
+pub const keepalive_ms: u64 = 15_000;
+pub const sse_keepalive = ": keepalive\n\n";
 pub const stream_buffer_bytes: usize = 256 * 1024;
 pub const read_chunk_bytes: usize = 16 * 1024;
 const write_chunk_bytes: usize = 64 * 1024;
@@ -75,6 +77,7 @@ pub const Daemon = struct {
     drained_at_ms: ?u64 = null,
     signals: ?*const fn () u32 = null,
     streams: std.atomic.Value(usize) = .init(0),
+    quiet_limit_ms: u64 = keepalive_ms,
 
     pub fn init(allocator: std.mem.Allocator, core: *hubmod.Hub, allow: []const []const u8, outer: hub_http.KeepGoing) !Daemon {
         const frontend = try hub_stdio.Frontend.init(allocator, core, .{ .context = &discard.context, .write = discard.write }, .{});
@@ -909,6 +912,11 @@ pub const Connection = struct {
             },
             .streaming => {
                 if (self.stream_ended and !self.pending()) self.phase = .done;
+                if (self.phase == .streaming and !self.pending() and now -| self.progress_ms >= self.daemon.quiet_limit_ms) {
+                    self.compact();
+                    self.queue(sse_keepalive);
+                    self.progress_ms = now;
+                }
             },
             .awaiting => {
                 const deferred = self.awaiting orelse return;
@@ -1725,6 +1733,29 @@ test "an open event stream does not hold the daemon: another connection is answe
     try testing.expect(try readFor(&submitter, &admitted, "session.message.submit.response", 2000));
     try testing.expect(try readFor(&stream, &streamed, "id: 1\ndata: {", 2000));
     try testing.expect(std.mem.indexOf(u8, streamed.items, "run.started") != null);
+}
+
+test "a quiet event stream writes a keepalive comment" {
+    var served: Served = undefined;
+    try served.prepare();
+    served.fixture.daemon.quiet_limit_ms = 40;
+    _ = try served.fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    try served.serve();
+    defer served.stop();
+
+    var stream = try served.dial();
+    defer stream.close();
+    try stream.writeAll("GET /sessions/demo/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    var streamed = std.ArrayList(u8).empty;
+    defer streamed.deinit(testing.allocator);
+    try testing.expect(try readFor(&stream, &streamed, "\r\n\r\n: keepalive\n\n: keepalive\n\n", 2000));
+}
+
+test "a stream stays quiet for fifteen seconds before its keepalive" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    try testing.expectEqual(@as(u64, 15_000), fixture.daemon.quiet_limit_ms);
 }
 
 test "a chunked body is decoded by the loop and served as if it had declared its length" {
