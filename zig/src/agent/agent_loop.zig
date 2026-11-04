@@ -1083,6 +1083,7 @@ const WithheldResults = struct {
     ids: [max_withheld_results][]const u8 = undefined,
     len: usize = 0,
     input_dropped: bool = false,
+    history_at_start: usize = 0,
 
     fn holds(self: *const WithheldResults, tool_call_id: []const u8) bool {
         for (self.ids[0..self.len]) |id| {
@@ -1320,7 +1321,7 @@ fn streamAssistantResponse(
                 };
                 var noted: ?ai_types.AssistantMessage = null;
                 errdefer if (noted) |*message| message.deinit(allocator);
-                if (failureNote(e.err.error_message.slice(), output_shown, context.messagesSlice())) |note| {
+                if (failureNote(e.err.error_message.slice(), output_shown, context.messagesSlice()[@min(turn_retry.withheld.history_at_start, context.messages.items.len)..])) |note| {
                     turn_retry.withheld.input_dropped = note.ptr == input_dropped_note.ptr;
                     noted = try notedFailure(allocator, e.err, note);
                     if (provider_stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
@@ -1362,7 +1363,7 @@ fn streamAssistantResponse(
 
     if (final_message == null) {
         if (provider_stream.getError()) |provider_error| {
-            if (failureNote(provider_error, message_started, context.messagesSlice())) |note| {
+            if (failureNote(provider_error, message_started, context.messagesSlice()[@min(turn_retry.withheld.history_at_start, context.messages.items.len)..])) |note| {
                 turn_retry.withheld.input_dropped = note.ptr == input_dropped_note.ptr;
                 const noted = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ provider_error, note });
                 defer allocator.free(noted);
@@ -1375,10 +1376,10 @@ fn streamAssistantResponse(
     return final_message orelse error.NoFinalMessage;
 }
 
-fn failureNote(error_text: []const u8, output_shown: bool, history: []const ai_types.Message) ?[]const u8 {
+fn failureNote(error_text: []const u8, output_shown: bool, added_this_run: []const ai_types.Message) ?[]const u8 {
     if (output_shown and TurnRetry.eligible(error_text)) return failed_after_output_note;
     if (retry.classifyError(error_text) != .context_overflow) return null;
-    if (history.len == 0 or history[history.len - 1] != .user) return null;
+    if (added_this_run.len == 0 or added_this_run[added_this_run.len - 1] != .user) return null;
     return input_dropped_note;
 }
 
@@ -1594,6 +1595,7 @@ const FlakyCtx = struct {
     show_text: bool = false,
     error_event: bool = false,
     cancel_on_failure: ?*std.atomic.Value(bool) = null,
+    new_prompt: bool = false,
     calls: usize = 0,
     history_differed: bool = false,
 };
@@ -1649,12 +1651,14 @@ fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
     defer events.deinit();
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
-    try context.appendMessage(try ai_types.cloneMessage(std.testing.allocator, .{ .user = .{
+    const question = try ai_types.cloneMessage(std.testing.allocator, .{ .user = .{
         .content = .{ .text = "saved question" },
         .timestamp = 0,
-    } }));
+    } });
+    if (!flaky.new_prompt) try context.appendMessage(question);
+    const prompts = [_]ai_types.Message{question};
 
-    try runLoop(std.testing.allocator, &.{}, &context, .{
+    try runLoop(std.testing.allocator, if (flaky.new_prompt) &prompts else &.{}, &context, .{
         .model = testModel(),
         .protocol = .{ .stream_fn = flakyStream, .ctx = flaky },
         .max_iterations = 1,
@@ -1870,11 +1874,18 @@ test "an overflow with no large tool result ends the run" {
 
 test "an overflow after a new user message says the input was not kept, on either failure path" {
     for ([_]bool{ false, true }) |error_event| {
-        var flaky = FlakyCtx{ .failure = "prompt is too long: 9000 tokens > 8192 maximum", .failures_left = 1, .error_event = error_event };
+        var flaky = FlakyCtx{ .failure = "prompt is too long: 9000 tokens > 8192 maximum", .failures_left = 1, .error_event = error_event, .new_prompt = true };
         const outcome = try runFlakyTurn(&flaky);
         try std.testing.expect(outcome.final_error);
         try std.testing.expect(outcome.noted_input_dropped);
     }
+}
+
+test "an overflow on history a run continues from does not claim to drop an input" {
+    var flaky = FlakyCtx{ .failure = "prompt is too long: 9000 tokens > 8192 maximum", .failures_left = 1 };
+    const outcome = try runFlakyTurn(&flaky);
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(!outcome.noted_input_dropped);
 }
 
 test "an overflow after a tool result does not claim to drop an input" {
@@ -2235,7 +2246,7 @@ fn runLoop(
     event_stream: *AgentEventStream,
     retained: *types.StreamRetention,
 ) !void {
-    var withheld = WithheldResults{};
+    var withheld = WithheldResults{ .history_at_start = context.messages.items.len };
     var state = LoopState{
         .messages = std.ArrayList(ai_types.Message).empty,
         .iterations = 0,
