@@ -16,12 +16,16 @@ struct Serving {
 
 impl Serving {
     fn start() -> Self {
+        Self::within(Duration::from_millis(500))
+    }
+
+    fn within(window: Duration) -> Self {
         let hub = Hub::new(Registry::default_registry());
         let endpoint = Endpoint::new(
             &hub,
             EndpointOptions {
                 adapter: "memory".into(),
-                shutdown: Some(Duration::from_millis(500)),
+                shutdown: Some(window),
                 ..EndpointOptions::default()
             },
         )
@@ -132,6 +136,21 @@ fn a_graceful_shutdown_asks_then_drains_refusing_new_work_until_its_run_ends() {
         json!({"session_id": "s", "run_id": run}),
     ));
     serving.wait_for(|line| line["type"] == "run.cancelled");
+    serving.ends_with_input_open();
+}
+
+#[test]
+fn a_settled_runs_stream_ends_at_its_terminal_and_holds_no_shutdown_open() {
+    let mut serving = Serving::within(Duration::from_secs(30));
+    let run = running(&mut serving);
+    serving.send(request(
+        "run.cancel.request",
+        "c",
+        json!({"session_id": "s", "run_id": run}),
+    ));
+    serving.wait_for(|line| line["type"] == "run.cancelled");
+    serving.send(shutdown("x", json!({"mode": "graceful"})));
+    assert_eq!(serving.answer("x")["payload"]["outcome"], "stopping");
     serving.ends_with_input_open();
 }
 
