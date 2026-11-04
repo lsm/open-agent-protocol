@@ -880,13 +880,11 @@ session.Submit(ctx, protocol.MessageSubmitRequest{
 hub.Published(session.ID(), "my-request-id") // no-op unless that submit steered a run
 for {
 	envelope, err := sub.Next()
-	if err == io.EOF {
-		break // the run reached its terminal event
-	}
 	if err != nil {
-		break // fell behind: resume per the error's cursor
+		break // the session closed, or fell behind: resume per the error's cursor
 	}
-	// resolve gates and collect content as events arrive
+	// resolve gates and collect content as events arrive; a run.completed,
+	// run.failed or run.cancelled ends that run, and the stream goes on
 }
 ```
 

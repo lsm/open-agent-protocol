@@ -60,7 +60,6 @@ func TestSSEReplayAfterCursor(t *testing.T) {
 			t.Fatalf("replayed envelope run %q, want %q", envelope.RunID, runID)
 		}
 	}
-	stream.expectEnd()
 }
 
 func TestSSELastEventIDReconnect(t *testing.T) {
@@ -74,7 +73,6 @@ func TestSSELastEventIDReconnect(t *testing.T) {
 	if len(replayed) != 3 {
 		t.Fatalf("replayed %d envelopes, want 3", len(replayed))
 	}
-	stream.expectEnd()
 }
 
 func TestSSEQueryCursorWinsOverHeader(t *testing.T) {
@@ -100,7 +98,6 @@ func TestSSEQueryCursorWinsOverHeader(t *testing.T) {
 	if len(replayed) != 1 {
 		t.Fatalf("replayed %d envelopes, want 1", len(replayed))
 	}
-	stream.expectEnd()
 }
 
 func TestSSEReplayGap(t *testing.T) {
@@ -114,7 +111,6 @@ func TestSSEReplayGap(t *testing.T) {
 	if payload["requested_after"] != float64(1) || payload["oldest_available"] != float64(11) || payload["latest_available"] != float64(12) {
 		t.Fatalf("gap signal: %v", payload)
 	}
-	stream.expectEnd()
 
 	stream = connectSSE(t, server, "/sessions/sse-gap/events?after=10", "")
 	replayed := stream.drainUntil(protocol.TypeRunCompleted)
@@ -122,7 +118,6 @@ func TestSSEReplayGap(t *testing.T) {
 	if len(replayed) != 2 {
 		t.Fatalf("retained replay %d envelopes, want 2", len(replayed))
 	}
-	stream.expectEnd()
 }
 
 func TestSSECursorErrors(t *testing.T) {
@@ -207,8 +202,6 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 	resolveInput(t, server, inputRequestAt(t, middle), "resolve-mid-2")
 	stream.drainUntil(protocol.TypeRunCompleted)
 	late.drainUntil(protocol.TypeRunCompleted)
-	stream.expectEnd()
-	late.expectEnd()
 }
 
 func TestSSEStreamEndsOnSessionClose(t *testing.T) {
@@ -255,7 +248,6 @@ func TestSSEOverflowSignalReplay(t *testing.T) {
 	if payload["last_sequence"] != float64(10) {
 		t.Fatalf("overflow signal: %v", payload)
 	}
-	stream.expectEnd()
 }
 
 type fakeAdapter struct {
@@ -395,7 +387,6 @@ func driveOneRun(t *testing.T, server *httptest.Server, sessionID, prefix string
 	middle := stream.drainUntil(protocol.TypeUserInputRequested)
 	resolveInput(t, server, inputRequestAt(t, middle), prefix+"-input")
 	stream.drainUntil(protocol.TypeRunCompleted)
-	stream.expectEnd()
 	return admission.RunID
 }
 
@@ -413,14 +404,12 @@ func TestSSECursorFollowsTheRunItNames(t *testing.T) {
 		t.Fatalf("replay began on run %q, want the named run %q", envelope.RunID, first)
 	}
 	named.drainUntil(protocol.TypeRunCompleted)
-	named.expectEnd()
 
 	unnamed := connectSSE(t, server, "/sessions/sse-two-runs/events?after=1", "")
 	if envelope := unnamed.envelope(); envelope.RunID != second {
 		t.Fatalf("an unqualified cursor replayed run %q, want the current run %q", envelope.RunID, second)
 	}
 	unnamed.drainUntil(protocol.TypeRunCompleted)
-	unnamed.expectEnd()
 }
 
 func TestSSERefusesARunWithoutACursor(t *testing.T) {

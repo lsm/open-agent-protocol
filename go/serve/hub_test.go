@@ -282,9 +282,6 @@ func driveMemoryRun(t *testing.T, session *serve.Session, subscription *serve.Su
 	middle := nextUntil(t, subscription, typeStop(protocol.TypeRunStatusUpdated))
 	resolveGate(t, session, envelopeOfType(t, middle, protocol.TypeUserInputRequested))
 	nextUntil(t, subscription, typeStop(protocol.TypeRunCompleted))
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("post-terminal error %v, want io.EOF", err)
-	}
 	return runID
 }
 
@@ -505,9 +502,6 @@ func TestHubFansOutToSubscribers(t *testing.T) {
 				t.Fatalf("subscriber %d envelope: run %s sequence %v, want %s at %d", index, envelope.RunID, envelope.Sequence, runID, sequence)
 			}
 		}
-		if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-			t.Fatalf("subscriber %d post-run error %v, want io.EOF", index, err)
-		}
 		subscription.Close()
 	}
 }
@@ -547,9 +541,6 @@ func TestHubSubscriptionQueueOverflow(t *testing.T) {
 		}
 	}
 	active.endRun()
-	if _, err := fast.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("fast post-run error %v, want io.EOF", err)
-	}
 
 	first, err := slow.Next()
 	if err != nil || first.Sequence == nil || *first.Sequence != 1 {
@@ -713,9 +704,6 @@ func TestHubResumeFromCursorMidStream(t *testing.T) {
 	}
 	if want := 12 - 3 + 1; len(seen) != want {
 		t.Fatalf("resumed stream delivered %d envelopes, want %d", len(seen), want)
-	}
-	if _, err := resumed.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("post-terminal error %v, want io.EOF", err)
 	}
 }
 
@@ -892,10 +880,6 @@ func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
 	}
 	active.endRun()
 
-	if _, err := witness.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("witness end error %v, want io.EOF", err)
-	}
-
 	runB := submitGolden(t, session, "run B intervenes")
 	active.emit(t, 1)
 	active.endRun()
@@ -1007,11 +991,14 @@ func TestHubSessionsListingAcrossAdapters(t *testing.T) {
 
 	manual.active(t).emit(t, 1)
 	manual.active(t).endRun()
-	for {
-		if _, err := subscription.Next(); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			t.Fatalf("subscription error: %v", err)
+	subscription.Close()
+	settled := time.Now().Add(testTimeout)
+	for idle := false; !idle; {
+		for _, entry := range hub.Sessions(ctx) {
+			idle = idle || (entry.SessionID == "list-b" && entry.Status == protocol.SessionIdle)
+		}
+		if time.Now().After(settled) {
+			t.Fatal("the run never settled")
 		}
 	}
 	assertListing("list-b", "beta", protocol.SessionIdle, "")
@@ -1051,9 +1038,6 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 		if envelope.Sequence == nil || *envelope.Sequence != uint64(offset+1) {
 			t.Fatalf("envelope %d (%s) sequence %v", offset, envelope.Type, envelope.Sequence)
 		}
-	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("post-terminal error %v, want io.EOF", err)
 	}
 
 	if err := session.Close(ctx); err != nil {
@@ -1192,10 +1176,6 @@ func TestHubConcurrentSessions(t *testing.T) {
 					return
 				}
 			}
-			if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-				t.Errorf("session %d post-terminal error %v", index, err)
-				return
-			}
 			subscription.Close()
 			if err := session.Close(ctx); err != nil {
 				t.Errorf("session %d close: %v", index, err)
@@ -1329,5 +1309,94 @@ func TestTheListingReleasesASessionTheAdapterReportsClosed(t *testing.T) {
 	}
 	if _, err := hub.Session("listed-closed"); !errors.Is(err, serve.ErrUnknownSession) {
 		t.Fatalf("the hub answered %v after the listing saw the session closed", err)
+	}
+}
+
+func TestALiveSubscriptionCarriesOnIntoTheSessionsNextRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "next-run")
+	subscription, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	first := driveMemoryRun(t, session, subscription)
+	second := driveMemoryRun(t, session, subscription)
+	if first == second {
+		t.Fatalf("both runs were %s", first)
+	}
+}
+
+func TestAResumedStreamCarriesOnIntoTheSessionsNextRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "resumed-next-run")
+	watcher, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	first := driveMemoryRun(t, session, watcher)
+	resumed, err := hub.Subscribe(ctx, session.ID(), serve.After(first, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	replayed := nextUntil(t, resumed, typeStop(protocol.TypeRunCompleted))
+	if replayed[0].RunID != first || *replayed[0].Sequence != 1 {
+		t.Fatalf("replay began at %s #%d", replayed[0].RunID, *replayed[0].Sequence)
+	}
+	second := driveMemoryRun(t, session, watcher)
+	started := nextUntil(t, resumed, typeStop(protocol.TypeRunStarted))
+	if last := started[len(started)-1]; last.RunID != second || *last.Sequence != 1 {
+		t.Fatalf("the resumed stream went on to %s #%d, want %s #1", last.RunID, *last.Sequence, second)
+	}
+}
+
+func TestACursorSkipsARunAdmittedBeforeItsOwn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "earlier-run")
+	watcher, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	submit := func(delivery protocol.RequestedDeliveryMode) protocol.RunID {
+		admission, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
+			SessionID: session.ID(), Delivery: delivery,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return admission.RunID
+	}
+	earlier := submit(protocol.DeliveryAuto)
+	nextUntil(t, watcher, typeStop(protocol.TypeActionPermissionRequested))
+	queued := submit(protocol.DeliveryQueue)
+	if _, err := session.Cancel(ctx, queued); err != nil {
+		t.Fatal(err)
+	}
+	nextUntil(t, watcher, func(e protocol.Envelope) bool { return e.RunID == queued })
+	cursor, err := hub.Subscribe(ctx, session.ID(), serve.After(queued, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cursor.Close()
+	nextUntil(t, cursor, func(e protocol.Envelope) bool { return e.RunID == queued })
+	if _, err := session.Cancel(ctx, earlier); err != nil {
+		t.Fatal(err)
+	}
+	nextUntil(t, watcher, typeStop(protocol.TypeRunCancelled))
+	later := submit(protocol.DeliveryAuto)
+	for _, envelope := range nextUntil(t, cursor, typeStop(protocol.TypeRunStarted)) {
+		if envelope.RunID != later {
+			t.Fatalf("the cursor heard %s, want only %s", envelope.RunID, later)
+		}
 	}
 }

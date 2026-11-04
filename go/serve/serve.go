@@ -317,6 +317,12 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 	return statuses
 }
 
+func (h *Hub) EndSubscriptions() {
+	for _, entry := range h.sessions.list() {
+		entry.finishSubs(nil)
+	}
+}
+
 func (h *Hub) CloseSessions(ctx context.Context) {
 	h.stopping.Store(true)
 	entries := h.sessions.list()

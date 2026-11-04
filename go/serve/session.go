@@ -1099,6 +1099,12 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 	s.exitReader(runID, end)
 }
 
+func (s *Session) serial(runID protocol.RunID) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serials[runID]
+}
+
 func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 	s.mu.Lock()
 	affected := s.detachExposedLocked(runID)
@@ -1127,6 +1133,10 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	s.readers--
 	s.finished[runID] = true
 	current := s.runID
+	if end == nil && !s.closed && s.pendingEnd == nil && s.deferred == nil && !s.finishDue {
+		s.mu.Unlock()
+		return
+	}
 
 	if end != nil && end.err != nil && current != runID {
 		exposed = s.detachExposedLocked(runID)

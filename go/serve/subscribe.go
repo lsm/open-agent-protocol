@@ -53,7 +53,15 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 			return nil, ErrNoRunToResume
 		}
 	}
+	sub, _, _, open := entry.subscribe(h.queue)
+	if !open {
+		return nil, &SessionClosedError{ID: id}
+	}
 	_, replay, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: runID, AfterSequence: *config.after})
+	if err != nil {
+		entry.unsubscribe(sub)
+		sub.stop(nil)
+	}
 	var gap *base.ReplayGap
 	if errors.As(err, &gap) {
 		return nil, gap
@@ -61,7 +69,8 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	if err != nil {
 		return nil, err
 	}
-	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID, last: *config.after}, nil
+	positions := map[protocol.RunID]uint64{runID: *config.after}
+	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replay, run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
 }
 
 type Subscription struct {
@@ -75,6 +84,7 @@ type Subscription struct {
 	last      uint64
 	lastRun   protocol.RunID
 	positions map[protocol.RunID]uint64
+	firstRun  uint64
 
 	joinedRun protocol.RunID
 	joinedAt  uint64
@@ -97,10 +107,14 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 		}
 		return protocol.Envelope{}, io.EOF
 	}
-	if s.sub != nil {
-		return s.nextLive()
+	if s.replay != nil {
+		envelope, err := s.nextReplay()
+		if !errors.Is(err, io.EOF) {
+			return envelope, err
+		}
+		s.replay = nil
 	}
-	return s.nextReplay()
+	return s.nextLive()
 }
 
 func (s *Subscription) Close() {
@@ -114,15 +128,17 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 	for {
 		select {
 		case envelope := <-s.sub.ch:
-			s.observe(envelope)
-			return envelope, nil
+			if s.observe(envelope) {
+				return envelope, nil
+			}
 		case <-s.sub.finish:
 
 			for {
 				select {
 				case envelope := <-s.sub.ch:
-					s.observe(envelope)
-					return envelope, nil
+					if s.observe(envelope) {
+						return envelope, nil
+					}
 				default:
 					s.finished = true
 					if state := s.sub.terminal.Load(); state != nil {
@@ -154,7 +170,6 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 	select {
 	case result, ok := <-s.replay:
 		if !ok {
-			s.finished = true
 			return protocol.Envelope{}, io.EOF
 		}
 		if result.Error != nil {
@@ -169,6 +184,9 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 			return protocol.Envelope{}, s.err
 		}
 		s.last = observedSequence(result.Envelope, s.last)
+		if result.Envelope.Sequence != nil {
+			s.positions[result.Envelope.RunID] = *result.Envelope.Sequence
+		}
 		return result.Envelope, nil
 	case <-s.ctx.Done():
 		s.Close()
@@ -177,30 +195,32 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 	}
 }
 
-func (s *Subscription) observe(envelope protocol.Envelope) {
+func (s *Subscription) observe(envelope protocol.Envelope) bool {
 	s.sub.acknowledge(envelope.RunID)
+	if envelope.Sequence != nil && *envelope.Sequence <= s.positions[envelope.RunID] {
+		return false
+	}
+	if s.firstRun > 0 && s.session.serial(envelope.RunID) < s.firstRun {
+		return false
+	}
 	if envelope.RunID != s.lastRun {
 		s.lastRun = envelope.RunID
 		s.last = 0
 	}
 	s.last = observedSequence(envelope, s.last)
 	if envelope.Sequence == nil {
-		return
+		return true
 	}
 	if s.positions == nil {
 		s.positions = make(map[protocol.RunID]uint64)
 	}
-	if *envelope.Sequence > s.positions[envelope.RunID] {
-		s.positions[envelope.RunID] = *envelope.Sequence
-	}
+	s.positions[envelope.RunID] = *envelope.Sequence
+	return true
 }
 
 func (s *Subscription) detach() {
-	if s.sub != nil {
-		s.session.unsubscribe(s.sub)
-		s.sub.stop(nil)
-		return
-	}
+	s.session.unsubscribe(s.sub)
+	s.sub.stop(nil)
 	if s.replay != nil {
 		stream := s.replay
 		go func() {
