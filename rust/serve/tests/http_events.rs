@@ -144,6 +144,21 @@ fn last_event_id_reads_a_run_qualified_id_back_at_its_last_colon() {
     let (next, _, data) = next_event(&mut resumed);
     assert_eq!(data["sequence"], 2, "{data}");
     assert_eq!(next.unwrap(), id.replace(":1", ":2"));
+    let mut stale = TcpStream::connect(addr).unwrap();
+    stale
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stale
+        .write_all(
+            format!(
+                "GET /sessions/s/events?run_id=elsewhere HTTP/1.1\r\nHost: {addr}\r\nLast-Event-ID: {id}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut stale = BufReader::new(stale);
+    assert_eq!(status_and_headers(&mut stale).0, 200);
+    assert_eq!(next_event(&mut stale).2["sequence"], 2);
 }
 
 #[test]

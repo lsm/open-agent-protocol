@@ -978,9 +978,7 @@ impl Served {
             let position = match cursor.rsplit_once(':').filter(|_| queried.is_none()) {
                 Some(("", _)) => "",
                 Some((named, position)) => {
-                    if run.is_empty() {
-                        named.clone_into(&mut run);
-                    }
+                    named.clone_into(&mut run);
                     position
                 }
                 None => cursor.as_str(),
