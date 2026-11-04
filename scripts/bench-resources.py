@@ -616,10 +616,11 @@ def flight_summary(rows, trace, steps, n, shape, stats, phases, scenario, work):
     for agent, turn, received, finished, tool in sorted(trace, key=lambda t: t[2]):
         last = by_agent.get(agent)
         if last is not None and turn > 0:
-            turns.append((received - last[0], received - last[1] - last[2]))
+            turns.append((received - last[0], received - last[1] - last[2], turn))
         by_agent[agent] = (received, finished, tool)
     summary.update(turn_p50_ms=percentile([t[0] for t in turns], 0.5) * 1e3, turn_p99_ms=percentile([t[0] for t in turns], 0.99) * 1e3,
-                   between_p50_ms=percentile([t[1] for t in turns], 0.5) * 1e3, between_p99_ms=percentile([t[1] for t in turns], 0.99) * 1e3)
+                   between_p50_ms=percentile([t[1] for t in turns], 0.5) * 1e3, between_p99_ms=percentile([t[1] for t in turns], 0.99) * 1e3,
+                   between_by_turn_ms={k: percentile([t[1] for t in turns if t[2] == k], 0.5) * 1e3 for k in (1, 2, 3)})
     return summary
 
 
@@ -909,7 +910,7 @@ def main():
                 if scenario in LOOP_ONLY and target != "zig-loop":
                     continue
                 for n in counts:
-                    if scenario in FLIGHTS and user_processes() + n >= arguments.max_user_processes:
+                    if scenario in FLIGHTS and user_processes() + 2 * n >= arguments.max_user_processes:
                         results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: N tools at once would pass --max-user-processes"})
                         continue
                     result = run_case(target, binaries[target], scenario, n, scratch, arguments.timeout,
