@@ -18,6 +18,7 @@ pub const Transport = struct {
     send_line_fn: *const fn (?*anyopaque, []const u8) anyerror!void,
     pump_fn: *const fn (?*anyopaque) anyerror!void,
     recv_line_fn: *const fn (?*anyopaque, std.mem.Allocator) anyerror!?[]u8,
+    wait_fn: ?*const fn (?*anyopaque, u64) void = null,
     close_fn: *const fn (?*anyopaque) void,
 
     pub fn close(self: Transport) void {
@@ -498,6 +499,8 @@ fn runThread(ctx: *ThreadContext) void {
     runThreadFallible(ctx) catch |err| ctx.stream.completeWithError(@errorName(err));
 }
 
+const line_wait_fallback_ms: u64 = 100;
+
 fn runThreadFallible(ctx: *ThreadContext) !void {
     var arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena_state.deinit();
@@ -546,7 +549,12 @@ fn runThreadFallible(ctx: *ThreadContext) !void {
             cancel_sent = true;
         }
         if (compat.time.nowMillis() - last_progress_ms > 120_000) return error.ProviderInferenceTimedOut;
-        if (!had_line) compat.time.sleepNs(std.time.ns_per_ms);
+        if (had_line) continue;
+        if (transport.wait_fn) |wait| {
+            wait(transport.ctx, line_wait_fallback_ms);
+        } else {
+            compat.time.sleepNs(std.time.ns_per_ms);
+        }
     }
 }
 

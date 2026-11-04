@@ -473,6 +473,14 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             }
         }
 
+        pub fn activity(self: *Self) u32 {
+            return self.futex.load(.acquire);
+        }
+
+        pub fn waitForActivity(self: *Self, seen: u32, timeout_ms: u64) void {
+            waitTimeoutMs(self, seen, timeout_ms);
+        }
+
         pub fn pushFailed(self: *Self) bool {
             return self.push_failed.load(.acquire);
         }
