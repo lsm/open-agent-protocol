@@ -1765,9 +1765,13 @@ Stdio only; over HTTP the client hangs up.
 - **answer:** `{"id":N,"ok":true,"result":null}`. No line carries that
   subscription's id after the answer, and its slot under the ceiling is free. An
   id naming no live subscription answers the same, because a subscription can end
-  on its own while the request is in flight.
+  on its own while the request is in flight. A host sends this after it has read
+  the subscription's acknowledgement: requests on the pipe may run in parallel, so
+  one sent earlier can run first and find nothing.
 - **errors:** `invalid_request` (a missing or unreadable `subscription`, or a
-  parameter the op does not define).
+  parameter the op does not define), `busy` (the subscription has not stopped,
+  because its output is stalled; it stays counted, and the host sends the request
+  again).
 
 ### `events`
 
