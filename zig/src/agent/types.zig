@@ -14,13 +14,8 @@ pub const AgentTermination = enum {
 };
 
 pub const AgentEndPayload = struct {
-    messages: OwnedSlice(ai_types.Message) = OwnedSlice(ai_types.Message).initBorrowed(&.{}),
     termination: ?AgentTermination = null,
     final_message: ?ai_types.AssistantMessage = null,
-
-    pub fn deinit(self: *AgentEndPayload, allocator: std.mem.Allocator) void {
-        self.messages.deinit(allocator);
-    }
 };
 
 pub const CompactionOutcome = enum { completed, cancelled, failed };
@@ -561,13 +556,11 @@ pub const AgentState = struct {
 
 pub const AgentLoopResult = struct {
     pub const Retention = StreamRetention;
-    messages: OwnedSlice(ai_types.Message),
     final_message: ai_types.AssistantMessage,
     iterations: u32,
     termination: ?AgentTermination = null,
 
     pub fn deinit(self: *AgentLoopResult, allocator: std.mem.Allocator) void {
-        self.messages.deinit(allocator);
         var final = self.final_message;
         final.deinit(allocator);
     }
@@ -687,9 +680,7 @@ test "AgentEvent tags are correct" {
     const event: AgentEvent = .agent_start;
     try std.testing.expect(std.meta.activeTag(event) == .agent_start);
 
-    const end_event: AgentEvent = .{ .agent_end = .{
-        .messages = OwnedSlice(ai_types.Message).initBorrowed(&.{}),
-    } };
+    const end_event: AgentEvent = .{ .agent_end = .{} };
     try std.testing.expect(std.meta.activeTag(end_event) == .agent_end);
 }
 
@@ -757,7 +748,6 @@ test "AgentEventStream basic usage" {
     try std.testing.expect(std.meta.activeTag(event.?) == .agent_start);
 
     const result = AgentLoopResult{
-        .messages = OwnedSlice(ai_types.Message).initBorrowed(&.{}),
         .final_message = .{
             .content = &.{},
             .api = "test",
@@ -828,23 +818,6 @@ test "AgentEventStream deinit drains owned message update events" {
         .event = owned,
         .owns_event = true,
     } });
-}
-
-test "AgentEndPayload deinit with owned strings" {
-    const msg = ai_types.Message{
-        .user = .{
-            .content = .{ .text = try std.testing.allocator.dupe(u8, "test") },
-            .timestamp = 0,
-        },
-    };
-    const msgs = try std.testing.allocator.alloc(ai_types.Message, 1);
-    msgs[0] = msg;
-
-    var payload = AgentEndPayload{
-        .messages = OwnedSlice(ai_types.Message).initOwned(msgs),
-    };
-
-    payload.deinit(std.testing.allocator);
 }
 
 test "TurnEndPayload with tool results" {
@@ -945,4 +918,9 @@ test "AgentMessage fromToolResult" {
     try std.testing.expect(agent_msg == .llm);
     try std.testing.expect(agent_msg.isLlmCompatible());
     try std.testing.expectEqual(@as(i64, 12345), agent_msg.getTimestamp());
+}
+
+test "a run's end carries no copy of its messages" {
+    try std.testing.expect(!@hasField(AgentEndPayload, "messages"));
+    try std.testing.expect(!@hasField(AgentLoopResult, "messages"));
 }

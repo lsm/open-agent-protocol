@@ -320,7 +320,7 @@ test "distributed fullstack: agent loop via provider protocol and tool protocol"
     try std.testing.expectEqualStrings("final answer: sum=5", result.final_message.content[0].text.text);
 
     var found_tool_result = false;
-    for (result.messages.slice()) |message| {
+    for (context.messages.items) |message| {
         if (message != .tool_result) continue;
         found_tool_result = true;
         try std.testing.expectEqualStrings("remote_sum", message.tool_result.tool_name);
