@@ -1280,7 +1280,11 @@ a subscription is the hub's, so an open client does not stop a park).
 A session parks only if the hub can bring it back as it was and nothing is in
 flight. Its adapter must offer `session.open.reopen`, and it must have no live
 tool source, because a stopped MCP server cannot resume where it was. It must be
-idle, with no run, no pending interaction and no held subscription. The hub keeps
+idle, with no run, no pending interaction and no held subscription. It must have
+no live background job, and this fails closed: an adapter that cannot report its
+background work never parks, because silently killing a user's background shell
+is worse than holding a process. Today `memory` and `oapx` report it; no
+third-party harness adapter does yet. The hub keeps
 the tools, metadata and allowed degraded features a session opened with in memory
 for the reopen; a park lasts only as long as the process, so they never reach the
 binding store.
@@ -1297,7 +1301,8 @@ is that operation's failure, and the session stays parked.
 | --- | --- |
 | A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
 | A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
-| A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and neither a run nor a hold lets it`; see D37 |
+| A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and no run, live job or hold lets it`; see D37 |
+| A session that cannot report live work never parks | Zig: `a session that cannot report live work never parks`; see D37 |
 | A session with a live tool source does not park | Zig: `a session with a live tool source does not park`; see D37 |
 | A wake reopens with what the session opened with | Zig: `a wake reopens with the tools and metadata the session opened with`; see D37 |
 | `state` answers a parked session without waking it | Zig: `state answers a parked session from what it stored and does not wake it`; see D37 |

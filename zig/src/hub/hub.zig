@@ -962,6 +962,7 @@ pub const Hub = struct {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (entry.parked) return true;
         if (!entry.reopenable or self.heldFor(entry) != null) return false;
+        if (!entry.session.holdsNoLiveWork()) return false;
         var refusal = contract.Refusal{};
         const reported = entry.session.state(arena, &refusal) catch return false;
         if (reported.status != .idle or reported.active_run_id != null or reported.active_runs.len > 0) return false;
@@ -3257,6 +3258,33 @@ test "a session with a live tool source does not park" {
     try testing.expect(!Hub.reopenable(flakyDescriptor(), .{}));
 }
 
+test "a session that cannot report live work never parks" {
+    const Silent = struct {
+        fn id(_: *anyopaque) []const u8 {
+            return "silent";
+        }
+    };
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    var table = contract.Session.VTable{
+        .id = Silent.id,
+        .state = flakyState,
+        .submit = flakySubmit,
+        .resolve = flakyResolve,
+        .cancel = flakyCancel,
+        .pump = flakyPump,
+        .drain = flakyDrain,
+        .activity = flakyActivity,
+        .close = flakyClose,
+    };
+    var session = contract.Session{ .ptr = &flaky, .vtable = &table };
+    try testing.expect(!session.holdsNoLiveWork());
+    table.live_work = flakyLiveWork;
+    session = .{ .ptr = &flaky, .vtable = &table };
+    try testing.expect(session.holdsNoLiveWork());
+    flaky.live_job = true;
+    try testing.expect(!session.holdsNoLiveWork());
+}
+
 test "a wake reopens with the tools and metadata the session opened with" {
     var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3302,7 +3330,7 @@ test "state answers a parked session from what it stored and does not wake it" {
     try testing.expectEqual(before.updated_at_ms, after.updated_at_ms);
 }
 
-test "parking stops the harness, and neither a run nor a hold lets it" {
+test "parking stops the harness, and no run, live job or hold lets it" {
     var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
@@ -3323,6 +3351,11 @@ test "parking stops the harness, and neither a run nor a hold lets it" {
     try testing.expectEqual(@as(usize, 0), flaky.closes);
 
     flaky.active_run = "";
+    flaky.live_job = true;
+    try testing.expect(!try hub.park(arena, "stopping"));
+    try testing.expectEqual(@as(usize, 0), flaky.closes);
+
+    flaky.live_job = false;
     _ = try hub.hold(arena, "stopping");
     try testing.expect(!try hub.park(arena, "stopping"));
     try testing.expectEqual(@as(usize, 0), flaky.closes);
@@ -4359,6 +4392,7 @@ const Flaky = struct {
     saw_metadata: ?std.json.Value = null,
     saw_tools: ?[]const u8 = null,
     saw_reopen: bool = false,
+    live_job: bool = false,
     keep: std.heap.ArenaAllocator = undefined,
     session: contract.Session = undefined,
     owned_id: []const u8 = "",
@@ -4438,9 +4472,15 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
         .models = flakyModels,
         .tools = flakyTools,
         .stream_failure = flakyStreamFailure,
+        .live_work = flakyLiveWork,
     } };
     self.owned_id = id;
     return self.session;
+}
+
+fn flakyLiveWork(ptr: *anyopaque) bool {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    return self.live_job;
 }
 
 fn flakyReadable(ptr: *anyopaque) ?std.Io.File.Handle {
