@@ -478,6 +478,9 @@ const Reactor = struct {
     idle_conns: std.ArrayList(*Conn) = .empty,
     conns_opened: usize = 0,
     dead_conns: std.ArrayList(*Conn) = .empty,
+    journal: std.ArrayList(u8) = .empty,
+    journal_fd: c.fd_t = -1,
+    journal_sync: bool = false,
 
     fn post(self: *Reactor, cmd: Cmd) void {
         self.lock.acquire();
@@ -515,6 +518,7 @@ const Reactor = struct {
             }
             for (self.dead_conns.items) |conn| conn.destroy();
             self.dead_conns.clearRetainingCapacity();
+            self.flushJournal();
         }
     }
 
@@ -533,9 +537,40 @@ const Reactor = struct {
         }
     }
 
+    fn flushJournal(self: *Reactor) void {
+        if (self.journal.items.len == 0) return;
+        writeAll(self.journal_fd, self.journal.items);
+        self.journal.clearRetainingCapacity();
+        if (self.journal_sync) _ = c.fsync(self.journal_fd);
+        self.journal_sync = false;
+    }
+
+    fn record(self: *Reactor, s: *Session, event: Event) !void {
+        const kind = @tagName(event);
+        const text = switch (event) {
+            .delta => |t| t,
+            .tool_done => |t| t,
+            .submit => |t| t,
+            else => "",
+        };
+        const encoded = try std.json.Stringify.valueAlloc(gpa, .{
+            .protocol = "open-agent-protocol",
+            .version = "0.1",
+            .profile = "open-agent-protocol.agent-control-core",
+            .type = kind,
+            .session_id = s.id,
+            .run_id = s.seq,
+            .text = text,
+        }, .{});
+        defer gpa.free(encoded);
+        try self.journal.appendSlice(gpa, encoded);
+        try self.journal.append(gpa, '\n');
+    }
+
     fn feed(self: *Reactor, s: *Session, event: Event) anyerror!void {
         const run = s.run orelse return error.RunParked;
         var out = Actions{};
+        try self.record(s, event);
         try step(run, event, &out);
         s.phase = run.phase;
         s.seq = run.seq;
@@ -565,7 +600,8 @@ const Reactor = struct {
                 self.tool_running -= 1;
                 try self.admitTools();
             },
-            .open_gate, .settled => {},
+            .open_gate => {},
+            .settled => self.journal_sync = true,
             .arm_timer => |ms| self.change(@intFromPtr(s), c.EVFILT.TIMER, c.EV.ADD | c.EV.ONESHOT, 0, ms, @intFromPtr(s)),
             .abort_io => {
                 self.model_wait.remove(s);
@@ -1212,6 +1248,9 @@ pub fn main() !void {
     reactors = try gpa.alloc(Reactor, config.reactors);
     for (reactors) |*reactor| {
         reactor.* = .{ .kq = c.kqueue() };
+        const dir = std.mem.span(c.getenv("TMPDIR") orelse return error.NoTmp);
+        const path = try std.fmt.allocPrintSentinel(gpa, "{s}/journal-{d}.jsonl", .{ dir, @intFromPtr(reactor) }, 0);
+        reactor.journal_fd = c.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, @as(c.mode_t, 0o644));
         _ = try std.Thread.spawn(.{}, Reactor.loop, .{reactor});
     }
     for (0..config.workers) |_| _ = try std.Thread.spawn(.{}, Pool.work, .{&pool});

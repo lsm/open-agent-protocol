@@ -112,7 +112,7 @@ on the hub. Turn figures come from the model endpoint's clock instead:
   benchmark rather than the hub is the limit.
 
 `results.json` also keeps a timeline sampled every 250 ms. Because tools are
-real processes, a flight is skipped when N on top of what the user already runs
+real processes, two per `Shell` call, a flight is skipped when 2N on top of what the user already runs
 would pass `--max-user-processes` (5,000), and stopped if the count gets there
 or the hub holds `--max-hub-cores` (12) for 5 s. A stopped case kills the hub's
 whole process group.
