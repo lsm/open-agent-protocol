@@ -196,11 +196,12 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 }
 
 func (s *Subscription) observe(envelope protocol.Envelope) bool {
-	s.sub.acknowledge(envelope.RunID)
-	if envelope.Sequence != nil && *envelope.Sequence <= s.positions[envelope.RunID] {
+	if s.firstRun > 0 && s.session.serial(envelope.RunID) < s.firstRun {
+		s.sub.untrack(envelope.RunID)
 		return false
 	}
-	if s.firstRun > 0 && s.session.serial(envelope.RunID) < s.firstRun {
+	s.sub.acknowledge(envelope.RunID)
+	if envelope.Sequence != nil && *envelope.Sequence <= s.positions[envelope.RunID] {
 		return false
 	}
 	if envelope.RunID != s.lastRun {
