@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -17,11 +18,21 @@ const (
 	sseEventOverflow   = "oap-overflow"
 	sseEventReplayGap  = "oap-replay-gap"
 	sseEventSubscribed = "oap-subscribed"
+	sseKeepalive       = ": keepalive\n\n"
 )
+
+const DefaultKeepalive = 15 * time.Second
 
 func (s *Server) streamSubscription(w io.Writer, flusher http.Flusher, subscription *serve.Subscription) {
 	for {
-		envelope, err := subscription.Next()
+		envelope, err := subscription.NextWithin(s.keepalive)
+		if errors.Is(err, serve.ErrQuiet) {
+			if _, err := io.WriteString(w, sseKeepalive); err != nil {
+				return
+			}
+			flusher.Flush()
+			continue
+		}
 		if err != nil {
 			var overflow *serve.OverflowError
 			if errors.As(err, &overflow) {

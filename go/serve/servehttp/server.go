@@ -35,6 +35,8 @@ type Options struct {
 	HostAllowlist []string
 
 	SubscriptionHold time.Duration
+
+	Keepalive time.Duration
 }
 
 type Server struct {
@@ -43,6 +45,7 @@ type Server struct {
 	allowHosts  map[string]bool
 	nextIDValue atomic.Uint64
 	holdFor     time.Duration
+	keepalive   time.Duration
 	mu          sync.Mutex
 	held        map[protocol.SessionID]*heldSubscription
 	work        *workwire.Front
@@ -62,7 +65,11 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if holdFor <= 0 {
 		holdFor = DefaultSubscriptionHold
 	}
-	return &Server{hub: hub, schema: schema, allowHosts: allowHosts, holdFor: holdFor,
+	keepalive := options.Keepalive
+	if keepalive <= 0 {
+		keepalive = DefaultKeepalive
+	}
+	return &Server{hub: hub, schema: schema, allowHosts: allowHosts, holdFor: holdFor, keepalive: keepalive,
 		held: map[protocol.SessionID]*heldSubscription{}, work: workwire.New(hub), stopping: newStopState()}, nil
 }
 
