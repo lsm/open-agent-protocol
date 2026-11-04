@@ -327,7 +327,7 @@ test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt t
 
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
-        return error.StreamCompleted;
+        return if (event_stream.pushFailed()) error.OutOfMemory else error.StreamCompleted;
     }
 }
 
@@ -2087,7 +2087,7 @@ test "a rejected final publication leaves the events already queued readable" {
     defer context.deinit();
     const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
 
-    try std.testing.expectError(error.StreamCompleted, runLoop(allocator, &.{}, &context, .{
+    try std.testing.expectError(error.OutOfMemory, runLoop(allocator, &.{}, &context, .{
         .model = testModel(),
         .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
         .max_iterations = 1,
@@ -2138,7 +2138,7 @@ test "a failed run publishes the error and leaves the queued events readable" {
     };
     runLoopThread(runner);
 
-    try std.testing.expectEqualStrings("StreamCompleted", events.getError().?);
+    try std.testing.expectEqualStrings("OutOfMemory", events.getError().?);
     try std.testing.expect(events.getResult() == null);
 
     var saw_turn_end = false;
