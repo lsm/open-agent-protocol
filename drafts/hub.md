@@ -2575,7 +2575,7 @@ because its mux serves `HEAD` on every `GET` pattern, and in Rust since
 says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 `GET` entry, and updating that test, closes this.
 
-### D36 — Decision 0066 is not in any tree yet
+### D36 — Decision 0066 is not in every tree yet
 
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
