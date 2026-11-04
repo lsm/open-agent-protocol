@@ -186,3 +186,7 @@ the row then records how many steps it reached.
 
 Numbers depend on the machine and its load; compare slopes from one machine,
 not across machines.
+
+## When a run stalls
+
+`--capture-stalls DIR` keeps the evidence from a case that times out. Before the hub is torn down it saves a live stack sample, the process list, the hub's open sockets, the TIME_WAIT count and each unfinished session's last state, and it keeps the run directory under `DIR`. Without the option, a timeout leaves only its status line.
