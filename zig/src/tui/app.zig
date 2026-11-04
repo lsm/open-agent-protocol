@@ -1181,7 +1181,7 @@ pub const App = struct {
 
     pub fn deinit(self: *App) void {
         self.saveEndpointRecords();
-        if (self.store) |store| self.recorder.saveHeldInput(self.allocator, store, self.currentSessionMetadata());
+        if (self.store) |store| self.saveHeldInput(store);
         self.forgetLoginOverrides();
         for (self.deferred_commands.items) |text| self.allocator.free(text);
         self.deferred_commands.deinit(self.allocator);
@@ -1598,7 +1598,7 @@ pub const App = struct {
         }
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
-        self.recorder.saveHeldInput(self.allocator, store, self.currentSessionMetadata());
+        self.saveHeldInput(store);
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         self.dropHeldCompaction();
         self.state.clearHeldAfterAbort();
@@ -2809,10 +2809,27 @@ pub const App = struct {
         }
     }
 
+    fn applyReleasedInput(self: *App, store: session_store.Store, meta: session_store.SessionMetadata) void {
+        const released = self.recorder.takeReleased() orelse return;
+        defer self.allocator.free(released.text);
+        if (released.metadata and self.session_created_at == 0) self.session_created_at = meta.last_active;
+        _ = self.titleFromFirstMessage(tui_state.withoutZenNote(std.mem.trim(u8, released.text, " \t\r\n")));
+        self.saveSessionIndex(store);
+        self.flushPendingWorktreeSidecar();
+    }
+
+    fn saveHeldInput(self: *App, store: session_store.Store) void {
+        const meta = self.currentSessionMetadata();
+        self.recorder.saveHeldInput(self.allocator, store, meta);
+        self.applyReleasedInput(store, meta);
+    }
+
     fn persistEvent(self: *App, event: session_runtime.SessionEvent) void {
         const store = self.store orelse return;
         const meta = self.currentSessionMetadata();
-        const saved = self.recorder.record(self.allocator, store, meta, event) orelse return;
+        const recorded = self.recorder.record(self.allocator, store, meta, event);
+        self.applyReleasedInput(store, meta);
+        const saved = recorded orelse return;
         if (saved.metadata) {
             self.compaction_offset = saved.compaction_offset orelse self.compaction_offset;
             if (self.session_created_at == 0) self.session_created_at = meta.last_active;
@@ -7834,6 +7851,27 @@ test "autocompact starts one compaction, and a turn typed during it takes the no
     try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
 }
 
+test "App titles and dates a session when its held first message is released, not before" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "released-title");
+    defer app.deinit();
+
+    var input = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "first question")) } };
+    defer input.deinit(std.testing.allocator);
+    app.saveEvent(input);
+    try std.testing.expectEqualStrings("", app.session_title);
+    try std.testing.expectEqual(@as(i64, 0), app.session_created_at);
+
+    var answer = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "hi")) } };
+    defer answer.deinit(std.testing.allocator);
+    app.saveEvent(answer);
+    try std.testing.expectEqualStrings("first question", app.session_title);
+    try std.testing.expect(app.session_created_at != 0);
+}
+
 test "App indexes where a completed compaction starts" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -7845,7 +7883,7 @@ test "App indexes where a completed compaction starts" {
     var before = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
     defer before.deinit(std.testing.allocator);
     app.saveEvent(before);
-    app.recorder.saveHeldInput(std.testing.allocator, app.store.?, app.currentSessionMetadata());
+    app.saveHeldInput(app.store.?);
     const offset = try app.store.?.conversationBytes("compaction-index");
     var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
@@ -7876,7 +7914,7 @@ test "App keeps the last compaction offset when a compaction record is not writt
     var before = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
     defer before.deinit(std.testing.allocator);
     app.saveEvent(before);
-    app.recorder.saveHeldInput(std.testing.allocator, app.store.?, app.currentSessionMetadata());
+    app.saveHeldInput(app.store.?);
     const offset = try app.store.?.conversationBytes("unwritten-compaction");
     var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
@@ -7910,9 +7948,11 @@ test "App titles a new session with its first message's first line" {
     var first = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "\n fix the resume freeze\nwith detail")) } };
     defer first.deinit(std.testing.allocator);
     app.saveEvent(first);
+    app.saveHeldInput(app.store.?);
     var second = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "another message")) } };
     defer second.deinit(std.testing.allocator);
     app.saveEvent(second);
+    app.saveHeldInput(app.store.?);
 
     var index = try app.store.?.loadIndex("first-message-title");
     defer index.deinit(std.testing.allocator);

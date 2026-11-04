@@ -201,12 +201,15 @@ pub const Recorder = struct {
     written_provider: []u8 = &.{},
     pending_thinking: std.ArrayList(u8) = .empty,
     held_input: std.ArrayList(session_events.SessionEvent) = .empty,
+    released: ?Released = null,
 
     pub const Saved = struct { metadata: bool, compaction_offset: ?u64 };
+    pub const Released = struct { text: []u8, metadata: bool };
 
     pub fn deinit(self: *Recorder, allocator: std.mem.Allocator) void {
         self.dropHeldInput(allocator);
         self.held_input.deinit(allocator);
+        if (self.released) |released| allocator.free(released.text);
         if (self.written_model.len > 0) allocator.free(self.written_model);
         if (self.written_provider.len > 0) allocator.free(self.written_provider);
         self.pending_thinking.deinit(allocator);
@@ -222,7 +225,7 @@ pub const Recorder = struct {
 
     pub fn record(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata, event: session_events.SessionEvent) ?Saved {
         if (event == .message_end and event.message_end.role == .user) {
-            if (self.hold(allocator, event)) return .{ .metadata = false, .compaction_offset = null };
+            if (self.hold(allocator, event)) return null;
         } else if (self.held_input.items.len > 0) {
             if (reportsDroppedInput(event)) {
                 self.dropHeldInput(allocator);
@@ -248,8 +251,20 @@ pub const Recorder = struct {
     }
 
     pub fn saveHeldInput(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata) void {
-        for (self.held_input.items) |event| _ = self.recordNow(allocator, store, meta, event);
+        for (self.held_input.items) |event| {
+            const metadata = if (self.recordNow(allocator, store, meta, event)) |saved| saved.metadata else false;
+            if (self.released) |*released| {
+                released.metadata = released.metadata or metadata;
+            } else if (allocator.dupe(u8, event.message_end.text.slice())) |text| {
+                self.released = .{ .text = text, .metadata = metadata };
+            } else |_| {}
+        }
         self.dropHeldInput(allocator);
+    }
+
+    pub fn takeReleased(self: *Recorder) ?Released {
+        defer self.released = null;
+        return self.released;
     }
 
     fn reportsDroppedInput(event: session_events.SessionEvent) bool {
