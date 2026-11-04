@@ -2114,6 +2114,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "session_runtime", .module = session_runtime_mod },
+            .{ .name = "overflow", .module = overflow_mod },
             .{ .name = "agent_compaction", .module = agent_compaction_mod },
             .{ .name = "json/writer", .module = json_writer_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
