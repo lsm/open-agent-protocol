@@ -767,7 +767,7 @@ pub const Frontend = struct {
             return .{ .refused = .{ .code = "invalid_cursor", .message = "run_id names the run a cursor belongs to; it has no meaning without after" } };
         }
         if (self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
-            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends when the host unsubscribes it, at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
         }
         const subscription = self.hub.subscribe(arena, session_id, .{ .run_id = run, .after = request.after }) catch |err| {
             return .{ .refused = try subscribeRefusal(arena, err, session_id) };
@@ -2299,7 +2299,7 @@ pub const Frontend = struct {
         }
         if (!holding and open.subscribe and self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
             envelope.deinit(arena);
-            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends when the host unsubscribes it, at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
         }
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{
@@ -5555,27 +5555,30 @@ test "work.list pages newest first with ties in key order, asks the native lists
 }
 
 test "unsubscribe ends one subscription, frees its slot and leaves the others streaming" {
-    const harness = try Harness.init(testing.allocator, .{}, .{ .max_subscriptions = 1 });
+    const harness = try Harness.init(testing.allocator, .{}, .{ .max_subscriptions = 2 });
     defer harness.deinit();
     defer reference_holder.pending_events = &.{};
     try harness.send(try openLine(harness.arena(), "reference", open_envelope));
     try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"s1\"}");
-    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
     try harness.send("{\"id\":3,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqual(@as(usize, 2), harness.frontend.streams.items.len);
+    try harness.send("{\"id\":4,\"op\":\"events\",\"session_id\":\"s1\"}");
     try testing.expectEqualStrings("busy", try harness.code());
 
-    try harness.send("{\"id\":4,\"op\":\"unsubscribe\",\"subscription\":2}");
-    try testing.expectEqualStrings("{\"id\":4,\"ok\":true,\"result\":null}", harness.recorder.last());
-    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+    try harness.send("{\"id\":5,\"op\":\"unsubscribe\",\"subscription\":2}");
+    try testing.expectEqualStrings("{\"id\":5,\"ok\":true,\"result\":null}", harness.recorder.last());
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
     const before = harness.recorder.lines.items.len;
     reference_holder.pending_events = &.{.{ .line = started_line, .run_id = "run-1", .sequence = 1 }};
     try harness.hub.pump(testing.allocator, 0);
     try harness.frontend.pumpStreams();
-    try testing.expectEqual(before, harness.recorder.lines.items.len);
+    const streamed = harness.recorder.lines.items[before..];
+    try testing.expectEqual(@as(usize, 1), streamed.len);
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena(), streamed[0], .{});
+    try testing.expectEqual(@as(i64, 3), value.object.get("id").?.integer);
 
-    try harness.send("{\"id\":5,\"op\":\"events\",\"session_id\":\"s1\"}");
-    try testing.expectEqualStrings("{\"id\":5,\"ok\":true,\"result\":null}", harness.recorder.lines.items[before]);
-    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+    try harness.send("{\"id\":6,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqual(@as(usize, 2), harness.frontend.streams.items.len);
 }
 
 test "unsubscribe answers the same for an id with no subscription and refuses a bad request" {
