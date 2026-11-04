@@ -3440,6 +3440,29 @@ test "a session parks once it has been idle past the limit, and activity puts th
     try testing.expect(hub.findSession("idling").?.parked);
 }
 
+test "a hold that outlasts the limit parks the session as soon as it ends" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256, .park_after_ns = 100 });
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    try parkedHub(&adapter, &hub, arena, "held");
+    _ = try hub.hold(arena, "held");
+
+    tick(120);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(!hub.findSession("held").?.parked);
+
+    const held = hub.heldFor(hub.findSession("held").?).?;
+    _ = hub.dropHold(held);
+    hub.release(held, .expired);
+    tick(1);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(hub.findSession("held").?.parked);
+}
+
 test "no limit means nothing parks on its own" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
