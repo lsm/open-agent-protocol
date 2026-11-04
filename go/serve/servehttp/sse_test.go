@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -214,6 +215,31 @@ func TestSSEStreamEndsOnSessionClose(t *testing.T) {
 		t.Fatalf("close status %d: %s", response.StatusCode, data)
 	}
 	stream.expectEnd()
+}
+
+func TestSSEHangupOnAnIdleStreamEndsItsHandler(t *testing.T) {
+	daemon, err := New(serve.New(memoryRegistry(0), serve.Options{}), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := daemon.Handler()
+	ended := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r)
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			close(ended)
+		}
+	}))
+	t.Cleanup(server.Close)
+	openSession(t, server, "memory", "sse-hangup")
+
+	stream := connectSSE(t, server, "/sessions/sse-hangup/events", "")
+	stream.close()
+	select {
+	case <-ended:
+	case <-time.After(testTimeout):
+		t.Fatal("the handler outlived its client on an idle stream")
+	}
 }
 
 func TestSSEOverflowSignalLive(t *testing.T) {

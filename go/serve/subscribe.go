@@ -57,7 +57,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	if !open {
 		return nil, &SessionClosedError{ID: id}
 	}
-	_, replay, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: runID, AfterSequence: *config.after})
+	replays, err := resumeRuns(ctx, entry, runID, *config.after)
 	if err != nil {
 		entry.unsubscribe(sub)
 		sub.stop(nil)
@@ -70,16 +70,46 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		return nil, err
 	}
 	positions := map[protocol.RunID]uint64{runID: *config.after}
-	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replay, run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
+	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replays[0].stream, replaying: runID, later: replays[1:], run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
+}
+
+type resumedRun struct {
+	run    protocol.RunID
+	stream base.EventStream
+}
+
+func resumeRuns(ctx context.Context, entry *Session, runID protocol.RunID, after uint64) ([]resumedRun, error) {
+	var replays []resumedRun
+	for _, run := range append([]protocol.RunID{runID}, entry.laterRuns(runID)...) {
+		_, stream, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: run, AfterSequence: after})
+		if err != nil {
+			abandon(replays)
+			return nil, err
+		}
+		replays = append(replays, resumedRun{run: run, stream: stream})
+		after = 0
+	}
+	return replays, nil
+}
+
+func abandon(replays []resumedRun) {
+	for _, replay := range replays {
+		go func() {
+			for range replay.stream {
+			}
+		}()
+	}
 }
 
 type Subscription struct {
 	session *Session
 	ctx     context.Context
 
-	sub    *subscriber
-	replay base.EventStream
-	run    protocol.RunID
+	sub       *subscriber
+	replay    base.EventStream
+	replaying protocol.RunID
+	later     []resumedRun
+	run       protocol.RunID
 
 	last      uint64
 	lastRun   protocol.RunID
@@ -107,12 +137,16 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 		}
 		return protocol.Envelope{}, io.EOF
 	}
-	if s.replay != nil {
+	for s.replay != nil {
 		envelope, err := s.nextReplay()
 		if !errors.Is(err, io.EOF) {
 			return envelope, err
 		}
 		s.replay = nil
+		if len(s.later) > 0 {
+			s.replay, s.replaying, s.last = s.later[0].stream, s.later[0].run, 0
+			s.later = s.later[1:]
+		}
 	}
 	return s.nextLive()
 }
@@ -177,7 +211,7 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 			s.Close()
 			s.finished = true
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
-				s.err = &OverflowError{RunID: s.run, LastSequence: s.last}
+				s.err = &OverflowError{RunID: s.replaying, LastSequence: s.last}
 			} else {
 				s.err = result.Error
 			}
@@ -223,12 +257,9 @@ func (s *Subscription) detach() {
 	s.session.unsubscribe(s.sub)
 	s.sub.stop(nil)
 	if s.replay != nil {
-		stream := s.replay
-		go func() {
-			for range stream {
-			}
-		}()
+		abandon([]resumedRun{{stream: s.replay}})
 	}
+	abandon(s.later)
 }
 
 type OverflowError struct {

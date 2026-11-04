@@ -1356,6 +1356,67 @@ func TestAResumedStreamCarriesOnIntoTheSessionsNextRun(t *testing.T) {
 	}
 }
 
+func TestACursorReplaysALaterRunThatSettledBeforeItSubscribed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "later-run")
+	watcher, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	first := driveMemoryRun(t, session, watcher)
+	second := driveMemoryRun(t, session, watcher)
+	last := uint64(0)
+	replay, err := hub.Subscribe(ctx, session.ID(), serve.After(first, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	nextUntil(t, replay, typeStop(protocol.TypeRunCompleted))
+	for _, envelope := range nextUntil(t, replay, typeStop(protocol.TypeRunCompleted)) {
+		if envelope.RunID != second || *envelope.Sequence != last+1 {
+			t.Fatalf("after #%d the cursor heard %s #%d, want %s", last, envelope.RunID, *envelope.Sequence, second)
+		}
+		last = *envelope.Sequence
+	}
+	third := driveMemoryRun(t, session, watcher)
+	started := nextUntil(t, replay, typeStop(protocol.TypeRunStarted))
+	if got := started[0]; got.RunID != third || *got.Sequence != 1 {
+		t.Fatalf("after the replay the cursor heard %s #%d, want %s #1", got.RunID, *got.Sequence, third)
+	}
+}
+
+func TestACursorIsAReplayGapWhenALaterRunHasLeftTheJournal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 2)
+	session := openMemorySession(t, hub, "lost-run")
+	watcher, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	counter, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer counter.Close()
+	first := driveMemoryRun(t, session, watcher)
+	settled := nextUntil(t, counter, typeStop(protocol.TypeRunCompleted))
+	reached := *settled[len(settled)-1].Sequence
+	driveMemoryRun(t, session, watcher)
+	_, err = hub.Subscribe(ctx, session.ID(), serve.After(first, reached))
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) {
+		t.Fatalf("subscribe: %v, want a replay gap", err)
+	}
+	if gap.RequestedAfter != 0 {
+		t.Fatalf("the gap asks after %d, want the later run's 0", gap.RequestedAfter)
+	}
+}
+
 func TestACursorSkipsARunAdmittedBeforeItsOwn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
