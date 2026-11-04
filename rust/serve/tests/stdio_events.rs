@@ -193,6 +193,66 @@ fn a_subscription_past_the_cap_is_refused_busy() {
 }
 
 #[test]
+fn unsubscribe_ends_one_subscription_and_frees_its_slot() {
+    let (hub, _) = opened(64);
+    let answered = lines_with(
+        &hub,
+        &[
+            r#"{"id":1,"op":"events","session_id":"s"}"#,
+            r#"{"id":2,"op":"unsubscribe","subscription":1}"#,
+            r#"{"id":3,"op":"events","session_id":"s"}"#,
+        ],
+        StdioOptions {
+            max_subscriptions: 1,
+            ..StdioOptions::default()
+        },
+    );
+    let answer = |id: i64| answered.iter().find(|line| line["id"] == id).unwrap();
+    assert_eq!(answer(2)["ok"], true);
+    assert_eq!(answer(2)["result"], Value::Null);
+    assert_eq!(answer(3)["ok"], true, "{answered:?}");
+}
+
+#[test]
+fn unsubscribe_right_after_the_acknowledgement_still_reaches_the_subscription() {
+    let (hub, _) = opened(64);
+    for _ in 0..300 {
+        let answered = lines_with(
+            &hub,
+            &[
+                r#"{"id":1,"op":"events","session_id":"s"}"#,
+                r#"{"id":2,"op":"unsubscribe","subscription":1}"#,
+                r#"{"id":3,"op":"events","session_id":"s"}"#,
+            ],
+            StdioOptions {
+                max_subscriptions: 1,
+                ..StdioOptions::default()
+            },
+        );
+        let third = answered.iter().find(|line| line["id"] == 3).unwrap();
+        assert_eq!(third["ok"], true, "{answered:?}");
+    }
+}
+
+#[test]
+fn unsubscribe_answers_the_same_for_an_id_with_no_subscription() {
+    let (hub, _) = opened(64);
+    let answered = lines(
+        &hub,
+        &[
+            r#"{"id":1,"op":"unsubscribe","subscription":99}"#,
+            r#"{"id":2,"op":"unsubscribe"}"#,
+            r#"{"id":4,"op":"unsubscribe","subscription":2,"session_id":"s"}"#,
+        ],
+    );
+    let answer = |id: i64| answered.iter().find(|line| line["id"] == id).unwrap();
+    assert_eq!(answer(1)["ok"], true);
+    for id in [2, 4] {
+        assert_eq!(answer(id)["error"]["code"], "invalid_request", "{id}");
+    }
+}
+
+#[test]
 fn a_replay_gap_falls_back_to_its_minimal_line_under_a_tight_frame_limit() {
     let id = "s".repeat(120);
     let mut registry = Registry::new();

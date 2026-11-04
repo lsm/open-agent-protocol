@@ -21,6 +21,7 @@ import (
 const (
 	opOpen         = "open"
 	opEvents       = "events"
+	opUnsubscribe  = "unsubscribe"
 	opAdapters     = "adapters"
 	opCapabilities = "capabilities"
 	opSessions     = "sessions"
@@ -141,6 +142,9 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 	switch request.Op {
 	case opEvents:
 		s.serveEvents(ctx, run, request, lines)
+		return
+	case opUnsubscribe:
+		s.serveUnsubscribe(ctx, run, request, lines)
 		return
 	case opOpen:
 		if werr := request.only(paramAdapter, paramRequest); werr != nil {
@@ -302,6 +306,8 @@ const (
 	paramCursor  = "cursor"
 	paramLimit   = "limit"
 
+	paramSubscription = "subscription"
+
 	paramAllowDegraded = "allow_degraded_features"
 )
 
@@ -311,7 +317,7 @@ func (request requestLine) only(fields ...string) *wireError {
 		allowed[field] = true
 	}
 	var extra []string
-	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramCursor, paramLimit, paramAllowDegraded} {
+	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramCursor, paramLimit, paramAllowDegraded, paramSubscription} {
 		if !allowed[param] && request.present[param] {
 			extra = append(extra, param)
 		}
@@ -965,6 +971,19 @@ func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage
 	return json.RawMessage("null"), nil
 }
 
+func (s *Server) serveUnsubscribe(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
+	if werr := request.only(paramSubscription); werr != nil {
+		s.respond(ctx, lines, request, nil, werr)
+		return
+	}
+	if request.Subscription == nil {
+		s.respond(ctx, lines, request, nil, &wireError{Code: "invalid_request", Message: "subscription is the id of the request that started it"})
+		return
+	}
+	run.unsubscribe(ctx, *request.Subscription)
+	s.respond(ctx, lines, request, json.RawMessage("null"), nil)
+}
+
 func (s *Server) serveEvents(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
 	id := *request.ID
 	fail := func(werr *wireError) { s.respond(ctx, lines, request, nil, werr) }
@@ -999,7 +1018,7 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 		return
 	}
 
-	pumps, outcome, why := run.attach()
+	stream, outcome, why := run.attach(id)
 	switch outcome {
 	case closedToWork:
 		fail(&wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
@@ -1010,10 +1029,10 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 		return
 	}
 
-	subscription, err := s.hub.Subscribe(pumps, entry.ID(), options...)
+	subscription, err := s.hub.Subscribe(stream.ctx, entry.ID(), options...)
 	var gap *base.ReplayGap
 	if errors.As(err, &gap) {
-		run.detach()
+		run.detach(stream)
 		if !s.respond(ctx, lines, request, json.RawMessage("null"), nil) {
 			return
 		}
@@ -1031,7 +1050,7 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 		return
 	}
 	if err != nil {
-		run.detach()
+		run.detach(stream)
 		code := "internal"
 		switch {
 
@@ -1051,13 +1070,13 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 	}
 	if !s.respond(ctx, lines, request, json.RawMessage("null"), nil) {
 
-		run.detach()
+		run.detach(stream)
 		subscription.Close()
 		return
 	}
 	go func() {
-		defer run.detach()
-		s.pump(pumps, entry, subscription, id, resumeFrom, lines)
+		defer run.detach(stream)
+		s.pump(stream.ctx, entry, subscription, id, resumeFrom, lines)
 	}()
 }
 
@@ -1298,7 +1317,7 @@ func (s *Server) serveOpen(ctx context.Context, run *runState, request requestLi
 		s.respond(ctx, lines, request, result, werr)
 		return protocol.SessionID(openedSession(result))
 	}
-	pumps, outcome, why := run.attach()
+	stream, outcome, why := run.attach(*request.ID)
 	switch outcome {
 	case closedToWork:
 		s.respond(ctx, lines, request, nil, &wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
@@ -1307,27 +1326,27 @@ func (s *Server) serveOpen(ctx context.Context, run *runState, request requestLi
 		s.respond(ctx, lines, request, nil, &wireError{Code: "busy", Message: why + "; a subscription ends when the host unsubscribes it, at an overflow or stream failure, or when its session closes — send this request again once one has"})
 		return ""
 	}
-	result, subscription, werr := s.openOp(ctx, request, pumps)
+	result, subscription, werr := s.openOp(ctx, request, stream.ctx)
 	opened := protocol.SessionID(openedSession(result))
 	if subscription == nil {
-		run.detach()
+		run.detach(stream)
 		s.respond(ctx, lines, request, result, werr)
 		return opened
 	}
 	if !s.respond(ctx, lines, request, result, werr) {
-		run.detach()
+		run.detach(stream)
 		subscription.Close()
 		return opened
 	}
 	entry, lookupErr := s.hub.Session(opened)
 	if lookupErr != nil {
-		run.detach()
+		run.detach(stream)
 		subscription.Close()
 		return opened
 	}
 	go func() {
-		defer run.detach()
-		s.pump(pumps, entry, subscription, *request.ID, 0, lines)
+		defer run.detach(stream)
+		s.pump(stream.ctx, entry, subscription, *request.ID, 0, lines)
 	}()
 	return opened
 }

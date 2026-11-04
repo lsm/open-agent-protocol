@@ -154,7 +154,8 @@ func TestGracefulShutdownEndsServingOnceTheDrainedRunSettles(t *testing.T) {
 
 func TestADrainedShutdownWaitsForAttachedPumpsBeforeTeardown(t *testing.T) {
 	run := newRunState(context.Background(), 0, 0, 0)
-	if _, outcome, _ := run.attach(); outcome != admitted {
+	attached, outcome, _ := run.attach(1)
+	if outcome != admitted {
 		t.Fatal("attach was refused")
 	}
 	returned := make(chan struct{})
@@ -164,7 +165,7 @@ func TestADrainedShutdownWaitsForAttachedPumpsBeforeTeardown(t *testing.T) {
 		t.Fatal("awaitPumps returned while a pump was still attached")
 	case <-time.After(10 * drainPoll):
 	}
-	run.detach()
+	run.detach(attached)
 	select {
 	case <-returned:
 	case <-time.After(5 * time.Second):

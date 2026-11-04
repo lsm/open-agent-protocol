@@ -299,8 +299,9 @@ framing and does not count, so a line whose payload is exactly the limit is
 served and one byte more is a defect. A host computes its own line against the
 same number.
 
-The eight members a request line may carry are `id`, `op`, `adapter`,
-`session_id`, `run_id`, `after`, `request` and `allow_degraded_features`. An op
+The eleven members a request line may carry are `id`, `op`, `adapter`,
+`session_id`, `run_id`, `after`, `request`, `cursor`, `limit`, `subscription` and
+`allow_degraded_features`. An op
 that takes a parameter it does not define is refused `invalid_request`, and the
 check is on **presence**, so a supplied-but-null parameter still counts as
 supplied.
@@ -1771,10 +1772,12 @@ Stdio only; over HTTP the client hangs up.
   on its own while the request is in flight. A host sends this after it has read
   the subscription's acknowledgement: requests on the pipe may run in parallel, so
   one sent earlier can run first and find nothing.
-- **errors:** `invalid_request` (a missing or unreadable `subscription`, or a
-  parameter the op does not define), `busy` (the subscription has not stopped,
+- **errors:** `invalid_request` (a missing `subscription`, or a parameter the op
+  does not define; a `subscription` that is not an integer is a framing defect), `busy` (the subscription has not stopped,
   because its output is stalled; it stays counted, and the host sends the request
   again).
+- **pinned by:** `TestUnsubscribeEndsOneSubscriptionAndFreesItsSlot`,
+  `TestUnsubscribeAnswersTheSameForAnIDWithNoSubscription`.
 
 ### `events`
 
@@ -2577,10 +2580,9 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
 each part is built, Zig ends a subscription at its run's terminal, Rust ends it
-when the session has no run left to follow, `unsubscribe` is not in every tree
-yet, no hub writes a keepalive, SSE ids are bare sequences, and no hub replays
-across runs. A Go cursor follows later runs live but skips a run that settled
-between its own and the subscribe.
+when the session has no run left to follow, no hub writes a keepalive, SSE ids
+are bare sequences, and no hub replays across runs. A Go cursor follows later
+runs live but skips a run that settled between its own and the subscribe.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences

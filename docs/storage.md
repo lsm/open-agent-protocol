@@ -10,10 +10,10 @@ OAP's durable state is written by two hard-wired file stores today:
   interface, `go/binding.Store` (`Append`, `Latest`, `History`, `Sessions`),
   with a file and a memory implementation.
 - **`oapx` sessions.** `zig/src/tui/session_store.zig` `Store`: per session an
-  events file `<id>.jsonl`, a `.stream.jsonl` of chunks, an index written by
-  atomic replace, and `compaction-<n>.jsonl` transcripts. The `oapx` adapter
-  reaches it through three callbacks: `HistoryLoader` (`load`, `read`),
-  `TranscriptStore` (`save`) and `Recorder` (`record`).
+  events file `<id>.jsonl`, an index written by atomic replace, and
+  `compaction-<n>.jsonl` transcripts. The `oapx` adapter reaches it through
+  three callbacks: `HistoryLoader` (`load`, `read`), `TranscriptStore` (`save`)
+  and `Recorder` (`record`).
 
 This makes both one interface per tree, so a host can supply SQLite or a
 service. JSONL stays the default implementation, and its file format does not
