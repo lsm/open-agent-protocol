@@ -1284,6 +1284,14 @@ func TestEventsCursorFollowsTheRunItNames(t *testing.T) {
 	}
 
 	f.drainSubscription(4)
+	carried := f.expectSignal(4, signalEnvelope)
+	if err := json.Unmarshal(carried.Envelope, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.RunID != second || *envelope.Sequence != 1 {
+		t.Fatalf("the replay went on to %s #%d, want %s #1", envelope.RunID, *envelope.Sequence, second)
+	}
+	f.drainSubscription(4)
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}
