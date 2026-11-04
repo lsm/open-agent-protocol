@@ -758,7 +758,7 @@ pub const Frontend = struct {
             return .{ .refused = .{ .code = "invalid_cursor", .message = "run_id names the run a cursor belongs to; it has no meaning without after" } };
         }
         if (self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
-            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends when the host unsubscribes it, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
         }
         const subscription = self.hub.subscribe(arena, session_id, .{ .run_id = run, .after = request.after }) catch |err| {
             return .{ .refused = try subscribeRefusal(arena, err, session_id) };
@@ -834,7 +834,7 @@ pub const Frontend = struct {
         }
         switch (subscription.ending) {
             .open => return false,
-            .run_terminal, .expired => return true,
+            .expired => return true,
             .overflow => {
                 var object = try signalObject(arena, "oap-overflow", watched.id, subscription.session_id);
                 try object.put(arena, "run_id", .{ .string = subscription.overflow_run });
@@ -2274,7 +2274,7 @@ pub const Frontend = struct {
         }
         if (!holding and open.subscribe and self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
             envelope.deinit(arena);
-            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends when the host unsubscribes it, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
         }
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{
@@ -4170,7 +4170,7 @@ const event_head = "\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"p
 const started_line = "{" ++ event_head ++ ",\"type\":\"run.started\",\"id\":\"e1\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":1,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
 const completed_line = "{" ++ event_head ++ ",\"type\":\"run.completed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
 
-test "events acknowledges, then streams the run's envelopes on its own id and ends at the terminal" {
+test "events acknowledges, then streams the run's envelopes on its own id and stays open past the terminal" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     defer reference_holder.pending_events = &.{};
@@ -4191,7 +4191,7 @@ test "events acknowledges, then streams the run's envelopes on its own id and en
         try testing.expectEqual(sequence, value.object.get("sequence").?.integer);
         try testing.expectEqualStrings("run-1", value.object.get("envelope").?.object.get("run_id").?.string);
     }
-    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
 }
 
 const replied_line = "{" ++ event_head ++ ",\"type\":\"run.completed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"final_response\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":\"pong\"}}}";
@@ -4758,7 +4758,7 @@ test "a subscribing open answers, then streams the session's envelopes on the op
         try testing.expectEqualStrings("envelope", value.object.get("event").?.string);
         try testing.expectEqual(@as(i64, 1), value.object.get("id").?.integer);
     }
-    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
 }
 
 test "a refusal carries the adapter's own feature and reason, and nothing more" {

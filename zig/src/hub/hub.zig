@@ -53,7 +53,6 @@ pub const Options = struct {
 
 pub const Ending = enum {
     open,
-    run_terminal,
     overflow,
     stream_failed,
     session_closed,
@@ -344,28 +343,20 @@ pub const Subscription = struct {
     pub fn next(self: *Subscription) ?Delivery {
         const allocator = self.hub.allocator;
         self.trim(allocator);
-        if (self.ending == .run_terminal or self.ending == .expired) return null;
+        if (self.ending == .expired) return null;
         if (self.replay.items.len > 0) {
             const event = self.replay.items[0];
             self.replay_at = 1;
             self.advance(event);
-            return self.settle(event);
+            return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
         }
         if (self.queue.items.len > 0) {
             const event = self.queue.items[0];
             self.queue_at = 1;
             self.advance(event);
-            return self.settle(event);
+            return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
         }
         return null;
-    }
-
-    fn settle(self: *Subscription, event: Pending) Delivery {
-        if (self.ending == .open and event.terminal) {
-            self.ending = .run_terminal;
-            self.hub.leave(self);
-        }
-        return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
     }
 
     fn trim(self: *Subscription, allocator: std.mem.Allocator) void {
@@ -2077,8 +2068,6 @@ pub const Hub = struct {
                 .terminal = try terminal(self.allocator, kept.line),
             });
         }
-        const settled = self.settledAt(entry, named);
-        if (settled > 0 and after >= settled) subscription.ending = .run_terminal;
     }
 };
 
@@ -2658,7 +2647,7 @@ test "a resumed subscription ends at the terminal it replays" {
     var delivered: usize = 0;
     while (resumed.next()) |_| delivered += 1;
     try testing.expectEqual(@as(usize, 1), delivered);
-    try testing.expectEqual(Ending.run_terminal, resumed.ending);
+    try testing.expectEqual(Ending.open, resumed.ending);
 }
 
 test "a nested type member in a tool result is not mistaken for an envelope type" {
@@ -2684,10 +2673,10 @@ test "a nested type member in a tool result is not mistaken for an envelope type
     flaky.emit_line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.completed\",\"id\":\"e2\"}";
     try hub.pump(testing.allocator, 0);
     _ = subscription.next().?;
-    try testing.expectEqual(Ending.run_terminal, subscription.ending);
+    try testing.expectEqual(Ending.open, subscription.ending);
 }
 
-test "a run's terminal ends the stream even when a later run numbers higher" {
+test "a stream carries on past a run's terminal into a later run" {
     var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
@@ -2707,9 +2696,11 @@ test "a run's terminal ends the stream even when a later run numbers higher" {
 
     const first = subscription.next().?;
     try testing.expectEqualStrings("run-a", first.run_id);
-    try testing.expectEqual(Ending.run_terminal, subscription.ending);
-    while (subscription.next()) |_| {}
-    try testing.expectEqualStrings("run-a", subscription.run_id);
+    try testing.expectEqual(Ending.open, subscription.ending);
+    const second = subscription.next().?;
+    try testing.expectEqualStrings("run-b", second.run_id);
+    try testing.expectEqual(@as(u64, 9), second.sequence);
+    try testing.expectEqualStrings("run-b", subscription.run_id);
 }
 
 test "a run's terminal envelope never becomes the session's current run" {
@@ -2925,7 +2916,7 @@ test "an any_directory entry opens a session in the directory asked for, through
     try testing.expectEqualStrings("/fixed", (try hub.work(arena, fixed)).directory);
 }
 
-test "a cursor sitting on a settled run's terminal ends at once and hears nothing later" {
+test "a cursor sitting on a settled run's terminal stays open and hears the next run" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 3 });
@@ -2937,7 +2928,7 @@ test "a cursor sitting on a settled run's terminal ends at once and hears nothin
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "at-terminal" });
     const request = try submitFor(arena, "at-terminal");
-    _ = try hub.submit(arena, "at-terminal", &request, "");
+    const first = try hub.submit(arena, "at-terminal", &request, "");
     var queued = request;
     queued.delivery = .queue;
     const waiting = try hub.submit(arena, "at-terminal", &queued, "");
@@ -2946,14 +2937,14 @@ test "a cursor sitting on a settled run's terminal ends at once and hears nothin
     try hub.pump(testing.allocator, 0);
 
     const settled = try hub.subscribe(arena, opened.session_id, .{ .run_id = waiting.run_id.?, .after = 1 });
-    try testing.expectEqual(Ending.run_terminal, settled.ending);
-    try testing.expect(settled.next() == null);
+    try testing.expectEqual(Ending.open, settled.ending);
+    while (settled.next()) |_| {}
 
-    const later = try submitFor(arena, "at-terminal");
-    _ = try hub.submit(arena, "at-terminal", &later, "");
+    _ = try hub.cancel(arena, "at-terminal", first.run_id.?);
     try hub.pump(testing.allocator, 0);
-    try testing.expect(settled.next() == null);
-    try testing.expectEqual(Ending.run_terminal, settled.ending);
+    const next = settled.next().?;
+    try testing.expectEqualStrings(first.run_id.?, next.run_id);
+    try testing.expectEqual(Ending.open, settled.ending);
 }
 
 test "a queued run's id can be named by a cursor before it has emitted" {
@@ -3437,7 +3428,7 @@ test "a close refuses while a run is live, and a released session is unknown" {
     try testing.expectError(error.UnknownSession, hub.close(arena, "busy"));
 }
 
-test "a subscription ends after it is handed the run's terminal envelope" {
+test "a subscription stays open after it is handed the run's terminal envelope" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
@@ -3461,7 +3452,7 @@ test "a subscription ends after it is handed the run's terminal envelope" {
     try hub.pump(testing.allocator, 0);
 
     while (subscription.next()) |_| {}
-    try testing.expectEqual(Ending.run_terminal, subscription.ending);
+    try testing.expectEqual(Ending.open, subscription.ending);
     try testing.expect(subscription.next() == null);
 }
 
@@ -4586,7 +4577,7 @@ test "the subscriber count has its own bound, not the mailbox depth" {
     try testing.expectError(error.SubscriptionFull, hub.subscribe(arena, opened.session_id, .{}));
 }
 
-test "a subscription that has read its terminal stops occupying a ceiling slot" {
+test "a subscription holds its ceiling slot past a terminal until it is closed" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .max_subscriptions = 1, .journal_capacity = 256 });
@@ -4607,14 +4598,16 @@ test "a subscription that has read its terminal stops occupying a ceiling slot" 
     try testing.expectError(error.SubscriptionFull, hub.subscribe(arena, opened.session_id, .{}));
 
     while (first.next()) |_| {}
-    try testing.expectEqual(Ending.run_terminal, first.ending);
-    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(Ending.open, first.ending);
+    try testing.expectError(error.SubscriptionFull, hub.subscribe(arena, opened.session_id, .{}));
 
+    first.close();
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
     _ = try hub.subscribe(arena, opened.session_id, .{});
     try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
 }
 
-test "an ended subscription keeps its handle until close, and close reclaims it" {
+test "a subscription keeps its handle until close, and close reclaims it" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
@@ -4632,8 +4625,8 @@ test "an ended subscription keeps its handle until close, and close reclaims it"
     _ = try hub.cancel(arena, "handle", started.run_id.?);
     try hub.pump(testing.allocator, 0);
     while (ended.next()) |_| {}
-    try testing.expectEqual(Ending.run_terminal, ended.ending);
-    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(Ending.open, ended.ending);
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
     try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
 
     ended.close();
