@@ -1052,6 +1052,8 @@ func TestClassifySortsProviderFailuresIntoFourClasses(t *testing.T) {
 		"provider said no":                                                   errorFatal,
 		"the input token count (9000) exceeds the maximum; please try again": errorContextOverflow,
 		"HTTP 413 status code (no body)":                                     errorContextOverflow,
+		"the other side closed the connection":                               errorTransient,
+		"receive failed":                                                     errorTransient,
 		"too many tokens":                                                    errorContextOverflow,
 	}
 	for reason, want := range cases {

@@ -39,7 +39,7 @@ var overflowTexts = []string{
 
 var throttledTexts = []string{"rate limit", "ratelimit", "too many requests", "resource exhausted"}
 
-var transientTexts = []string{"overloaded", "service unavailable", "temporarily unavailable", "try again", "retry later", "read error", "read failed", "timed out", "connection reset", "unexpected eof"}
+var transientTexts = []string{"overloaded", "service unavailable", "temporarily unavailable", "try again", "retry later", "other side closed", "read error", "read failed", "receive failed", "timed out", "connection reset", "unexpected eof"}
 
 func classify(reason string) errorClass {
 	text := strings.ToLower(reason)
