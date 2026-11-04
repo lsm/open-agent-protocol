@@ -2577,9 +2577,8 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
 each part is built, Go and Rust end a subscription when the session has no run
-left to follow, no hub writes a keepalive, SSE ids are bare sequences, and no hub
-replays across runs. A Zig cursor follows later runs live but skips a run that
-settled between its own and the subscribe.
+left to follow, no hub writes a keepalive, SSE ids are bare sequences, and only
+Zig replays across runs.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences

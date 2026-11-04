@@ -2037,13 +2037,17 @@ pub const Hub = struct {
         if (!self.knownRun(entry, named)) return error.RunNotFound;
         const latest = self.journaled(entry, named);
         if (after > latest) return error.ReplayCursorFuture;
-        var oldest: u64 = 0;
-        for (entry.journal.items) |kept| {
-            if (!std.mem.eql(u8, kept.run_id, named)) continue;
-            if (oldest == 0) oldest = kept.sequence;
-        }
+        const oldest = oldestKept(entry, named);
         if (after < latest and (oldest == 0 or after + 1 < oldest)) {
             subscription.gap = .{ .requested_after = after, .oldest_available = oldest, .latest_available = latest };
+            subscription.ending = .expired;
+            return;
+        }
+        const first_run: usize = @intCast(ordinal(entry, named));
+        for (entry.cursors.items[first_run + 1 ..]) |cursor| {
+            const kept = oldestKept(entry, cursor.run_id);
+            if (cursor.latest == 0 or kept == 1) continue;
+            subscription.gap = .{ .requested_after = 0, .oldest_available = kept, .latest_available = cursor.latest };
             subscription.ending = .expired;
             return;
         }
@@ -2051,20 +2055,32 @@ pub const Hub = struct {
         if (subscription.run_id.len > 0) self.allocator.free(subscription.run_id);
         subscription.run_id = owned;
         subscription.highest = after;
-        subscription.first_run = entry.cursors.items.len;
-        for (entry.cursors.items, 0..) |cursor, index| {
-            if (std.mem.eql(u8, cursor.run_id, named)) subscription.first_run = index;
+        subscription.first_run = first_run;
+        if (!try self.replayRun(entry, subscription, named, after)) return;
+        var index = first_run + 1;
+        while (index < entry.cursors.items.len) : (index += 1) {
+            if (!try self.replayRun(entry, subscription, entry.cursors.items[index].run_id, 0)) return;
         }
+    }
+
+    fn oldestKept(entry: *const Entry, run_id: []const u8) u64 {
         for (entry.journal.items) |kept| {
-            if (!std.mem.eql(u8, kept.run_id, named)) continue;
+            if (std.mem.eql(u8, kept.run_id, run_id)) return kept.sequence;
+        }
+        return 0;
+    }
+
+    fn replayRun(self: *Hub, entry: *const Entry, subscription: *Subscription, run_id: []const u8, after: u64) !bool {
+        for (entry.journal.items) |kept| {
+            if (!std.mem.eql(u8, kept.run_id, run_id)) continue;
             if (kept.sequence <= after) continue;
             if (subscription.replay.items.len >= self.stream_queue) {
-                const reached = if (subscription.replay.items.len > 0)
-                    subscription.replay.items[subscription.replay.items.len - 1].sequence
-                else
-                    after;
-                try self.seedOverflow(subscription, named, reached);
-                break;
+                if (subscription.replay.getLastOrNull()) |reached| {
+                    try self.seedOverflow(subscription, reached.run_id, reached.sequence);
+                } else {
+                    try self.seedOverflow(subscription, run_id, after);
+                }
+                return false;
             }
             const copy = try self.allocator.dupe(u8, kept.line);
             errdefer self.allocator.free(copy);
@@ -2077,6 +2093,7 @@ pub const Hub = struct {
                 .terminal = try terminal(self.allocator, kept.line),
             });
         }
+        return true;
     }
 };
 
@@ -2923,6 +2940,105 @@ test "an any_directory entry opens a session in the directory asked for, through
     const fixed = try arena.dupe(u8, (try hub.open(arena, "fixed", .{ .directory = "/elsewhere/b" })).session_id);
     try testing.expectEqual(@as(usize, 3), placing.count);
     try testing.expectEqualStrings("/fixed", (try hub.work(arena, fixed)).directory);
+}
+
+test "a cursor replays a later run that settled before it subscribed, then hears the next" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "across-runs" });
+    const request = try submitFor(arena, "across-runs");
+    const first = try hub.submit(arena, "across-runs", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "across-runs", first.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    const reached = hub.journaled(hub.findSession("across-runs").?, first.run_id.?);
+    const second = try hub.submit(arena, "across-runs", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "across-runs", second.run_id.?);
+    try hub.pump(testing.allocator, 0);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = first.run_id.?, .after = reached });
+    try testing.expectEqual(Ending.open, resumed.ending);
+    var expected: u64 = 1;
+    while (resumed.next()) |delivered| : (expected += 1) {
+        try testing.expectEqualStrings(second.run_id.?, delivered.run_id);
+        try testing.expectEqual(expected, delivered.sequence);
+    }
+    try testing.expect(expected > 1);
+
+    const third = try hub.submit(arena, "across-runs", &request, "");
+    try hub.pump(testing.allocator, 0);
+    const next = resumed.next().?;
+    try testing.expectEqualStrings(third.run_id.?, next.run_id);
+    try testing.expectEqual(@as(u64, 1), next.sequence);
+}
+
+test "a cursor is a replay gap when a later run has left the journal" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 2 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "lost-run" });
+    const request = try submitFor(arena, "lost-run");
+    const first = try hub.submit(arena, "lost-run", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "lost-run", first.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    const reached = hub.journaled(hub.findSession("lost-run").?, first.run_id.?);
+    const second = try hub.submit(arena, "lost-run", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "lost-run", second.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    const latest = hub.journaled(hub.findSession("lost-run").?, second.run_id.?);
+    try testing.expect(latest > 2);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = first.run_id.?, .after = reached });
+    try testing.expectEqual(Ending.expired, resumed.ending);
+    try testing.expectEqual(@as(u64, 0), resumed.gap.?.requested_after);
+    try testing.expectEqual(latest - 1, resumed.gap.?.oldest_available);
+    try testing.expectEqual(latest, resumed.gap.?.latest_available);
+    try testing.expect(resumed.next() == null);
+}
+
+test "a replay that overflows on a later run names the last event it holds" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "long-replay" });
+    const request = try submitFor(arena, "long-replay");
+    const first = try hub.submit(arena, "long-replay", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "long-replay", first.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    const reached = hub.journaled(hub.findSession("long-replay").?, first.run_id.?);
+    const second = try hub.submit(arena, "long-replay", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "long-replay", second.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(hub.journaled(hub.findSession("long-replay").?, second.run_id.?) > 2);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = first.run_id.?, .after = reached });
+    try testing.expectEqual(Ending.overflow, resumed.ending);
+    try testing.expectEqualStrings(second.run_id.?, resumed.overflow_run);
+    try testing.expectEqual(@as(u64, 2), resumed.overflow_sequence);
 }
 
 test "a cursor sitting on a settled run's terminal stays open, skips an earlier run and hears the next" {
@@ -5360,9 +5476,14 @@ const Interleaving = struct {
                 const replay = try self.hub.subscribe(arena, self.name(slot), .{ .run_id = known.id, .after = 0 });
                 var expected: u64 = 1;
                 var ended = false;
-                while (replay.next()) |delivery| : (expected += 1) {
+                while (replay.next()) |delivery| {
+                    if (!std.mem.eql(u8, delivery.run_id, known.id)) {
+                        try testing.expect(ended);
+                        continue;
+                    }
                     try testing.expect(!ended);
                     try testing.expectEqual(expected, delivery.sequence);
+                    expected += 1;
                     ended = try Hub.terminal(testing.allocator, delivery.line);
                 }
                 try testing.expect(ended);
