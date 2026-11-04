@@ -506,7 +506,9 @@ refuse a request that size. A refusal is a limit on what this repository will as
 not a claim about what the provider accepts: a window above what a model reports still
 draws the provider's own overflow error. The loop then withholds the largest tool results
 from the request, replacing each with a short note and leaving the history as it was, and
-retries. If that cannot make it fit, the turn fails and `/compact` is the way out.
+retries. If that cannot make it fit, the turn fails and `/compact` is the way out. When a
+new message is what overflowed, it is dropped from the history so it cannot fail every later
+turn, and the error says so.
 
 A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
 it is still there next session, and `/context default` removes the member rather than

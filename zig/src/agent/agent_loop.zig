@@ -3,6 +3,7 @@ const std = @import("std");
 const json_encode = @import("json_encode");
 const compat = @import("compat");
 const retry = @import("retry");
+const overflow_text = @import("overflow");
 const ai_types = @import("ai_types");
 const event_stream_module = @import("event_stream");
 const types = @import("agent_types");
@@ -1062,6 +1063,7 @@ const max_turn_retries: u8 = 2;
 const turn_retry_base_delay_ms: u32 = 1000;
 const turn_retry_budget_ms: i64 = 600_000;
 const failed_after_output_note = "after output was shown, so it was not retried";
+pub const input_dropped_note = overflow_text.input_dropped_note;
 
 const withheld_result_text = "[This tool result was too large for the model's context window and was withheld.]";
 const withheld_result_parts = [_]ai_types.UserContentPart{.{ .text = .{ .text = withheld_result_text } }};
@@ -1317,8 +1319,8 @@ fn streamAssistantResponse(
                 };
                 var noted: ?ai_types.AssistantMessage = null;
                 errdefer if (noted) |*message| message.deinit(allocator);
-                if (output_shown and TurnRetry.eligible(e.err.error_message.slice())) {
-                    noted = try notedAfterOutput(allocator, e.err);
+                if (failureNote(e.err.error_message.slice(), output_shown, context.messagesSlice())) |note| {
+                    noted = try notedFailure(allocator, e.err, note);
                     if (provider_stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
                     final_transferred = true;
                 }
@@ -1358,8 +1360,8 @@ fn streamAssistantResponse(
 
     if (final_message == null) {
         if (provider_stream.getError()) |provider_error| {
-            if (message_started and TurnRetry.eligible(provider_error)) {
-                const noted = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ provider_error, failed_after_output_note });
+            if (failureNote(provider_error, message_started, context.messagesSlice())) |note| {
+                const noted = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ provider_error, note });
                 defer allocator.free(noted);
                 return try makeProviderErrorAssistantMessage(allocator, config.model, noted);
             }
@@ -1370,10 +1372,17 @@ fn streamAssistantResponse(
     return final_message orelse error.NoFinalMessage;
 }
 
-fn notedAfterOutput(allocator: std.mem.Allocator, message: ai_types.AssistantMessage) !ai_types.AssistantMessage {
+fn failureNote(error_text: []const u8, output_shown: bool, history: []const ai_types.Message) ?[]const u8 {
+    if (output_shown and TurnRetry.eligible(error_text)) return failed_after_output_note;
+    if (retry.classifyError(error_text) != .context_overflow) return null;
+    if (history.len == 0 or history[history.len - 1] != .user) return null;
+    return input_dropped_note;
+}
+
+fn notedFailure(allocator: std.mem.Allocator, message: ai_types.AssistantMessage, note: []const u8) !ai_types.AssistantMessage {
     var noted = try ai_types.cloneAssistantMessage(allocator, message);
     errdefer noted.deinit(allocator);
-    const text = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ message.error_message.slice(), failed_after_output_note });
+    const text = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ message.error_message.slice(), note });
     noted.error_message.deinit(allocator);
     noted.error_message = ai_types.OwnedSlice(u8).initOwned(text);
     return noted;
@@ -1628,7 +1637,7 @@ fn flakyStream(
     return stream_ptr;
 }
 
-const FlakyOutcome = struct { message_starts: usize = 0, final_text: bool = false, final_error: bool = false, noted_after_output: bool = false };
+const FlakyOutcome = struct { message_starts: usize = 0, final_text: bool = false, final_error: bool = false, noted_after_output: bool = false, noted_input_dropped: bool = false };
 
 fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
     var events_storage: AgentEventStream = undefined;
@@ -1659,6 +1668,7 @@ fn runFlakyTurn(flaky: *FlakyCtx) !FlakyOutcome {
             .turn_end => |payload| {
                 outcome.final_error = payload.message.stop_reason == .@"error";
                 outcome.noted_after_output = std.mem.indexOf(u8, payload.message.error_message.slice(), failed_after_output_note) != null;
+                outcome.noted_input_dropped = std.mem.indexOf(u8, payload.message.error_message.slice(), input_dropped_note) != null;
                 outcome.final_text = payload.message.content.len > 0 and payload.message.content[0] == .text and std.mem.eql(u8, payload.message.content[0].text.text, "recovered");
             },
             else => {},
@@ -1809,6 +1819,7 @@ fn runOverflowTurn(overflow: *OverflowCtx, sizes: []const usize) !FlakyOutcome {
         defer mutable.deinit(std.testing.allocator);
         if (mutable == .turn_end) {
             outcome.final_error = mutable.turn_end.message.stop_reason == .@"error";
+            outcome.noted_input_dropped = std.mem.indexOf(u8, mutable.turn_end.message.error_message.slice(), input_dropped_note) != null;
             outcome.final_text = mutable.turn_end.message.content.len > 0 and mutable.turn_end.message.content[0] == .text and std.mem.eql(u8, mutable.turn_end.message.content[0].text.text, "recovered");
         }
     }
@@ -1852,6 +1863,22 @@ test "an overflow with no large tool result ends the run" {
     const outcome = try runOverflowTurn(&overflow, &.{});
     try std.testing.expectEqual(@as(usize, 1), overflow.calls);
     try std.testing.expect(outcome.final_error);
+}
+
+test "an overflow after a new user message says the input was not kept, on either failure path" {
+    for ([_]bool{ false, true }) |error_event| {
+        var flaky = FlakyCtx{ .failure = "prompt is too long: 9000 tokens > 8192 maximum", .failures_left = 1, .error_event = error_event };
+        const outcome = try runFlakyTurn(&flaky);
+        try std.testing.expect(outcome.final_error);
+        try std.testing.expect(outcome.noted_input_dropped);
+    }
+}
+
+test "an overflow after a tool result does not claim to drop an input" {
+    var overflow_ctx = OverflowCtx{ .limit = 5 };
+    const outcome = try runOverflowTurn(&overflow_ctx, &.{});
+    try std.testing.expect(outcome.final_error);
+    try std.testing.expect(!outcome.noted_input_dropped);
 }
 
 test "no retry starts once the turn has used its time budget" {

@@ -1351,6 +1351,7 @@ pub const Agent = struct {
                     if (e.message.getErrorMessage()) |err| {
                         self._state.error_message.deinit(self._allocator);
                         self._state.error_message = types.OwnedSlice(u8).initOwned(try self._allocator.dupe(u8, err));
+                        if (std.mem.indexOf(u8, err, agent_loop.input_dropped_note) != null) self.dropNewInput();
                     }
                 },
                 .agent_end => {
@@ -1391,6 +1392,17 @@ pub const Agent = struct {
         self._state.is_streaming = false;
         self._cancel_token = null;
         self._pending_cancel.store(false, .release);
+    }
+
+    fn dropNewInput(self: *Agent) void {
+        const messages = &self._state.messages;
+        while (messages.items.len > 0) {
+            const last = messages.items[messages.items.len - 1];
+            const failed_reply = last == .assistant and last.assistant.stop_reason == .@"error";
+            if (last != .user and !failed_reply) return;
+            var dropped = messages.pop().?;
+            dropped.deinit(self._allocator);
+        }
     }
 
     fn emit(self: *Agent, event: AgentEvent) void {
@@ -1849,6 +1861,60 @@ test "a run that ends because its provider refused still ends exactly once" {
 
     try std.testing.expectEqual(@as(usize, 1), tally.terminals);
     try std.testing.expect(tally.saw_end);
+}
+
+const OversizedInputMock = struct {
+    calls: usize = 0,
+    last_history_len: usize = 0,
+};
+
+fn oversizedInputStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    _ = options;
+    const mock: *OversizedInputMock = @ptrCast(@alignCast(ctx.?));
+    mock.calls += 1;
+    mock.last_history_len = context.messages.len;
+    const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
+    stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
+    const last = context.messages[context.messages.len - 1];
+    if (std.mem.eql(u8, last.user.content.text, "oversized")) {
+        stream.completeWithError("prompt is too long: 9000 tokens > 8192 maximum");
+        return stream;
+    }
+    stream.complete(try ai_types.cloneAssistantMessage(allocator, .{
+        .content = &.{.{ .text = .{ .text = "fine" } }},
+        .api = model.api,
+        .provider = model.provider,
+        .model = model.id,
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = false,
+    }));
+    return stream;
+}
+
+test "an input that overflows is dropped, so the next turn does not carry it" {
+    var mock = OversizedInputMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = oversizedInputStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "oversized" }, .timestamp = 0 } });
+    agent.waitForIdle();
+    try std.testing.expectEqual(@as(usize, 0), agent._state.messages.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, agent._state.error_message.slice(), agent_loop.input_dropped_note) != null);
+
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "small" }, .timestamp = 0 } });
+    agent.waitForIdle();
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.last_history_len);
 }
 
 const CutOffMock = struct {
