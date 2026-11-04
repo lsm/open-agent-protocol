@@ -110,11 +110,20 @@ fn every_attach_path_draws_what_go_draws() {
                     "attach-response-one",
                     "/payload/session_id",
                 ),
+                (
+                    "scope_mismatch",
+                    "attach-response-one",
+                    "/payload/session_id",
+                ),
             ][..],
         ),
         (
             "degraded-accepted-other-session",
-            &[("scope_mismatch", "attach-response", "/payload/session_id")][..],
+            &[
+                ("scope_mismatch", "attach-response", "/payload/session_id"),
+                ("scope_mismatch", "attach-response", "/payload/session_id"),
+                ("scope_mismatch", "attach-response", "/payload/session_id"),
+            ][..],
         ),
         (
             "alias-named-by-a-model",
@@ -160,11 +169,23 @@ fn every_attach_path_draws_what_go_draws() {
         ),
         (
             "response-other-session",
-            &[(
-                "scope_mismatch",
-                "attach-response-one",
-                "/payload/session_id",
-            )][..],
+            &[
+                (
+                    "scope_mismatch",
+                    "attach-response-one",
+                    "/payload/session_id",
+                ),
+                (
+                    "scope_mismatch",
+                    "attach-response-one",
+                    "/payload/session_id",
+                ),
+                (
+                    "scope_mismatch",
+                    "attach-response-one",
+                    "/payload/session_id",
+                ),
+            ][..],
         ),
         (
             "unadvertised-refused-other-code",

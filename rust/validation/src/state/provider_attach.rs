@@ -45,6 +45,8 @@ impl State {
     }
 
     pub(super) fn provider_attach_request(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: SessionProviderAttachRequest = payload(e);
+        self.check_scope(at, e, &s(&p.session_id), "");
         let judged = self
             .control_descriptor(at, e, FEATURE_PROVIDERS_ATTACH)
             .is_some();
@@ -60,6 +62,7 @@ impl State {
 
     pub(super) fn provider_attach_response(&mut self, at: (usize, usize), e: &Envelope) {
         let p: SessionProviderAttachResponse = payload(e);
+        self.check_scope(at, e, &s(&p.session_id), "");
         let reply = os(&e.in_reply_to);
         let Some(request) = self.requests.get(&reply) else {
             return;
