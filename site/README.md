@@ -3,7 +3,8 @@
 This first slice adds the publication pipeline and six navigation sections. It
 keeps source documents in their original directories. Build-time staging copies
 selected prose into `.content/source/`, links unstaged material to GitHub, adds
-open-conflict notices, and generates schema pages and manifest inventory counts.
+open-conflict notices, and generates schema pages and manifest inventory counts. Numeric schema tokens retain their original precision, including
+the full uint64 boundary.
 The final export step gives LLM Markdown links the repository base prefix,
 including links between exported pages. Generated files are ignored. The conflict register preserves the audit IDs and
 both claims; this site does not choose a winning side.

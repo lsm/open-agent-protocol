@@ -85,7 +85,8 @@ function refLink(value, current) {
 const index = []
 for (const name of schemas) {
   const raw = await readFile(path.join(root, 'schema/v0.1', name), 'utf8')
-  const schema = JSON.parse(raw)
+  const schema = JSON.parse(raw, (key, value, context) =>
+    typeof value === 'number' && !Number.isSafeInteger(value) ? JSON.rawJSON(context.source) : value)
   await put(`public/schemas/${name}`, raw)
   const sections = [['Root', schema], ...Object.entries(schema.$defs || {})]
   const lines = [`# ${schema.title || name}`, '', `Generated from [${name}](/schemas/${name}). This describes the schema, not runtime support.`, '', '::: warning Open conflict', 'Schema and semantic/runtime behavior are separate. See [C16–C18 and C41](/conflicts) before relying on subscription or transcript-page behavior.', ':::', '']
