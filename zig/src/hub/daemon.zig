@@ -414,9 +414,10 @@ pub const Daemon = struct {
 };
 
 fn appendEventId(allocator: std.mem.Allocator, out: *std.ArrayList(u8), run: []const u8, sequence: u64) !void {
+    if (std.mem.indexOfAny(u8, run, "\r\n\x00") != null) return;
     var counted: [32]u8 = undefined;
     try out.appendSlice(allocator, "id: ");
-    if (run.len > 0 and std.mem.indexOfAny(u8, run, "\r\n\x00") == null) {
+    if (run.len > 0) {
         try out.appendSlice(allocator, run);
         try out.append(allocator, ':');
     }
@@ -1626,7 +1627,7 @@ test "an event id names its run only when it has one" {
     for ([_][]const u8{ "a\ndata: x", "a\rb", "a\x00b" }) |forged| {
         out.clearRetainingCapacity();
         try appendEventId(testing.allocator, &out, forged, 3);
-        try testing.expectEqualStrings("id: 3\n", out.items);
+        try testing.expectEqualStrings("", out.items);
     }
 }
 
