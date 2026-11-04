@@ -1119,6 +1119,7 @@ pub const Session = struct {
         if (native.response != null or self.gate.cancelled.load(.acquire)) return error.InteractionNotFound;
         try self.emit(run, if (pending.kind == .permission) "action.permission.resolved" else "user.input.resolved", resolved.value(), false);
         native.response = response;
+        self.gate.wake();
         self.pending = null;
         run.status = .running;
     }
@@ -1387,8 +1388,8 @@ pub const Session = struct {
             return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
         }
         run.status = .cancelling;
-        self.gate.cancelled.store(true, .release);
-        self.call_gate.cancelled.store(true, .release);
+        self.gate.cancel();
+        self.call_gate.cancel();
         self.runtime.cancel();
 
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
@@ -1711,8 +1712,8 @@ pub const Session = struct {
     fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
         const self = cast(ptr);
         if (!force and (self.live() != null or self.queuedCount() > 0)) return error.RunActive;
-        self.gate.cancelled.store(true, .release);
-        self.call_gate.cancelled.store(true, .release);
+        self.gate.cancel();
+        self.call_gate.cancel();
         if (self.live() != null) self.runtime.cancel();
         self.destroy();
     }

@@ -1,6 +1,8 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
 
+pub const input_dropped_note = "the new input did not fit the model's context window and was not kept";
+
 pub fn isContextOverflowText(err_msg: []const u8) bool {
     return matchesOverflowPattern(err_msg);
 }

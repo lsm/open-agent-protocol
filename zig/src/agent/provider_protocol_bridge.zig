@@ -204,6 +204,8 @@ fn tokenCancelled(token: ?ai_types.CancelToken) bool {
     return held.isCancelled();
 }
 
+const provider_wait_fallback_ms: u64 = 100;
+
 fn runStreamThread(ctx: *StreamThreadContext) void {
     defer {
         const out_stream = ctx.out_stream;
@@ -257,7 +259,9 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
                 abort_sent = true;
             } else |_| {}
         }
-        _ = runtime.pumpOnce(&client) catch |err| {
+        const source = server.soleActiveStream();
+        const seen = if (source) |stream| stream.activity() else 0;
+        const forwarded = runtime.pumpOnce(&client) catch |err| {
             ctx.out_stream.completeWithError(@errorName(err));
             return;
         };
@@ -281,7 +285,12 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
             return;
         }
 
-        compat.time.sleepNs(1 * std.time.ns_per_ms);
+        if (drained or forwarded > 0) continue;
+        if (source != null and server.soleActiveStream() == source) {
+            source.?.waitForActivity(seen, provider_wait_fallback_ms);
+        } else {
+            compat.time.sleepNs(1 * std.time.ns_per_ms);
+        }
     }
 
     _ = runtime.pumpOnce(&client) catch {};
@@ -601,6 +610,7 @@ const PacedProvider = struct {
     var gap_ms: u64 = 0;
     var hold_ms: u64 = 0;
     var started: usize = 0;
+    var pushed_ms: std.atomic.Value(i64) = .init(0);
 
     const Job = struct {
         stream: *event_stream.AssistantMessageEventStream,
@@ -638,6 +648,7 @@ const PacedProvider = struct {
         var sent: usize = 0;
         while (sent < deltas and !cancelled(token)) : (sent += 1) {
             compat.time.sleepMs(gap_ms);
+            pushed_ms.store(compat.time.nowMillis(), .release);
             s.push(.{ .text_delta = .{ .content_index = 0, .delta = "x", .partial = partial() } }) catch {};
         }
         var held: u64 = 0;
@@ -856,6 +867,34 @@ test "a request made after its run was cancelled never reaches the provider" {
 
     try std.testing.expectEqualStrings("request cancelled", stream.getError() orelse "");
     try std.testing.expectEqual(@as(usize, 0), PacedProvider.started);
+}
+
+test "most provider events reach the consumer without waiting out the pump's fallback" {
+    const allocator = std.testing.allocator;
+
+    PacedProvider.deltas = 8;
+    PacedProvider.gap_ms = 130;
+    PacedProvider.hold_ms = 0;
+
+    var registry = api_registry.ApiRegistry.init(allocator);
+    defer registry.deinit();
+    var bridge = try pacedBridge(&registry);
+    const protocol = bridge.protocolClient();
+
+    const user = ai_types.Message{ .user = .{ .content = .{ .text = "anything" }, .timestamp = 0 } };
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{user} };
+    const stream = try protocol.stream(PacedProvider.paced_model, ctx, .{ .api_key = "test-key" }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    var prompt: usize = 0;
+    while (stream.wait()) |ev| {
+        var owned_ev = ev;
+        if (owned_ev == .text_delta and compat.time.nowMillis() - PacedProvider.pushed_ms.load(.acquire) < 30) prompt += 1;
+        ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
+    }
+    try std.testing.expect(prompt * 2 > PacedProvider.deltas);
 }
 
 test "a stream that goes silent for the idle window fails as timed out" {

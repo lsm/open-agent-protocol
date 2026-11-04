@@ -24,6 +24,7 @@ pub const HubLink = struct {
     outbound: std.ArrayList([]u8) = .empty,
     outbound_mutex: std.atomic.Mutex = .unlocked,
     stream: ?RunStream = null,
+    stream_run: std.ArrayList(u8) = .empty,
     runs: std.ArrayList(Followed) = .empty,
     idle_streams: u8 = 0,
     stream_moved: bool = false,
@@ -44,6 +45,7 @@ pub const HubLink = struct {
         self.dropStream();
         for (self.runs.items) |run| allocator.free(run.id);
         self.runs.deinit(allocator);
+        self.stream_run.deinit(allocator);
         for (self.outbound.items) |line| allocator.free(line);
         self.outbound.deinit(allocator);
         allocator.free(self.base);
@@ -85,7 +87,7 @@ pub const HubLink = struct {
                 try self.push(frame);
             }
         }
-        if (ended) {
+        if (ended or self.streamRunSettled()) {
             const refused = !stream.status_ok;
             const delivered = self.stream_moved;
             self.dropStream();
@@ -93,6 +95,11 @@ pub const HubLink = struct {
             moved = true;
         }
         return moved;
+    }
+
+    fn streamRunSettled(self: *HubLink) bool {
+        const run = self.findRun(self.stream_run.items) orelse return false;
+        return run.settled;
     }
 
     fn streamEnded(self: *HubLink, refused: bool, delivered: bool) !void {
@@ -240,6 +247,8 @@ pub const HubLink = struct {
         const target = try self.path(a, "/sessions/", self.session_id, "/events");
         const request_target = try std.fmt.allocPrint(a, "{s}?after={d}&run_id={s}", .{ target, after, escaped_run });
         self.stream = try RunStream.open(a, self.base, request_target);
+        self.stream_run.clearRetainingCapacity();
+        try self.stream_run.appendSlice(self.allocator, run_id);
         self.stream_moved = false;
     }
 
@@ -623,7 +632,7 @@ const QueueHub = struct {
         var queued = self.take(2) orelse return;
         answer(&queued, "{" ++ envelope_head ++ ",\"type\":\"session.message.submit.response\",\"id\":\"hub-2\",\"payload\":{\"session_id\":\"s1\",\"accepted\":true,\"admission\":\"queued\",\"run_id\":\"run-2\",\"status\":\"queued\"}}");
         first.stream.writeAll(self.first_events) catch return;
-        first.stream.close();
+        defer first.stream.close();
         var second = self.take(3) orelse return;
         second.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n") catch return;
         second.stream.writeAll(self.second_events) catch return;

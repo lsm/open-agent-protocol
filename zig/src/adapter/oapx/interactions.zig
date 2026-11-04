@@ -13,10 +13,40 @@ pub const Request = struct {
     published: bool = false,
 };
 
+const wait_fallback_ms: i64 = 1_000;
+
+const Signal = struct {
+    count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    fn seen(self: *const Signal) u32 {
+        return self.count.load(.acquire);
+    }
+
+    fn raise(self: *Signal) void {
+        _ = self.count.fetchAdd(1, .release);
+        compat.fs.defaultIo().futexWake(u32, &self.count.raw, std.math.maxInt(u32));
+    }
+
+    fn wait(self: *Signal, seen_count: u32) void {
+        const timeout: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(wait_fallback_ms), .clock = .boot } };
+        compat.fs.defaultIo().futexWaitTimeout(u32, &self.count.raw, seen_count, timeout) catch {};
+    }
+};
+
 pub const Gate = struct {
     mutex: std.atomic.Mutex = .unlocked,
     request: ?*Request = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    signal: Signal = .{},
+
+    pub fn wake(self: *Gate) void {
+        self.signal.raise();
+    }
+
+    pub fn cancel(self: *Gate) void {
+        self.cancelled.store(true, .release);
+        self.signal.raise();
+    }
 
     pub fn lock(self: *Gate) void {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
@@ -43,6 +73,7 @@ pub const Gate = struct {
             self.mutex.unlock();
         }
         while (true) {
+            const seen = self.signal.seen();
             self.lock();
             const response = request.response;
             self.mutex.unlock();
@@ -51,7 +82,7 @@ pub const Gate = struct {
             if (cancel_token) |token| {
                 if (token.isCancelled()) return error.Cancelled;
             }
-            compat.time.sleepNs(std.time.ns_per_ms);
+            self.signal.wait(seen);
         }
     }
 };
@@ -61,9 +92,15 @@ pub const CallGate = struct {
     tool_call_id: ?[]u8 = null,
     answer: ?[]u8 = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    signal: Signal = .{},
 
     fn lock(self: *CallGate) void {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    pub fn cancel(self: *CallGate) void {
+        self.cancelled.store(true, .release);
+        self.signal.raise();
     }
 
     pub fn post(self: *CallGate, allocator: std.mem.Allocator, tool_call_id: []const u8, answer: []const u8) !void {
@@ -71,14 +108,16 @@ pub const CallGate = struct {
         errdefer allocator.free(owned_id);
         const owned_answer = try allocator.dupe(u8, answer);
         self.lock();
-        defer self.mutex.unlock();
         self.clearLocked(allocator);
         self.tool_call_id = owned_id;
         self.answer = owned_answer;
+        self.mutex.unlock();
+        self.signal.raise();
     }
 
     pub fn wait(self: *CallGate, allocator: std.mem.Allocator, tool_call_id: []const u8, cancel_token: ?ai_types.CancelToken) ![]u8 {
         while (true) {
+            const seen = self.signal.seen();
             self.lock();
             if (self.answer) |answer| {
                 if (std.mem.eql(u8, self.tool_call_id.?, tool_call_id)) {
@@ -94,7 +133,7 @@ pub const CallGate = struct {
             if (cancel_token) |token| {
                 if (token.isCancelled()) return error.Cancelled;
             }
-            compat.time.sleepNs(std.time.ns_per_ms);
+            self.signal.wait(seen);
         }
     }
 
@@ -146,4 +185,115 @@ test "a cancelled call gate releases a waiting tool without an answer" {
     try gate.post(std.testing.allocator, "other-call", "{}");
     gate.cancelled.store(true, .release);
     try std.testing.expectError(error.Cancelled, gate.wait(std.testing.allocator, "call-1", null));
+}
+
+const prompt_ms: i64 = 500;
+
+const ParkedGate = struct {
+    gate: *Gate,
+    token: ?ai_types.CancelToken = null,
+    parked: std.atomic.Value(bool) = .init(false),
+    outcome: ?anyerror = null,
+    ended_ms: std.atomic.Value(i64) = .init(0),
+
+    fn run(self: *ParkedGate) void {
+        self.parked.store(true, .release);
+        const answer = self.gate.wait(std.testing.allocator, .permission, "call", "tool", "{}", self.token) catch |err| {
+            self.outcome = err;
+            self.ended_ms.store(compat.time.nowMillis(), .release);
+            return;
+        };
+        std.testing.allocator.free(answer);
+        self.ended_ms.store(compat.time.nowMillis(), .release);
+    }
+};
+
+fn parkAtGate(parked: *ParkedGate) !std.Thread {
+    const thread = try std.Thread.spawn(.{}, ParkedGate.run, .{parked});
+    const by = compat.time.nowMillis() + 5_000;
+    while (compat.time.nowMillis() < by) : (compat.time.sleepMs(5)) {
+        parked.gate.lock();
+        const waiting = parked.gate.request != null;
+        parked.gate.mutex.unlock();
+        if (waiting) break;
+    }
+    compat.time.sleepMs(50);
+    return thread;
+}
+
+test "an answer wakes a parked gate at once" {
+    var gate = Gate{};
+    var parked = ParkedGate{ .gate = &gate };
+    const thread = try parkAtGate(&parked);
+    const response = try std.testing.allocator.dupe(u8, "yes");
+    const sent = compat.time.nowMillis();
+    gate.lock();
+    gate.request.?.response = response;
+    gate.mutex.unlock();
+    gate.wake();
+    thread.join();
+    try std.testing.expect(parked.outcome == null);
+    try std.testing.expect(parked.ended_ms.load(.acquire) - sent < prompt_ms);
+}
+
+test "cancelling wakes a parked gate at once" {
+    var gate = Gate{};
+    var parked = ParkedGate{ .gate = &gate };
+    const thread = try parkAtGate(&parked);
+    const sent = compat.time.nowMillis();
+    gate.cancel();
+    thread.join();
+    try std.testing.expectEqual(@as(?anyerror, error.Cancelled), parked.outcome);
+    try std.testing.expect(parked.ended_ms.load(.acquire) - sent < prompt_ms);
+    try std.testing.expect(gate.request == null);
+}
+
+test "a cancel seen only on the token still ends a parked gate" {
+    var gate = Gate{};
+    var cancelled = std.atomic.Value(bool).init(false);
+    var parked = ParkedGate{ .gate = &gate, .token = .{ .cancelled = &cancelled } };
+    const thread = try parkAtGate(&parked);
+    const sent = compat.time.nowMillis();
+    cancelled.store(true, .release);
+    thread.join();
+    try std.testing.expectEqual(@as(?anyerror, error.Cancelled), parked.outcome);
+    try std.testing.expect(parked.ended_ms.load(.acquire) - sent <= wait_fallback_ms + prompt_ms);
+}
+
+const ParkedCall = struct {
+    gate: *CallGate,
+    outcome: ?anyerror = null,
+    ended_ms: std.atomic.Value(i64) = .init(0),
+
+    fn run(self: *ParkedCall) void {
+        const answer = self.gate.wait(std.testing.allocator, "call", null) catch |err| {
+            self.outcome = err;
+            self.ended_ms.store(compat.time.nowMillis(), .release);
+            return;
+        };
+        std.testing.allocator.free(answer);
+        self.ended_ms.store(compat.time.nowMillis(), .release);
+    }
+};
+
+test "a posted answer and a cancel each wake a parked call at once" {
+    var gate = CallGate{};
+    defer gate.deinit(std.testing.allocator);
+    var answered = ParkedCall{ .gate = &gate };
+    var thread = try std.Thread.spawn(.{}, ParkedCall.run, .{&answered});
+    compat.time.sleepMs(100);
+    var sent = compat.time.nowMillis();
+    try gate.post(std.testing.allocator, "call", "{}");
+    thread.join();
+    try std.testing.expect(answered.outcome == null);
+    try std.testing.expect(answered.ended_ms.load(.acquire) - sent < prompt_ms);
+
+    var cancelled = ParkedCall{ .gate = &gate };
+    thread = try std.Thread.spawn(.{}, ParkedCall.run, .{&cancelled});
+    compat.time.sleepMs(100);
+    sent = compat.time.nowMillis();
+    gate.cancel();
+    thread.join();
+    try std.testing.expectEqual(@as(?anyerror, error.Cancelled), cancelled.outcome);
+    try std.testing.expect(cancelled.ended_ms.load(.acquire) - sent < prompt_ms);
 }

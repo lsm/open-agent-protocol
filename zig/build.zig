@@ -1864,6 +1864,7 @@ pub fn build(b: *std.Build) void {
     });
     agent_loop_mod.addImport("repeat", repeat_mod);
     agent_loop_mod.addImport("retry", retry_mod);
+    agent_loop_mod.addImport("overflow", overflow_mod);
 
     const agent_compaction_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/compaction.zig"),
