@@ -594,8 +594,11 @@ def user_processes():
     return len(subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="], capture_output=True, text=True).stdout.split())
 
 
-def time_waits():
-    return subprocess.run(["netstat", "-an"], capture_output=True, text=True).stdout.count("TIME_WAIT")
+def time_waits(tables=Path("/proc/net")):
+    if sys.platform == "darwin":
+        return subprocess.run(["netstat", "-an"], capture_output=True, text=True).stdout.count("TIME_WAIT")
+    rows = [line.split() for name in ("tcp", "tcp6") if (tables / name).exists() for line in (tables / name).read_text().splitlines()[1:]]
+    return sum(row[3] == "06" for row in rows)
 
 
 def rate(rows, key):
