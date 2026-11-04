@@ -1082,6 +1082,7 @@ fn toolResultBytes(message: ai_types.ToolResultMessage) usize {
 const WithheldResults = struct {
     ids: [max_withheld_results][]const u8 = undefined,
     len: usize = 0,
+    input_dropped: bool = false,
 
     fn holds(self: *const WithheldResults, tool_call_id: []const u8) bool {
         for (self.ids[0..self.len]) |id| {
@@ -1320,6 +1321,7 @@ fn streamAssistantResponse(
                 var noted: ?ai_types.AssistantMessage = null;
                 errdefer if (noted) |*message| message.deinit(allocator);
                 if (failureNote(e.err.error_message.slice(), output_shown, context.messagesSlice())) |note| {
+                    turn_retry.withheld.input_dropped = note.ptr == input_dropped_note.ptr;
                     noted = try notedFailure(allocator, e.err, note);
                     if (provider_stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
                     final_transferred = true;
@@ -1361,6 +1363,7 @@ fn streamAssistantResponse(
     if (final_message == null) {
         if (provider_stream.getError()) |provider_error| {
             if (failureNote(provider_error, message_started, context.messagesSlice())) |note| {
+                turn_retry.withheld.input_dropped = note.ptr == input_dropped_note.ptr;
                 const noted = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ provider_error, note });
                 defer allocator.free(noted);
                 return try makeProviderErrorAssistantMessage(allocator, config.model, noted);
@@ -2398,6 +2401,7 @@ fn runLoop(
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = final_error_msg,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
+                        .input_dropped = withheld.input_dropped,
                     } });
                     if (loop_owns_message) {
                         retained.park(assistant_message);

@@ -44,6 +44,7 @@ pub const CompactionEndPayload = struct {
 pub const TurnEndPayload = struct {
     message: ai_types.AssistantMessage,
     tool_results: OwnedSlice(ai_types.ToolResultMessage) = OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
+    input_dropped: bool = false,
 
     pub fn deinit(self: *TurnEndPayload, allocator: std.mem.Allocator) void {
         if (self.message.is_owned) {

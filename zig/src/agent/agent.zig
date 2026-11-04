@@ -1353,8 +1353,8 @@ pub const Agent = struct {
                     if (e.message.getErrorMessage()) |err| {
                         self._state.error_message.deinit(self._allocator);
                         self._state.error_message = types.OwnedSlice(u8).initOwned(try self._allocator.dupe(u8, err));
-                        if (std.mem.indexOf(u8, err, agent_loop.input_dropped_note) != null) self.dropNewInput(history_before_run);
                     }
+                    if (e.input_dropped) self.dropNewInput(history_before_run);
                 },
                 .agent_end => {
                     self._state.is_streaming = false;
@@ -1889,6 +1889,10 @@ fn oversizedInputStreamFn(
         stream.completeWithError("prompt is too long: 9000 tokens > 8192 maximum");
         return stream;
     }
+    if (std.mem.eql(u8, last.user.content.text, "quoting")) {
+        stream.completeWithError("provider said: " ++ agent_loop.input_dropped_note);
+        return stream;
+    }
     if (std.mem.eql(u8, last.user.content.text, "refused")) {
         try stream.push(.{ .@"error" = .{ .reason = .@"error", .err = .{
             .content = &.{},
@@ -1932,6 +1936,18 @@ test "an input that overflows is dropped, so the next turn does not carry it" {
     agent.waitForIdle();
     try std.testing.expectEqual(@as(usize, 2), mock.calls);
     try std.testing.expectEqual(@as(usize, 1), mock.last_history_len);
+}
+
+test "an error that only quotes the dropped-input note drops nothing" {
+    var mock = OversizedInputMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = oversizedInputStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "quoting" }, .timestamp = 0 } });
+    agent.waitForIdle();
+    try std.testing.expect(agent._state.messages.items.len >= 1);
+    try std.testing.expect(agent._state.messages.items[0] == .user);
 }
 
 test "dropping an overflowing input leaves an earlier failed turn in the history" {
