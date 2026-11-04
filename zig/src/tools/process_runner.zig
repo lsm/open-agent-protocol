@@ -503,6 +503,18 @@ test "process runner returns after child exits with inherited background pipe" {
     try std.testing.expectEqual(@as(u8, 0), result.term.exited);
 }
 
+test "a child that lingers briefly after closing its pipes is reaped without a full poll" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const argv = [_][]const u8{ "/bin/sh", "-c", "exec >/dev/null 2>&1; sleep 0.02" };
+    const started = common.nowMs();
+    const result = try run(std.heap.smp_allocator, &argv, .inherit, 5_000, null);
+    const elapsed = common.durationMs(started);
+    defer std.heap.smp_allocator.free(result.stdout);
+    defer std.heap.smp_allocator.free(result.stderr);
+    try std.testing.expectEqual(@as(u8, 0), result.term.exited);
+    try std.testing.expect(elapsed < common.process_poll_ms - 10);
+}
+
 test "process runner enforces timeout after pipe eof" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const argv = [_][]const u8{ "/bin/sh", "-c", "exec >/dev/null 2>&1; sleep 2" };
