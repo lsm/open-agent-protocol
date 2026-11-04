@@ -573,8 +573,7 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    var client = compat.http.HttpClient.init(allocator);
-    defer client.deinit();
+    const client = compat.http.sharedClient();
 
     const url = provider_catalog.joinUrlOwned(allocator, base_url, request_wire, false) catch {
         ctx.deinit();

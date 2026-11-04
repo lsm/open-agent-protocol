@@ -802,8 +802,7 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    var client = compat.http.HttpClient.init(allocator);
-    defer client.deinit();
+    const client = compat.http.sharedClient();
 
     const url = buildStreamGenerateContentUrl(allocator, base_url, model.id) catch {
         ctx.deinit();

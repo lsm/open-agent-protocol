@@ -1354,8 +1354,7 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    var client = compat_mod.http.HttpClient.init(allocator);
-    defer client.deinit();
+    const client = compat_mod.http.sharedClient();
 
     const wire = if (std.mem.eql(u8, model.provider, "github-copilot")) copilot_wire else request_wire;
     const url = provider_catalog.joinModelUrlOwned(allocator, model, wire) catch {

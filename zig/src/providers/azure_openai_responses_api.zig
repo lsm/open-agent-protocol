@@ -269,8 +269,7 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    var client = compat.http.HttpClient.init(ctx.allocator);
-    defer client.deinit();
+    const client = compat.http.sharedClient();
 
     const url = std.fmt.allocPrint(ctx.allocator, "{s}/openai/v1/responses", .{ctx.base_url}) catch {
         ctx.stream.completeWithError("oom url");
