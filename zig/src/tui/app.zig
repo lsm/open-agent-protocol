@@ -7203,7 +7203,7 @@ fn freeSessionFileLines(lines: *std.ArrayList([]const u8)) void {
     lines.deinit(std.testing.allocator);
 }
 
-test "App saveEvent keeps conversation events in the session and chunks in its stream file" {
+test "App saveEvent keeps conversation events in the session and writes no chunks to disk" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
@@ -7256,12 +7256,7 @@ test "App saveEvent keeps conversation events in the session and chunks in its s
     try std.testing.expect(loaded.events.items[2] == .tool_execution_start);
     try std.testing.expectEqualStrings("{\"command\":\"pwd\"}", loaded.events.items[2].tool_execution_start.args_json.slice());
 
-    var stream = try sessionFileLines(base, "split-events.stream.jsonl");
-    defer freeSessionFileLines(&stream);
-    try std.testing.expectEqual(@as(usize, 4), stream.items.len);
-    try std.testing.expect(std.mem.indexOf(u8, stream.items[1], "\"type\":\"thinking_delta\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.items[2], "\"type\":\"tool_execution_update\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.items[3], "\"type\":\"provider_event\"") != null);
+    try std.testing.expectError(error.FileNotFound, sessionFileLines(base, "split-events.stream.jsonl"));
 }
 
 test "App writes session metadata when a session starts and when its model changes" {

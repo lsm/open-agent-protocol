@@ -20,7 +20,7 @@
 # The provider-* scenarios unset OAPX_TUI_FIXTURE and register
 # scripts/tui-fake-provider.py as a custom provider in $HOME/.oapx/providers.json,
 # one per wire format plus an env-keyed variant, and assert the streamed reply
-# renders and the session log records its text_delta events and message_end.
+# renders and the session log records its assembled message_end.
 # provider-https needs --tls-dir (a gen-certs directory whose ca.pem the system
 # trust store holds) and is reported as skipped without it.
 #
@@ -1623,13 +1623,10 @@ def run_fake_provider_scenario(args, name, api, keyed=False, tls=False):
                 raise ScenarioError(f"{name}: a POST reached the fake provider without the configured key")
             run.quit()
             events = session_events(home)
-            deltas = [e for e in events if e.get("type") == "text_delta"]
             ends = [e for e in events if e.get("type") == "message_end" and e.get("role") == "assistant"]
-            if len(deltas) < FAKE_PROVIDER_DELTAS:
-                raise ScenarioError(f"{name}: session log holds {len(deltas)} text_delta events, expected at least {FAKE_PROVIDER_DELTAS}")
             if not ends or ends[-1].get("text", "").strip() != expected:
                 raise ScenarioError(f"{name}: session log assistant message_end text is {[e.get('text') for e in ends]!r}, expected {expected!r}")
-            run.note(f"{api} over {scheme}{' with an env key' if keyed else ''}: {len(posts)} POST(s), {len(deltas)} text_delta events, message_end {expected!r}")
+            run.note(f"{api} over {scheme}{' with an env key' if keyed else ''}: {len(posts)} POST(s)")
         except ScenarioError as err:
             run.error = str(err)
             log = os.path.join(home, ".oapx", "tui-stderr.log")
