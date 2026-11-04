@@ -270,8 +270,8 @@ first.
 
 ### Two levels of parking
 
-There are two kinds of park, and one rule decides both, written once in
-`drafts/hub.md`:
+There are two kinds of park. The Parking section of `drafts/hub.md` is the rule's
+home, and run parking extends it rather than restating it:
 
 | Level | What it does | Condition |
 |---|---|---|
@@ -285,6 +285,11 @@ interaction stays answerable, and resolving it loads the run first.
 
 A cursor from before a session park gets `oap-replay-gap`. A run park should not
 need that, because the journal is on disk by then.
+
+Stage 7 builds on #1615. `Session.holdsNoLiveWork()` is already the shared check.
+`Hub.park` checks the session level inline, so stage 7 lifts that into one function
+with a level, and moves the live tool source check there from `Hub.reopenable`.
+`keepState` blanks `active_runs`, so stage 7 copies them for a run park instead.
 
 Crash recovery of in-flight runs is a separate subject, and this draft does not
 cover it.
