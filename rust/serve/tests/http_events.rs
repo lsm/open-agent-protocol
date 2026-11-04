@@ -7,7 +7,7 @@ use oap_adapter::{OpenRequest, SubmitRequest};
 use oap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
-use oap_serve::http::{serve_http, HttpOptions};
+use oap_serve::http::{serve_http, HttpOptions, DEFAULT_KEEPALIVE};
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
@@ -198,4 +198,45 @@ fn a_stream_the_server_ends_closes_the_connection() {
     reader
         .read_to_end(&mut rest)
         .expect("the connection stayed open after the stream ended");
+}
+
+#[test]
+fn a_quiet_stream_writes_a_keepalive_comment() {
+    let hub = Hub::new(Registry::default_registry());
+    block_on(hub.open(
+        "memory",
+        OpenRequest {
+            session_id: "s".into(),
+            ..OpenRequest::default()
+        },
+    ))
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = hub.clone();
+    std::thread::spawn(move || {
+        serve_http(
+            &served,
+            listener,
+            &HttpOptions {
+                keepalive: Some(Duration::from_millis(20)),
+                ..HttpOptions::default()
+            },
+        )
+    });
+    let mut reader = open_stream(addr, "/sessions/s/events");
+    assert_eq!(status_and_headers(&mut reader).0, 200);
+    for _ in 0..2 {
+        let mut comment = String::new();
+        reader.read_line(&mut comment).unwrap();
+        assert_eq!(comment, ": keepalive\n");
+        comment.clear();
+        reader.read_line(&mut comment).unwrap();
+        assert_eq!(comment, "\n");
+    }
+}
+
+#[test]
+fn a_stream_stays_quiet_for_fifteen_seconds_before_its_keepalive() {
+    assert_eq!(DEFAULT_KEEPALIVE, Duration::from_secs(15));
 }

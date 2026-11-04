@@ -18,6 +18,7 @@ const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const DEFAULT_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 pub const DEFAULT_SUBSCRIPTION_HOLD: std::time::Duration = std::time::Duration::from_secs(30);
+pub const DEFAULT_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Clone, Debug, Default)]
 pub struct HttpOptions {
@@ -25,6 +26,7 @@ pub struct HttpOptions {
     pub max_connections: usize,
     pub header_timeout: Option<std::time::Duration>,
     pub subscription_hold: Option<std::time::Duration>,
+    pub keepalive: Option<std::time::Duration>,
 }
 
 struct Served {
@@ -35,6 +37,7 @@ struct Served {
     max: usize,
     header_timeout: std::time::Duration,
     hold_for: std::time::Duration,
+    keepalive: std::time::Duration,
     held: Arc<Held>,
     stopping: std::sync::RwLock<stdio::Stopping>,
     finishing: std::sync::atomic::AtomicBool,
@@ -92,6 +95,7 @@ pub fn serve_http(hub: &Hub, listener: TcpListener, options: &HttpOptions) -> st
         hold_for: options
             .subscription_hold
             .unwrap_or(DEFAULT_SUBSCRIPTION_HOLD),
+        keepalive: options.keepalive.unwrap_or(DEFAULT_KEEPALIVE),
         held: Arc::default(),
         stopping: std::sync::RwLock::default(),
         finishing: std::sync::atomic::AtomicBool::new(false),
@@ -549,7 +553,7 @@ impl Served {
         let mut answer = self.answer(&asked, &stream, &mut consumed);
         stream.set_write_timeout(Some(self.header_timeout))?;
         if let Some(events) = answer.events.take() {
-            return stream_events(&stream, events, asked.method != "HEAD");
+            return stream_events(&stream, events, asked.method != "HEAD", self.keepalive);
         }
         respond(&stream, &answer, asked.method != "HEAD")?;
         if !consumed {
@@ -1187,7 +1191,12 @@ fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<
     stream.flush()
 }
 
-fn stream_events(mut stream: &TcpStream, events: Events, with_body: bool) -> std::io::Result<()> {
+fn stream_events(
+    mut stream: &TcpStream,
+    events: Events,
+    with_body: bool,
+    keepalive: std::time::Duration,
+) -> std::io::Result<()> {
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
     )?;
@@ -1236,9 +1245,17 @@ fn stream_events(mut stream: &TcpStream, events: Events, with_body: bool) -> std
         canceller.cancel();
     });
     loop {
-        let next = crate::live::block_on(std::future::poll_fn(|context| {
-            futures_core::Stream::poll_next(std::pin::Pin::new(&mut subscription), context)
-        }));
+        let next = crate::live::block_on_within(
+            std::future::poll_fn(|context| {
+                futures_core::Stream::poll_next(std::pin::Pin::new(&mut subscription), context)
+            }),
+            keepalive,
+        );
+        let Some(next) = next else {
+            stream.write_all(b": keepalive\n\n")?;
+            stream.flush()?;
+            continue;
+        };
         match next {
             Some(Ok(envelope)) => {
                 let mut frame = String::new();

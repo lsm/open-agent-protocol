@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
+use std::time::{Duration, Instant};
 
 use futures_core::Stream;
 use oap_adapter::{Error, EventStream};
@@ -525,6 +526,23 @@ impl Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+pub(crate) fn block_on_within<F: Future>(future: F, limit: Duration) -> Option<F::Output> {
+    let deadline = Instant::now() + limit;
+    let mut future = std::pin::pin!(future);
+    let waker = Waker::from(Arc::new(Unpark(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return Some(output);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        thread::park_timeout(left);
     }
 }
 
