@@ -60,6 +60,48 @@ pub const HttpClient = struct {
     }
 };
 
+const shared_idle_connections = 1024;
+const stale_sweep_interval_ms = 1000;
+
+var shared_lock: std.atomic.Mutex = .unlocked;
+var shared_client: ?HttpClient = null;
+var last_stale_sweep_ms: i64 = 0;
+
+pub fn sharedClient() *HttpClient {
+    while (!shared_lock.tryLock()) std.atomic.spinLoopHint();
+    defer shared_lock.unlock();
+    if (shared_client == null) {
+        shared_client = HttpClient.init(std.heap.smp_allocator);
+        shared_client.?.client.connection_pool.free_size = shared_idle_connections;
+    }
+    const client = &shared_client.?;
+    const now = std.Io.Timestamp.now(defaultIo(), .boot).toMilliseconds();
+    if (now - last_stale_sweep_ms >= stale_sweep_interval_ms) {
+        last_stale_sweep_ms = now;
+        dropClosedConnections(client);
+    }
+    return client;
+}
+
+fn dropClosedConnections(client: *HttpClient) void {
+    if (@import("builtin").os.tag == .windows) return;
+    const io = defaultIo();
+    const pool = &client.client.connection_pool;
+    pool.mutex.lockUncancelable(io);
+    defer pool.mutex.unlock(io);
+    var next = pool.free.first;
+    while (next) |node| {
+        next = node.next;
+        const connection: *std.http.Client.Connection = @alignCast(@fieldParentPtr("pool_node", node));
+        var watched = [_]std.posix.pollfd{.{ .fd = connection.stream_reader.stream.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
+        const ready = std.posix.poll(&watched, 0) catch 1;
+        if (ready == 0) continue;
+        pool.free.remove(node);
+        pool.free_len -= 1;
+        connection.destroy(io);
+    }
+}
+
 pub fn sendRequest(request: *Request, body: []const u8) !void {
     request.transfer_encoding = .{ .content_length = body.len };
     var sent = try request.sendBodyUnflushed(&.{});
@@ -187,6 +229,89 @@ test "compat http requests identity encoding unless a caller overrides it" {
         .override => |value| try std.testing.expectEqualStrings("gzip", value),
         else => return error.TestUnexpectedResult,
     }
+}
+
+const KeepAliveServer = struct {
+    listener: std.Io.net.Server,
+    accepted: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    close_after_reply: bool = false,
+
+    fn port(self: *const KeepAliveServer) u16 {
+        return self.listener.socket.address.getPort();
+    }
+
+    fn serve(self: *KeepAliveServer, requests: usize) void {
+        const io = std.testing.io;
+        var served: usize = 0;
+        while (served < requests) {
+            var stream = self.listener.accept(io) catch return;
+            defer stream.close(io);
+            _ = self.accepted.fetchAdd(1, .acq_rel);
+            var read_buffer: [4096]u8 = undefined;
+            var reader = stream.reader(io, &read_buffer);
+            var write_buffer: [256]u8 = undefined;
+            var writer = stream.writer(io, &write_buffer);
+            while (served < requests) {
+                _ = reader.interface.takeDelimiterInclusive('\n') catch break;
+                while (true) {
+                    const line = reader.interface.takeDelimiterInclusive('\n') catch return;
+                    if (std.mem.eql(u8, line, "\r\n")) break;
+                }
+                writer.interface.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok") catch return;
+                writer.interface.flush() catch return;
+                served += 1;
+                if (self.close_after_reply) break;
+            }
+        }
+    }
+};
+
+fn releaseServer(port: u16) void {
+    const address = std.Io.net.IpAddress.parse("127.0.0.1", port) catch return;
+    var stream = address.connect(std.testing.io, .{ .mode = .stream }) catch return;
+    defer stream.close(std.testing.io);
+    var buffer: [64]u8 = undefined;
+    var writer = stream.writer(std.testing.io, &buffer);
+    writer.interface.writeAll("GET / HTTP/1.1\r\n\r\n") catch return;
+    writer.interface.flush() catch return;
+}
+
+fn fetchThroughShared(port: u16) !void {
+    var url_buffer: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buffer, "http://127.0.0.1:{d}/", .{port});
+    var request = try sharedClient().openRequest(.GET, try std.Uri.parse(url), .{});
+    defer request.deinit();
+    try sendBodilessRequest(&request);
+    var redirect_buffer: [256]u8 = undefined;
+    var response = try receiveResponse(&request, &redirect_buffer);
+    var transfer_buffer: [64]u8 = undefined;
+    const reader = responseReader(&response, &transfer_buffer);
+    var body: [8]u8 = undefined;
+    while (try readResponse(reader, &body) > 0) {}
+}
+
+test "the shared client reuses one connection across requests" {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = KeepAliveServer{ .listener = try address.listen(std.testing.io, .{ .reuse_address = true }) };
+    defer server.listener.deinit(std.testing.io);
+    const thread = try std.Thread.spawn(.{}, KeepAliveServer.serve, .{ &server, 3 });
+    defer thread.join();
+    for (0..3) |_| try fetchThroughShared(server.port());
+    try std.testing.expectEqual(@as(u32, 1), server.accepted.load(.acquire));
+}
+
+test "the shared client drops an idle connection the server closed" {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = KeepAliveServer{ .listener = try address.listen(std.testing.io, .{ .reuse_address = true }), .close_after_reply = true };
+    defer server.listener.deinit(std.testing.io);
+    const thread = try std.Thread.spawn(.{}, KeepAliveServer.serve, .{ &server, 2 });
+    defer thread.join();
+    errdefer releaseServer(server.port());
+    try fetchThroughShared(server.port());
+    std.Io.sleep(std.testing.io, .fromMilliseconds(50), .boot) catch {};
+    last_stale_sweep_ms = 0;
+    try fetchThroughShared(server.port());
+    try std.testing.expectEqual(@as(u32, 2), server.accepted.load(.acquire));
 }
 
 test "compat http client initializes and deinitializes" {
