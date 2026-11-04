@@ -418,7 +418,7 @@ func (r *Run) streamOnce(history []provider.Message) turnOutcome {
 	refusal := ""
 	shown := false
 	for event := range turn.Events {
-		if event.Kind != provider.EventStart {
+		if event.Kind != provider.EventStart && event.Kind != provider.EventKeepalive {
 			watchdog.Stop()
 		}
 		switch event.Kind {

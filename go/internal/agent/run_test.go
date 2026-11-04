@@ -58,6 +58,7 @@ func frames(ctx context.Context, turn scriptedTurn) <-chan provider.Event {
 			return
 		}
 		if turn.stall != nil {
+			out <- provider.Event{Kind: provider.EventKeepalive}
 			select {
 			case <-turn.stall:
 			case <-ctx.Done():
