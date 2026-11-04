@@ -411,6 +411,7 @@ pub struct Subscription {
     joined: Option<(RunId, u64)>,
     positions: HashMap<RunId, u64>,
     replays: VecDeque<(RunId, EventStream)>,
+    one_run: bool,
     sub: Arc<Subscriber>,
     session: Arc<HubSession>,
     done: bool,
@@ -455,6 +456,7 @@ impl Subscription {
             joined,
             positions: HashMap::new(),
             replays: VecDeque::new(),
+            one_run: false,
             sub,
             session,
             done: false,
@@ -471,6 +473,12 @@ impl Subscription {
         let mut subscription = Self::live(session, sub, None);
         subscription.positions.insert(run.clone(), after);
         subscription.run = run;
+        subscription
+    }
+
+    pub(crate) fn one_run(session: Arc<HubSession>, run: RunId, after: u64) -> Self {
+        let mut subscription = Self::after(session, Arc::default(), run, after);
+        subscription.one_run = true;
         subscription
     }
 
@@ -567,6 +575,8 @@ impl Stream for Subscription {
                     }
                     Poll::Ready(Some(Err(err))) => Polled::Failed(err),
                 }
+            } else if self.one_run {
+                Polled::End
             } else {
                 let mut mailbox = lock(&self.sub.mailbox);
                 if let Some(envelope) = mailbox.queue.pop_front() {

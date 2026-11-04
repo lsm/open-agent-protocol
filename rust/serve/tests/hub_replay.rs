@@ -144,6 +144,20 @@ fn a_cursor_is_a_replay_gap_when_a_later_run_has_left_the_journal() {
 }
 
 #[test]
+fn a_one_run_cursor_ends_with_its_run_and_ignores_a_later_runs_gap() {
+    let hub = hub(2);
+    let session = open(&hub, "one-run");
+    let mut watcher = hub.subscribe(session.id()).unwrap();
+    let first = cancelled_run(&session);
+    let settled = until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let reached = settled.last().unwrap().sequence.unwrap();
+    cancelled_run(&session);
+    until(&mut watcher, of_type(EnvelopeType::RUN_CANCELLED));
+    let mut replay = block_on(hub.subscribe_one_run(session.id(), Some(first), reached)).unwrap();
+    assert!(block_on(replay.next()).is_none());
+}
+
+#[test]
 fn ending_subscriptions_stops_a_replay_still_following_a_run() {
     let hub = hub(64);
     let session = open(&hub, "following");

@@ -379,18 +379,17 @@ impl Hub {
             .ok_or_else(|| HubError::UnknownSession(id.clone()))
     }
 
-    pub async fn subscribe_after(
+    async fn cursor_run(
         &self,
+        entry: &HubSession,
         id: &SessionId,
         run: Option<RunId>,
-        after: u64,
-    ) -> Result<Subscription, HubError> {
-        let entry = self.session(id)?;
+    ) -> Result<RunId, HubError> {
         if entry.is_closed() {
             return Err(HubError::SessionClosed(id.clone()));
         }
-        let run = match run.filter(|run| !run.as_str().is_empty()) {
-            Some(run) => run,
+        match run.filter(|run| !run.as_str().is_empty()) {
+            Some(run) => Ok(run),
             None => {
                 let active = entry
                     .session
@@ -400,27 +399,59 @@ impl Hub {
                     .and_then(|state| state.active_run_id);
                 active
                     .or_else(|| entry.current_run())
-                    .ok_or(HubError::NoRunToResume)?
+                    .ok_or(HubError::NoRunToResume)
             }
-        };
+        }
+    }
+
+    async fn resume(
+        entry: &HubSession,
+        run: RunId,
+        after: u64,
+        subscription: &mut Subscription,
+    ) -> Result<(), HubError> {
+        let (_, stream) = entry
+            .session
+            .resume(ResumeRequest {
+                run_id: run.clone(),
+                after_sequence: after,
+            })
+            .await
+            .inspect_err(|err| entry.closed_by(err))?;
+        subscription.replaying(run, stream);
+        Ok(())
+    }
+
+    pub async fn subscribe_after(
+        &self,
+        id: &SessionId,
+        run: Option<RunId>,
+        after: u64,
+    ) -> Result<Subscription, HubError> {
+        let entry = self.session(id)?;
+        let run = self.cursor_run(&entry, id, run).await?;
         let sub = entry
             .with_live(|live| live.subscribe_from(&run))
             .ok_or_else(|| HubError::SessionClosed(id.clone()))?;
         let later = entry.with_live(|live| live.later_runs(&run));
         let mut subscription = Subscription::after(entry.clone(), sub, run.clone(), after);
-        let mut after = after;
-        for run in std::iter::once(run).chain(later) {
-            let (_, stream) = entry
-                .session
-                .resume(ResumeRequest {
-                    run_id: run.clone(),
-                    after_sequence: after,
-                })
-                .await
-                .inspect_err(|err| entry.closed_by(err))?;
-            subscription.replaying(run, stream);
-            after = 0;
+        Self::resume(&entry, run, after, &mut subscription).await?;
+        for run in later {
+            Self::resume(&entry, run, 0, &mut subscription).await?;
         }
+        Ok(subscription)
+    }
+
+    pub async fn subscribe_one_run(
+        &self,
+        id: &SessionId,
+        run: Option<RunId>,
+        after: u64,
+    ) -> Result<Subscription, HubError> {
+        let entry = self.session(id)?;
+        let run = self.cursor_run(&entry, id, run).await?;
+        let mut subscription = Subscription::one_run(entry.clone(), run.clone(), after);
+        Self::resume(&entry, run, after, &mut subscription).await?;
         Ok(subscription)
     }
 
