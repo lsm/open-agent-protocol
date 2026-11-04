@@ -92,6 +92,13 @@ still runs its existing checks and consumer journeys.
 Add a new journey as a new file in `journeys/`; never edit an index.
 Use a distinct descriptive filename; no shared numbering or list needs updating.
 
+## Documentation site
+
+For site changes, also follow `journeys/docs-site.md`: build the isolated
+VitePress package, check the published artifacts, and inspect the browser
+journey under the repository base path. Hosted Pages smoke remains separate
+until the administrator enables deployment.
+
 ## Evidence and merge
 
 Put commands, exit codes, observed CLI diagnostics and PTY reply/quit evidence,

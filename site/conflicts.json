@@ -1,0 +1,341 @@
+{
+  "auditCommit": "094c5884a3e33871991d4b03642256bf794bd2a5",
+  "items": [
+    {
+      "id": "C01",
+      "area": "README/Go Hub",
+      "document": "[README.md:876](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L876)",
+      "claim": "嵌入 Hub 示例把 protocol.MessageSubmitRequest 直接传给 session.Submit。",
+      "implementation": "[go/serve/session.go:494](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/session.go#L494)",
+      "observation": "签名需要 adapter.SubmitRequest。抽取原示例编译，exit 1，报 cannot use MessageSubmitRequest as adapter.SubmitRequest。"
+    },
+    {
+      "id": "C02",
+      "area": "Go SDK",
+      "document": "[docs/go-library.md:150](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/go-library.md#L150)",
+      "claim": "客户端执行工具与 token options 均 unsupported。",
+      "implementation": "[go/sdk/oap.go:602](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/sdk/oap.go#L602); [go/sdk/agent.go:107](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/sdk/agent.go#L107)",
+      "observation": "已通过 action.tools.provide 提供工具、resolveCall 执行；MaxTokens 在 oapx open 转成 output，且有范围校验。"
+    },
+    {
+      "id": "C03",
+      "area": "Go 库索引",
+      "document": "[docs/go-library.md:65](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/go-library.md#L65); [README.md:933](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L933)",
+      "claim": "列出所有公开包，声称列表受检查保证完整，但不列 go/binding。",
+      "implementation": "[go/internal/publicset/publicset.go:8](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/internal/publicset/publicset.go#L8); [go/binding/binding.go:55](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/binding/binding.go#L55)",
+      "observation": "publicset 明确包含 go/binding；公开 Store 接口已存在。"
+    },
+    {
+      "id": "C04",
+      "area": "Go agent loop",
+      "document": "[docs/go-agent-loop.md:67](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/go-agent-loop.md#L67); [README.md:944](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L944)",
+      "claim": "Go 树还没有 loop，仅在规划第一片。",
+      "implementation": "[go/internal/agent/run.go:28](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/internal/agent/run.go#L28); [go/internal/agent/run.go:60](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/internal/agent/run.go#L60)",
+      "observation": "已有 Config、Run、Start 和异步 loop。"
+    },
+    {
+      "id": "C05",
+      "area": "README/CLI",
+      "document": "[README.md:1100](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L1100)",
+      "claim": "oapx conformance 还是未来产品工作。",
+      "implementation": "[zig/src/tools/makai.zig:843](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L843); [zig/src/tools/makai.zig:2264](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L2264)",
+      "observation": "已有 runner 及 CLI 分派，要求 --command。"
+    },
+    {
+      "id": "C06",
+      "area": "README/decisions",
+      "document": "[README.md:1160](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L1160)",
+      "claim": "Decision 0047 的目录条目标 proposed。",
+      "implementation": "[decisions/0047-a-work-layer-over-sessions.md:3](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/decisions/0047-a-work-layer-over-sessions.md#L3); [go/serve/servehttp/work.go:45](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servehttp/work.go#L45)",
+      "observation": "该决定自身 accepted，work HTTP 路由已实现。"
+    },
+    {
+      "id": "C07",
+      "area": "一致性矩阵/Rust",
+      "document": "[docs/conformance-matrix.md:20](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L20); [docs/conformance-matrix.md:65](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L65)",
+      "claim": "Rust agent semantic validator missing，只判断 decode/schema。",
+      "implementation": "[rust/validation/src/validator.rs:107](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/validation/src/validator.rs#L107)",
+      "observation": "构建 State，逐 envelope apply 并 close，输出语义诊断。"
+    },
+    {
+      "id": "C08",
+      "area": "一致性矩阵/provider",
+      "document": "[docs/conformance-matrix.md:17](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L17); [docs/conformance-matrix.md:21](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L21)",
+      "claim": "Rust provider 只有 SDK types，provider validator missing。",
+      "implementation": "[rust/protocol/src/provider.rs:11](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/protocol/src/provider.rs#L11); [rust/validation/src/lib.rs:14](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/validation/src/lib.rs#L14); [rust/validation/tests/manifest.rs:43](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/validation/tests/manifest.rs#L43)",
+      "observation": "独立 ProviderEnvelope 与 ProviderValidator 均存在，manifest 按 provider profile 分派。"
+    },
+    {
+      "id": "C09",
+      "area": "一致性矩阵/Zig",
+      "document": "[docs/conformance-matrix.md:20](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L20); [docs/conformance-matrix.md:51](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L51)",
+      "claim": "Zig 缺少的 code 会被 gate 自动跳过，87 个 fixture 豁免。",
+      "implementation": "[zig/src/validation/semantic_gate.zig:160](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/validation/semantic_gate.zig#L160); [fixtures/known-gaps.json:4](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/fixtures/known-gaps.json#L4)",
+      "observation": "gate 对未登记差异及失效豁免失败；Zig 登记的 fixture 只有 4 个。"
+    },
+    {
+      "id": "C10",
+      "area": "一致性矩阵/pack",
+      "document": "[docs/conformance-matrix.md:22](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L22)",
+      "claim": "Zig pack loading 只实现 5/20，#1261 还将新增 10。",
+      "implementation": "[zig/src/validation/packs.zig:9](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/validation/packs.zig#L9); [docs/validation-coverage.md:173](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/validation-coverage.md#L173)",
+      "observation": "loader 已有这组拒绝码及后续实现；较新的 coverage 记录 20 个已覆盖，另有 descriptor schema 的独立缺口。"
+    },
+    {
+      "id": "C11",
+      "area": "一致性矩阵/Copilot",
+      "document": "[docs/conformance-matrix.md:25](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L25)",
+      "claim": "Copilot Zig done、Go missing。",
+      "implementation": "[go/adapter/copilot/adapter.go:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/adapter/copilot/adapter.go#L1); [go/serve/registry.go:432](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/registry.go#L432)",
+      "observation": "Go adapter 与 registry 分派均已存在。"
+    },
+    {
+      "id": "C12",
+      "area": "一致性矩阵/transcript",
+      "document": "[docs/conformance-matrix.md:32](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L32)",
+      "claim": "Go transcript hub route pending。",
+      "implementation": "[go/serve/servehttp/work.go:53](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servehttp/work.go#L53); [go/serve/servestdio/ops.go:293](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servestdio/ops.go#L293)",
+      "observation": "HTTP GET /sessions/{id}/transcript 和 stdio transcript 都已路由。"
+    },
+    {
+      "id": "C13",
+      "area": "一致性矩阵/统计",
+      "document": "[docs/conformance-matrix.md:38](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L38); [docs/conformance-matrix.md:45](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/conformance-matrix.md#L45)",
+      "claim": "785 traces、Rust 68 traces；总计 done/partial/missing 是旧状态。",
+      "implementation": "[fixtures/manifest.json:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/fixtures/manifest.json#L1); [rust/validation/tests/manifest.rs:36](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/validation/tests/manifest.rs#L36)",
+      "observation": "当前 manifest 有 1300 项（含 load-invalid），provider 157 项；Rust 遍历非 load-invalid 的 manifest，并显式管理 known gaps。"
+    },
+    {
+      "id": "C14",
+      "area": "Hub 草案入口",
+      "document": "[drafts/hub.md:7](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/drafts/hub.md#L7)",
+      "claim": "Go 是唯一存在的 Hub，Zig Hub 还不存在。",
+      "implementation": "[zig/src/hub/hub.zig:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/hub/hub.zig#L1); [rust/serve/src/hub.rs:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/serve/src/hub.rs#L1)",
+      "observation": "Zig 与 Rust Hub 都已存在，本文后半自己也记载它们的差异。"
+    },
+    {
+      "id": "C15",
+      "area": "Hub D36 迁移状态",
+      "document": "[drafts/hub.md:2578](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/drafts/hub.md#L2578)",
+      "claim": "Decision 0066 尚未进入任何一棵树。",
+      "implementation": "[go/serve/servestdio/ops.go:24](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servestdio/ops.go#L24); [zig/src/hub/stdio.zig:808](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/hub/stdio.zig#L808); [rust/serve/src/stdio.rs:587](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/serve/src/stdio.rs#L587)",
+      "observation": "三棵树均已有 unsubscribe；Go 默认订阅跨 run。"
+    },
+    {
+      "id": "C16",
+      "area": "订阅生命周期/TS Hub client",
+      "document": "[decisions/0066-a-subscription-lasts-as-long-as-its-connection.md:28](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/decisions/0066-a-subscription-lasts-as-long-as-its-connection.md#L28)",
+      "claim": "run terminal 与 idle 不结束订阅；客户端必须读 terminal 判断 run 结束。",
+      "implementation": "[clients/ts/src/events.ts:125](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/clients/ts/src/events.ts#L125); [clients/ts/src/events.ts:426](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/clients/ts/src/events.ts#L426)",
+      "observation": "TS EventStream 仍记录 terminal，并在 terminal 后 return。"
+    },
+    {
+      "id": "C17",
+      "area": "HTTP SSE keepalive",
+      "document": "[decisions/0066-a-subscription-lasts-as-long-as-its-connection.md:55](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/decisions/0066-a-subscription-lasts-as-long-as-its-connection.md#L55); [drafts/hub.md:718](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/drafts/hub.md#L718)",
+      "claim": "每 15 秒无事件时发送 : keepalive。",
+      "implementation": "[go/serve/servehttp/sse.go:24](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servehttp/sse.go#L24); [rust/serve/src/http.rs:1238](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/serve/src/http.rs#L1238); [drafts/hub.md:2580](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/drafts/hub.md#L2580)",
+      "observation": "现有发送循环没有此周期写入；D36 明确仍无 Hub 写 keepalive。"
+    },
+    {
+      "id": "C18",
+      "area": "HTTP SSE cursor",
+      "document": "[decisions/0066-a-subscription-lasts-as-long-as-its-connection.md:65](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/decisions/0066-a-subscription-lasts-as-long-as-its-connection.md#L65)",
+      "claim": "SSE id 是 <run_id>:<sequence>，按最后一个冒号拆开，跨 run replay。",
+      "implementation": "[go/serve/servehttp/sse.go:80](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servehttp/sse.go#L80); [rust/serve/src/http.rs:1246](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/serve/src/http.rs#L1246); [go/client/events.go:221](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/client/events.go#L221)",
+      "observation": "写出及客户端生成的仍为裸 sequence；D36 也登记此状态。"
+    },
+    {
+      "id": "C19",
+      "area": "Hub G2 文案",
+      "document": "[drafts/hub.md:1997](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/drafts/hub.md#L1997)",
+      "claim": "io.EOF 表示 run 到 terminal，stdio 不能表达单订阅 hangup。",
+      "implementation": "[go/serve/subscribe.go:30](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/subscribe.go#L30); [go/serve/servestdio/stdio.go:176](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servestdio/stdio.go#L176)",
+      "observation": "默认订阅不在 run terminal 结束，stdio 已能 unsubscribe；OneRun 是显式内部选项。"
+    },
+    {
+      "id": "C20",
+      "area": "协议 gaps/transcript schema",
+      "document": "[docs/oapx-protocol-gaps.md:52](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/oapx-protocol-gaps.md#L52); [docs/oapx-protocol-gaps.md:63](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/oapx-protocol-gaps.md#L63)",
+      "claim": "transcript.load 还只是待决定草案，没有 OAP envelope。",
+      "implementation": "[schema/v0.1/envelope.schema.json:50](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/schema/v0.1/envelope.schema.json#L50); [go/validation/transcript.go:15](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/validation/transcript.go#L15)",
+      "observation": "schema 已收 request/response，验证器已有对应路径。"
+    },
+    {
+      "id": "C21",
+      "area": "协议 gaps/serve 持久化",
+      "document": "[docs/oapx-protocol-gaps.md:74](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/oapx-protocol-gaps.md#L74); [docs/oapx-protocol-gaps.md:81](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/oapx-protocol-gaps.md#L81)",
+      "claim": "只有 TUI 保存 oapx sessions，serve 不写消息，重启丢失。",
+      "implementation": "[zig/src/tools/makai.zig:619](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L619); [zig/src/tools/makai.zig:324](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L324)",
+      "observation": "serve 默认创建 session_store 并接入 ServedSessions；HOME 缺失可降级不保存。"
+    },
+    {
+      "id": "C22",
+      "area": "TUI attach/resume",
+      "document": "[docs/tui-oap-seam.md:74](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/tui-oap-seam.md#L74)",
+      "claim": "Hub oapx entry 还没有保存会话，attach resume unsupported。",
+      "implementation": "[zig/src/tools/makai.zig:619](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L619); [zig/src/tools/makai.zig:629](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L629)",
+      "observation": "当前 hub 默认接上 saved sessions，旧的无保存前提已变。"
+    },
+    {
+      "id": "C23",
+      "area": "Storage 接口进度",
+      "document": "[docs/storage.md:5](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/storage.md#L5); [docs/storage.md:113](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/storage.md#L113)",
+      "claim": "Zig bindings 仍 hard-wired，第一步还要引入 vtable。",
+      "implementation": "[zig/src/hub/binding.zig:297](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/hub/binding.zig#L297)",
+      "observation": "Bindings 已是 ctx+VTable，包含 append/latest/sessions/lastFailure。"
+    },
+    {
+      "id": "C24",
+      "area": "Storage durability 进度",
+      "document": "[docs/storage.md:97](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/storage.md#L97)",
+      "claim": "Zig binding 首次 replace 不 sync directory，step 2 将补。",
+      "implementation": "[zig/src/hub/binding.zig:190](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/hub/binding.zig#L190); [zig/src/compat/fs.zig:39](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/compat/fs.zig#L39)",
+      "observation": "binding rewrite 已用 atomicReplaceDurable。"
+    },
+    {
+      "id": "C25",
+      "area": "TS 旧 integration plan/auth",
+      "document": "[docs/ts-sdk-chat-integration-plan.md:11](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/ts-sdk-chat-integration-plan.md#L11)",
+      "claim": "Verified Current State：TS auth 仍 shell out CLI。",
+      "implementation": "[sdk/typescript/src/oap_client.ts:565](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L565); [sdk/typescript/src/oap_client.ts:589](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L589)",
+      "observation": "auth.providers.request/login.start.request 在同一 OAP transport 上发出。"
+    },
+    {
+      "id": "C26",
+      "area": "TS 旧 integration plan/chat",
+      "document": "[docs/ts-sdk-chat-integration-plan.md:16](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/ts-sdk-chat-integration-plan.md#L16)",
+      "claim": "没有高层 chat API。",
+      "implementation": "[sdk/typescript/src/oap_client.ts:697](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L697); [sdk/typescript/src/oap_client.ts:717](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L717)",
+      "observation": "已有 OapAgentApi.run/stream 和 provider API。"
+    },
+    {
+      "id": "C27",
+      "area": "TS 旧 integration plan/wire",
+      "document": "[docs/ts-sdk-chat-integration-plan.md:17](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/ts-sdk-chat-integration-plan.md#L17)",
+      "claim": "makai --stdio 仅返回 ready，将继续兼容该握手。",
+      "implementation": "[zig/src/tools/makai.zig:2279](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L2279); [DESIGN.md:40](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/DESIGN.md#L40)",
+      "observation": "裸 --stdio 是已退休 v1 wire，入口提示改用 serve agent,provider --stdio。"
+    },
+    {
+      "id": "C28",
+      "area": "V1 review 文档状态",
+      "document": "[docs/review-process.md:3](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/review-process.md#L3); [docs/review-process.md:8](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/review-process.md#L8)",
+      "claim": "active normative rollout，以 v1 spec 和旧 integration plan 为准。",
+      "implementation": "[DESIGN.md:40](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/DESIGN.md#L40); [zig/src/tools/makai.zig:2279](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/tools/makai.zig#L2279)",
+      "observation": "现行 wire 已退休 v1；设计与代码明确 OAP endpoint。"
+    },
+    {
+      "id": "C29",
+      "area": "V1 traceability 活跃索引",
+      "document": "[docs/implementation-traceability-matrix.md:3](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/implementation-traceability-matrix.md#L3); [docs/implementation-traceability-matrix.md:35](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/implementation-traceability-matrix.md#L35)",
+      "claim": "active 矩阵指向 typescript/src 与 Makai v1 phase，要求每个实现 PR 更新。",
+      "implementation": "[sdk/typescript/src/oap_client.ts:855](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L855); [package.json:5](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/package.json#L5)",
+      "observation": "当前 SDK 实现/入口是 sdk/typescript；root package 输出 dist/src。"
+    },
+    {
+      "id": "C30",
+      "area": "V1 matrix stream 状态",
+      "document": "[docs/implementation-traceability-matrix.md:44](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/implementation-traceability-matrix.md#L44)",
+      "claim": "M-010 stream 生命周期 not started。",
+      "implementation": "[sdk/typescript/src/oap_client.ts:717](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L717); [sdk/typescript/README.md:108](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/README.md#L108)",
+      "observation": "高层 agent streaming 已存在，文档描述工具事件和 session 行为。"
+    },
+    {
+      "id": "C31",
+      "area": "V1 matrix auth retry 状态",
+      "document": "[docs/implementation-traceability-matrix.md:45](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/implementation-traceability-matrix.md#L45)",
+      "claim": "M-011 auth retry not started。",
+      "implementation": "[sdk/typescript/src/oap_client.ts:736](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/sdk/typescript/src/oap_client.ts#L736)",
+      "observation": "AutoOnce 路径会调用 auth.login 后处理重试。"
+    },
+    {
+      "id": "C32",
+      "area": "Performance plan",
+      "document": "[docs/performance-memory-baseline-plan.md:5](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/performance-memory-baseline-plan.md#L5)",
+      "claim": "当前没有仓库拥有的可重复性能基线。",
+      "implementation": "[zig/build.zig:2879](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/build.zig#L2879); [scripts/bench-resources.py:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/scripts/bench-resources.py#L1)",
+      "observation": "已有 bench target、资源 benchmark 和 PTY harness。"
+    },
+    {
+      "id": "C33",
+      "area": "Reliability plan/SSE",
+      "document": "[docs/zig-reliability-80-20-plan.md:21](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/zig-reliability-80-20-plan.md#L21)",
+      "claim": "SSE parser 没有 per-parser budget。",
+      "implementation": "[zig/src/providers/sse_parser.zig:15](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/providers/sse_parser.zig#L15); [zig/src/providers/sse_parser.zig:43](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/providers/sse_parser.zig#L43)",
+      "observation": "已有 Limits 与 initWithLimits，测试覆盖 line/event bounds。"
+    },
+    {
+      "id": "C34",
+      "area": "Reliability plan/stdio",
+      "document": "[docs/zig-reliability-80-20-plan.md:22](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/zig-reliability-80-20-plan.md#L22)",
+      "claim": "stdio leftover 到换行前可无界增长。",
+      "implementation": "[zig/src/transports/stdio.zig:32](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/transports/stdio.zig#L32); [zig/src/transports/stdio.zig:71](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/transports/stdio.zig#L71)",
+      "observation": "LineFramer 按 limit 约束容量并报 LineTooLarge。"
+    },
+    {
+      "id": "C35",
+      "area": "Reliability plan/WebSocket",
+      "document": "[docs/zig-reliability-80-20-plan.md:23](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/zig-reliability-80-20-plan.md#L23)",
+      "claim": "WebSocket receive/fragment buffers 无界。",
+      "implementation": "[zig/src/transports/websocket.zig:180](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/transports/websocket.zig#L180); [zig/src/transports/websocket.zig:246](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/transports/websocket.zig#L246); [zig/src/transports/websocket.zig:293](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/transports/websocket.zig#L293)",
+      "observation": "已有 frame/message/receive_buffer 三种限额检查。"
+    },
+    {
+      "id": "C36",
+      "area": "TS Hub client 包安装",
+      "document": "[clients/ts/README.md:28](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/clients/ts/README.md#L28)",
+      "claim": "repo root 没有 package.json。",
+      "implementation": "[package.json:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/package.json#L1)",
+      "observation": "root package.json 存在，名字 oap-sdk；不是 clients/ts 的 oap-client 包。"
+    },
+    {
+      "id": "C37",
+      "area": "Validation ledger/steer",
+      "document": "[docs/validation-coverage.md:404](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/validation-coverage.md#L404)",
+      "claim": "no_model_turn 在两个 validator 都没有。",
+      "implementation": "[go/validation/steer.go:31](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/validation/steer.go#L31); [zig/src/validation/semantic.zig:3384](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/validation/semantic.zig#L3384); [rust/validation/src/state/steer.rs:73](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/rust/validation/src/state/steer.rs#L73)",
+      "observation": "Go、Zig、Rust 已实现该理由分支。"
+    },
+    {
+      "id": "C38",
+      "area": "Validation ledger/pack",
+      "document": "[docs/validation-coverage.md:411](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/validation-coverage.md#L411)",
+      "claim": "Zig loader 18/20，两个 load codes 仍豁免。",
+      "implementation": "[zig/src/validation/packs.zig:9](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/zig/src/validation/packs.zig#L9); [docs/validation-coverage.md:173](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/validation-coverage.md#L173)",
+      "observation": "同一页较新表格已写 all 20，loader 声明并处理该组码。"
+    },
+    {
+      "id": "C39",
+      "area": "Validation ledger/计数",
+      "document": "[docs/validation-coverage.md:38](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/validation-coverage.md#L38)",
+      "claim": "manifest 744 项，后面的 per-unit/codes/fixture 数来自该快照。",
+      "implementation": "[fixtures/manifest.json:1](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/fixtures/manifest.json#L1)",
+      "observation": "本次解析为 1300 项。"
+    },
+    {
+      "id": "C40",
+      "area": "Hub ops 数量",
+      "document": "[docs/go-library.md:88](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/go-library.md#L88); [README.md:1091](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L1091)",
+      "claim": "Hub stdio 有十四 ops。",
+      "implementation": "[go/serve/servestdio/ops.go:21](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servestdio/ops.go#L21); [go/serve/servestdio/ops.go:293](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/serve/servestdio/ops.go#L293)",
+      "observation": "已增加 unsubscribe、transcript、work 等分派，十四不再是完整 op 数。"
+    },
+    {
+      "id": "C41",
+      "area": "Transcript 页约束",
+      "document": "[decisions/0051-transcript-load.md:94](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/decisions/0051-transcript-load.md#L94); [docs/validation-coverage.md:401](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/docs/validation-coverage.md#L401)",
+      "claim": "超界条目截断后单独成页；coverage 也承认 truncated-alone 未检查。",
+      "implementation": "[go/validation/transcript.go:67](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/validation/transcript.go#L67); [go/validation/transcript.go:70](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/validation/transcript.go#L70); [schema/v0.1/session.schema.json:25](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/schema/v0.1/session.schema.json#L25)",
+      "observation": "只判数量/重复/gap。把有效 truncated fixture 加一个普通邻居，Go/Rust 均 exit 0、无诊断。"
+    },
+    {
+      "id": "C42",
+      "area": "README/schema 握手图",
+      "document": "[README.md:145](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/README.md#L145)",
+      "claim": "时序图把 capabilities 标在 protocol.initialize.response。",
+      "implementation": "[schema/v0.1/capabilities.schema.json:16](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/schema/v0.1/capabilities.schema.json#L16); [go/protocol/control.go:23](https://github.com/lsm/open-agent-protocol/blob/094c5884a3e33871991d4b03642256bf794bd2a5/go/protocol/control.go#L23)",
+      "observation": "initialize response 只有 protocol_version/profile/endpoint；capabilities 是独立 request/response。"
+    }
+  ]
+}
