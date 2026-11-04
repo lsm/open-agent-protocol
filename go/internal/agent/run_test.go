@@ -1165,7 +1165,8 @@ func TestAChunkStreamWhoseOnlyEventIsItsStartStillTimesOut(t *testing.T) {
 }
 
 type lateRefusal struct {
-	calls atomic.Int32
+	calls  atomic.Int32
+	reason string
 }
 
 func (s *lateRefusal) Stream(ctx context.Context, request TurnRequest) Turn {
@@ -1174,13 +1175,13 @@ func (s *lateRefusal) Stream(ctx context.Context, request TurnRequest) Turn {
 	go func() {
 		defer close(out)
 		<-ctx.Done()
-		out <- provider.Event{Kind: provider.EventError, Reason: "HTTP 401 (bad key)"}
+		out <- provider.Event{Kind: provider.EventError, Reason: s.reason}
 	}()
 	return Turn{Events: out}
 }
 
 func TestARefusalThatArrivesAfterTheWatchdogKeepsItsOwnReason(t *testing.T) {
-	streamer := &lateRefusal{}
+	streamer := &lateRefusal{reason: "HTTP 401 (bad key)"}
 	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: streamer, RetryDelay: time.Millisecond, FirstByteTimeout: 10 * time.Millisecond}, prompts("hi"))
 	drain(t, run)
 	if got := streamer.calls.Load(); got != 1 {
@@ -1205,6 +1206,15 @@ func (s *silentAfterDelta) Stream(ctx context.Context, request TurnRequest) Turn
 		<-ctx.Done()
 	}()
 	return Turn{Events: out}
+}
+
+func TestACancelTheWatchdogCausedStillCountsAsATimeout(t *testing.T) {
+	streamer := &lateRefusal{reason: providerCancelled}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: streamer, RetryDelay: time.Millisecond, FirstByteTimeout: 10 * time.Millisecond}, prompts("hi"))
+	drain(t, run)
+	if got := streamer.calls.Load(); got != maxTurnRetries+1 {
+		t.Fatalf("the provider was asked %d times, want %d: a timeout is retried", got, maxTurnRetries+1)
+	}
 }
 
 func TestAStreamThatGoesSilentAfterOutputFailsAtTheIdleLimit(t *testing.T) {

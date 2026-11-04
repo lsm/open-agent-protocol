@@ -22,6 +22,7 @@ const (
 	defaultIdleTimeout      = 600 * time.Second
 	firstByteFailure        = "the provider timed out before the first byte"
 	idleFailure             = "the provider stream timed out"
+	providerCancelled       = "request cancelled"
 )
 
 type Config struct {
@@ -454,7 +455,7 @@ func (r *Run) streamOnce(history []provider.Message) turnOutcome {
 	if r.ctx.Err() != nil {
 		return turnOutcome{assistant: r.errorContent("the run was cancelled")}
 	}
-	if refusal == "" && stalled.Load() {
+	if stalled.Load() && (refusal == "" || refusal == providerCancelled) {
 		refusal = firstByteFailure
 		if started {
 			refusal = idleFailure
