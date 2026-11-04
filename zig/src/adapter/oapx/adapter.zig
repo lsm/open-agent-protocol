@@ -58,7 +58,7 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = contract.feature_model_switch, .level = .native },
     .{ .key = "run.model_selection", .level = .native, .scope = "run", .reason = "a submit's model_id runs that run on the model and leaves the session's model as it was" },
     .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
-    .{ .key = "run.compaction", .level = .native, .reason = "the loop compacts between turns once its estimate of the history reaches the session's threshold, and on request; it does not compact on a provider's overflow" },
+    .{ .key = "run.compaction", .level = .native, .reason = "the loop compacts between turns once its estimate of the history reaches the session's threshold, and on request; it does not compact on a provider's overflow, where it withholds the largest tool results from the request and retries" },
     .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "auto is the loop's own threshold below the model's window, share a percentage of the window, tokens a count, and off never; it takes effect from the next run", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the agent loop's thinking level, at open and between runs; minimal, which the loop would run as low, is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
 };
