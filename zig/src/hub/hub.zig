@@ -450,6 +450,60 @@ const Held = struct {
     expires_ns: u64,
 };
 
+const OpenedWith = struct {
+    arena: std.heap.ArenaAllocator,
+    participant: []const u8,
+    metadata_json: ?[]const u8,
+    tools_json: ?[]const u8,
+    allow_degraded_features: []const []const u8,
+
+    fn init(allocator: std.mem.Allocator, request: OpenRequest) !OpenedWith {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const keep = arena.allocator();
+        const features = try keep.alloc([]const u8, request.allow_degraded_features.len);
+        for (request.allow_degraded_features, features) |feature, *kept| kept.* = try keep.dupe(u8, feature);
+        const participant = try keep.dupe(u8, request.participant);
+        const metadata_json = if (request.metadata) |value| try std.json.Stringify.valueAlloc(keep, value, .{}) else null;
+        const tools_json = if (request.tools_json) |value| try keep.dupe(u8, value) else null;
+        return .{ .arena = arena, .participant = participant, .metadata_json = metadata_json, .tools_json = tools_json, .allow_degraded_features = features };
+    }
+};
+
+const ParkedState = struct {
+    arena: std.heap.ArenaAllocator,
+    state: oap_types.SessionState,
+};
+
+fn keepOptional(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    return if (value) |text| try allocator.dupe(u8, text) else null;
+}
+
+fn keepState(allocator: std.mem.Allocator, state: oap_types.SessionState) !oap_types.SessionState {
+    var kept = state;
+    kept.session_id = try allocator.dupe(u8, state.session_id);
+    kept.active_run_id = null;
+    kept.active_runs = &.{};
+    kept.current_model_id = try keepOptional(allocator, state.current_model_id);
+    kept.transcript_cursor = try keepOptional(allocator, state.transcript_cursor);
+    kept.metadata_json = try keepOptional(allocator, state.metadata_json);
+    kept.recovery_reason = try keepOptional(allocator, state.recovery_reason);
+    kept.reasoning_level = try keepOptional(allocator, state.reasoning_level);
+    kept.compaction_policy_json = try keepOptional(allocator, state.compaction_policy_json);
+    kept.as_of = null;
+    const sources = try allocator.alloc(oap_types.ToolSourceDescriptor, state.sources.len);
+    for (state.sources, sources) |source, *copy| {
+        const id = try allocator.dupe(u8, source.id);
+        const kind = try allocator.dupe(u8, source.kind);
+        const display_name = try keepOptional(allocator, source.display_name);
+        const protocol = try keepOptional(allocator, source.protocol);
+        const endpoint = try keepOptional(allocator, source.endpoint);
+        copy.* = .{ .id = id, .kind = kind, .display_name = display_name, .protocol = protocol, .endpoint = endpoint };
+    }
+    kept.sources = sources;
+    return kept;
+}
+
 const Entry = struct {
     adapter_name: []u8,
     session_id: []u8,
@@ -457,7 +511,9 @@ const Entry = struct {
     session_closed: bool = false,
     parked: bool = false,
     reopenable: bool = false,
-    participant: []u8 = &.{},
+    opened: ?OpenedWith = null,
+    parked_state: ?ParkedState = null,
+    parked_runs: usize = 0,
     created_at_ms: i64,
     run_id: []u8,
     journal_capacity: usize,
@@ -470,7 +526,8 @@ const Entry = struct {
     directory: []u8 = &.{},
 
     fn deinit(self: *Entry, allocator: std.mem.Allocator) void {
-        if (self.participant.len > 0) allocator.free(self.participant);
+        if (self.opened) |*kept| kept.arena.deinit();
+        if (self.parked_state) |*kept| kept.arena.deinit();
         if (self.directory.len > 0) allocator.free(self.directory);
         for (self.turns.items) |turn| {
             allocator.free(turn.text);
@@ -880,8 +937,8 @@ pub const Hub = struct {
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms), registered.journal_capacity orelse self.journal_capacity);
         adopted = true;
         if (placed.directory.len > 0) entry.directory = try self.allocator.dupe(u8, placed.directory);
-        entry.participant = try self.allocator.dupe(u8, request.participant);
         entry.reopenable = reopenable(descriptor, request);
+        if (entry.reopenable) entry.opened = try OpenedWith.init(self.allocator, request);
         self.keepBound(record);
         kept = true;
         self.recordBinding(if (request.reopen) .reopened else .opened, entry.session_id, opened_state.updated_at_ms orelse @intCast(self.clock() / std.time.ns_per_ms));
@@ -897,7 +954,7 @@ pub const Hub = struct {
     }
 
     fn reopenable(descriptor: contract.Descriptor, request: OpenRequest) bool {
-        if (request.tools_json != null or request.tool_sources_json != null or request.metadata != null) return false;
+        if (contract.carriesEntries(request.tool_sources_json)) return false;
         return descriptor.level(contract.feature_open_reopen) != .unavailable;
     }
 
@@ -908,10 +965,18 @@ pub const Hub = struct {
         var refusal = contract.Refusal{};
         const reported = entry.session.state(arena, &refusal) catch return false;
         if (reported.status != .idle or reported.active_run_id != null or reported.active_runs.len > 0) return false;
+        var holding = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer holding.deinit();
+        const stored = try keepState(holding.allocator(), reported);
         entry.session.close() catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return false,
+            else => {
+                holding.deinit();
+                return false;
+            },
         };
+        entry.parked_state = .{ .arena = holding, .state = stored };
+        entry.parked_runs = entry.cursors.items.len;
         entry.session_closed = true;
         entry.parked = true;
         for (entry.journal.items) |kept| self.allocator.free(kept.line);
@@ -925,10 +990,18 @@ pub const Hub = struct {
         const record = self.findBound(session_id) orelse return error.UnknownSession;
         const registered = self.find(entry.adapter_name) orelse return error.UnknownAdapter;
         const placed = try self.placedIn(registered, record.directory);
+        const opened = entry.opened orelse return error.UnknownSession;
+        const metadata: ?std.json.Value = if (opened.metadata_json) |text|
+            std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch return error.OutOfMemory
+        else
+            null;
         var refusal = contract.Refusal{};
         entry.session = try placed.adapter.open(arena, .{
             .session_id = entry.session_id,
-            .participant = entry.participant,
+            .participant = opened.participant,
+            .metadata = metadata,
+            .allow_degraded_features = opened.allow_degraded_features,
+            .tools_json = opened.tools_json,
             .reopen = true,
             .native_session_id = record.native_id,
             .adopted = record.adopted,
@@ -937,6 +1010,8 @@ pub const Hub = struct {
         }, &refusal);
         entry.session_closed = false;
         entry.parked = false;
+        if (entry.parked_state) |*kept| kept.arena.deinit();
+        entry.parked_state = null;
         return entry;
     }
 
@@ -1292,7 +1367,8 @@ pub const Hub = struct {
     }
 
     pub fn state(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!oap_types.SessionState {
-        const entry = try self.awake(arena, session_id);
+        const entry = self.findSession(session_id) orelse return error.UnknownSession;
+        if (entry.parked_state) |kept| return keepState(arena, kept.state);
         var refusal = contract.Refusal{};
         const reported = entry.session.state(arena, &refusal) catch |err| switch (err) {
             error.SessionClosed => {
@@ -2108,7 +2184,8 @@ pub const Hub = struct {
         const latest = self.journaled(entry, named);
         if (after > latest) return error.ReplayCursorFuture;
         const oldest = oldestKept(entry, named);
-        if (after < latest and (oldest == 0 or after + 1 < oldest)) {
+        const before_park: usize = @intCast(ordinal(entry, named));
+        if (before_park < entry.parked_runs or (after < latest and (oldest == 0 or after + 1 < oldest))) {
             subscription.gap = .{ .requested_after = after, .oldest_available = oldest, .latest_available = latest };
             subscription.ending = .expired;
             return;
@@ -3162,31 +3239,67 @@ test "a cursor from before a park is a replay gap" {
     try parkedHub(&adapter, &hub, arena, "gap");
 
     const run = try arena.dupe(u8, hub.findSession("gap").?.journal.items[0].run_id);
+    const latest = hub.journaled(hub.findSession("gap").?, run);
     try testing.expect(try hub.park(arena, "gap"));
-    const resumed = try hub.subscribe(arena, "gap", .{ .run_id = run, .after = 0 });
-    try testing.expectEqual(Ending.expired, resumed.ending);
-    try testing.expect(resumed.gap != null);
+    for ([_]u64{ 0, latest }) |after| {
+        const resumed = try hub.subscribe(arena, "gap", .{ .run_id = run, .after = after });
+        try testing.expectEqual(Ending.expired, resumed.ending);
+        try testing.expect(resumed.gap != null);
+    }
 }
 
-test "a session with a run, or opened with what a reopen would lose, does not park" {
-    var adapter = memory.Adapter.init(testing.allocator);
-    defer adapter.deinit();
-    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+test "a session with a live tool source does not park" {
+    const offered = [_]contract.Feature{.{ .key = contract.feature_open_reopen, .level = .native }};
+    const descriptor = contract.Descriptor{ .endpoint = .{ .id = "e" }, .capability_revision = "r", .features = &offered };
+    try testing.expect(Hub.reopenable(descriptor, .{ .tools_json = "[{}]" }));
+    try testing.expect(Hub.reopenable(descriptor, .{ .tool_sources_json = "[]" }));
+    try testing.expect(!Hub.reopenable(descriptor, .{ .tool_sources_json = "[{\"id\":\"mcp\"}]" }));
+    try testing.expect(!Hub.reopenable(flakyDescriptor(), .{}));
+}
+
+test "a wake reopens with the tools and metadata the session opened with" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
     defer hub.deinit();
-    try hub.register("memory", adapter.adapter());
+    try hub.register("flaky", flaky.adapter());
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
 
-    _ = try hub.open(arena, "memory", .{ .session_id = "busy" });
-    const request = try submitFor(arena, "busy");
-    _ = try hub.submit(arena, "busy", &request, "");
-    try hub.pump(testing.allocator, 0);
-    try testing.expect(!try hub.park(arena, "busy"));
-    try testing.expect(!hub.findSession("busy").?.parked);
+    const metadata = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"oapx\":{\"output\":7}}", .{});
+    _ = try hub.open(arena, "flaky", .{ .session_id = "kept" });
+    const entry = hub.findSession("kept").?;
+    entry.reopenable = true;
+    entry.opened = try OpenedWith.init(testing.allocator, .{ .participant = "user", .metadata = metadata, .tools_json = "[{\"name\":\"t\"}]" });
+    try testing.expect(try hub.park(arena, "kept"));
 
-    _ = try hub.open(arena, "memory", .{ .session_id = "tooled", .tools_json = "[]" });
-    try testing.expect(!try hub.park(arena, "tooled"));
+    flaky.saw_metadata = null;
+    flaky.saw_tools = null;
+    _ = try hub.models(arena, "kept", &.{ .session_id = "kept" });
+    try testing.expect(flaky.saw_reopen);
+    try testing.expectEqualStrings("[{\"name\":\"t\"}]", flaky.saw_tools.?);
+    try testing.expectEqual(@as(i64, 7), flaky.saw_metadata.?.object.get("oapx").?.object.get("output").?.integer);
+}
+
+test "state answers a parked session from what it stored and does not wake it" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    try parkedHub(&adapter, &hub, arena, "reading");
+
+    const before = try hub.state(arena, "reading");
+    try testing.expect(try hub.park(arena, "reading"));
+    const after = try hub.state(arena, "reading");
+    try testing.expect(hub.findSession("reading").?.parked);
+    try testing.expectEqual(oap_types.SessionStatus.idle, after.status);
+    try testing.expectEqualStrings("reading", after.session_id);
+    try testing.expectEqual(before.updated_at_ms, after.updated_at_ms);
 }
 
 test "parking stops the harness, and neither a run nor a hold lets it" {
@@ -4244,6 +4357,8 @@ const Flaky = struct {
     allocator: std.mem.Allocator,
     lister_revision: []const u8 = "lister-v9",
     saw_metadata: ?std.json.Value = null,
+    saw_tools: ?[]const u8 = null,
+    saw_reopen: bool = false,
     keep: std.heap.ArenaAllocator = undefined,
     session: contract.Session = undefined,
     owned_id: []const u8 = "",
@@ -4306,6 +4421,8 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
     _ = arena;
     _ = refusal;
     self.saw_metadata = request.metadata;
+    self.saw_tools = request.tools_json;
+    self.saw_reopen = request.reopen;
     const id = try self.keep.allocator().dupe(u8, if (request.session_id.len > 0) request.session_id else "flaky");
     self.session = .{ .ptr = self, .vtable = &.{
         .id = flakyId,

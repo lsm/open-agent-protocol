@@ -1278,23 +1278,29 @@ from the binding, and its events reach the same subscriptions
 a subscription is the hub's, so an open client does not stop a park).
 
 A session parks only if the hub can bring it back as it was and nothing is in
-flight. Its adapter must offer `session.open.reopen`. It must have opened with no
-tools, tool sources or metadata, because the binding does not hold them. It must
-be idle, with no run, no pending interaction and no held subscription.
+flight. Its adapter must offer `session.open.reopen`, and it must have no live
+tool source, because a stopped MCP server cannot resume where it was. It must be
+idle, with no run, no pending interaction and no held subscription. The hub keeps
+the tools, metadata and allowed degraded features a session opened with in memory
+for the reopen; a park lasts only as long as the process, so they never reach the
+binding store.
 
-A park drops the session's journal, so a cursor from before it is
-`oap-replay-gap`, as a harness restart is: nothing pretends the old events are
-still there. `sessions` lists a parked session as `idle` without waking it, and
-every other operation that reaches the harness wakes it first. Closing a parked
-session releases it with nothing to stop. A failed reopen is that operation's
-failure, and the session stays parked.
+A park drops the session's journal, and every run from before it answers a cursor
+with `oap-replay-gap`, as a harness restart does: nothing pretends the old events
+are still there. A read does not change what it reads: `state` answers from what
+the hub stored at the park, and `sessions` and `work` list a parked session as
+idle, none of them waking it. Every operation that needs the harness wakes it
+first. Closing a parked session releases it with nothing to stop. A failed reopen
+is that operation's failure, and the session stays parked.
 
 | rule | pinned by |
 | --- | --- |
 | A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
 | A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
 | A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and neither a run nor a hold lets it`; see D37 |
-| A session opened with what a reopen would lose does not park | Zig: `a session with a run, or opened with what a reopen would lose, does not park`; see D37 |
+| A session with a live tool source does not park | Zig: `a session with a live tool source does not park`; see D37 |
+| A wake reopens with what the session opened with | Zig: `a wake reopens with the tools and metadata the session opened with`; see D37 |
+| `state` answers a parked session without waking it | Zig: `state answers a parked session from what it stored and does not wake it`; see D37 |
 
 ## Compound open and the held subscription
 
