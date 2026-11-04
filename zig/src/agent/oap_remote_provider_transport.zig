@@ -103,6 +103,7 @@ const State = struct {
     thread: ?std.Thread = null,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    arrivals: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     failure: ?anyerror = null,
     request_line: ?[]u8 = null,
     inference_id: ?[]u8 = null,
@@ -118,6 +119,11 @@ const State = struct {
         self.allocator.destroy(self);
     }
 
+    fn announce(self: *State) void {
+        _ = self.arrivals.fetchAdd(1, .release);
+        defaultIo().futexWake(u32, &self.arrivals.raw, std.math.maxInt(u32));
+    }
+
     fn enqueue(self: *State, line: []const u8) !void {
         const copy = try self.allocator.dupe(u8, line);
         errdefer self.allocator.free(copy);
@@ -127,6 +133,7 @@ const State = struct {
             if (self.pending.items.len < 128) {
                 defer self.mutex.unlock(defaultIo());
                 try self.pending.append(self.allocator, copy);
+                self.announce();
                 return;
             }
             self.mutex.unlock(defaultIo());
@@ -158,6 +165,7 @@ pub fn open(
         .send_line_fn = sendLine,
         .pump_fn = pump,
         .recv_line_fn = recvLine,
+        .wait_fn = waitForLine,
         .close_fn = close,
     };
 }
@@ -189,6 +197,7 @@ fn runStream(state: *State) void {
         state.mutex.lockUncancelable(defaultIo());
         const abandoned = state.abandoned;
         state.done.store(true, .release);
+        state.announce();
         state.mutex.unlock(defaultIo());
         if (abandoned) state.destroy();
     }
@@ -260,6 +269,19 @@ fn pump(context: ?*anyopaque) !void {
         if (state.failure) |err| return err;
         return error.ProviderStreamEndedWithoutTerminal;
     }
+}
+
+fn waitForLine(context: ?*anyopaque, timeout_ms: u64) void {
+    const state: *State = @ptrCast(@alignCast(context));
+    const seen = state.arrivals.load(.acquire);
+    state.mutex.lockUncancelable(defaultIo());
+    const ready = state.pending.items.len > 0 or state.done.load(.acquire);
+    state.mutex.unlock(defaultIo());
+    if (ready) return;
+    defaultIo().futexWaitTimeout(u32, &state.arrivals.raw, seen, .{ .duration = .{
+        .raw = .fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .boot,
+    } }) catch {};
 }
 
 fn recvLine(context: ?*anyopaque, allocator: std.mem.Allocator) !?[]u8 {
@@ -405,4 +427,33 @@ test "remote transport carries a streamed inference through its terminal" {
         if (count < 2) compat.time.sleepMs(1);
     }
     try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+const ParkedTransport = struct {
+    state: *State,
+    ended_ms: std.atomic.Value(i64) = .init(0),
+
+    fn run(self: *ParkedTransport) void {
+        waitForLine(self.state, 5_000);
+        self.ended_ms.store(compat.time.nowMillis(), .release);
+    }
+};
+
+test "a line wakes the transport's waiter, and a queued line never parks it" {
+    var state = State{ .allocator = std.testing.allocator, .client = undefined };
+    defer {
+        for (state.pending.items) |line| std.testing.allocator.free(line);
+        state.pending.deinit(std.testing.allocator);
+    }
+    var parked = ParkedTransport{ .state = &state };
+    const waiter = try std.Thread.spawn(.{}, ParkedTransport.run, .{&parked});
+    compat.time.sleepMs(100);
+    const sent = compat.time.nowMillis();
+    try state.enqueue("{}");
+    waiter.join();
+    try std.testing.expect(parked.ended_ms.load(.acquire) - sent < 1_000);
+
+    const before = compat.time.nowMillis();
+    waitForLine(&state, 5_000);
+    try std.testing.expect(compat.time.nowMillis() - before < 1_000);
 }
