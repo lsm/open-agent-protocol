@@ -1986,6 +1986,12 @@ conformance draft's `+models` unit text cites the fixtures.
 
 ## T2. Queue delivery
 
+> [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+> supersedes every use below and in T3 and T4 of `?follow=session`,
+> `oap-run-boundary` and `oap-stream-end`: a subscription lasts as long as its
+> connection in one mode, and none of the three exists. Read those passages as
+> the history of that choice.
+
 Unit name: `queue`. Decision:
 [0007](../decisions/0007-queue-delivery.md), which graduates the admission
 overlap, the ordering rule, the disclosed bounds, the refusal in both
