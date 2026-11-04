@@ -988,7 +988,10 @@ pub const Hub = struct {
         if (!entry.reopenable or self.heldFor(entry) != null) return false;
         if (!entry.session.holdsNoLiveWork()) return false;
         var refusal = contract.Refusal{};
-        const reported = entry.session.state(arena, &refusal) catch return false;
+        const reported = entry.session.state(arena, &refusal) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
         if (reported.status != .idle or reported.active_run_id != null or reported.active_runs.len > 0) return false;
         var holding = std.heap.ArenaAllocator.init(self.allocator);
         errdefer holding.deinit();
