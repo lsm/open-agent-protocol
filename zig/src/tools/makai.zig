@@ -545,6 +545,12 @@ fn sweepHubSessions(core: *hub.Hub, stderr: std.Io.File) void {
     compat.stdio.writeAll(stderr, message) catch {};
 }
 
+fn parkAfterNs(text: []const u8) error{InvalidHubOption}!u64 {
+    const seconds = std.fmt.parseInt(u64, text, 10) catch return error.InvalidHubOption;
+    if (seconds == 0) return error.InvalidHubOption;
+    return std.math.mul(u64, seconds, std.time.ns_per_s) catch error.InvalidHubOption;
+}
+
 fn runHub(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -557,6 +563,7 @@ fn runHub(
     var addr: ?[]const u8 = null;
     var history_path: ?[]const u8 = null;
     var save_sessions: ?bool = null;
+    var park_after_ns: u64 = 0;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const argument = args[index];
@@ -570,6 +577,12 @@ fn runHub(
             history_path = args[index];
         } else if (std.mem.startsWith(u8, argument, "--session-history=")) {
             history_path = argument["--session-history=".len..];
+        } else if (std.mem.eql(u8, argument, "--park-after")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidHubOption;
+            park_after_ns = try parkAfterNs(args[index]);
+        } else if (std.mem.startsWith(u8, argument, "--park-after=")) {
+            park_after_ns = try parkAfterNs(argument["--park-after=".len..]);
         } else if (std.mem.eql(u8, argument, "--stdio")) {
             over_stdio = true;
         } else if (std.mem.eql(u8, argument, "--config")) {
@@ -646,7 +659,7 @@ fn runHub(
             return error.BackendRefused;
         };
     }
-    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .bindings = if (bindings) |*store| store.bindings() else null });
+    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .park_after_ns = park_after_ns, .bindings = if (bindings) |*store| store.bindings() else null });
     defer core.deinit();
     if (config == null) {
         const memory = try arena.create(memory_adapter.Adapter);
@@ -1269,6 +1282,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>] [--no-save-oapx-sessions]
+        \\                  [--park-after <seconds>]         Stop an idle session's harness; its next input reopens it
         \\                                                   Many sessions on one wire; oapx hub is its old name
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]

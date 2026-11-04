@@ -16,6 +16,10 @@ writes `results.json` and `results.md`. Narrow a run with `--targets`,
 plus `--go <goap>`. It needs Python 3 and the three toolchains; it runs on
 macOS and Linux.
 
+`--park-after <seconds>` serves the Zig targets with that flag and settles past it,
+so a `history` run with and without it shows what parking saves per idle agent.
+Go and Rust ignore it until they can park.
+
 ## In the benchmark report
 
 `--report scaling.jsonl` also writes one JSON line per target and scenario in
@@ -163,7 +167,8 @@ the row then records how many steps it reached.
 - Concurrency inside the hub beyond what one stdio client drives: outside the
   flights the driver issues one request at a time, so `burst` holds N runs
   active at once but does not submit them in parallel.
-- Recovery, restart or reopen.
+- Recovery, restart or reopen, apart from the memory `--park-after` frees: no step
+  wakes a parked session, so the cost of a wake is not measured.
 - The file run stores (`zig/src/hub/run_store.zig`, `go/binding/runs.go`,
   `rust/binding/src/runs.rs`): none of the three served hubs calls them yet, so
   their append cost is not on any path this drives. The session history and

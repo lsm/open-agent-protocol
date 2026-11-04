@@ -49,6 +49,7 @@ pub const Options = struct {
     shutdown_ns: u64 = default_shutdown_ns,
     tool_sources: []const contract.ConfiguredSource = &.{},
     bindings: ?binding.Bindings = null,
+    park_after_ns: u64 = 0,
 };
 
 pub const Ending = enum {
@@ -521,6 +522,7 @@ const Entry = struct {
     opened: ?OpenedWith = null,
     parked_state: ?ParkedState = null,
     parked_runs: usize = 0,
+    active_ns: u64 = 0,
     last_outcome: ?LastOutcome = null,
     created_at_ms: i64,
     run_id: []u8,
@@ -564,6 +566,7 @@ pub const Hub = struct {
     stream_queue: usize,
     journal_capacity: usize,
     hold_ns: u64,
+    park_after_ns: u64,
     shutdown_ns: u64,
     tool_sources: []const contract.ConfiguredSource,
     adapters: std.ArrayList(Registered) = .empty,
@@ -583,6 +586,7 @@ pub const Hub = struct {
             .stream_queue = options.stream_queue,
             .journal_capacity = options.journal_capacity,
             .hold_ns = options.hold_ns,
+            .park_after_ns = options.park_after_ns,
             .shutdown_ns = options.shutdown_ns,
             .tool_sources = options.tool_sources,
             .bindings = options.bindings,
@@ -1019,6 +1023,7 @@ pub const Hub = struct {
 
     fn awake(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!*Entry {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
+        entry.active_ns = self.clock();
         if (!entry.parked) return entry;
         const record = self.findBound(session_id) orelse return error.UnknownSession;
         const registered = self.find(entry.adapter_name) orelse return error.UnknownAdapter;
@@ -1669,6 +1674,7 @@ pub const Hub = struct {
                     continue;
                 },
             };
+            if (events.items.len > 0) entry.active_ns = self.clock();
             for (events.items) |event| {
                 const settled = terminal(self.allocator, event.line) catch |err| {
                     if (err != error.OutOfMemory) return err;
@@ -1684,6 +1690,21 @@ pub const Hub = struct {
                     return err;
                 };
             }
+        }
+        try self.parkIdle(scratch.allocator());
+    }
+
+    fn parkIdle(self: *Hub, arena: std.mem.Allocator) !void {
+        if (self.park_after_ns == 0) return;
+        const now = self.clock();
+        for (self.entries.items) |*entry| {
+            if (entry.parked or !entry.reopenable) continue;
+            if (now -| entry.active_ns < self.park_after_ns) continue;
+            _ = self.park(arena, entry.session_id) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {},
+            };
+            entry.active_ns = now;
         }
     }
 
@@ -2101,6 +2122,7 @@ pub const Hub = struct {
             .created_at_ms = created_at_ms,
             .run_id = owned_run,
             .journal_capacity = journal_capacity,
+            .active_ns = self.clock(),
         });
         return &self.entries.items[self.entries.items.len - 1];
     }
@@ -3393,6 +3415,43 @@ test "work keeps a run's outcome through a park and a wake" {
     try testing.expectEqual(WorkStatus.stopped, (try hub.work(arena, "outcome")).status);
     try testing.expect(try hub.park(arena, "outcome"));
     try testing.expectEqual(WorkStatus.stopped, (try hub.work(arena, "outcome")).status);
+}
+
+test "a session parks once it has been idle past the limit, and activity puts that off" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256, .park_after_ns = 100 });
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    try parkedHub(&adapter, &hub, arena, "idling");
+
+    tick(60);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(!hub.findSession("idling").?.parked);
+    _ = try hub.models(arena, "idling", &.{ .session_id = "idling" });
+    tick(60);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(!hub.findSession("idling").?.parked);
+    _ = try hub.state(arena, "idling");
+    tick(60);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(hub.findSession("idling").?.parked);
+}
+
+test "no limit means nothing parks on its own" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    try parkedHub(&adapter, &hub, arena, "staying");
+    tick(std.time.ns_per_s * 3600);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(!hub.findSession("staying").?.parked);
 }
 
 test "state answers a parked session from what it stored and does not wake it" {
