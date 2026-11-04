@@ -123,8 +123,8 @@ class Sampler(threading.Thread):
 
 class Hub:
     def __init__(self, command, environment, cwd, stderr):
-        self.process = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
+        self.process = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=stderr, text=True, bufsize=1, start_new_session=True)
         self.replies = queue.Queue()
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -173,10 +173,15 @@ class Hub:
             self.process.wait(timeout=20)
         except (subprocess.TimeoutExpired, BrokenPipeError, OSError):
             pass
-        if self.process.poll() is None:
-            self.process.kill()
-            self.process.wait(timeout=10)
+        self.kill()
+        self.process.wait(timeout=10)
         self.reader.join(timeout=5)
+
+    def kill(self):
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def envelope(kind, payload, **head):
@@ -552,10 +557,11 @@ def percentile(values, fraction):
 class Timeline(threading.Thread):
     """Samples the hub, the model workers and the driver together, so each reading can be tied to a phase mix."""
 
-    def __init__(self, probe, workers, shared, count, phases):
+    def __init__(self, probe, workers, shared, count, phases, hub, options):
         super().__init__(daemon=True)
         self.probe, self.workers, self.shared, self.count, self.phases = probe, workers, shared, count, phases
-        self.rows, self.halt = [], threading.Event()
+        self.hub, self.options = hub, options
+        self.rows, self.halt, self.stopped = [], threading.Event(), None
 
     def run(self):
         while not self.halt.wait(0.25):
@@ -569,6 +575,21 @@ class Timeline(threading.Thread):
                               "switches": hub["switches"], "model_cpu": model, "driver_cpu": sum(os.times()[:2]),
                               "in_model": counts["in_model"], "in_tool": counts["calls"] - counts["results"],
                               "at_gate": self.phases["gates"], "polls": self.phases["polls"]})
+            self.guard()
+
+    def guard(self):
+        recent = self.rows[-20:]
+        if user_processes() >= self.options.max_user_processes:
+            self.stopped = f"stopped: user processes reached {self.options.max_user_processes}"
+        elif len(recent) == 20 and rate(recent, "hub_cpu") > self.options.max_hub_cores:
+            self.stopped = f"stopped: hub over {self.options.max_hub_cores} cores for 5 s"
+        if self.stopped:
+            self.hub.kill()
+            self.halt.set()
+
+
+def user_processes():
+    return len(subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="], capture_output=True, text=True).stdout.split())
 
 
 def rate(rows, key):
@@ -647,12 +668,14 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             runner = lambda a, count, s: scenario_flight(a, count, s, shape, work, options.poll, phases)
             with open(root / "stats", "r+b") as held:
                 shared = mmap.mmap(held.fileno(), 0)
-            timeline = Timeline(probe, [Probe(pid) for pid in model_pids], shared, len(model_pids), phases)
+            timeline = Timeline(probe, [Probe(pid) for pid in model_pids], shared, len(model_pids), phases, hub, options)
             timeline.start()
         worker = threading.Thread(target=lambda: outcome.setdefault("error", _guard(runner, Agents(hub, adapter, metadata), n, steps)), daemon=True)
         worker.start()
         worker.join(timeout)
-        if sampler.capped:
+        if timeline is not None and timeline.stopped:
+            result["status"] = timeline.stopped + f" at {len(timeline.rows) / 4:.0f} s"
+        elif sampler.capped:
             result["status"] = f"stopped: RSS over {cap >> 20} MiB at step {len(steps)}"
         elif worker.is_alive():
             result["status"] = f"timeout after {timeout}s at step {len(steps)}"
@@ -843,6 +866,8 @@ def main():
     parser.add_argument("--model-workers", type=int, default=4, help="asyncio processes behind a flight's model endpoint")
     parser.add_argument("--poll", type=float, default=0.25, help="seconds a flight waits between rounds of state reads")
     parser.add_argument("--hold", type=float, help="seconds a hold scenario parks each agent (default max(15, N/50))")
+    parser.add_argument("--max-user-processes", type=int, default=5000, help="stop a flight when this user runs this many processes")
+    parser.add_argument("--max-hub-cores", type=float, default=12, help="stop a flight whose hub holds this many cores for 5 s")
     parser.add_argument("--out", help="directory for results.json and results.md")
     parser.add_argument("--no-build", action="store_true", help="use existing zig-out and rust/target/release binaries")
     parser.add_argument("--go", help="a prebuilt goap binary")
@@ -884,6 +909,9 @@ def main():
                 if scenario in LOOP_ONLY and target != "zig-loop":
                     continue
                 for n in counts:
+                    if scenario in FLIGHTS and user_processes() + n >= arguments.max_user_processes:
+                        results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: N tools at once would pass --max-user-processes"})
+                        continue
                     result = run_case(target, binaries[target], scenario, n, scratch, arguments.timeout,
                                       arguments.rss_cap_mib << 20, arguments)
                     results.append(result)

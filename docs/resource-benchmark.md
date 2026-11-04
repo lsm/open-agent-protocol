@@ -72,6 +72,54 @@ The memory adapter's script raises a permission request and then a user input
 request; the driver approves and answers both. Go and Rust have no shell jobs,
 so `jobs` runs only on `zig-loop`.
 
+## Flights
+
+The scenarios above drive agents one at a time, so they show what agents cost
+sitting still. The flights run only on `zig-loop`, and only when named in
+`--scenarios`: they keep all N agents in flight at once.
+
+```sh
+python3 scripts/bench-resources.py --targets zig-loop --n 10,100,1000 \
+  --scenarios working,mixed,hold-model,hold-tool,hold-gate --rss-cap-mib 12288
+```
+
+| scenario | each agent |
+| --- | --- |
+| `working` | two runs of Read, then `sleep` for 1-5 s in `Shell`, then Write, then closing text |
+| `mixed` | as `working`, but every third agent opens in `ask` mode and its gates are held for 2 s, so some agents are in the model, some in a tool and some at a gate |
+| `hold-model` | stays in its first model call for `--hold` seconds |
+| `hold-tool` | stays in `Shell` for `--hold` seconds |
+| `hold-gate` | opens in `ask` mode and each gate is held for `--hold` seconds |
+
+What is real: the hub, the loop, HTTP to the model endpoint, the tools, a
+workspace per agent, and the check that each tool result reached the next
+request. What is scripted: the model. It reads the turn from the conversation,
+waits 500 ms for its first token, then streams 20 chunks 50 ms apart.
+
+The model endpoint is a forked pool of asyncio workers (`--model-workers`) in
+its own processes. The driver is one client that writes up to 64 requests at a
+time and reads each live session's `state` every `--poll` seconds, because a
+stdio hub takes one client and at most 64 subscriptions. So runs are noticed
+when polled, a run's latency includes that wait, and the polling is itself load
+on the hub. Turn figures come from the model endpoint's clock instead:
+
+- **turn**: from one model request of a run to the next.
+- **between**: from a model response ending to the next request, less the
+  `sleep` the tool was told to do. With gates it includes the time held.
+- **hold threads, cores, switches/s**: the median thread count and the rates
+  while at least 98% of agents sit in the held phase.
+- **model worker peak cores**, **driver cores**: read these first. Near 1.0, the
+  benchmark rather than the hub is the limit.
+
+`results.json` also keeps a timeline sampled every 250 ms. Because tools are
+real processes, a flight is skipped when N on top of what the user already runs
+would pass `--max-user-processes` (5,000), and stopped if the count gets there
+or the hub holds `--max-hub-cores` (12) for 5 s. A stopped case kills the hub's
+whole process group.
+
+`--loop-binary` runs `zig-loop` on another binary taking `oapx`'s `serve`
+arguments.
+
 ## Columns
 
 - **peak RSS**: the largest memory reading sampled every 10 ms while the
@@ -100,12 +148,13 @@ the row then records how many steps it reached.
 
 ## What it does not measure
 
-- Model throughput, provider latency or token cost: the provider is scripted
-  and local, and the memory adapter has no model at all.
-- Real commands: the only command run is `true`.
-- Concurrency inside the hub beyond what one stdio client drives: the driver
-  issues one request at a time, so `burst` holds N runs active at once but does
-  not submit them in parallel.
+- Model throughput or token cost: the provider is scripted and local, and the
+  memory adapter has no model at all. Flights script a latency; the others have
+  none.
+- Real work in commands: the commands run are `true` and, in flights, `sleep`.
+- Concurrency inside the hub beyond what one stdio client drives: outside the
+  flights the driver issues one request at a time, so `burst` holds N runs
+  active at once but does not submit them in parallel.
 - Recovery, restart or reopen.
 - The file run stores (`zig/src/hub/run_store.zig`, `go/binding/runs.go`,
   `rust/binding/src/runs.rs`): none of the three served hubs calls them yet, so
