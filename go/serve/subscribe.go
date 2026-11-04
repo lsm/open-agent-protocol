@@ -14,8 +14,9 @@ import (
 type SubscribeOption func(*subscribeOptions)
 
 type subscribeOptions struct {
-	runID protocol.RunID
-	after *uint64
+	runID  protocol.RunID
+	after  *uint64
+	oneRun bool
 }
 
 func After(runID protocol.RunID, sequence uint64) SubscribeOption {
@@ -24,6 +25,10 @@ func After(runID protocol.RunID, sequence uint64) SubscribeOption {
 		options.after = &value
 		options.runID = runID
 	}
+}
+
+func OneRun() SubscribeOption {
+	return func(options *subscribeOptions) { options.oneRun = true }
 }
 
 func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...SubscribeOption) (*Subscription, error) {
@@ -53,11 +58,18 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 			return nil, ErrNoRunToResume
 		}
 	}
-	sub, _, _, open := h.attach(entry)
-	if !open {
-		return nil, &SessionClosedError{ID: id}
+	sub := newSubscriber(h.queue, runID, 0)
+	if !config.oneRun {
+		var open bool
+		if sub, _, _, open = h.attach(entry); !open {
+			return nil, &SessionClosedError{ID: id}
+		}
 	}
-	replays, err := resumeRuns(ctx, entry, runID, *config.after)
+	runs := []protocol.RunID{runID}
+	if !config.oneRun {
+		runs = append(runs, entry.laterRuns(runID)...)
+	}
+	replays, err := resumeRuns(ctx, entry, runs, *config.after)
 	if err != nil {
 		entry.unsubscribe(sub)
 		sub.stop(nil)
@@ -70,7 +82,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		return nil, err
 	}
 	positions := map[protocol.RunID]uint64{runID: *config.after}
-	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replays[0].stream, replaying: runID, later: replays[1:], run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
+	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replays[0].stream, replaying: runID, later: replays[1:], oneRun: config.oneRun, run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
 }
 
 func (h *Hub) attach(entry *Session) (*subscriber, protocol.RunID, uint64, bool) {
@@ -88,9 +100,9 @@ type resumedRun struct {
 	stream base.EventStream
 }
 
-func resumeRuns(ctx context.Context, entry *Session, runID protocol.RunID, after uint64) ([]resumedRun, error) {
+func resumeRuns(ctx context.Context, entry *Session, runs []protocol.RunID, after uint64) ([]resumedRun, error) {
 	var replays []resumedRun
-	for _, run := range append([]protocol.RunID{runID}, entry.laterRuns(runID)...) {
+	for _, run := range runs {
 		_, stream, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: run, AfterSequence: after})
 		if err != nil {
 			abandon(replays)
@@ -119,6 +131,7 @@ type Subscription struct {
 	replay    base.EventStream
 	replaying protocol.RunID
 	later     []resumedRun
+	oneRun    bool
 	run       protocol.RunID
 
 	last      uint64
@@ -157,6 +170,10 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 			s.replay, s.replaying, s.last = s.later[0].stream, s.later[0].run, 0
 			s.later = s.later[1:]
 		}
+	}
+	if s.oneRun {
+		s.Close()
+		return protocol.Envelope{}, io.EOF
 	}
 	return s.nextLive()
 }

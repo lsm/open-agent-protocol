@@ -1422,6 +1422,35 @@ func TestNoSubscriptionAttachesOnceSubscriptionsHaveEnded(t *testing.T) {
 	}
 }
 
+func TestAOneRunCursorEndsWithItsRunAndIgnoresALaterRunsGap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 2)
+	session := openMemorySession(t, hub, "one-run")
+	watcher, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	counter, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer counter.Close()
+	first := driveMemoryRun(t, session, watcher)
+	settled := nextUntil(t, counter, typeStop(protocol.TypeRunCompleted))
+	reached := *settled[len(settled)-1].Sequence
+	driveMemoryRun(t, session, watcher)
+	replay, err := hub.Subscribe(ctx, session.ID(), serve.After(first, reached), serve.OneRun())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	if envelope, err := replay.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("next: %s, %v, want the end of the stream", envelope.Type, err)
+	}
+}
+
 func TestACursorIsAReplayGapWhenALaterRunHasLeftTheJournal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
