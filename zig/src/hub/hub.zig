@@ -1704,7 +1704,6 @@ pub const Hub = struct {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {},
             };
-            entry.active_ns = now;
         }
     }
 

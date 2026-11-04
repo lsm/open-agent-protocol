@@ -1292,7 +1292,8 @@ binding store.
 `oapx serve --park-after <seconds>` parks a parkable session once it has been idle
 that long; with no flag nothing parks on its own. Input to a session and its events
 count as activity. Reading it does not, so a client polling `state` keeps nothing
-awake.
+awake. A refused park does not restart that clock, so a session parks as soon as what
+refused it ends.
 
 A park drops the session's journal, and every run from before it answers a cursor
 with `oap-replay-gap`, as a harness restart does: nothing pretends the old events
@@ -1308,6 +1309,7 @@ is that operation's failure, and the session stays parked.
 | A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
 | A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and no run, live job or hold lets it`; see D37 |
 | A session parks once idle past the limit, activity puts that off and a read does not | Zig: `a session parks once it has been idle past the limit, and activity puts that off`; see D37 |
+| A park the limit reached but a hold refused happens as soon as the hold ends | Zig: `a hold that outlasts the limit parks the session as soon as it ends`; see D37 |
 | A session that cannot report live work never parks | Zig: `a session that cannot report live work never parks`; see D37 |
 | A session with a live tool source does not park | Zig: `a session with a live tool source does not park`; see D37 |
 | A wake reopens with what the session opened with | Zig: `a wake reopens with the tools and metadata the session opened with`; see D37 |
