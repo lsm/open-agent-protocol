@@ -747,7 +747,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		cursor = r.Header.Get("Last-Event-ID")
 		var named string
 		named, position = splitEventID(cursor)
-		if run == "" {
+		if named != "" {
 			run = named
 		}
 	}

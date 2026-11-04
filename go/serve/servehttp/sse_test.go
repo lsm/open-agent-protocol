@@ -90,6 +90,11 @@ func TestSSELastEventIDReadsARunQualifiedID(t *testing.T) {
 	if replayed[0].RunID != first {
 		t.Fatalf("resumed on %s, want %s", replayed[0].RunID, first)
 	}
+
+	stale := connectSSE(t, server, "/sessions/sse-qualified/events?run_id=elsewhere", fmt.Sprintf("%s:9", first))
+	if envelope := stale.envelope(); envelope.RunID != first {
+		t.Fatalf("a stale run_id moved the cursor to %s, want %s", envelope.RunID, first)
+	}
 }
 
 func TestSSERefusesARunQualifiedCursorItCannotRead(t *testing.T) {
