@@ -1378,7 +1378,10 @@ fn decode_request(frame: &[u8]) -> Result<Request, String> {
                 typed(parsed.is_i64() || parsed.is_null())?;
                 request.limit = parsed.as_i64();
             }
-            "subscription" => request.subscription = parsed.as_i64(),
+            "subscription" => {
+                typed(parsed.is_i64() || parsed.is_null())?;
+                request.subscription = parsed.as_i64();
+            }
             "allow_degraded_features" => {
                 typed(match &parsed {
                     Value::Array(items) => items.iter().all(Value::is_string),

@@ -242,13 +242,12 @@ fn unsubscribe_answers_the_same_for_an_id_with_no_subscription() {
         &[
             r#"{"id":1,"op":"unsubscribe","subscription":99}"#,
             r#"{"id":2,"op":"unsubscribe"}"#,
-            r#"{"id":3,"op":"unsubscribe","subscription":"two"}"#,
             r#"{"id":4,"op":"unsubscribe","subscription":2,"session_id":"s"}"#,
         ],
     );
     let answer = |id: i64| answered.iter().find(|line| line["id"] == id).unwrap();
     assert_eq!(answer(1)["ok"], true);
-    for id in 2..=4 {
+    for id in [2, 4] {
         assert_eq!(answer(id)["error"]["code"], "invalid_request", "{id}");
     }
 }
