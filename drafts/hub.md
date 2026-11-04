@@ -1772,6 +1772,8 @@ Stdio only; over HTTP the client hangs up.
   parameter the op does not define), `busy` (the subscription has not stopped,
   because its output is stalled; it stays counted, and the host sends the request
   again).
+- **pinned by:** `TestUnsubscribeEndsOneSubscriptionAndFreesItsSlot`,
+  `TestUnsubscribeAnswersTheSameForAnIDWithNoSubscription`.
 
 ### `events`
 
@@ -2574,8 +2576,8 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 lands one pull request at a time, so this document is ahead of the code. Until
 each part is built, Zig ends a subscription at its run's terminal, Go and Rust
-end it when the session has no run left to follow, no hub has `unsubscribe` or
-writes a keepalive, SSE ids are bare sequences, and a cursor resumes one run.
+end it when the session has no run left to follow, `unsubscribe` is not in every
+tree yet, no hub writes a keepalive, SSE ids are bare sequences, and a cursor resumes one run.
 This entry shrinks as those land and closes with the last.
 
 ### Recorded, and not divergences
