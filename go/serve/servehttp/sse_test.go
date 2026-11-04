@@ -130,8 +130,10 @@ func TestAnEventIDNamesItsRunOnlyWhenItHasOne(t *testing.T) {
 	if id := eventID("run-1", 3); id != "run-1:3" {
 		t.Fatalf("id %q", id)
 	}
-	if id := eventID("", 3); id != "3" {
-		t.Fatalf("id %q", id)
+	for _, run := range []protocol.RunID{"", "a\ndata: x", "a\rb", "a\x00b"} {
+		if id := eventID(run, 3); id != "3" {
+			t.Fatalf("run %q: id %q", run, id)
+		}
 	}
 }
 

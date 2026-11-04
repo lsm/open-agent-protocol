@@ -94,7 +94,7 @@ func splitEventID(id string) (run, position string) {
 }
 
 func eventID(run protocol.RunID, sequence uint64) string {
-	if run == "" {
+	if run == "" || strings.ContainsAny(string(run), "\r\n\x00") {
 		return fmt.Sprint(sequence)
 	}
 	return fmt.Sprintf("%s:%d", run, sequence)
