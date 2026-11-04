@@ -391,10 +391,8 @@ pub const Daemon = struct {
     pub fn fill(self: *Daemon, out: *std.ArrayList(u8), subscription: *hubmod.Subscription, budget: usize) !Fill {
         while (out.items.len < budget) {
             const delivered = subscription.next() orelse break;
-            var counted: [32]u8 = undefined;
-            try out.appendSlice(self.allocator, "id: ");
-            try out.appendSlice(self.allocator, delivered.run_id);
-            try out.appendSlice(self.allocator, try std.fmt.bufPrint(&counted, ":{d}\ndata: ", .{delivered.sequence}));
+            try appendEventId(self.allocator, out, delivered.run_id, delivered.sequence);
+            try out.appendSlice(self.allocator, "data: ");
             try out.appendSlice(self.allocator, delivered.line);
             try out.appendSlice(self.allocator, "\n\n");
         }
@@ -416,6 +414,16 @@ pub const Daemon = struct {
         }
     }
 };
+
+fn appendEventId(allocator: std.mem.Allocator, out: *std.ArrayList(u8), run: []const u8, sequence: u64) !void {
+    var counted: [32]u8 = undefined;
+    try out.appendSlice(allocator, "id: ");
+    if (run.len > 0) {
+        try out.appendSlice(allocator, run);
+        try out.append(allocator, ':');
+    }
+    try out.appendSlice(allocator, try std.fmt.bufPrint(&counted, "{d}\n", .{sequence}));
+}
 
 pub const sse_head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
 
@@ -1603,6 +1611,14 @@ test "an event's id names its run and sequence, and Last-Event-ID reads that for
     const by_query = try fixture.daemon.respond(arena, request);
     try testing.expectEqual(@as(u64, 4), by_query.stream.next().?.sequence);
     fixture.daemon.leave(by_query.stream);
+}
+
+test "an event id names its run only when it has one" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(testing.allocator);
+    try appendEventId(testing.allocator, &out, "run-1", 3);
+    try appendEventId(testing.allocator, &out, "", 3);
+    try testing.expectEqualStrings("id: run-1:3\nid: 3\n", out.items);
 }
 
 test "a run-qualified cursor with no run, no sequence, or in the query is refused" {
