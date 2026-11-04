@@ -108,14 +108,22 @@ on the hub. Turn figures come from the model endpoint's clock instead:
   `sleep` the tool was told to do. With gates it includes the time held.
 - **hold threads, cores, switches/s**: the median thread count and the rates
   while at least 98% of agents sit in the held phase.
-- **model worker peak cores**, **driver cores**: read these first. Near 1.0, the
-  benchmark rather than the hub is the limit.
+- **model worker peak cores**, **driver peak cores**: the busiest second of any
+  one worker, and of the driver. Read these first: near 1.0, the benchmark
+  rather than the hub is the limit.
 
 `results.json` also keeps a timeline sampled every 250 ms. Because tools are
 real processes, two per `Shell` call, a flight is skipped when 2N on top of what the user already runs
 would pass `--max-user-processes` (5,000), and stopped if the count gets there
 or the hub holds `--max-hub-cores` (12) for 5 s. A stopped case kills the hub's
 whole process group.
+
+The model client opens a connection per call, and on macOS each closed one holds
+an ephemeral port in TIME_WAIT for about 30 s, out of about 16,000 for the whole
+machine. Sustained runs at N = 1,000 and above can use them up, and every
+program on the machine then fails to connect. So a flight is skipped or stopped
+at `--max-time-wait` (12,000) sockets. On a shared machine, run one such case at
+a time, at least 35 s apart.
 
 `--loop-binary` runs `zig-loop` on another binary taking `oapx`'s `serve`
 arguments.

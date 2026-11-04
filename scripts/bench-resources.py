@@ -581,6 +581,8 @@ class Timeline(threading.Thread):
         recent = self.rows[-20:]
         if user_processes() >= self.options.max_user_processes:
             self.stopped = f"stopped: user processes reached {self.options.max_user_processes}"
+        elif len(self.rows) % 4 == 0 and time_waits() >= self.options.max_time_wait:
+            self.stopped = f"stopped: {self.options.max_time_wait} sockets in TIME_WAIT"
         elif len(recent) == 20 and rate(recent, "hub_cpu") > self.options.max_hub_cores:
             self.stopped = f"stopped: hub over {self.options.max_hub_cores} cores for 5 s"
         if self.stopped:
@@ -592,6 +594,13 @@ def user_processes():
     return len(subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="], capture_output=True, text=True).stdout.split())
 
 
+def time_waits(tables=Path("/proc/net")):
+    if sys.platform == "darwin":
+        return subprocess.run(["netstat", "-an"], capture_output=True, text=True).stdout.count("TIME_WAIT")
+    rows = [line.split() for name in ("tcp", "tcp6") if (tables / name).exists() for line in (tables / name).read_text().splitlines()[1:]]
+    return sum(row[3] == "06" for row in rows)
+
+
 def rate(rows, key):
     span = rows[-1]["t"] - rows[0]["t"]
     return (rows[-1][key] - rows[0][key]) / span if span > 0 else 0.0
@@ -601,9 +610,10 @@ def flight_summary(rows, trace, steps, n, shape, stats, phases, scenario, work):
     summary = {"runs": len(steps), "polls": phases["polls"], "refused": phases["refused"], "bad_results": stats["bad"],
                "written_back": sum(1 for path in work.glob("*/out.txt")), "peak_in_model": max(r["in_model"] for r in rows),
                "peak_in_tool": max(r["in_tool"] for r in rows), "peak_at_gate": max(r["at_gate"] for r in rows)}
-    span = rows[-1]["t"] - rows[0]["t"]
-    summary.update(hub_cores=rate(rows, "hub_cpu"), switches_s=rate(rows, "switches"), driver_cores=rate(rows, "driver_cpu"),
-                   model_core_peak=max((b - a) / span for a, b in zip(rows[0]["model_cpu"], rows[-1]["model_cpu"])))
+    seconds = list(zip(rows, rows[4:]))
+    summary.update(hub_cores=rate(rows, "hub_cpu"), switches_s=rate(rows, "switches"),
+                   driver_core_peak=max(((b["driver_cpu"] - a["driver_cpu"]) / (b["t"] - a["t"]) for a, b in seconds), default=0.0),
+                   model_core_peak=max(((y - x) / (b["t"] - a["t"]) for a, b in seconds for x, y in zip(a["model_cpu"], b["model_cpu"])), default=0.0))
     key = {"hold-model": "in_model", "hold-tool": "in_tool", "hold-gate": "at_gate"}.get(scenario)
     if key:
         parked = [r for r in rows if r[key] >= n * 0.98 and r["in_model"] + r["in_tool"] + r["at_gate"] >= n * 0.98]
@@ -636,7 +646,7 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
     flight = scenario in FLIGHTS
     if target == "zig-loop":
         command = ["flight", "--directory", str(root), "--workers", str(options.model_workers)] if flight else ["provider", "--workspace", str(work)]
-        provider = subprocess.Popen([sys.executable, "-I", __file__, *command], stdout=subprocess.PIPE, text=True)
+        provider = subprocess.Popen([sys.executable, "-I", __file__, *command], stdout=subprocess.PIPE, text=True, start_new_session=True)
         port, *model_pids = map(int, provider.stdout.readline().split())
         oapx = home / ".oapx"
         oapx.mkdir()
@@ -714,7 +724,10 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
         hub.stop()
         stderr.close()
         if provider is not None:
-            provider.kill()
+            try:
+                os.killpg(provider.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
             provider.wait(timeout=10)
         shutil.rmtree(root, ignore_errors=True)
     return result
@@ -751,7 +764,7 @@ FLIGHT_COLUMNS = (("peak threads", "peak_threads", 1), ("hold threads", "hold_th
                   ("hub cores", "hub_cores", 1), ("hold cores", "hold_cores", 1), ("switches/s", "switches_s", 1), ("hold switches/s", "hold_switches_s", 1),
                   ("turn p50 ms", "turn_p50_ms", 1), ("turn p99 ms", "turn_p99_ms", 1), ("between p50 ms", "between_p50_ms", 1),
                   ("between p99 ms", "between_p99_ms", 1), ("runs/s", "runs_s", 1), ("model worker peak cores", "model_core_peak", 1),
-                  ("driver cores", "driver_cores", 1))
+                  ("driver peak cores", "driver_core_peak", 1))
 
 
 def render_flights(results):
@@ -868,6 +881,7 @@ def main():
     parser.add_argument("--poll", type=float, default=0.25, help="seconds a flight waits between rounds of state reads")
     parser.add_argument("--hold", type=float, help="seconds a hold scenario parks each agent (default max(15, N/50))")
     parser.add_argument("--max-user-processes", type=int, default=5000, help="stop a flight when this user runs this many processes")
+    parser.add_argument("--max-time-wait", type=int, default=12000, help="stop a flight when this many sockets on the machine are in TIME_WAIT")
     parser.add_argument("--max-hub-cores", type=float, default=12, help="stop a flight whose hub holds this many cores for 5 s")
     parser.add_argument("--out", help="directory for results.json and results.md")
     parser.add_argument("--no-build", action="store_true", help="use existing zig-out and rust/target/release binaries")
@@ -912,6 +926,9 @@ def main():
                 for n in counts:
                     if scenario in FLIGHTS and user_processes() + 2 * min(n, int(os.environ.get("BENCH_TOOL_BOUND", n))) >= arguments.max_user_processes:
                         results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: N tools at once would pass --max-user-processes"})
+                        continue
+                    if scenario in FLIGHTS and time_waits() >= arguments.max_time_wait:
+                        results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: TIME_WAIT sockets already at --max-time-wait"})
                         continue
                     result = run_case(target, binaries[target], scenario, n, scratch, arguments.timeout,
                                       arguments.rss_cap_mib << 20, arguments)
