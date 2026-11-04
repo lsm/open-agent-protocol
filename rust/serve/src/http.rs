@@ -1202,7 +1202,10 @@ fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<
 }
 
 fn event_id(run: Option<&oap_protocol::RunId>, sequence: u64) -> String {
-    match run.filter(|run| !run.as_str().is_empty()) {
+    let writable = |run: &&oap_protocol::RunId| {
+        !run.as_str().is_empty() && !run.as_str().contains(['\r', '\n', '\0'])
+    };
+    match run.filter(writable) {
         Some(run) => format!("{run}:{sequence}"),
         None => sequence.to_string(),
     }
@@ -1335,6 +1338,9 @@ mod tests {
         assert_eq!(event_id(Some(&"run-1".into()), 3), "run-1:3");
         assert_eq!(event_id(Some(&"".into()), 3), "3");
         assert_eq!(event_id(None, 3), "3");
+        for forged in ["a\ndata: x", "a\rb", "a\0b"] {
+            assert_eq!(event_id(Some(&forged.into()), 3), "3");
+        }
     }
 
     #[test]
