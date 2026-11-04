@@ -1201,13 +1201,11 @@ fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<
     stream.flush()
 }
 
-fn event_id(run: Option<&oap_protocol::RunId>, sequence: u64) -> String {
-    let writable = |run: &&oap_protocol::RunId| {
-        !run.as_str().is_empty() && !run.as_str().contains(['\r', '\n', '\0'])
-    };
-    match run.filter(writable) {
-        Some(run) => format!("{run}:{sequence}"),
-        None => sequence.to_string(),
+fn event_id(run: Option<&oap_protocol::RunId>, sequence: u64) -> Option<String> {
+    match run.map(oap_protocol::RunId::as_str) {
+        Some(run) if run.contains(['\r', '\n', '\0']) => None,
+        Some(run) if !run.is_empty() => Some(format!("{run}:{sequence}")),
+        _ => Some(sequence.to_string()),
     }
 }
 
@@ -1279,11 +1277,11 @@ fn stream_events(
         match next {
             Some(Ok(envelope)) => {
                 let mut frame = String::new();
-                if let Some(sequence) = envelope.sequence {
-                    frame.push_str(&format!(
-                        "id: {}\n",
-                        event_id(envelope.run_id.as_ref(), sequence)
-                    ));
+                let id = envelope
+                    .sequence
+                    .and_then(|sequence| event_id(envelope.run_id.as_ref(), sequence));
+                if let Some(id) = id {
+                    frame.push_str(&format!("id: {id}\n"));
                 }
                 frame.push_str(&format!("data: {}\n\n", serde_json::to_string(&envelope)?));
                 stream.write_all(frame.as_bytes())?;
@@ -1335,11 +1333,11 @@ mod tests {
 
     #[test]
     fn an_event_id_names_its_run_only_when_it_has_one() {
-        assert_eq!(event_id(Some(&"run-1".into()), 3), "run-1:3");
-        assert_eq!(event_id(Some(&"".into()), 3), "3");
-        assert_eq!(event_id(None, 3), "3");
+        assert_eq!(event_id(Some(&"run-1".into()), 3).unwrap(), "run-1:3");
+        assert_eq!(event_id(Some(&"".into()), 3).unwrap(), "3");
+        assert_eq!(event_id(None, 3).unwrap(), "3");
         for forged in ["a\ndata: x", "a\rb", "a\0b"] {
-            assert_eq!(event_id(Some(&forged.into()), 3), "3");
+            assert_eq!(event_id(Some(&forged.into()), 3), None);
         }
     }
 
