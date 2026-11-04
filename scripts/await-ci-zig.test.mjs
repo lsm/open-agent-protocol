@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -72,4 +72,27 @@ test("a failed run fails, even when prose changed beside the code", (t) => {
 
 test("a cancelled run fails", (t) => {
   assert.equal(run(t, ["zig/a.zig"], ["completed cancelled"]), 1);
+});
+
+const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+
+test("All Tests Pass needs every other job of ci.yml", () => {
+  const workflow = read("../.github/workflows/ci.yml");
+  const jobs = workflow
+    .slice(workflow.indexOf("\njobs:\n"))
+    .split("\n")
+    .flatMap((line) => line.match(/^  ([A-Za-z0-9_-]+):$/)?.[1] ?? []);
+  const needs = workflow.match(/name: All Tests Pass[\s\S]*?needs: \[(.*)\]/)[1].split(", ");
+  assert.deepEqual(needs.toSorted(), jobs.filter((job) => job !== "all-tests-pass").toSorted());
+});
+
+test("the script's prose filter is ci-zig.yml's paths-ignore", () => {
+  const ignored = read("../.github/workflows/ci-zig.yml")
+    .match(/paths-ignore:\n((?: +- .*\n)+)/)[1]
+    .split("\n")
+    .flatMap((line) => line.match(/- "(.*)"/)?.[1] ?? []);
+  const directories = ignored.filter((path) => path.endsWith("/**")).map((path) => path.slice(0, -3));
+  assert.deepEqual(ignored.filter((path) => !path.endsWith("/**")), ["*.md"]);
+  const filter = `^(${directories.join("|")})/|^[^/]+\\.md$`;
+  assert.ok(read("./await-ci-zig.sh").includes(`'${filter}'`), filter);
 });
