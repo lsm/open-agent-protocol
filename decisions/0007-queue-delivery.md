@@ -4,7 +4,9 @@ Status: accepted 2026-09-16 (174 `queue` fixtures; OpenCode executes
 `delivery:"queue"` with promotion natively. Nothing in the record is left
 pending) (the no-position pending set amended by
 [Decision 0054](0054-register-batch-1.md); the `active_runs` requirement by
-[Decision 0057](0057-an-endpoint-that-puts-entries-there-advertises-the-queue.md))
+[Decision 0057](0057-an-endpoint-that-puts-entries-there-advertises-the-queue.md);
+ordered delivery across run domains admitted by
+[Decision 0066](0066-a-subscription-lasts-as-long-as-its-connection.md))
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -792,6 +794,9 @@ order their responses and is not this unit's to change.
 
 ## What this unit does not admit
 
+- [Decision 0066](0066-a-subscription-lasts-as-long-as-its-connection.md) admits
+  the first item below: a subscription carries runs in admission order, without
+  `?follow=session` or the boundary and end signals.
 - Ordered delivery across run domains, and so T2's delivery slice through
   `serve`:
   `?follow=session`, the `oap-run-boundary` and `oap-stream-end` signals, and
