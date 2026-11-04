@@ -1290,10 +1290,10 @@ failure, and the session stays parked.
 
 | rule | pinned by |
 | --- | --- |
-| A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D36 |
-| A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D36 |
-| A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and neither a run nor a hold lets it`; see D36 |
-| A session opened with what a reopen would lose does not park | Zig: `a session with a run, or opened with what a reopen would lose, does not park`; see D36 |
+| A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
+| A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
+| A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and neither a run nor a hold lets it`; see D37 |
+| A session opened with what a reopen would lose does not park | Zig: `a session with a run, or opened with what a reopen would lose, does not park`; see D37 |
 
 ## Compound open and the held subscription
 
@@ -2608,7 +2608,14 @@ because its mux serves `HEAD` on every `GET` pattern, and in Rust since
 says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 `GET` entry, and updating that test, closes this.
 
-### D36 — Parking is not in every tree yet
+### D36 — Decision 0066 is not in every tree yet
+
+[Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
+lands one pull request at a time, so this document is ahead of the code. Until
+each part is built, not every hub writes a run-qualified SSE id.
+This entry shrinks as those land and closes with the last.
+
+### D37 — Parking is not in every tree yet
 
 [Parking](#parking) lands one tree at a time. Zig's hub can park and wake a session,
 and nothing parks one on its own yet: no tree has the idle timer, and Go and Rust
