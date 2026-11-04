@@ -1,7 +1,8 @@
 # Event-Driven Agent Loop
 
-Status: proposal, not adopted. The owner has not decided on this plan, and
-nothing in it has started. Two decisions are open, listed at the end.
+Status: proposal under review. The owner has approved the direction. Stage 0 is
+merged, and later stages wait until this draft lands. Two decisions are open,
+listed at the end.
 
 Scope: the Zig runtime (`zig/src/agent`, `adapter/oapx`, `hub`, `providers`,
 `tools`). This draft changes no wire behaviour. The Parking section names the
@@ -80,6 +81,11 @@ is the loop after the polling fixes (#1588, #1592).
   a full queue, so 64 slots would lose streamed output under load, and the
   benchmark does not check for that. Stage 0 keeps the 1,024 limit and makes the
   storage grow on demand instead, which saves nearly as much (#1612).
+- That change costs no measurable throughput. An early five-run comparison on a
+  busy machine suggested 10% lower `working` throughput, so it was rerun quietly:
+  ten alternating rounds at N=1,000, swapping the order each round, with a load
+  average under 8. The median was 81.2 runs per second with the change and 80.5
+  without, with no bad results, and peak memory was 4,727 MiB against 6,105 MiB.
 
 These fixes are worth doing first, but thread count stays linear. They top out at
 about 6,100 agents at a gate or 3,000-4,000 in a model call.
@@ -143,8 +149,8 @@ adapter. Five things are not:
    `StreamRetention` and `_retired_messages` exist. A run must own its messages,
    and events must carry copies or indexes. This is the riskiest refactor here,
    because a mistake is a use-after-free.
-3. **In-flight I/O.** A socket or a child process cannot be saved. The Parking
-   section defines what a resumed run does instead.
+3. **In-flight I/O.** A socket or a child process cannot be saved, which is why
+   only cold runs park.
 4. **Session-lifetime processes.** Background jobs and MCP servers outlive a run.
 5. **Implicit state.** The permission engine, the credential refresh lock and the
    title thread.
@@ -155,6 +161,22 @@ A few reactor threads each own a share of the sessions and block in the kernel
 with no timeout, so a run needs no lock and an idle reactor never wakes. Other
 threads post commands to a reactor through a queue and a wakeup event. File work,
 TLS handshakes and process spawns go to a small bounded pool.
+
+A run stays on one reactor while it is active, because moving live sockets and
+child watches is not worth the complexity. Sessions are hashed to reactors, so
+one reactor can run hot:
+
+- Per-tick work limits stop a hot share from starving its own runs' timers.
+- CPU-heavy work leaves the reactor, so a hot share is mostly I/O dispatch.
+- Tool and model budgets are global, so a hot reactor cannot hold more than its
+  turn. The prototype split them statically, and that probably cost it on
+  `hold-tool`.
+- A parked run is plain data, so it can resume on the least loaded reactor. This
+  is the one cheap rebalancing point.
+
+Commands arrive through one stdin reader that parses every line. At very high
+request rates that single parser may become the limit, and it may need to shard
+or do less work before handing a line to a reactor. This was not measured.
 
 The base must be our own thin layer over `kqueue` and `epoll`. In the Zig 0.17.0
 standard library:
@@ -194,46 +216,55 @@ validation, partial writes and post-handshake messages are unverified.
 
 ## Hub changes
 
-The loop alone cannot reach the goal, because the Hub is the first bottleneck.
+The loop alone cannot reach the goal, because the Hub is the first bottleneck, so
+this work comes first and does not wait for the reactor.
 
-- `Hub.pump` becomes a ready queue that touches only sessions with work, so its
-  cost stops growing with N.
-- Saving becomes group commit: each reactor appends every event to a journal, with
-  one write per batch and one `fsync` per batch that settles a run.
-- `state` is answered by the reactor that owns the session, so a read does not
-  queue behind streaming. Under load today, `state` replies fall to 13-46 per
-  second at N=1,500, and gates are noticed late.
-- The per-session journal, up to 65,536 events in memory, moves to disk. Replay
-  then reads a file, which has to be designed together with subscription resume
-  across runs.
+`Hub.pump` visits every entry each pass: `drive` pumps it, then `drain` reads it.
+`awaitAny` rebuilds a `pollfd` list of every session too. For `oapx`, `pump` also
+records each streamed event on that one thread.
+
+These fit the existing loop:
+
+- **Ready queue.** `SessionRuntime.push` marks its session ready and wakes the
+  Hub, and `pump` visits only ready sessions, so its cost stops growing with N. A
+  session that cannot signal stays on an always-visit list, so other adapters keep
+  working unchanged. `expireHolds` and `reclaim` also walk everything, and need a
+  deadline queue.
+- **Budgeted passes.** A pass handles a bounded amount of work, then returns to
+  the stdin loop, so `state` is answered between slices. Under load today, `state`
+  replies fall to 13-46 per second at N=1,500, and gates are noticed late.
+- **Batched saving.** Events go to a writer thread that appends them in batches,
+  with one `fsync` per batch that settles a run. The prototype's journal did this
+  per reactor.
+
+Answering `state` on another thread does not fit the existing loop, because all
+Hub state belongs to one thread and every entry would need a lock. Budgeted passes
+are the near-term answer. Off-thread `state` arrives with the reactor, which owns
+its sessions.
+
+The per-session journal, up to 65,536 events in memory, moves to disk with parking.
+Replay then reads a file, which has to be designed together with subscription
+resume across runs.
 
 ## Parking
 
-Parking saves a run and frees it. A resident session keeps a small summary, and
-an event for a parked run loads it first. A parked run needs no thread, socket or
-timer.
+Parking saves a cold run and frees it. A resident session keeps a small summary,
+and an event for a parked run loads it first. A parked run needs no thread, socket
+or timer.
 
-### What resuming means
+**Only cold runs park:** `idle`, `gate` and `backoff`. These resume exactly. A run
+in `model` or `tool` is active and stays resident, so nothing restarts a model
+call and no tool outcome is ever unknown. This needs no wire change. A run waiting
+in `model_queued` or `tool_queued` also stays resident at first.
 
-| Phase when parked | On resume |
-|---|---|
-| `idle`, `gate`, `backoff` | Continue exactly |
-| `model_queued`, `model` | Discard any partial turn and queue the call again |
-| `tool_queued` | Queue the tool again |
-| `tool` | Report the outcome as unknown, and never run the tool again |
+A session with a live background job or MCP server does not park, at least at
+first.
 
-### Protocol questions
+Crash recovery of in-flight runs is a separate subject, and this draft does not
+cover it.
 
-These need answers before parking can ship:
-
-1. What does a consumer see for a run that was parked while a tool ran? A tool
-   result saying the outcome is unknown is proposed here, but it is not specified.
-2. May a session with a live background job or MCP server park at all? Either it
-   cannot, or those processes move to a table that does not depend on session
-   memory.
-3. Output already shown cannot be withdrawn, so a model call restarted on resume
-   must not have shown output, or the run must fail as it does today.
-4. How does replay behave across a parked run once the journal is on disk?
+One protocol question remains: how replay behaves across a parked run once the
+journal is on disk.
 
 ### Memory
 
@@ -241,11 +272,12 @@ At about 800 KiB per agent, as measured for `zig-loop` `history`, 100,000 agents
 need about 79 GB, which does not fit in 48 GiB. All of these must hold:
 
 1. Cold runs live on disk, about 80 GB for 100,000 real-size runs.
-2. A resident session is a summary. The prototype's is about 2 KiB, and today's
-   empty session is 18-284 KiB. The target is under 20 KiB, or about 2 GB at
-   100,000.
-3. Active runs have a memory budget with least-recently-used eviction. For
-   example, 8 GiB holds about 10,000 runs of 800 KiB.
+2. A resident session is a summary. The prototype's is about 2 KiB, and after
+   stage 0 an empty session is about 26 KiB. The target is under 20 KiB, or about
+   2 GB at 100,000.
+3. Active runs have a memory budget. For example, 8 GiB holds about 10,000 runs of
+   800 KiB. In-flight limits bound how many runs are truly active, but runs queued
+   for a model or tool count too, so a large burst can exceed the budget.
 4. The journal is not resident.
 
 ## Global tool budget
@@ -378,24 +410,53 @@ Read these numbers as a ceiling, not a forecast.
 
 ## Stages
 
-The old loop keeps working through every stage until one switch-over. Line counts
-are changed production lines, and the ranges reflect uncertainty in the providers
-and the Hub. The total is about 8,500-14,700 lines in 60-100 pull requests.
+Each stage has a measured pass condition. The benchmark is
+`scripts/bench-resources.py`, comparing alternating runs in one window.
 
-| Stage | Work | Lines | Merges alone | Gain |
-|---|---|---:|---|---|
-| 0 | Event ring that grows on demand, HTTP connection reuse | 300-500 | Yes | Memory and `TIME_WAIT` improve at once |
-| 1 | Reactor and bounded pool on `kqueue` and `epoll`, unused | 800-1,200 | Yes | None yet |
-| 2 | Extract `step` from `runLoop`, with a blocking driver executing actions | 1,500-2,500 | Yes, no behaviour change | Exhaustive tests |
-| 3 | Gates, timers and cancel as events | 400-700 | Yes | Gate threads go |
-| 4 | Non-blocking HTTP and TLS, split six providers, remove the bridges | 2,500-4,000 | Per provider | Model threads go |
-| 5 | `Shell`, file tools, MCP, background jobs, global tool budget, background-job quota, process guard | 900-1,700 | Per tool | Tool threads go |
-| 6 | Hub ready queue, group commit, `state` off the central thread | 1,000-2,000 | Yes | Removes the first bottleneck |
-| 7 | Make the new driver the default and delete the thread path | 300-600, and about 2,000 removed | Switch-over | Fixed threads |
-| 8 | Parking, journal on disk, session summaries, eviction | 800-1,500 | Yes | 100,000 agents |
+The old path keeps working throughout. A vertical slice runs through the new
+driver early behind a per-session opt-in, then each piece widens and its old path
+is deleted, so there is no late switch-over. Line counts are changed production
+lines, and stages 2-7 total about 8,400-14,500 in 60-100 pull requests.
 
-Stages 2 and 4 carry the most risk. The agent limit does not move until stage 4
-ends, so the real payoff arrives at stages 6-7.
+| Stage | Work | Lines | Pass condition |
+|---|---|---:|---|
+| 0 | Done: ring grows on demand (#1612), shared HTTP client (#1613) | Merged | Empty sessions 271 to 26 MiB and peak `TIME_WAIT` 8,000 to under 200, at N=1,000 |
+| 1 | Retire the unknowns below, on the prototype branch | No product code | Every stop condition below is clear |
+| 2 | Hub ready queue, budgeted passes, batched saving, on the existing loop | 800-1,500 | `working` at N=1,500 stops degrading, `state` stays over 500 per second, and an idle Hub takes no wakeups for sessions with nothing to do |
+| 3 | Reactor and bounded pool on `kqueue` and `epoll`, unused | 800-1,200 | Unit tests on macOS and Linux, and an idle reactor takes zero wakeups |
+| 4 | Extract `step` from `runLoop`, with a blocking driver executing actions | 1,800-3,000 | The differential gate below passes on every scenario |
+| 5 | Vertical slice behind a per-session opt-in: one provider, `Shell`, gates, cancel | 1,500-2,500 | Opted-in `working` at N=1,000 matches the old path's traces, uses fixed threads, and handles cancel in each phase |
+| 6 | Widen provider by provider, then file tools, MCP, background jobs, tool budget; delete each old path | 2,700-4,800 | Each piece passes the differential gate, and its threads are gone from the phase table |
+| 7 | Parking, journal on disk, session summaries, eviction | 800-1,500 | Parked `hold-gate` at N=100,000 on real-size histories, with zero idle wakeups |
+
+**Final acceptance, on Linux:** real tools at N=10,000 with a fixed thread count,
+flat idle CPU, and no bad tool results, then parked agents at N=100,000.
+
+The agent limit starts moving at stage 5, and the Hub's bottleneck moves at stage
+2 rather than at the end. Stages 4 and 6 carry the most risk.
+
+### Stage 1: retire the unknowns first
+
+These are cheap next to about 14,500 lines, and they decide whether those lines
+are justified. They use the prototype, not product code.
+
+| Check | How | Stop or rethink if |
+|---|---|---|
+| Linux | Add `epoll` to the prototype and run `hold-gate` at N=10,000 on a runner | Threads grow with N, or parked agents cause wakeups, and the cause is not a prototype bug |
+| Real TLS | Non-blocking record feeding with full certificate validation, against a real provider endpoint. An unauthenticated request is enough, so no key is needed | The standard client cannot validate a real chain or keep state across partial records. A vendored TLS library would then join stage 6 and the size would need redoing |
+| Real sizes | `hold-gate` at N=10,000 with histories near 800 KiB, parking on | A parked session stays over 20 KiB resident, or resume p99 exceeds 1 s, or the run needs more disk than planned |
+
+If Linux or real sizes fail in a way that cannot be fixed, the plan stops at stage
+2, because stage 0 and the Hub work stand alone.
+
+### The differential gate
+
+"No behaviour change" needs proof, because scripts written for `step` only test
+`step` against itself. Before stage 4, record event traces from the old loop across
+the existing scenarios and fixtures: text, tool calls, gates, cancel at each phase,
+retries, overflow recovery, steering and compaction. `step` must reproduce each
+trace, ignoring only ids and timestamps. Building that harness is part of stage 4's
+size, and the same traces gate stages 5 and 6.
 
 Overflow and retry state (#1572, #1578, #1590) is already shaped as data and moves
 into `step` directly. Subscription lifetime (decision 0066) fits well, because a
@@ -410,8 +471,9 @@ its resume across runs must be designed with the on-disk journal.
 3. The message ownership change can introduce use-after-free bugs.
 4. One blocking call left on a reactor stalls every run in its share, so debug
    builds need a detector.
-5. Parking's protocol questions may turn out to need wire changes.
-6. Two drivers coexisting costs maintenance for as long as the migration lasts.
+5. Replay across a parked run may turn out to need a wire change.
+6. Two drivers coexist from stage 5 until the last piece moves, though the old
+   path shrinks at every step.
 7. `agent_loop.zig` and `agent.zig` are hot files, so other work there will
    conflict and has to be coordinated.
 
@@ -427,6 +489,9 @@ its resume across runs must be designed with the on-disk journal.
 - What limits the prototype next. At 100,000 it stayed near 0.25 Hub cores, so it
   was not its limit. Disk and active memory at real run sizes are the expected next
   limits, then the single thread parsing stdin. Neither was measured.
+- The Hub stage's gains on the existing loop. Removing the per-event save has been
+  measured at 35-40 to 65-67 runs per second at N=1,000, but the ready queue and
+  budgeted passes have not been tried.
 
 ## Rust
 
