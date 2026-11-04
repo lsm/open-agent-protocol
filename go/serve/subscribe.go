@@ -203,30 +203,43 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 	select {
 	case result, ok := <-s.replay:
-		if !ok {
+		return s.replayed(result, ok)
+	case <-s.sub.finish:
+		select {
+		case result, ok := <-s.replay:
+			return s.replayed(result, ok)
+		default:
+			abandon(append(s.later, resumedRun{stream: s.replay}))
+			s.later = nil
 			return protocol.Envelope{}, io.EOF
 		}
-		if result.Error != nil {
-
-			s.Close()
-			s.finished = true
-			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
-				s.err = &OverflowError{RunID: s.replaying, LastSequence: s.last}
-			} else {
-				s.err = result.Error
-			}
-			return protocol.Envelope{}, s.err
-		}
-		s.last = observedSequence(result.Envelope, s.last)
-		if result.Envelope.Sequence != nil {
-			s.positions[result.Envelope.RunID] = *result.Envelope.Sequence
-		}
-		return result.Envelope, nil
 	case <-s.ctx.Done():
 		s.Close()
 		s.finished, s.err = true, s.ctx.Err()
 		return protocol.Envelope{}, s.err
 	}
+}
+
+func (s *Subscription) replayed(result base.Result, ok bool) (protocol.Envelope, error) {
+	if !ok {
+		return protocol.Envelope{}, io.EOF
+	}
+	if result.Error != nil {
+
+		s.Close()
+		s.finished = true
+		if errors.Is(result.Error, base.ErrEventStreamOverflow) {
+			s.err = &OverflowError{RunID: s.replaying, LastSequence: s.last}
+		} else {
+			s.err = result.Error
+		}
+		return protocol.Envelope{}, s.err
+	}
+	s.last = observedSequence(result.Envelope, s.last)
+	if result.Envelope.Sequence != nil {
+		s.positions[result.Envelope.RunID] = *result.Envelope.Sequence
+	}
+	return result.Envelope, nil
 }
 
 func (s *Subscription) observe(envelope protocol.Envelope) bool {

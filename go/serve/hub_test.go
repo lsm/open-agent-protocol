@@ -1388,6 +1388,24 @@ func TestACursorReplaysALaterRunThatSettledBeforeItSubscribed(t *testing.T) {
 	}
 }
 
+func TestEndingSubscriptionsStopsAReplayStillFollowingARun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	hub := memoryHub(t, 0)
+	session := openMemorySession(t, hub, "following")
+	run := submitGolden(t, session, "run the golden script")
+	cursor, err := hub.Subscribe(ctx, session.ID(), serve.After(run, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cursor.Close()
+	nextUntil(t, cursor, typeStop(protocol.TypeActionPermissionRequested))
+	hub.EndSubscriptions()
+	if _, err := cursor.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("next: %v, want the end of the stream", err)
+	}
+}
+
 func TestACursorIsAReplayGapWhenALaterRunHasLeftTheJournal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
