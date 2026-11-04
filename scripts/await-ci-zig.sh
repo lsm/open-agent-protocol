@@ -10,10 +10,17 @@ if [ -n "$changed" ] && ! grep -qvE '^(decisions|drafts|docs|research)/|^[^/]+\.
   exit 0
 fi
 
+own_run='
+  [.workflow_runs[]
+    | select(any(.pull_requests[]; .number == $pr)
+        or (.pull_requests == [] and .head_repository.full_name != $repo))]
+  | first
+  | if . == null then "absent" else "\(.status) \(.conclusion)" end'
+
 absent=0
 while true; do
-  state="$(gh api "repos/${REPO}/actions/workflows/ci-zig.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=1" \
-    --jq '.workflow_runs[0] | if . == null then "absent" else "\(.status) \(.conclusion)" end')" || state="unreadable"
+  state="$(gh api "repos/${REPO}/actions/workflows/ci-zig.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=100" |
+    jq -r --argjson pr "$PR" --arg repo "$REPO" "$own_run")" || state="unreadable"
   case "$state" in
     "completed success")
       echo "ci-zig.yml passed on ${HEAD_SHA}"
