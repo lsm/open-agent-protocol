@@ -360,6 +360,7 @@ envelope line, and the subscription carries on into the session's next run
 | The acknowledgement is always written before the first envelope | `TestEventsAcknowledgementPrecedesTheStream`, `TestTheSubscribedSignalPrecedesEveryEnvelope` |
 | The acknowledgement is `result: null`, matching the SSE route's bodyless response | `TestEventsOpDeliversTheRunStream`, `TestSubscribedSignalMatchesHTTP` |
 | `oap-subscribed` is written first, and only when the run had already emitted | `TestEventsReportsWhereALateSubscriptionJoined`, `TestSubscribedSignalMatchesHTTP` |
+| In all three hubs, a subscription carries on across runs until its host ends it, and that frees its slot under the ceiling | `TestHubStdioHoldsASubscriptionAcrossRunsUntilItsHostEndsIt` |
 | A subscription that begins at the start of its run gets no join signal | `TestEventsReportsNoJoinPointWhenNothingPrecededTheSubscription`, `TestSubscribingBetweenRunsReportsNoJoinPoint` |
 | The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`; the `oap-frame-limit` ending it also drives has its members pinned by `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; read off the stdio wire by `TestEventsSignalAnOverflowWithItsRunAndCursor`, which pins `session_id`, `run_id` and the resume cursor against the last sequence delivered |
@@ -1839,7 +1840,7 @@ Stdio only; over HTTP the client hangs up.
   `TestSSECursorErrors`, `TestSSEReplayGap`, `TestSSENoRunToResume`,
   `TestSSEUnknownSession`, `TestSSEOnClosedSession`, `TestEventsOpRefusals`
   (the `busy` refusal at the subscription ceiling, whose message names the
-  ending paths; its text still names a run's terminal until D36 closes). The release
+  ending paths). The release
   is pinned: `TestEventsOpRefusals` answers a session that has been released
   with `unknown_session`, apart from the one that never existed, and
   `TestSSEOnClosedSession` answers a live stream and a cursor stream on a
@@ -2607,13 +2608,6 @@ because its mux serves `HEAD` on every `GET` pattern, and in Rust since
 `zig/src/hub/routes.zig` answers the table entry's method alone, so its `405`
 says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 `GET` entry, and updating that test, closes this.
-
-### D36 — Decision 0066 is not in every tree yet
-
-[Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
-lands one pull request at a time, so this document is ahead of the code. Until
-each part is built, not every hub writes a run-qualified SSE id.
-This entry shrinks as those land and closes with the last.
 
 ### D37 — Parking is not in every tree yet
 
