@@ -237,6 +237,48 @@ fn a_quiet_stream_writes_a_keepalive_comment() {
 }
 
 #[test]
+fn a_zero_keepalive_takes_the_default_rather_than_flooding_the_stream() {
+    let hub = Hub::new(Registry::default_registry());
+    block_on(hub.open(
+        "memory",
+        OpenRequest {
+            session_id: "s".into(),
+            ..OpenRequest::default()
+        },
+    ))
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = hub.clone();
+    std::thread::spawn(move || {
+        serve_http(
+            &served,
+            listener,
+            &HttpOptions {
+                keepalive: Some(Duration::ZERO),
+                ..HttpOptions::default()
+            },
+        )
+    });
+    let mut reader = open_stream(addr, "/sessions/s/events");
+    assert_eq!(status_and_headers(&mut reader).0, 200);
+    reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut line = String::new();
+    let quiet = reader.read_line(&mut line).unwrap_err();
+    assert!(
+        matches!(
+            quiet.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "{quiet}"
+    );
+    assert_eq!(line, "");
+}
+
+#[test]
 fn a_keepalive_defaults_to_fifteen_seconds() {
     assert_eq!(DEFAULT_KEEPALIVE, Duration::from_secs(15));
 }
