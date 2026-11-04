@@ -1773,6 +1773,8 @@ Stdio only; over HTTP the client hangs up.
   does not define; a `subscription` that is not an integer is a framing defect), `busy` (the subscription has not stopped,
   because its output is stalled; it stays counted, and the host sends the request
   again).
+- **pinned by:** `TestUnsubscribeEndsOneSubscriptionAndFreesItsSlot`,
+  `TestUnsubscribeAnswersTheSameForAnIDWithNoSubscription`.
 
 ### `events`
 
