@@ -1234,8 +1234,46 @@ fn selftest() !void {
     writeAll(1, try std.fmt.bufPrint(&line, "selftest ok: suspended and resumed at {d} of {d} points\n", .{ checked, script.len + 1 }));
 }
 
+fn nowNs() u64 {
+    var ts: c.timespec = undefined;
+    _ = c.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+fn parkBench() !void {
+    const run = try Run.create("s", "/w", false);
+    defer run.destroy();
+    const a = run.arena.allocator();
+    const block = try a.alloc(u8, 8192);
+    @memset(block, 'x');
+    for (0..100) |_| try run.messages.append(a, .{ .role = .tool, .content = block, .tool_call_id = "call", .tool_name = "Read" });
+    const path = try std.fmt.allocPrintSentinel(gpa, "{s}/park-bench.json", .{std.mem.span(c.getenv("TMPDIR").?)}, 0);
+    defer gpa.free(path);
+    var encode_ns: u64 = 0;
+    var read_ns: u64 = 0;
+    const rounds: usize = 200;
+    var size: usize = 0;
+    for (0..rounds) |_| {
+        const started = nowNs();
+        const bytes = try run.encode(gpa);
+        defer gpa.free(bytes);
+        size = bytes.len;
+        if (!writeFile(path, bytes)) return error.WriteFailed;
+        const written = nowNs();
+        const loaded = readFile(path);
+        defer gpa.free(loaded);
+        const restored = try Run.decode(loaded);
+        restored.destroy();
+        encode_ns += written - started;
+        read_ns += nowNs() - written;
+    }
+    var line: [128]u8 = undefined;
+    writeAll(1, try std.fmt.bufPrint(&line, "park {d} KiB: save {d} us, load {d} us\n", .{ size / 1024, encode_ns / rounds / 1000, read_ns / rounds / 1000 }));
+}
+
 pub fn main() !void {
     if (c.getenv("PROTO_SELFTEST") != null) return selftest();
+    if (c.getenv("PROTO_PARKBENCH") != null) return parkBench();
     config.reactors = envNumber("PROTO_REACTORS", 4);
     config.workers = envNumber("PROTO_WORKERS", 4);
     config.model_limit = envNumber("PROTO_MODEL_LIMIT", 4096);
