@@ -403,15 +403,25 @@ impl Hub {
                     .ok_or(HubError::NoRunToResume)?
             }
         };
-        let (_, stream) = entry
-            .session
-            .resume(ResumeRequest {
-                run_id: run.clone(),
-                after_sequence: after,
-            })
-            .await
-            .inspect_err(|err| entry.closed_by(err))?;
-        Ok(Subscription::replay(run, after, stream))
+        let sub = entry
+            .with_live(|live| live.subscribe_from(&run))
+            .ok_or_else(|| HubError::SessionClosed(id.clone()))?;
+        let later = entry.with_live(|live| live.later_runs(&run));
+        let mut subscription = Subscription::after(entry.clone(), sub, run.clone(), after);
+        let mut after = after;
+        for run in std::iter::once(run).chain(later) {
+            let (_, stream) = entry
+                .session
+                .resume(ResumeRequest {
+                    run_id: run.clone(),
+                    after_sequence: after,
+                })
+                .await
+                .inspect_err(|err| entry.closed_by(err))?;
+            subscription.replaying(run, stream);
+            after = 0;
+        }
+        Ok(subscription)
     }
 
     pub async fn probe(&self, name: &str) -> Result<oap_adapter::Descriptor, HubError> {
@@ -469,6 +479,12 @@ impl Hub {
 
     pub fn sessions(&self) -> Vec<Arc<HubSession>> {
         self.shared.sessions().live.values().cloned().collect()
+    }
+
+    pub fn end_subscriptions(&self) {
+        for entry in self.sessions() {
+            live::finish(entry.with_live(Live::end_subscriptions));
+        }
     }
 
     pub fn close_sessions(&self) -> Vec<(SessionId, HubError)> {

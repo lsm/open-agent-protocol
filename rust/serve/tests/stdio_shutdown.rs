@@ -3,14 +3,14 @@ mod support;
 use std::io::{BufReader, Read};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::executor::block_on;
 use oap_adapter::{OpenRequest, SubmitRequest};
 use oap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::{serve, StdioOptions, SHUTDOWN_WINDOW};
 use oap_serve::{Hub, Registry};
 use serde_json::Value;
 
@@ -135,6 +135,36 @@ fn a_graceful_shutdown_refuses_new_work_and_stops_once_its_runs_settle() {
     assert_eq!(draining["outcome"], "draining", "{draining}");
     assert_eq!(answer(&answered, 2)["error"]["code"], "shutting_down");
     assert_eq!(answer(&answered, 3)["ok"], true, "{}", answer(&answered, 3));
+}
+
+#[test]
+fn a_graceful_shutdown_ends_a_subscription_without_waiting_out_its_window() {
+    let (hub, run) = with_a_run();
+    let cancel = format!(
+        r#"{{"id":3,"op":"cancel","session_id":"s","request":{{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.cancel.request","id":"cancel-1","session_id":"s","run_id":"{run}","payload":{{"session_id":"s","run_id":"{run}"}}}}}}"#,
+        run = run.as_str()
+    );
+    let started = Instant::now();
+    let answered = served_within(
+        hub,
+        held_open(&[
+            r#"{"id":1,"op":"events","session_id":"s"}"#,
+            r#"{"id":2,"op":"shutdown","request":{"mode":"graceful"}}"#,
+            &cancel,
+        ]),
+    )
+    .expect("serve kept reading after the graceful shutdown drained");
+    assert!(
+        started.elapsed() < SHUTDOWN_WINDOW,
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        answered
+            .iter()
+            .any(|line| line["envelope"]["type"] == "run.cancelled"),
+        "{answered:?}"
+    );
 }
 
 #[test]
