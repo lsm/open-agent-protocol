@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -306,7 +307,7 @@ func (stream *sseStream) envelope() protocol.Envelope {
 		stream.t.Fatalf("parse sse envelope: %v (%s)", err, event.data)
 	}
 
-	if envelope.Sequence != nil && event.id != strconv.FormatUint(*envelope.Sequence, 10) {
+	if envelope.Sequence != nil && event.id != fmt.Sprintf("%s:%d", envelope.RunID, *envelope.Sequence) {
 		stream.t.Fatalf("sse id %q does not match envelope sequence %d", event.id, *envelope.Sequence)
 	}
 	return envelope

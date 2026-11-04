@@ -3,6 +3,7 @@ package servehttp
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,49 @@ func TestSSELastEventIDReconnect(t *testing.T) {
 	requireSequence(t, replayed, 10)
 	if len(replayed) != 3 {
 		t.Fatalf("replayed %d envelopes, want 3", len(replayed))
+	}
+}
+
+func TestSSELastEventIDReadsARunQualifiedID(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-qualified")
+	first := driveOneRun(t, server, "sse-qualified", "one", false)
+	driveOneRun(t, server, "sse-qualified", "two", true)
+
+	stream := connectSSE(t, server, "/sessions/sse-qualified/events", fmt.Sprintf("%s:9", first))
+	replayed := stream.drainUntil(protocol.TypeRunCompleted)
+	requireSequence(t, replayed, 10)
+	if replayed[0].RunID != first {
+		t.Fatalf("resumed on %s, want %s", replayed[0].RunID, first)
+	}
+}
+
+func TestSSERefusesARunQualifiedCursorItCannotRead(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-bad-id")
+	goldenRun(t, server, "sse-bad-id", "submit-sse-bad-id")
+	for _, id := range []string{":1", "run:x"} {
+		request, err := http.NewRequest(http.MethodGet, server.URL+"/sessions/sse-bad-id/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Last-Event-ID", id)
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("id %q answered %d", id, response.StatusCode)
+		}
+	}
+	response, err := server.Client().Get(server.URL + "/sessions/sse-bad-id/events?after=run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a run-qualified after answered %d", response.StatusCode)
 	}
 }
 
