@@ -353,9 +353,7 @@ pub const Daemon = struct {
                 if (after == null or colon == 0) {
                     return self.refusal(arena, .{ .code = "invalid_cursor", .message = try std.fmt.allocPrint(arena, "cursor \"{s}\" is not an unsigned sequence", .{text}) }, scoped);
                 }
-                if (colon) |at| {
-                    if (run.len == 0) run = text[0..at];
-                }
+                if (colon) |at| run = text[0..at];
             }
         }
         if (after == null and run.len > 0) {
@@ -1606,6 +1604,12 @@ test "an event's id names its run and sequence, and Last-Event-ID reads that for
     try testing.expectEqual(@as(u64, 2), next.sequence);
     try testing.expectEqualStrings(run, next.run_id);
     fixture.daemon.leave(resumed.stream);
+
+    const stale = try std.fmt.allocPrint(arena, "/sessions/demo/events?run_id={s}-elsewhere", .{run});
+    request.split = try hub_http.splitTarget(arena, stale);
+    const header_wins = try fixture.daemon.respond(arena, request);
+    try testing.expectEqualStrings(run, header_wins.stream.next().?.run_id);
+    fixture.daemon.leave(header_wins.stream);
 
     request.split = try hub_http.splitTarget(arena, "/sessions/demo/events?after=3");
     const by_query = try fixture.daemon.respond(arena, request);
