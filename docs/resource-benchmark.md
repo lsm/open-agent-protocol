@@ -118,6 +118,13 @@ would pass `--max-user-processes` (5,000), and stopped if the count gets there
 or the hub holds `--max-hub-cores` (12) for 5 s. A stopped case kills the hub's
 whole process group.
 
+The model client opens a connection per call, and on macOS each closed one holds
+an ephemeral port in TIME_WAIT for about 30 s, out of about 16,000 for the whole
+machine. Sustained runs at N = 1,000 and above can use them up, and every
+program on the machine then fails to connect. So a flight is skipped or stopped
+at `--max-time-wait` (12,000) sockets. On a shared machine, run one such case at
+a time, at least 35 s apart.
+
 `--loop-binary` runs `zig-loop` on another binary taking `oapx`'s `serve`
 arguments.
 

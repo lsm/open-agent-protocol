@@ -581,6 +581,8 @@ class Timeline(threading.Thread):
         recent = self.rows[-20:]
         if user_processes() >= self.options.max_user_processes:
             self.stopped = f"stopped: user processes reached {self.options.max_user_processes}"
+        elif len(self.rows) % 4 == 0 and time_waits() >= self.options.max_time_wait:
+            self.stopped = f"stopped: {self.options.max_time_wait} sockets in TIME_WAIT"
         elif len(recent) == 20 and rate(recent, "hub_cpu") > self.options.max_hub_cores:
             self.stopped = f"stopped: hub over {self.options.max_hub_cores} cores for 5 s"
         if self.stopped:
@@ -590,6 +592,13 @@ class Timeline(threading.Thread):
 
 def user_processes():
     return len(subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="], capture_output=True, text=True).stdout.split())
+
+
+def time_waits(tables=Path("/proc/net")):
+    if sys.platform == "darwin":
+        return subprocess.run(["netstat", "-an"], capture_output=True, text=True).stdout.count("TIME_WAIT")
+    rows = [line.split() for name in ("tcp", "tcp6") if (tables / name).exists() for line in (tables / name).read_text().splitlines()[1:]]
+    return sum(row[3] == "06" for row in rows)
 
 
 def rate(rows, key):
@@ -872,6 +881,7 @@ def main():
     parser.add_argument("--poll", type=float, default=0.25, help="seconds a flight waits between rounds of state reads")
     parser.add_argument("--hold", type=float, help="seconds a hold scenario parks each agent (default max(15, N/50))")
     parser.add_argument("--max-user-processes", type=int, default=5000, help="stop a flight when this user runs this many processes")
+    parser.add_argument("--max-time-wait", type=int, default=12000, help="stop a flight when this many sockets on the machine are in TIME_WAIT")
     parser.add_argument("--max-hub-cores", type=float, default=12, help="stop a flight whose hub holds this many cores for 5 s")
     parser.add_argument("--out", help="directory for results.json and results.md")
     parser.add_argument("--no-build", action="store_true", help="use existing zig-out and rust/target/release binaries")
@@ -916,6 +926,9 @@ def main():
                 for n in counts:
                     if scenario in FLIGHTS and user_processes() + 2 * n >= arguments.max_user_processes:
                         results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: N tools at once would pass --max-user-processes"})
+                        continue
+                    if scenario in FLIGHTS and time_waits() >= arguments.max_time_wait:
+                        results.append({"target": target, "scenario": scenario, "n": n, "status": "skipped: TIME_WAIT sockets already at --max-time-wait"})
                         continue
                     result = run_case(target, binaries[target], scenario, n, scratch, arguments.timeout,
                                       arguments.rss_cap_mib << 20, arguments)
