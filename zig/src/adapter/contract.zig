@@ -212,10 +212,16 @@ pub const Session = struct {
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
         native_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
         stream_failure: ?*const fn (ptr: *anyopaque) ?StreamFailure = null,
+        live_work: ?*const fn (ptr: *anyopaque) bool = null,
     };
 
     pub fn id(self: Session) []const u8 {
         return self.vtable.id(self.ptr);
+    }
+
+    pub fn holdsNoLiveWork(self: Session) bool {
+        const reports = self.vtable.live_work orelse return false;
+        return !reports(self.ptr);
     }
 
     pub fn nativeId(self: Session) []const u8 {

@@ -1268,6 +1268,45 @@ and the run it wants is usually the one that just ended under it.
 | An acknowledged position overrides a stale pending one | `TestAcknowledgedPositionOverridesStalePending`; in Zig `exposedTo` judges the run last delivered first, so a queued event of an older run does not expose it (D7, fixed) |
 | A late overflow does not cut a newer run | `TestLateOverflowDoesNotCutNewerRun`; Zig: `a stream failure on an older run spares a subscription reading a newer one, and one on the current run ends them all` (D7, fixed) |
 
+## Parking
+
+An open session need not keep a harness running while it sits idle. Parking stops
+a session's harness and keeps everything the hub holds for it: its id, its
+subscribers and its binding. The next input to that session reopens the harness
+from the binding, and its events reach the same subscriptions
+([Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md):
+a subscription is the hub's, so an open client does not stop a park).
+
+A session parks only if the hub can bring it back as it was and nothing is in
+flight. Its adapter must offer `session.open.reopen`, and it must have no live
+tool source, because a stopped MCP server cannot resume where it was. It must be
+idle, with no run, no pending interaction and no held subscription. It must have
+no live background job, and this fails closed: an adapter that cannot report its
+background work never parks, because silently killing a user's background shell
+is worse than holding a process. Today `memory` and `oapx` report it; no
+third-party harness adapter does yet. The hub keeps
+the tools, metadata and allowed degraded features a session opened with in memory
+for the reopen; a park lasts only as long as the process, so they never reach the
+binding store.
+
+A park drops the session's journal, and every run from before it answers a cursor
+with `oap-replay-gap`, as a harness restart does: nothing pretends the old events
+are still there. A read does not change what it reads: `state` answers from what
+the hub stored at the park, and `sessions` and `work` list a parked session as
+idle, none of them waking it. Every operation that needs the harness wakes it
+first. Closing a parked session releases it with nothing to stop. A failed reopen
+is that operation's failure, and the session stays parked.
+
+| rule | pinned by |
+| --- | --- |
+| A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
+| A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
+| A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and no run, live job or hold lets it`; see D37 |
+| A session that cannot report live work never parks | Zig: `a session that cannot report live work never parks`; see D37 |
+| A session with a live tool source does not park | Zig: `a session with a live tool source does not park`; see D37 |
+| A wake reopens with what the session opened with | Zig: `a wake reopens with the tools and metadata the session opened with`; see D37 |
+| `state` answers a parked session without waking it | Zig: `state answers a parked session from what it stored and does not wake it`; see D37 |
+
 ## Compound open and the held subscription
 
 A host can pipeline `open`, `events` and `submit`, and the subscription then
@@ -2580,6 +2619,12 @@ because its mux serves `HEAD` on every `GET` pattern, and in Rust since
 `zig/src/hub/routes.zig` answers the table entry's method alone, so its `405`
 says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 `GET` entry, and updating that test, closes this.
+
+### D37 — Parking is not in every tree yet
+
+[Parking](#parking) lands one tree at a time. Zig's hub can park and wake a session,
+and nothing parks one on its own yet: no tree has the idle timer, and Go and Rust
+have no park at all.
 
 ### Recorded, and not divergences
 
