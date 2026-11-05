@@ -657,8 +657,9 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
         adapter, metadata = "loop", {"workspace_root": str(work)}
         config = {"adapters": {"loop": {"type": "oapx"}}}
     (root / "hub.json").write_text(json.dumps(config))
+    park = ["--park-after", str(options.park_after)] if options.park_after and target.startswith("zig") else []
     command = sandboxed([str(binary), "serve", "--stdio", "--config", str(root / "hub.json"),
-                         "--session-history", str(data / "sessions.jsonl")], root)
+                         "--session-history", str(data / "sessions.jsonl"), *park], root)
     stderr = (root / "hub-stderr.txt").open("w")
     hub = Hub(command, environment, work, stderr)
     result = {"target": target, "scenario": scenario, "n": n, "status": "ok"}
@@ -699,7 +700,7 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             timeline.halt.set()
             timeline.join(timeout=5)
         if result["status"] == "ok":
-            time.sleep(1.0)
+            time.sleep(1.0 + (options.park_after + 1 if park else 0))
         sampler.stop()
         result.update(peak_rss=sampler.peak["rss"], peak_threads=sampler.peak["threads"])
         if hub.process.poll() is None:
@@ -883,6 +884,7 @@ def main():
     parser.add_argument("--max-user-processes", type=int, default=5000, help="stop a flight when this user runs this many processes")
     parser.add_argument("--max-time-wait", type=int, default=12000, help="stop a flight when this many sockets on the machine are in TIME_WAIT")
     parser.add_argument("--max-hub-cores", type=float, default=12, help="stop a flight whose hub holds this many cores for 5 s")
+    parser.add_argument("--park-after", type=int, default=0, help="serve the Zig targets with --park-after, and settle past it")
     parser.add_argument("--out", help="directory for results.json and results.md")
     parser.add_argument("--no-build", action="store_true", help="use existing zig-out and rust/target/release binaries")
     parser.add_argument("--go", help="a prebuilt goap binary")

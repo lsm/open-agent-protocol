@@ -456,6 +456,7 @@ pub const Session = struct {
         .pump = pump,
         .drain = drain,
         .activity = activity,
+        .live_work = liveWork,
         .close = close,
         .tools = tools,
         .models = models,
@@ -1702,6 +1703,10 @@ pub const Session = struct {
             try suffix.append(allocator, .{ .line = line, .run_id = owned_run_id, .sequence = kept.sequence });
         }
         return .{ .events = try suffix.toOwnedSlice(allocator) };
+    }
+
+    fn liveWork(ptr: *anyopaque) bool {
+        return cast(ptr).jobs.anyRunning();
     }
 
     fn activity(ptr: *anyopaque) contract.Activity {
@@ -2953,6 +2958,31 @@ test "a background shell job the session started keeps running after its call an
     const closed_at = (try tmp.dir.statFile(testing.io, output, .{})).size;
     compat.time.sleepMs(300);
     try testing.expectEqual(closed_at, (try tmp.dir.statFile(testing.io, output, .{})).size);
+}
+
+test "a session reports a live background job, so the hub will not park it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    try testing.expect(harness.session.holdsNoLiveWork());
+
+    const session = Session.cast(harness.session.ptr);
+    var shell_tool: ?agent.AgentTool = null;
+    for (session.runtime.availableTools()) |tool| if (std.mem.eql(u8, tool.name, "Shell")) {
+        shell_tool = tool;
+    };
+    const tool = shell_tool orelse return error.TestUnexpectedResult;
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var result = try tool.runtime_execute.?(tool.runtime_ctx, "call-bg", args, null, null, null, testing.allocator);
+    defer result.deinit(testing.allocator);
+    try testing.expect(!harness.session.holdsNoLiveWork());
 }
 
 test "an open that attaches sources is refused, since attaching is not advertised" {

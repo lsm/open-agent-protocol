@@ -387,6 +387,7 @@ pub const Session = struct {
         .pump = pump,
         .drain = drain,
         .activity = activity,
+        .live_work = liveWork,
         .close = close,
         .tools = tools,
         .models = models,
@@ -1351,6 +1352,10 @@ pub const Session = struct {
         }
         for (self.outbox.items) |queued| self.gpa.free(queued.line);
         self.outbox.clearRetainingCapacity();
+    }
+
+    fn liveWork(_: *anyopaque) bool {
+        return false;
     }
 
     fn activity(ptr: *anyopaque) contract.Activity {

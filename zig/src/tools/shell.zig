@@ -134,6 +134,16 @@ pub const Jobs = struct {
         };
     }
 
+    pub fn anyRunning(self: *Jobs) bool {
+        self.reap();
+        self.lock();
+        defer self.mutex.unlock();
+        for (self.list.items) |job| {
+            if (job.term == null) return true;
+        }
+        return false;
+    }
+
     pub fn endAll(self: *Jobs) void {
         self.lock();
         const jobs = self.list.items;
@@ -846,6 +856,27 @@ test "ShellJob reports a finished job's exit code and ends a running one on kill
     var killed = try tools[1].runtime_execute.?(tools[1].runtime_ctx, "call-kill", kill_args, null, null, null, std.testing.allocator);
     defer killed.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, killed.getDetailsJson().?, "\"status\":\"killed\"") != null);
+}
+
+test "anyRunning counts a job until it ends" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try std.testing.expect(!jobs.anyRunning());
+
+    const tools = sessionTools(&jobs);
+    const slow = try backgroundArgs(&case, ticking);
+    defer std.testing.allocator.free(slow);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-slow", slow, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+    try std.testing.expect(jobs.anyRunning());
+
+    _ = try jobs.report(jobs.list.items[0].output, true);
+    const by = common.nowMs() + 5_000;
+    while (jobs.anyRunning() and common.nowMs() < by) {}
+    try std.testing.expect(!jobs.anyRunning());
 }
 
 test "a job whose command exits ends what it left running at once, without being polled" {

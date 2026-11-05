@@ -360,6 +360,7 @@ envelope line, and the subscription carries on into the session's next run
 | The acknowledgement is always written before the first envelope | `TestEventsAcknowledgementPrecedesTheStream`, `TestTheSubscribedSignalPrecedesEveryEnvelope` |
 | The acknowledgement is `result: null`, matching the SSE route's bodyless response | `TestEventsOpDeliversTheRunStream`, `TestSubscribedSignalMatchesHTTP` |
 | `oap-subscribed` is written first, and only when the run had already emitted | `TestEventsReportsWhereALateSubscriptionJoined`, `TestSubscribedSignalMatchesHTTP` |
+| In all three hubs, a subscription carries on across runs until its host ends it, and that frees its slot under the ceiling | `TestHubStdioHoldsASubscriptionAcrossRunsUntilItsHostEndsIt` |
 | A subscription that begins at the start of its run gets no join signal | `TestEventsReportsNoJoinPointWhenNothingPrecededTheSubscription`, `TestSubscribingBetweenRunsReportsNoJoinPoint` |
 | The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`; the `oap-frame-limit` ending it also drives has its members pinned by `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; read off the stdio wire by `TestEventsSignalAnOverflowWithItsRunAndCursor`, which pins `session_id`, `run_id` and the resume cursor against the last sequence delivered |
@@ -1267,6 +1268,53 @@ and the run it wants is usually the one that just ended under it.
 | An acknowledged position overrides a stale pending one | `TestAcknowledgedPositionOverridesStalePending`; in Zig `exposedTo` judges the run last delivered first, so a queued event of an older run does not expose it (D7, fixed) |
 | A late overflow does not cut a newer run | `TestLateOverflowDoesNotCutNewerRun`; Zig: `a stream failure on an older run spares a subscription reading a newer one, and one on the current run ends them all` (D7, fixed) |
 
+## Parking
+
+An open session need not keep a harness running while it sits idle. Parking stops
+a session's harness and keeps everything the hub holds for it: its id, its
+subscribers and its binding. The next input to that session reopens the harness
+from the binding, and its events reach the same subscriptions
+([Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md):
+a subscription is the hub's, so an open client does not stop a park).
+
+A session parks only if the hub can bring it back as it was and nothing is in
+flight. Its adapter must offer `session.open.reopen`, and it must have no live
+tool source, because a stopped MCP server cannot resume where it was. It must be
+idle, with no run, no pending interaction and no held subscription. It must have
+no live background job, and this fails closed: an adapter that cannot report its
+background work never parks, because silently killing a user's background shell
+is worse than holding a process. Today `memory` and `oapx` report it; no
+third-party harness adapter does yet. The hub keeps
+the tools, metadata and allowed degraded features a session opened with in memory
+for the reopen; a park lasts only as long as the process, so they never reach the
+binding store.
+
+`oapx serve --park-after <seconds>` parks a parkable session once it has been idle
+that long; with no flag nothing parks on its own. Input to a session and its events
+count as activity. Reading it does not, so a client polling `state` keeps nothing
+awake. A refused park does not restart that clock, so a session parks as soon as what
+refused it ends.
+
+A park drops the session's journal, and every run from before it answers a cursor
+with `oap-replay-gap`, as a harness restart does: nothing pretends the old events
+are still there. A read does not change what it reads: `state` answers from what
+the hub stored at the park, and `sessions` and `work` list a parked session as
+idle, none of them waking it. Every operation that needs the harness wakes it
+first. Closing a parked session releases it with nothing to stop. A failed reopen
+is that operation's failure, and the session stays parked.
+
+| rule | pinned by |
+| --- | --- |
+| A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
+| A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
+| A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and no run, live job or hold lets it`; see D37 |
+| A session parks once idle past the limit, activity puts that off and a read does not | Zig: `a session parks once it has been idle past the limit, and activity puts that off`; see D37 |
+| A park the limit reached but a hold refused happens as soon as the hold ends | Zig: `a hold that outlasts the limit parks the session as soon as it ends`; see D37 |
+| A session that cannot report live work never parks | Zig: `a session that cannot report live work never parks`; see D37 |
+| A session with a live tool source does not park | Zig: `a session with a live tool source does not park`; see D37 |
+| A wake reopens with what the session opened with | Zig: `a wake reopens with the tools and metadata the session opened with`; see D37 |
+| `state` answers a parked session without waking it | Zig: `state answers a parked session from what it stored and does not wake it`; see D37 |
+
 ## Compound open and the held subscription
 
 A host can pipeline `open`, `events` and `submit`, and the subscription then
@@ -1811,7 +1859,7 @@ Stdio only; over HTTP the client hangs up.
   `TestSSECursorErrors`, `TestSSEReplayGap`, `TestSSENoRunToResume`,
   `TestSSEUnknownSession`, `TestSSEOnClosedSession`, `TestEventsOpRefusals`
   (the `busy` refusal at the subscription ceiling, whose message names the
-  ending paths; its text still names a run's terminal until D36 closes). The release
+  ending paths). The release
   is pinned: `TestEventsOpRefusals` answers a session that has been released
   with `unknown_session`, apart from the one that never existed, and
   `TestSSEOnClosedSession` answers a live stream and a cursor stream on a
@@ -2580,12 +2628,10 @@ because its mux serves `HEAD` on every `GET` pattern, and in Rust since
 says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 `GET` entry, and updating that test, closes this.
 
-### D36 — Decision 0066 is not in every tree yet
+### D37 — Parking is not in every tree yet
 
-[Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
-lands one pull request at a time, so this document is ahead of the code. Until
-each part is built, not every hub writes a run-qualified SSE id.
-This entry shrinks as those land and closes with the last.
+[Parking](#parking) lands one tree at a time. Zig parks and wakes a session behind
+`--park-after`; Go and Rust have no park at all.
 
 ### Recorded, and not divergences
 
