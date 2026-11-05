@@ -8,7 +8,8 @@ Profile: `open-agent-protocol.agent-control-core`
 Scope: `oapx`'s own agent loop. A third-party harness's commands keep the
 behaviour its harness gives them.
 Amends: [Decision 0059](0059-a-background-shell-job-lives-for-its-session.md),
-whose rule 1 ended every foreground command with its call
+whose rule 1 ended every foreground command with its call and whose rule 3 set
+no time limit on a job
 
 ## Context
 
@@ -48,18 +49,26 @@ command is still running and that its end will be reported.
 
 `run_in_background: true` still starts a job at once, without the budget.
 
-### 3. `timeout_ms` limits the command, and has no default
+### 3. A command has a 1 hour limit
 
-`timeout_ms` keeps its meaning for a model that passes it: the command is ended
+Every `Shell` command, moved or started with `run_in_background`, has a limit of
+1 hour. It is the default when `timeout_ms` is omitted and the maximum when it is
+passed, so a larger value means 1 hour. A smaller `timeout_ms` ends the command
 at that time, in the call if the time falls within the budget and as a job if
-not. Without it a command has no time limit, because the 30 s default was what
-stood in for this rule.
+not. This replaces the 30 s default and the unlimited job of Decision 0059.
+
+A job that reaches its limit is ended the normal way, as Decision 0059 rule 3
+says: `SIGTERM` for its process group, then `SIGKILL` for whatever is left. The
+limit is one more way a job ends, so the model is told through the notice in rule
+4, with a reason that says the job hit its time limit and what that limit was.
 
 ### 4. A job's end goes back into the session
 
-This applies to every job, moved or started with `run_in_background`, that ends
-on its own. The result is a notice carrying the `task_id`, the `output_path`, the
-status from Decision 0059 rule 4 and a bounded tail of the output.
+This applies to every job, moved or started with `run_in_background`, that exits
+or reaches its limit. The result is a notice carrying the `task_id`, the `output_path`, the
+status from Decision 0059 rule 4, a bounded tail of the output and, for a job that
+reached its limit, the reason. On the wire that job's `session.task.ended` has
+status `failed` and cause `expired`.
 
 - If a turn is running and has another model request to make, the notice is
   folded into that request. No further run follows.
@@ -85,7 +94,8 @@ moved command is like any other job, and only `ShellJob {kill: true}`, a
 ### 6. Nothing wakes on a timer
 
 A job wakes its session once, when it ends. There is no progress notice and no
-periodic output. The model reads `output_path` when it wants to, with Read or
+periodic output. The limit in rule 3 is a timer on the process, not on the model:
+it ends the job, and that end is the one wake. The model reads `output_path` when it wants to, with Read or
 `ShellJob`.
 
 ### 7. `run.completed` does not mean the work is finished

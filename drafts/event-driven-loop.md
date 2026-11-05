@@ -224,9 +224,10 @@ validation, partial writes and post-handshake messages are unverified.
 ## Slow commands
 
 The rule is [Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md),
-which amends rule 1 of Decision 0059: every `Shell` command gets 5 seconds in the
-foreground, and past that it becomes a session background job. This section says
-how the rule fits the plan.
+which amends Decision 0059: every `Shell` command gets 5 seconds in the
+foreground, past that it becomes a session background job, and it has a 1 hour
+limit, the default for `timeout_ms` and its maximum. This section says how the rule
+fits the plan.
 
 ### How a command moves
 
@@ -241,6 +242,10 @@ how the rule fits the plan.
 - The job's exit watch posts `job_ended`. `step` folds the notice if the run has
   another model request to make, holds it during a final request, and otherwise
   the session starts a triggered run.
+- At the limit the job gets `SIGTERM`, then `SIGKILL`, for its process group. The
+  exit watch then posts `job_ended` as for any end, with a reason that tells the
+  model it hit the 1 hour limit. The limit is a deadline on the job, so it needs no
+  model call of its own.
 - Only the end wakes anything. A timer that pushed output would be a model call
   per job per interval, and at 10,000 agents those calls would be the workload.
 
@@ -274,7 +279,8 @@ is arithmetic, not a measurement.
 
 A moved command takes a job slot instead. The move never fails, because the
 process already exists. When job slots run out, new `Shell` calls wait in
-`tool_queued`, and the process guard below stays the real limit.
+`tool_queued`, and the process guard below stays the real limit. The 1 hour limit
+means a job slot always comes back, so a stuck command cannot hold one for good.
 
 ### Parking and 100,000 agents
 
@@ -287,7 +293,8 @@ What has to stay alive is the process and one exit watch, not the agent. So for
 `oapx`:
 
 - The job table moves out of the session to the Hub, then to a reactor at stage 6.
-  A row holds the session id, `task_id`, process group and `output_path`.
+  A row holds the session id, `task_id`, process group, `output_path` and deadline,
+  so the limit fires for a parked session too.
 - A live job in that table no longer blocks a park, at either level. A park is not
   a close, so Decision 0059 rule 3 is unchanged: closing the session, parked or
   not, ends its jobs.
@@ -564,10 +571,15 @@ The agent limit starts moving at stage 5, and the Hub's bottleneck moves at stag
 
 [Slow commands](#slow-commands) is its own track, because it works on the existing
 loop and does not wait for the reactor. Triggered runs and `session.task.*` in
-`oapx` land first, then the budget. Its pass condition is a `sleep 60` that returns
-a `task_id` in about 5 s, then reports its result once, folded in a running turn
-and as a triggered run on an idle session, with no model call in between. Its size
-is not estimated yet. The job table moves out of the session in stage 6, and parking
+`oapx` land first, then the budget. Its acceptance test:
+
+- A long command returns in about 5 s with its `task_id`, and the model keeps
+  working.
+- Its result then arrives by itself, once: folded when it ends mid-turn, and as a
+  triggered run when it ends on an idle session, with no model call in between.
+- A command that reaches the 1 hour limit is ended, and the model is told why.
+
+Its size is not estimated yet. The job table moves out of the session in stage 6, and parking
 with a live job is part of stage 7's pass condition.
 
 ### Stage 1: retire the unknowns first
@@ -656,3 +668,5 @@ The owner decided these on 2026-11-05:
    configurable. Beyond it, calls queue.
 4. **Slow commands.** An agent never sits and waits on a slow command
    ([Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md)).
+5. **Command limit.** A `Shell` command has a 1 hour limit, as the default and the
+   maximum for `timeout_ms`. At the limit it is ended and the model is told why.
