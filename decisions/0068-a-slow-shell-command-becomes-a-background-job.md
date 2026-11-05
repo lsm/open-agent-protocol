@@ -88,7 +88,7 @@ Every job's end still reaches the host, whatever the model is told.
 | how the job ended | `status` | `cause` |
 | --- | --- | --- |
 | exited 0 | `completed` | `finished` |
-| exited nonzero, or by a signal it was not sent here | `failed` | `finished` |
+| exited nonzero, or died from a signal nobody here sent | `failed` | `finished` |
 | reached its limit | `failed` | `expired` |
 | a cancel or `session.task.cancel` | `cancelled` | `cancelled_by_host` |
 | `ShellJob {kill: true}` | `cancelled` | `cancelled_by_model` |
