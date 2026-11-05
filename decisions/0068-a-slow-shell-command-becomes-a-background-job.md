@@ -8,8 +8,8 @@ Profile: `open-agent-protocol.agent-control-core`
 Scope: `oapx`'s own agent loop. A third-party harness's commands keep the
 behaviour its harness gives them.
 Amends: [Decision 0059](0059-a-background-shell-job-lives-for-its-session.md),
-whose rule 1 ended every foreground command with its call and whose rule 3 set
-no time limit on a job
+whose rule 1 ended every foreground command with its call, whose rule 3 set no
+time limit on a job, and whose rule 4 gave `ShellJob` no way to ask for a wake
 
 ## Context
 
@@ -41,11 +41,14 @@ applies to it: its process group ends with the call.
 
 At 5 seconds the command is not killed and not restarted. It becomes a
 background job, and the call returns its `task_id`, its `output_path` and the
-output so far. From then on it is a job under Decision 0059 rules 2 to 5, except
+output so far, up to a byte offset N it states. From then on it is a job under Decision 0059 rules 2 to 5, except
 as rule 5 below says. The model does not choose this, and no argument opts out.
 
-The call completes normally. It is not a failure, and the result says the
-command is still running and that its end will be reported.
+The call completes normally. It is not a failure. The result tells the model
+that the command is still running in the background, that it will be told when
+the command ends, that it can keep working, and that it can call
+`ShellJob {path, wake_on: "<regex>"}` to be woken earlier, for example on an error
+or a server coming up.
 
 `run_in_background: true` still starts a job at once, without the budget.
 
@@ -104,10 +107,11 @@ moved command is like any other job, and only `ShellJob {kill: true}`, a
 
 ### 6. Nothing wakes on a timer
 
-A job wakes its session once, when it ends. There is no progress notice and no
-periodic output. The limit in rule 3 is a timer on the process, not on the model:
-it ends the job, and that end is the one wake. The model reads `output_path` when it wants to, with Read or
-`ShellJob`.
+A job wakes its session when it ends, and also on a match if the model asked for
+one under rule 8. There is no progress notice and no periodic output. With no
+`wake_on`, the end is the one wake. The limit in rule 3 is a timer on the process,
+not on the model: it ends the job, and that end is the wake. The model reads
+`output_path` when it wants to, with Read or `ShellJob`.
 
 ### 7. `run.completed` does not mean the work is finished
 
@@ -117,6 +121,31 @@ the command's result then arrives in a later run on the same session. A host
 that needs everything finished waits for a session with no active run and no
 running task. A host that closes a session after its first terminal ends that
 session's jobs, as Decision 0059 rule 3 says.
+
+### 8. `wake_on` wakes the session on a matching line
+
+`ShellJob {path, wake_on}` sets a wake rule on a running job, moved or started with
+`run_in_background`. It is an optional member of the existing tool, and no new tool
+exists. `wake_on` is an RE2 regular expression that matches anywhere in a line. A
+pattern that does not compile is an error, and so is `wake_on` with `kill: true`. A
+job that has already ended takes no rule, and the answer says so.
+
+- **Where matching starts.** Each job keeps the offset the model has seen: N from
+  rule 2, 0 for a `run_in_background` job, and the offset of its last wake after
+  that. Matching starts at the line holding that offset, not at the moment
+  `wake_on` is set, so output written while the model was deciding is not missed.
+- **Line by line.** Only complete lines match, plus a last line with no newline
+  when the job ends. A job has one rule, and a new `wake_on` replaces it.
+- **A rule fires once.** The rule is gone as soon as it matches, however many more
+  lines would match. The model sets it again if it wants more, and matching then
+  starts at that wake's offset.
+- **The wake** carries the `task_id`, the matching line, up to three lines either
+  side of it that exist yet, and the current byte offset. It is delivered as a job
+  end is under rule 4: folded into the next model request if a turn is running,
+  otherwise a triggered run with trigger kind `background_task` and the job's
+  `task_id`. The job keeps running.
+- **The end still wakes.** A rule that fired changes nothing about rule 4. A rule
+  that has not fired ends with its job, after a last look at the output.
 
 ## Consequences
 

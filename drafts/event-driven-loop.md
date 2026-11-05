@@ -114,6 +114,7 @@ const Event = union(enum) {
     tool_admitted,
     tool_done: []const u8,
     tool_moved: MovedTool,
+    job_matched: JobNotice,
     job_ended: JobNotice,
     gate: bool,
     cancel,
@@ -246,11 +247,48 @@ fits the plan.
   exit watch then posts `job_ended` as for any end, with a reason that tells the
   model it hit the 1 hour limit. The limit is a deadline on the job, so it needs no
   model call of its own.
-- Only the end wakes anything. A timer that pushed output would be a model call
-  per job per interval, and at 10,000 agents those calls would be the workload.
+- Nothing wakes on a timer. A timer that pushed output would be a model call per
+  job per interval, and at 10,000 agents those calls would be the workload. A job
+  wakes its session at its end, and on a match if the model asked for one.
 
 This does not need the reactor. On the existing loop a job costs its watcher
 thread until stage 6 replaces it.
+
+### Waking on a match
+
+The moved call's result offers `ShellJob {path, wake_on: "<regex>"}`, so a model
+that wants to hear about an error or a server coming up can ask. A rule fires once
+and is then gone, which stops a noisy log waking the session hundreds of times.
+Decision 0068 rule 8 has the whole rule.
+
+**How output is read.** A job's stdout and stderr go straight to its file, so the
+Hub holds no pipe to read. The matcher reads the file instead. A pipe would let a
+slow matcher stall the job, and the file is already the record the model reads.
+
+- A job with no rule costs nothing here: no watch, and no byte read.
+- Setting a rule opens a read descriptor at the line holding the offset the model
+  has seen, reads to the end of the file, and matches what is already there. That
+  is what catches a line written while the model was deciding.
+- After that a file watch says when the job wrote: `EVFILT_VNODE` with `NOTE_WRITE`
+  on `kqueue`, and `inotify` on Linux, since `epoll` cannot watch a regular file.
+  Each event reads to the end of the file, so a burst of writes is one read. Nothing
+  polls. A partial last line stays buffered, up to a bound, until its newline.
+- A command that redirects its own output elsewhere writes nothing here, so a rule
+  cannot see that output.
+
+On the existing loop the watcher thread does this. Today it blocks in `waitLeader`
+(`zig/src/tools/shell.zig`), which cannot also see a write, so it changes to block
+on one `kqueue` or `epoll` set: the process's exit (`EVFILT_PROC`, or a `pidfd`), the
+file watch, and a wakeup descriptor that says a rule was set. It still reaps the
+leader and ends the group as today. In the event-driven loop the same registrations
+move to the reactor, and the read and match go to the bounded pool, because a noisy
+log is CPU work.
+
+**The line matcher.** `zig/src/validation/re2.zig` has only `fullMatch`, so a thin
+layer compiles the pattern as `.*(?:pattern).*` and runs `fullMatch` on each line.
+The engine has no backtracking, so a line costs time linear in its length.
+`fullMatch` answers null for bytes it cannot decode, and a line like that counts as
+no match rather than ending the rule.
 
 ### What run completion means to a host
 
@@ -293,14 +331,16 @@ What has to stay alive is the process and one exit watch, not the agent. So for
 `oapx`:
 
 - The job table moves out of the session to the Hub, then to a reactor at stage 6.
-  A row holds the session id, `task_id`, process group, `output_path` and deadline,
-  so the limit fires for a parked session too.
+  A row holds the session id, `task_id`, process group, `output_path`, deadline and
+  any wake rule with its offset, so the limit and a match work for a parked session
+  too.
 - A live job in that table no longer blocks a park, at either level. A park is not
   a close, so Decision 0059 rule 3 is unchanged: closing the session, parked or
   not, ends its jobs.
-- When a job ends, its row loads the parked session and starts a triggered run, as
-  a parked `backoff` run's deadline entry does. Nothing wakes before that.
-- A burst of job ends becomes a burst of runs in `model_queued`, so the model
+- When a job ends or its rule matches, its row loads the parked session and starts
+  a triggered run, as a parked `backoff` run's deadline entry does. Nothing else
+  wakes it.
+- A burst of job ends or matches becomes a burst of runs in `model_queued`, so the model
   limit absorbs it.
 
 A third-party harness is different: its jobs live inside its process, so a live job
@@ -578,6 +618,10 @@ loop and does not wait for the reactor. Triggered runs and `session.task.*` in
 - Its result then arrives by itself, once: folded when it ends mid-turn, and as a
   triggered run when it ends on an idle session, with no model call in between.
 - A command that reaches the 1 hour limit is ended, and the model is told why.
+- A `wake_on` match wakes the session once mid-turn, and once when idle.
+- A line written after byte N but before `wake_on` was set still matches.
+- A flood of matching lines causes one wake.
+- The job's end still wakes after a rule fired.
 
 Its size is not estimated yet. The job table moves out of the session in stage 6, and parking
 with a live job is part of stage 7's pass condition.
@@ -670,3 +714,5 @@ The owner decided these on 2026-11-05:
    ([Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md)).
 5. **Command limit.** A `Shell` command has a 1 hour limit, as the default and the
    maximum for `timeout_ms`. At the limit it is ended and the model is told why.
+6. **Match wake.** The model can ask `ShellJob` to wake it on a matching output
+   line. Without that, a job wakes its session once, at its end.
