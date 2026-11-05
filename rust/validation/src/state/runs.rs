@@ -276,10 +276,9 @@ impl State {
     fn admit_triggered(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
         let session = os(&e.session_id);
         let executing = self
-            .active
-            .get(&session)
-            .and_then(|active| self.runs.get(active))
-            .is_some_and(|run| run.started && !run.terminal);
+            .runs
+            .values()
+            .any(|run| run.session == session && run.started && !run.terminal);
         if executing {
             self.add(
                 codes::ILLEGAL_RUN_TRANSITION,

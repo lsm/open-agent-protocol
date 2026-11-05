@@ -1072,11 +1072,13 @@ pub const RunStarted = struct {
     run_id: []const u8,
     model_id: ?[]const u8 = null,
     started_at_ms: ?i64 = null,
+    trigger_json: ?[]const u8 = null,
 
     pub fn deinit(self: *RunStarted, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.run_id);
         if (self.model_id) |value| allocator.free(value);
+        if (self.trigger_json) |value| allocator.free(value);
     }
 };
 
