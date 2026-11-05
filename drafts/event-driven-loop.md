@@ -1,12 +1,12 @@
 # Event-Driven Agent Loop
 
-Status: proposal under review. The owner has approved the direction. Stage 0 is
-merged, and later stages wait until this draft lands. Two decisions are open,
-listed at the end.
+Status: adopted plan. The owner chose this design on 2026-11-05, with the
+decisions listed at the end. Stage 0 is merged, and stage 1 comes next.
 
 Scope: the Zig runtime (`zig/src/agent`, `adapter/oapx`, `hub`, `providers`,
-`tools`). This draft changes no wire behaviour. The Parking section names the
-protocol questions that parking raises, and those would need their own decision.
+`tools`). The loop itself changes no wire behaviour. [Slow commands](#slow-commands)
+needs triggered runs on the wire, and the Parking section names the protocol
+questions that parking raises, which would need their own decision.
 
 ## Goal
 
@@ -19,6 +19,8 @@ The targets are:
 - 10,000 agents must work, and 100,000 is the goal.
 - The thread count is fixed: a few reactor threads and a small bounded I/O pool.
 - An idle agent costs no CPU and causes no wakeups, so nothing polls.
+- An agent never sits and waits on a slow command
+  ([Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md)).
 - No process per agent. A tool's subprocess exists only while the tool runs,
   behind a bounded queue, and file tools do not fork.
 - Memory allows 100,000 agents, which means parking cold runs to disk.
@@ -111,6 +113,8 @@ const Event = union(enum) {
     timer,
     tool_admitted,
     tool_done: []const u8,
+    tool_moved: MovedTool,
+    job_ended: JobNotice,
     gate: bool,
     cancel,
     resumed,
@@ -121,6 +125,7 @@ const Action = union(enum) {
     send_model,
     queue_tool,
     run_tool,
+    move_tool,
     open_gate,
     abort_io,
     arm_timer: u32,
@@ -207,7 +212,7 @@ the lightweight task the goal asks for, and its stack is a plain struct.
 | `Shell` | Spawn on the pool, then watch the pipe and the exit in the reactor. A child can exit before its watch is registered: `kevent` then returns `ESRCH`, which must count as exited |
 | File tools | Run on the pool, with no fork |
 | MCP | Move the child's stdio into the reactor, replacing the poll in `mcp_bridge.zig` |
-| Background jobs | Replace the watcher thread in `shell.zig` with an exit watch |
+| Background jobs | Replace the watcher thread in `shell.zig` with an exit watch, in a job table the session does not own (see [Slow commands](#slow-commands)) |
 | Gates | `phase = .gate`. A resolution is an event, and no thread waits |
 | `agentLoopContinue` | Post `resumed` to an idle run |
 | Cancel | An event: `step` emits `abort_io`, which closes the socket or kills the child |
@@ -215,6 +220,91 @@ the lightweight task the goal asks for, and its stack is a plain struct.
 The TLS approach was tried against a loopback LibreSSL server on TLS 1.2 and 1.3,
 feeding one byte at a time. That test used `no_verification`, so real certificate
 validation, partial writes and post-handshake messages are unverified.
+
+## Slow commands
+
+The rule is [Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md),
+which amends rule 1 of Decision 0059: every `Shell` command gets 5 seconds in the
+foreground, and past that it becomes a session background job. This section says
+how the rule fits the plan.
+
+### How a command moves
+
+- A command's output goes to its job file from the start, and the file is removed
+  if the call ends within the budget. The move is then bookkeeping: the process
+  keeps its pipes and its group, and no byte can fall between a reader and a file.
+- The budget is an `arm_timer` on the reactor. When it fires and the command is
+  still running, `step` emits `move_tool`, and the driver records the job and posts
+  `tool_moved`, which `step` treats as that call's result.
+- A cancel inside the budget kills the command as today. After the move, a cancel
+  of the run that moved it ends it too.
+- The job's exit watch posts `job_ended`. `step` folds the notice if the run has
+  another model request to make, holds it during a final request, and otherwise
+  the session starts a triggered run.
+- Only the end wakes anything. A timer that pushed output would be a model call
+  per job per interval, and at 10,000 agents those calls would be the workload.
+
+This does not need the reactor. On the existing loop a job costs its watcher
+thread until stage 6 replaces it.
+
+### What run completion means to a host
+
+A run can complete while its command still runs. `run.completed` means the agent
+finished its turn, not that the work is finished. Three things follow:
+
+- The moved call's `action.call.completed` carries the `task_id`, and
+  `session.task.started` names the same `run_id` and `tool_call_id`, so a host can
+  show the work as still going.
+- The result arrives later as a folded notice or a triggered run. A subscription
+  outlives a run (Decision 0066), so it arrives on the open stream.
+- A host that needs everything finished waits for no active run and no running
+  task. Closing a session ends its jobs, so a host that closes at its first
+  terminal loses a moved command. Such a host has to read `state.tasks` first.
+
+Triggered runs are not on the wire yet, so `oapx` adopts `run.started.trigger` and
+`session.task.*` from `drafts/triggered-runs.md` before the budget lands. The
+budget must not land first, or it would strand results.
+
+### The tool budget
+
+A moved command leaves the `Shell` limit, which is what stops a `sleep`-style
+tool holding a slot while doing nothing. With a limit of 1,024 and a 5 second
+budget, slots turn over at no less than about 200 calls per second. That figure
+is arithmetic, not a measurement.
+
+A moved command takes a job slot instead. The move never fails, because the
+process already exists. When job slots run out, new `Shell` calls wait in
+`tool_queued`, and the process guard below stays the real limit.
+
+### Parking and 100,000 agents
+
+A session with a live job cannot park today, because `Session.holdsNoLiveWork()`
+refuses it and closing the session kills its jobs. Left that way, every agent
+waiting on a long command stays resident, and slow commands become the common
+case once this rule moves them.
+
+What has to stay alive is the process and one exit watch, not the agent. So for
+`oapx`:
+
+- The job table moves out of the session to the Hub, then to a reactor at stage 6.
+  A row holds the session id, `task_id`, process group and `output_path`.
+- A live job in that table no longer blocks a park, at either level. A park is not
+  a close, so Decision 0059 rule 3 is unchanged: closing the session, parked or
+  not, ends its jobs.
+- When a job ends, its row loads the parked session and starts a triggered run, as
+  a parked `backoff` run's deadline entry does. Nothing wakes before that.
+- A burst of job ends becomes a burst of runs in `model_queued`, so the model
+  limit absorbs it.
+
+A third-party harness is different: its jobs live inside its process, so a live job
+still blocks a park there, and the fail-closed rule stands. Live MCP servers still
+block one too. Until the table moves, an `oapx` session with a live job stays
+resident, which is safe and merely costs memory.
+
+The job quota bounds how many commands run at once, so 100,000 agents do not mean
+100,000 long commands. The rest wait in `tool_queued`, which costs them no thread,
+and they can park there once queued runs can. An agent parked on a long command
+costs its resident summary plus one row.
 
 ## Hub changes
 
@@ -267,8 +357,9 @@ in `model_queued` or `tool_queued` also stays resident at first.
 time. A parked `backoff` run therefore leaves one entry in its reactor's deadline
 queue, and that entry loads it when the retry is due.
 
-A session with a live background job or MCP server does not park, at least at
-first.
+A session with a live MCP server does not park, at least at first. A live job
+stops blocking a park once the job table leaves the session, as
+[Parking and 100,000 agents](#parking-and-100000-agents) says.
 
 ### Two levels of parking
 
@@ -277,8 +368,8 @@ home, and run parking extends it rather than restating it:
 
 | Level | What it does | Condition |
 |---|---|---|
-| Session (#1615) | Stops an idle session's harness and keeps the session in Hub memory | No active run, no pending interaction, no live tool source or job. A third-party adapter parks only if it declares it can report live background work |
-| Run (stage 7) | Saves a run to disk and frees it, on the new loop | The run is in `idle`, `gate` or `backoff`, and no tool source or job is live |
+| Session (#1615) | Stops an idle session's harness and keeps the session in Hub memory | No active run, no pending interaction, no live tool source or job. A third-party adapter parks only if it declares it can report live background work. For `oapx`, a job in the Hub's table does not count |
+| Run (stage 7) | Saves a run to disk and frees it, on the new loop | The run is in `idle`, `gate` or `backoff`, and no tool source is live. A job in the table does not count |
 
 A subscriber blocks neither level. Both use one resident summary, so `state` can
 answer for a parked session without waking it: its status and its active runs with
@@ -322,18 +413,21 @@ else the user runs shares that limit, so about half of it, 2,000 calls, is the
 practical figure. Both are estimates, not bounds:
 
 - A command can spawn any number of descendants, and nothing here limits them.
-- A background job (`run_in_background`) returns at once and its process group
-  lives until the session closes, so it would release its slot while its processes
-  stay. Background jobs need a separate quota, held for the job's lifetime.
+- A background job, started with `run_in_background` or moved past its 5 second
+  budget, releases its `Shell` slot while its processes stay. Background jobs need
+  a separate quota, held for the job's lifetime. About 1,000 is the starting
+  default, which is what the practical figure leaves beside 1,024 `Shell` calls.
+  Stage 6 measures it, and it is configurable.
 - Bounding descendants needs a per-call limit from the operating system, which is
   not designed here.
 
 A process guard should therefore watch the real count and stop admitting tools
 near the limit, rather than trusting the arithmetic.
 
-The limit is a real trade-off. With a limit of 64, `working` at N=1,000 fell to 15
-runs per second, because a `sleep`-style tool holds a slot while doing nothing.
-With 1,024 it reached about 81. The budget must be shared across reactors: a
+The default limit is 1,024 concurrent `Shell` calls, configurable, and beyond it
+calls queue. The limit is a real trade-off. With a limit of 64, `working` at
+N=1,000 fell to 15 runs per second, because a `sleep`-style tool holds a slot while
+doing nothing. With 1,024 it reached about 81. The budget must be shared across reactors: a
 static split probably explains the prototype's loss on `hold-tool` (see below).
 That cause has not been isolated.
 
@@ -468,6 +562,14 @@ flat idle CPU, and no bad tool results, then parked agents at N=100,000.
 The agent limit starts moving at stage 5, and the Hub's bottleneck moves at stage
 2 rather than at the end. Stages 4 and 6 carry the most risk.
 
+[Slow commands](#slow-commands) is its own track, because it works on the existing
+loop and does not wait for the reactor. Triggered runs and `session.task.*` in
+`oapx` land first, then the budget. Its pass condition is a `sleep 60` that returns
+a `task_id` in about 5 s, then reports its result once, folded in a running turn
+and as a triggered run on an idle session, with no model call in between. Its size
+is not estimated yet. The job table moves out of the session in stage 6, and parking
+with a live job is part of stage 7's pass condition.
+
 ### Stage 1: retire the unknowns first
 
 These are cheap next to about 14,500 lines, and they decide whether those lines
@@ -488,7 +590,9 @@ If Linux or real sizes fail in a way that cannot be fixed, the plan stops at sta
 `step` against itself. Before stage 4, record event traces from the old loop across
 the existing scenarios and fixtures: text, tool calls, gates, cancel at each phase,
 retries, overflow recovery, steering and compaction. `step` must reproduce each
-trace, ignoring only ids and timestamps. Building that harness is part of stage 4's
+trace, ignoring only ids and timestamps. A command past its 5 second budget is a
+deliberate change, so traces are recorded after the budget lands, or with commands
+shorter than it. Building that harness is part of stage 4's
 size, and the same traces gate stages 5 and 6.
 
 Overflow and retry state (#1572, #1578, #1590) is already shaped as data and moves
@@ -509,6 +613,8 @@ its resume across runs must be designed with the on-disk journal.
    path shrinks at every step.
 7. `agent_loop.zig` and `agent.zig` are hot files, so other work there will
    conflict and has to be coordinated.
+8. A host written for "the run's terminal is the end of the work" now misses
+   results, or loses a moved command by closing the session.
 
 ## Not verified
 
@@ -526,6 +632,12 @@ its resume across runs must be designed with the on-disk journal.
   measured at 35-40 to 65-67 runs per second at N=1,000, but the ready queue and
   budgeted passes have not been tried.
 
+- Everything under [Slow commands](#slow-commands). None of it was prototyped, and
+  the prototype has no background jobs.
+- What the 5 second budget does to the benchmarks. `working` sleeps for 1-5 s, at
+  the edge of the budget, and `hold-tool` would become a job scenario, so its
+  results need reading afresh.
+
 ## Rust
 
 The Rust hub also scales threads linearly: 10,003 threads at 10,000 waiting agents.
@@ -534,10 +646,13 @@ The Rust hub also scales threads linearly: 10,003 threads at 10,000 waiting agen
 removing the 5 ms sleeps in `stdio.rs`, should fix it. That estimate comes from
 reading the code and is untested.
 
-## Open decisions
+## Decisions
 
-The owner has not decided these, or the plan as a whole.
+The owner decided these on 2026-11-05:
 
-1. **Disk.** About 80 GB for 100,000 real-size runs, with ageing.
-2. **Tool budget.** A default global limit of 1,024 concurrent `Shell` calls,
+1. **The plan.** Go with the event-driven agent loop.
+2. **Disk.** Accept about 80 GB for 100,000 real-size runs, with ageing.
+3. **Tool budget.** A default global limit of 1,024 concurrent `Shell` calls,
    configurable. Beyond it, calls queue.
+4. **Slow commands.** An agent never sits and waits on a slow command
+   ([Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md)).
