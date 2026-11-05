@@ -13,6 +13,9 @@ runs, and that:
 Nothing in the design is left open. What each adapter still has to record
 against its pin is listed under *Where it lands*.
 
+[Decision 0069](../decisions/0069-triggered-runs-graduate.md) graduates
+`run.started.trigger` and the rules for admitting one. The rest stays a proposal.
+
 `oapx`'s own loop needs this too:
 [Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md)
 reports a job's end as a triggered run, so `oapx` adopts it first.

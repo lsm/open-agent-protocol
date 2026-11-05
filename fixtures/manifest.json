@@ -7578,7 +7578,6 @@
       "phase": "semantic",
       "codes": [
         "illegal_run_transition",
-        "queue_order_violation",
         "queue_order_violation"
       ],
       "units": [
@@ -16792,6 +16791,116 @@
       ],
       "rules": [
         "0056#an-answer-answers-the-prompt-it-resolves/3"
+      ]
+    },
+    {
+      "id": "triggered-run-on-idle-session",
+      "path": "valid/triggered-run-on-idle-session.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-trigger-belongs-to-a-run-nothing-reserved/2"
+      ]
+    },
+    {
+      "id": "triggered-run-after-a-submitted-run",
+      "path": "valid/triggered-run-after-a-submitted-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-triggered-run-starts-only-on-an-idle-session/1"
+      ]
+    },
+    {
+      "id": "triggered-run-ahead-of-a-reservation",
+      "path": "valid/triggered-run-ahead-of-a-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-triggered-run-goes-ahead-of-waiting-reservations/1"
+      ]
+    },
+    {
+      "id": "triggered-run-while-a-run-executes",
+      "path": "semantic-invalid/triggered-run-while-a-run-executes.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition",
+        "queue_order_violation"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-triggered-run-starts-only-on-an-idle-session/1",
+        "0007#one-run-executes-at-a-time-in-admission-order/1"
+      ]
+    },
+    {
+      "id": "triggered-run-on-a-reserved-run",
+      "path": "semantic-invalid/triggered-run-on-a-reserved-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-trigger-belongs-to-a-run-nothing-reserved/1"
+      ]
+    },
+    {
+      "id": "unreserved-run-without-a-trigger",
+      "path": "semantic-invalid/unreserved-run-without-a-trigger.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-trigger-belongs-to-a-run-nothing-reserved/2"
       ]
     }
   ]

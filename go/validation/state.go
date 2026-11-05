@@ -982,6 +982,39 @@ func (s *state) applyModelControl(st *sessionTrack, controls admittedControls) {
 		st.mutated = true
 	}
 }
+func triggeredStart(e protocol.Envelope) bool {
+	if e.Type != protocol.TypeRunStarted {
+		return false
+	}
+	var p protocol.RunStartedPayload
+	return e.DecodePayload(&p) == nil && p.Trigger != nil
+}
+
+func (s *state) admitTriggered(i, line int, e protocol.Envelope) *runState {
+	st := s.sessions[e.SessionID]
+	if st == nil {
+		st = &sessionTrack{}
+		s.sessions[e.SessionID] = st
+	}
+	if prev := s.runs[st.active]; prev != nil && prev.started && !prev.terminal {
+		s.add(CodeIllegalRunTransition, i, line, e, "/payload/trigger", "a triggered run starts only on an idle session")
+	}
+	position := len(st.order)
+	for index, id := range st.order {
+		if waiting := s.runs[id]; waiting != nil && !waiting.started && !waiting.terminal {
+			position = index
+			break
+		}
+	}
+	for _, id := range st.order[position:] {
+		s.runs[id].order++
+	}
+	run := &runState{id: e.RunID, session: e.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, order: position, admittedAt: i, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}}
+	s.runs[e.RunID] = run
+	st.order = slices.Insert(st.order, position, e.RunID)
+	return run
+}
+
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
 		SessionID protocol.SessionID `json:"session_id"`
@@ -990,6 +1023,13 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	_ = e.DecodePayload(&scope)
 	s.checkScope(i, line, e, scope.SessionID, scope.RunID)
 	r := s.runs[e.RunID]
+	triggered := triggeredStart(e)
+	if triggered && r != nil {
+		s.add(CodeIllegalRunTransition, i, line, e, "/payload/trigger", "a run a submit reserved carries no trigger")
+	}
+	if triggered && r == nil {
+		r = s.admitTriggered(i, line, e)
+	}
 	if r == nil {
 		s.add(CodeIllegalRunTransition, i, line, e, "/run_id", "run event has no accepted admission")
 

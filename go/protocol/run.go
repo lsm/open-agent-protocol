@@ -33,7 +33,25 @@ type RunStartedPayload struct {
 	Status      RunStatus `json:"status"`
 	ModelID     string    `json:"model_id,omitempty"`
 	StartedAtMS int64     `json:"started_at_ms,omitempty"`
+	Trigger     *Trigger  `json:"trigger,omitempty"`
 }
+
+type Trigger struct {
+	Kind       TriggerKind     `json:"kind"`
+	Input      []ContentPart   `json:"input,omitempty"`
+	TaskID     string          `json:"task_id,omitempty"`
+	SourceID   string          `json:"source_id,omitempty"`
+	Extensions json.RawMessage `json:"extensions,omitempty"`
+}
+
+type TriggerKind string
+
+const (
+	TriggerBackgroundTask TriggerKind = "background_task"
+	TriggerSchedule       TriggerKind = "schedule"
+	TriggerMessage        TriggerKind = "message"
+	TriggerOther          TriggerKind = "other"
+)
 
 type RunStatusUpdatedPayload struct {
 	SessionID          SessionID     `json:"session_id"`

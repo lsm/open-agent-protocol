@@ -132,6 +132,22 @@ pub struct RunStartedPayload {
     pub model_id: String,
     #[serde(skip_serializing_if = "is_zero_i64")]
     pub started_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Trigger>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Trigger {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub input: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub task_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -126,6 +126,31 @@ Source: [`decisions/0009-compound-open.md`](../../decisions/0009-compound-open.m
 | --- | --- | --- | --- | --- | --- | --- |
 | `0009#the-response-carries-two-facts-and-already-had-the-shape-for-both/1` | A successful compound open's response MUST list exactly one run its message admitted, anchored to the open request. | L87–91 | `session_state_mismatch` | `compoundopen.go:compoundOpenResponse` | — | — |
 
+### [0069] A triggered run starts only on an idle session
+
+Source: [`decisions/0069-triggered-runs-graduate.md`](../../decisions/0069-triggered-runs-graduate.md#a-triggered-run-starts-only-on-an-idle-session).
+
+| id | rule | lines | code | Go | Zig | Rust |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0069#a-triggered-run-starts-only-on-an-idle-session/1` | A `run.started` with `trigger` MUST NOT arrive while a run of the session is started and nonterminal. | L39–41 | `illegal_run_transition` | `state.go:admitTriggered` | `semantic.zig:admitTriggered` | `runs.rs:admit_triggered` |
+
+### [0069] A trigger belongs to a run nothing reserved
+
+Source: [`decisions/0069-triggered-runs-graduate.md`](../../decisions/0069-triggered-runs-graduate.md#a-trigger-belongs-to-a-run-nothing-reserved).
+
+| id | rule | lines | code | Go | Zig | Rust |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0069#a-trigger-belongs-to-a-run-nothing-reserved/1` | A `run.started` with `trigger` MUST NOT name a run a submit reserved. | L45–46 | `illegal_run_transition` | `state.go:runEvent` | `semantic.zig:runEvent` | `runs.rs:run_event` |
+| `0069#a-trigger-belongs-to-a-run-nothing-reserved/2` | A `run.started` without `trigger` MUST NOT name a run nothing reserved. | L46–47 | `illegal_run_transition` | `state.go:runEvent` | `semantic.zig:runEvent` | `runs.rs:run_event` |
+
+### [0069] A triggered run goes ahead of waiting reservations
+
+Source: [`decisions/0069-triggered-runs-graduate.md`](../../decisions/0069-triggered-runs-graduate.md#a-triggered-run-goes-ahead-of-waiting-reservations).
+
+| id | rule | lines | code | Go | Zig | Rust |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0069#a-triggered-run-goes-ahead-of-waiting-reservations/1` | A triggered run MAY start while reservations wait, and it enters the order ahead of every reservation still queued. | L51–55 | — | `state.go:admitTriggered` | `semantic.zig:admitTriggered` | `runs.rs:admit_triggered` |
+
 ### [0009] One refusal answers one election
 
 Source: [`decisions/0009-compound-open.md`](../../decisions/0009-compound-open.md#one-refusal-answers-one-election).

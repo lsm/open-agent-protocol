@@ -133,6 +133,9 @@ exist.
 
 ## PF-4. Background work escaping the run boundary — **deferral confirmation**
 
+[Decision 0069](../decisions/0069-triggered-runs-graduate.md) ends this deferral for
+a run that starts without a submit. Background tasks stay deferred.
+
 **Evidence.** Claude Code: background tasks legally outlive their turn; the
 adapter publishes a held terminal on the authoritative `session_state_changed:
 idle` signal and prunes child edges (review-verified). Hermes #6/#7: `btw` is

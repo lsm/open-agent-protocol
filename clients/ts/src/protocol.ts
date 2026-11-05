@@ -708,6 +708,15 @@ export interface RunStartedPayload {
   status: 'running';
   model_id?: string;
   started_at_ms?: number;
+  trigger?: Trigger;
+}
+
+export interface Trigger {
+  kind: 'background_task' | 'schedule' | 'message' | 'other';
+  input?: ContentPart[];
+  task_id?: string;
+  source_id?: string;
+  extensions?: Record<string, unknown>;
 }
 
 export interface RunStatusUpdatedPayload {

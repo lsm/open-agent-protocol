@@ -4689,11 +4689,37 @@ pub const Machine = struct {
         }
     }
 
+    fn admitTriggered(self: *Machine, index: usize, envelope: std.json.Value, run_id: []const u8) !*Run {
+        const session_id = field(envelope, "session_id");
+        const holder = try self.sessionFor(session_id);
+        if (self.runs.get(holder.active)) |previous| {
+            if (previous.started and !previous.terminal) try self.add(code_illegal_run_transition, index);
+        }
+        var position = holder.order.items.len;
+        for (holder.order.items, 0..) |id, at| {
+            const waiting = self.runs.get(id) orelse continue;
+            if (waiting.started or waiting.terminal) continue;
+            position = at;
+            break;
+        }
+        for (holder.order.items[position..]) |id| {
+            if (self.runs.get(id)) |later| later.order += 1;
+        }
+        const run = try self.arena.allocator().create(Run);
+        run.* = .{ .id = run_id, .session = session_id, .admitted = true, .last_index = index, .admitted_at = index, .order = position, .status = "queued" };
+        try self.runs.put(self.allocator, run_id, run);
+        try holder.order.insert(self.allocator, position, run_id);
+        return run;
+    }
+
     fn runEvent(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !void {
         const scoped = member(envelope, "payload") orelse std.json.Value{ .null = {} };
         try self.checkScope(index, envelope, .{ .session = memberString(scoped, "session_id"), .run = memberString(scoped, "run_id") });
         const run_id = field(envelope, "run_id");
         var run = self.runs.get(run_id);
+        const triggered = std.mem.eql(u8, declared, "run.started") and member(scoped, "trigger") != null;
+        if (triggered and run != null) try self.add(code_illegal_run_transition, index);
+        if (triggered and run == null) run = try self.admitTriggered(index, envelope, run_id);
         if (run == null) {
             try self.add(code_illegal_run_transition, index);
             const created = try self.arena.allocator().create(Run);
