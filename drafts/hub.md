@@ -1289,6 +1289,12 @@ the tools, metadata and allowed degraded features a session opened with in memor
 for the reopen; a park lasts only as long as the process, so they never reach the
 binding store.
 
+`oapx serve --park-after <seconds>` parks a parkable session once it has been idle
+that long; with no flag nothing parks on its own. Input to a session and its events
+count as activity. Reading it does not, so a client polling `state` keeps nothing
+awake. A refused park does not restart that clock, so a session parks as soon as what
+refused it ends.
+
 A park drops the session's journal, and every run from before it answers a cursor
 with `oap-replay-gap`, as a harness restart does: nothing pretends the old events
 are still there. A read does not change what it reads: `state` answers from what
@@ -1302,6 +1308,8 @@ is that operation's failure, and the session stays parked.
 | A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
 | A cursor from before a park is `oap-replay-gap` | Zig: `a cursor from before a park is a replay gap`; see D37 |
 | A session with a run or a hold does not park, and a park stops the harness | Zig: `parking stops the harness, and no run, live job or hold lets it`; see D37 |
+| A session parks once idle past the limit, activity puts that off and a read does not | Zig: `a session parks once it has been idle past the limit, and activity puts that off`; see D37 |
+| A park the limit reached but a hold refused happens as soon as the hold ends | Zig: `a hold that outlasts the limit parks the session as soon as it ends`; see D37 |
 | A session that cannot report live work never parks | Zig: `a session that cannot report live work never parks`; see D37 |
 | A session with a live tool source does not park | Zig: `a session with a live tool source does not park`; see D37 |
 | A wake reopens with what the session opened with | Zig: `a wake reopens with the tools and metadata the session opened with`; see D37 |
@@ -2622,9 +2630,8 @@ says `Allow: GET`, and its route test pins that. Answering `GET, HEAD` for a
 
 ### D37 — Parking is not in every tree yet
 
-[Parking](#parking) lands one tree at a time. Zig's hub can park and wake a session,
-and nothing parks one on its own yet: no tree has the idle timer, and Go and Rust
-have no park at all.
+[Parking](#parking) lands one tree at a time. Zig parks and wakes a session behind
+`--park-after`; Go and Rust have no park at all.
 
 ### Recorded, and not divergences
 
