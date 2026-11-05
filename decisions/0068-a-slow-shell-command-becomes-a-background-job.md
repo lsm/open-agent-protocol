@@ -67,8 +67,7 @@ limit is one more way a job ends, so the model is told through the notice in rul
 This applies to every job, moved or started with `run_in_background`, that exits
 or reaches its limit. The result is a notice carrying the `task_id`, the `output_path`, the
 status from Decision 0059 rule 4, a bounded tail of the output and, for a job that
-reached its limit, the reason. On the wire that job's `session.task.ended` has
-status `failed` and cause `expired`.
+reached its limit, the reason.
 
 - If a turn is running and has another model request to make, the notice is
   folded into that request. No further run follows.
@@ -81,7 +80,19 @@ Admission, ordering and racing submits follow *One run executes at a time* in
 `drafts/triggered-runs.md`.
 
 A job ended by `ShellJob {kill: true}`, by a cancel or by its session's close
-gives no notice and starts no run, as Claude's `stop_task` does not.
+gives the model no notice and starts no run, as Claude's `stop_task` does not.
+
+Every job's end still reaches the host, whatever the model is told.
+`session.task.ended` and `state.tasks` report it as `drafts/triggered-runs.md` says:
+
+| how the job ended | `status` | `cause` |
+| --- | --- | --- |
+| exited 0 | `completed` | `finished` |
+| exited nonzero, or by a signal it was not sent here | `failed` | `finished` |
+| reached its limit | `failed` | `expired` |
+| a cancel or `session.task.cancel` | `cancelled` | `cancelled_by_host` |
+| `ShellJob {kill: true}` | `cancelled` | `cancelled_by_model` |
+| its session closed | `cancelled` | `session_closed` |
 
 ### 5. Cancelling a run ends the commands it moved
 
