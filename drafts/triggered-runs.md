@@ -13,6 +13,10 @@ runs, and that:
 Nothing in the design is left open. What each adapter still has to record
 against its pin is listed under *Where it lands*.
 
+`oapx`'s own loop needs this too:
+[Decision 0068](../decisions/0068-a-slow-shell-command-becomes-a-background-job.md)
+reports a job's end as a triggered run, so `oapx` adopts it first.
+
 Base protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
 
