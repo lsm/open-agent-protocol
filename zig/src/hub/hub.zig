@@ -17,6 +17,8 @@ pub const default_shutdown_ns = 10 * std.time.ns_per_s;
 pub const close_attempts = 3;
 pub const close_retry_wait_ns = 100 * std.time.ns_per_ms;
 pub const default_participant = "user";
+pub const pass_sessions: usize = 64;
+pub const pass_budget_ns: u64 = 4 * std.time.ns_per_ms;
 
 pub const Failure = error{
     UnknownAdapter,
@@ -312,6 +314,12 @@ pub fn expiredAt(expires_ns: u64, at_ns: u64) bool {
     return expires_ns <= at_ns;
 }
 
+pub fn pollMillis(wait_ns: u64) i32 {
+    const whole = wait_ns / std.time.ns_per_ms;
+    const rounded = whole + @intFromBool(wait_ns % std.time.ns_per_ms != 0);
+    return @intCast(@min(rounded, std.math.maxInt(i32)));
+}
+
 pub const Hold = struct {
     expires_ns: u64,
 
@@ -341,10 +349,14 @@ pub const Subscription = struct {
     expires_ns: u64 = 0,
     detached: bool = false,
     first_run: usize = 0,
+    registry_index: usize = 0,
+    reclaim_next: ?*Subscription = null,
+    reclaim_queued: bool = false,
 
     pub fn next(self: *Subscription) ?Delivery {
         const allocator = self.hub.allocator;
         self.trim(allocator);
+        self.queueReclaim();
         if (self.ending == .expired) return null;
         if (self.replay.items.len > 0) {
             const event = self.replay.items[0];
@@ -395,6 +407,14 @@ pub const Subscription = struct {
         self.detached = true;
         self.hub.detach(self);
         self.forgetEvents(self.hub.allocator);
+        self.queueReclaim();
+    }
+
+    fn queueReclaim(self: *Subscription) void {
+        if (self.reclaim_queued or !Hub.spent(self)) return;
+        self.reclaim_next = self.hub.reclaim_head;
+        self.hub.reclaim_head = self;
+        self.reclaim_queued = true;
     }
 
     fn forgetEvents(self: *Subscription, allocator: std.mem.Allocator) void {
@@ -450,6 +470,10 @@ const Held = struct {
     subscription: *Subscription,
     expires_ns: u64,
 };
+
+fn earlierHold(_: void, left: Held, right: Held) std.math.Order {
+    return std.math.order(left.expires_ns, right.expires_ns);
+}
 
 const OpenedWith = struct {
     arena: std.heap.ArenaAllocator,
@@ -573,10 +597,13 @@ pub const Hub = struct {
     placed: std.ArrayList(Registered) = .empty,
     entries: std.ArrayList(Entry) = .empty,
     subscriptions: std.ArrayList(*Subscription) = .empty,
-    holds: std.ArrayList(Held) = .empty,
+    holds: std.PriorityQueue(Held, void, earlierHold) = .empty,
+    reclaim_head: ?*Subscription = null,
     bound: std.ArrayList(Bound) = .empty,
     bindings: ?binding.Bindings = null,
     shutting_down: bool = false,
+    next_entry: usize = 0,
+    pass_remaining: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -1539,7 +1566,7 @@ pub const Hub = struct {
         if (options.after == null and named_run.len > 0) return error.InvalidCursor;
         if (self.heldFor(entry)) |held| {
             if (options.after == null) {
-                if (held.detached or held.ending == .expired) {
+                if (held.detached or held.ending == .expired or expiredAt(held.expires_ns, self.clock())) {
                     _ = self.dropHold(held);
                     self.release(held, .expired);
                 } else {
@@ -1566,6 +1593,7 @@ pub const Hub = struct {
             if (joined > 0) subscription.joined_run = try self.allocator.dupe(u8, entry.run_id);
             if (entry.run_id.len > 0) subscription.attached_run = try self.allocator.dupe(u8, entry.run_id);
         }
+        subscription.registry_index = self.subscriptions.items.len;
         try self.subscriptions.append(self.allocator, subscription);
         errdefer _ = self.subscriptions.pop();
         if (subscription.ending == .open) {
@@ -1579,8 +1607,7 @@ pub const Hub = struct {
         const subscription = try self.subscribe(arena, session_id, .{});
         errdefer self.discard(subscription, .expired);
         const expires = self.clock() + self.hold_ns;
-        try self.holds.ensureUnusedCapacity(self.allocator, 1);
-        self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
+        try self.holds.push(self.allocator, .{ .subscription = subscription, .expires_ns = expires });
         subscription.held = true;
         subscription.expires_ns = expires;
         return .{ .expires_ns = expires };
@@ -1588,8 +1615,7 @@ pub const Hub = struct {
 
     pub fn holdSubscription(self: *Hub, subscription: *Subscription) std.mem.Allocator.Error!Hold {
         const expires = self.clock() + self.hold_ns;
-        try self.holds.ensureUnusedCapacity(self.allocator, 1);
-        self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
+        try self.holds.push(self.allocator, .{ .subscription = subscription, .expires_ns = expires });
         subscription.held = true;
         subscription.expires_ns = expires;
         return .{ .expires_ns = expires };
@@ -1597,15 +1623,19 @@ pub const Hub = struct {
 
     pub fn expireHolds(self: *Hub) void {
         const now = self.clock();
-        var index: usize = 0;
-        while (index < self.holds.items.len) {
-            if (!expiredAt(self.holds.items[index].expires_ns, now)) {
-                index += 1;
-                continue;
-            }
-            const held = self.holds.orderedRemove(index);
+        var expired: usize = 0;
+        while (self.holds.peek()) |held| {
+            if (expired == pass_sessions or !expiredAt(held.expires_ns, now)) break;
+            expired += 1;
+            _ = self.holds.pop();
             self.release(held.subscription, .expired);
         }
+    }
+
+    pub fn waitBudget(self: *const Hub, limit_ns: u64) u64 {
+        if (self.hasPendingPass() or self.reclaim_head != null) return 0;
+        const next = self.holds.peek() orelse return limit_ns;
+        return @min(limit_ns, next.expires_ns -| self.clock());
     }
 
     fn handleOf(entry: *const Entry) ?std.Io.File.Handle {
@@ -1631,7 +1661,7 @@ pub const Hub = struct {
             try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
         }
         if (watched.items.len == 0) return false;
-        const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
+        const budget = pollMillis(self.waitBudget(wait_ns));
         const awoken = std.posix.poll(watched.items, budget) catch 0;
         return awoken > 0;
     }
@@ -1643,17 +1673,70 @@ pub const Hub = struct {
         return false;
     }
 
-    fn drive(self: *Hub, share: u64) !void {
-        for (self.entries.items) |*entry| {
-            if (entry.parked) continue;
-            const wait = if (handleOf(entry) != null) 0 else share;
-            _ = entry.session.pump(wait) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    self.failStream(entry, entry.session.streamFailure());
-                },
+    pub fn hasPendingPass(self: *const Hub) bool {
+        return self.pass_remaining > 0;
+    }
+
+    fn deliver(self: *Hub, entry: *Entry, arena: std.mem.Allocator) !bool {
+        var events = std.ArrayList(contract.Event).empty;
+        entry.session.drain(arena, &events) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                self.failStream(entry, entry.session.streamFailure());
+                return false;
+            },
+        };
+        if (events.items.len > 0) entry.active_ns = self.clock();
+        for (events.items) |event| {
+            const settled = terminal(self.allocator, event.line) catch |err| {
+                if (err != error.OutOfMemory) return err;
+                self.endSubscriptions(entry, .stream_failed);
+                return err;
+            };
+            self.remember(entry, event, settled) catch |err| {
+                self.endSubscriptions(entry, .stream_failed);
+                return err;
+            };
+            self.fanOut(entry, event, settled) catch |err| {
+                self.endSubscriptions(entry, .stream_failed);
+                return err;
             };
         }
+        return events.items.len > 0;
+    }
+
+    fn drivePass(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
+        const count = self.entries.items.len;
+        if (count == 0) {
+            self.pass_remaining = 0;
+            self.next_entry = 0;
+            return false;
+        }
+        if (self.pass_remaining == 0) self.pass_remaining = count;
+        const visits = @min(pass_sessions, self.pass_remaining);
+        const started = self.clock();
+        const share = wait_ns / @max(count, 1);
+        var moved = false;
+        for (0..visits) |_| {
+            self.next_entry %= count;
+            const entry = &self.entries.items[self.next_entry];
+            self.next_entry = (self.next_entry + 1) % count;
+            self.pass_remaining -= 1;
+            if (!entry.parked) {
+                const wait = if (handleOf(entry) != null) 0 else share;
+                const pumped = entry.session.pump(wait) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => failed: {
+                        self.failStream(entry, entry.session.streamFailure());
+                        break :failed false;
+                    },
+                };
+                const delivered = try self.deliver(entry, arena);
+                moved = moved or pumped or delivered;
+            }
+            if (self.clock() -| started >= pass_budget_ns) break;
+        }
+        return moved;
     }
 
     pub fn pump(self: *Hub, allocator: std.mem.Allocator, wait_ns: u64) !void {
@@ -1661,36 +1744,13 @@ pub const Hub = struct {
         self.reclaim();
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
-        const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
-        try self.drive(share);
-        if (try self.awaitAny(scratch.allocator(), wait_ns)) try self.drive(share);
-        for (self.entries.items) |*entry| {
-            if (entry.parked) continue;
-            var events = std.ArrayList(contract.Event).empty;
-            entry.session.drain(scratch.allocator(), &events) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    self.failStream(entry, entry.session.streamFailure());
-                    continue;
-                },
-            };
-            if (events.items.len > 0) entry.active_ns = self.clock();
-            for (events.items) |event| {
-                const settled = terminal(self.allocator, event.line) catch |err| {
-                    if (err != error.OutOfMemory) return err;
-                    self.endSubscriptions(entry, .stream_failed);
-                    return err;
-                };
-                self.remember(entry, event, settled) catch |err| {
-                    self.endSubscriptions(entry, .stream_failed);
-                    return err;
-                };
-                self.fanOut(entry, event, settled) catch |err| {
-                    self.endSubscriptions(entry, .stream_failed);
-                    return err;
-                };
+        const moved = try self.drivePass(scratch.allocator(), wait_ns);
+        if (!moved and !self.hasPendingPass() and wait_ns > 0) {
+            if (try self.awaitAny(scratch.allocator(), wait_ns)) {
+                _ = try self.drivePass(scratch.allocator(), 0);
             }
         }
+        self.expireHolds();
         try self.parkIdle(scratch.allocator());
     }
 
@@ -1779,12 +1839,7 @@ pub const Hub = struct {
         subscription.ending = ending;
         subscription.held = false;
         self.detach(subscription);
-        for (self.subscriptions.items, 0..) |existing, index| {
-            if (existing == subscription) {
-                _ = self.subscriptions.orderedRemove(index);
-                break;
-            }
-        }
+        self.unregisterSubscription(subscription);
         subscription.release(self.allocator);
         self.allocator.destroy(subscription);
     }
@@ -1795,18 +1850,26 @@ pub const Hub = struct {
         subscription.detached = true;
         self.detach(subscription);
         subscription.forgetEvents(self.allocator);
+        subscription.queueReclaim();
+    }
+
+    fn unregisterSubscription(self: *Hub, subscription: *Subscription) void {
+        const index = subscription.registry_index;
+        const removed = self.subscriptions.swapRemove(index);
+        std.debug.assert(removed == subscription);
+        if (index < self.subscriptions.items.len) self.subscriptions.items[index].registry_index = index;
     }
 
     pub fn reclaim(self: *Hub) void {
-        var index: usize = 0;
-        while (index < self.subscriptions.items.len) {
-            const subscription = self.subscriptions.items[index];
-            if (!spent(subscription)) {
-                index += 1;
-                continue;
-            }
-            _ = self.subscriptions.orderedRemove(index);
-            _ = self.dropHold(subscription);
+        var reclaimed: usize = 0;
+        while (self.reclaim_head) |subscription| {
+            if (reclaimed == pass_sessions) break;
+            reclaimed += 1;
+            self.reclaim_head = subscription.reclaim_next;
+            subscription.reclaim_next = null;
+            subscription.reclaim_queued = false;
+            if (!spent(subscription)) continue;
+            self.unregisterSubscription(subscription);
             subscription.release(self.allocator);
             self.allocator.destroy(subscription);
         }
@@ -2130,6 +2193,8 @@ pub const Hub = struct {
         for (self.entries.items, 0..) |*candidate, index| {
             if (candidate.session_id.ptr != entry.session_id.ptr) continue;
             var removed = self.entries.orderedRemove(index);
+            if (index < self.next_entry) self.next_entry -= 1;
+            self.pass_remaining = @min(self.pass_remaining, self.entries.items.len);
             removed.deinit(self.allocator);
             return;
         }
@@ -2197,8 +2262,9 @@ pub const Hub = struct {
                 index += 1;
                 continue;
             }
-            _ = self.holds.orderedRemove(index);
+            _ = self.holds.popIndex(index);
             self.release(held.subscription, .session_closed);
+            index = 0;
         }
         self.removeSession(entry);
     }
@@ -2227,7 +2293,7 @@ pub const Hub = struct {
     fn dropHold(self: *Hub, subscription: *Subscription) bool {
         for (self.holds.items, 0..) |held, index| {
             if (held.subscription == subscription) {
-                _ = self.holds.orderedRemove(index);
+                _ = self.holds.popIndex(index);
                 return true;
             }
         }
@@ -6039,4 +6105,56 @@ test "a seeded interleaving of hub calls keeps every run's sequence contiguous a
         for (driver.witnessed.items) |seen| ends += @intFromBool(seen.terminal);
         try testing.expect(ends > 0);
     }
+}
+
+test "a large batch leaves time between slices and eventually delivers every session" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    var subscriptions: [80]*Subscription = undefined;
+    for (&subscriptions, 0..) |*subscription, index| {
+        const name = try std.fmt.allocPrint(arena, "slice-{d}", .{index});
+        const opened = try hub.open(arena, "memory", .{ .session_id = name, .subscribe = true });
+        subscription.* = opened.subscription.?;
+        const request = try submitFor(arena, name);
+        _ = try hub.submit(arena, name, &request, "");
+        while (subscription.*.next()) |_| {}
+    }
+    try hub.pump(testing.allocator, 0);
+    var first: usize = 0;
+    for (subscriptions) |subscription| {
+        if (subscription.next() != null) first += 1;
+    }
+    try testing.expect(first > 0);
+    try testing.expect(first <= 64);
+    var last_seen = subscriptions[79].next() != null;
+    for (0..8) |_| {
+        try hub.pump(testing.allocator, 0);
+        while (subscriptions[79].next()) |_| last_seen = true;
+    }
+    try testing.expect(last_seen);
+}
+
+test "a subscription after its hold deadline starts after the expired backlog" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .hold_ns = 5 * std.time.ns_per_ms });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "memory", .{ .session_id = "deadline" });
+    _ = try hub.hold(arena, "deadline");
+    const request = try submitFor(arena, "deadline");
+    _ = try hub.submit(arena, "deadline", &request, "");
+    try hub.pump(testing.allocator, 0);
+    tick(6 * std.time.ns_per_ms);
+    const adopted = try hub.subscribe(arena, "deadline", .{});
+    try testing.expect(adopted.next() == null);
 }

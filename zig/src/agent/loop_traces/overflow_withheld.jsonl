@@ -1,0 +1,19 @@
+{"event":"message_start","message":"user:start"}
+{"event":"message_end","message":"user:start","steering":false}
+{"event":"agent_start"}
+{"event":"turn_start"}
+{"event":"prompt_segment_usage","total_bytes":0,"segment":"system_prompt","item_count":0}
+{"event":"prompt_segment_usage","total_bytes":28,"segment":"tool_definitions","item_count":1}
+{"event":"prompt_segment_usage","total_bytes":6015,"segment":"message_history","item_count":2}
+{"event":"context_usage","total_bytes":6043,"estimated_tokens":1535,"message_count":2,"tool_count":1}
+{"event":"prompt_segment_usage","total_bytes":0,"segment":"system_prompt","item_count":0}
+{"event":"prompt_segment_usage","total_bytes":28,"segment":"tool_definitions","item_count":1}
+{"event":"prompt_segment_usage","total_bytes":96,"segment":"message_history","item_count":2}
+{"event":"context_usage","total_bytes":124,"estimated_tokens":56,"message_count":2,"tool_count":1}
+{"event":"message_start","message":"assistant:"}
+{"event":"message_update","update":"text_delta","delta":"recovered"}
+{"event":"message_end","message":"assistant:recovered","steering":false}
+{"event":"turn_end","message":"assistant:recovered","input_dropped":false,"stop_reason":"stop"}
+{"event":"agent_end","stop_reason":"stop"}
+{"event":"model_request","messages":["tool_result:echo:false:<6000 bytes>","user:start"]}
+{"event":"model_request","messages":["tool_result:echo:false:[This tool result was too large for the model's context window and was withheld.]","user:start"]}

@@ -128,7 +128,6 @@ impl State {
     }
 
     pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
-        self.open_model(e);
         let p: SessionState = payload(e);
         self.redelivery_response(at, e, &p);
         self.reopen_response(at, e, &p);
@@ -222,8 +221,9 @@ impl State {
             }
         }
         self.compound_open(at, e, &p);
+        self.open_model(at, e);
         self.check_snapshot_listing(at, e, &p);
-        self.apply_state_document(&session, &p);
+        self.apply_state_document(at, e, &session, &p);
     }
 
     fn compound_open(&mut self, at: (usize, usize), e: &Envelope, p: &SessionState) {
@@ -332,13 +332,41 @@ impl State {
             self.introduce_recovered_run(at, active, run);
         }
         self.check_snapshot_listing(at, e, &p);
-        self.apply_state_document(&session, &p);
+        self.apply_state_document(at, e, &session, &p);
     }
 
-    fn apply_state_document(&mut self, session: &str, p: &SessionState) {
+    fn apply_state_document(
+        &mut self,
+        at: (usize, usize),
+        e: &Envelope,
+        session: &str,
+        p: &SessionState,
+    ) {
         let active = os(&p.active_run_id);
         if let Some(previous) = self.active.get(session) {
-            if *previous != active && self.runs.get(previous).is_some_and(|run| !run.terminal) {
+            let settled = p.as_of.as_ref().is_some_and(|capture| {
+                capture
+                    .settled
+                    .iter()
+                    .any(|entry| entry.run_id.as_str() == previous)
+            });
+            if *previous != active
+                && !settled
+                && self.runs.get(previous).is_some_and(|run| !run.terminal)
+            {
+                let window = self
+                    .requests
+                    .get(&os(&e.in_reply_to))
+                    .map_or(at.0, |request| request.index);
+                if self.runs[previous].started_at.unwrap_or_default() <= window {
+                    self.add(
+                        codes::SESSION_STATE_MISMATCH,
+                        at,
+                        e,
+                        "/payload/active_run_id",
+                        "snapshot contradicts a nonterminal active run",
+                    );
+                }
                 return;
             }
         }

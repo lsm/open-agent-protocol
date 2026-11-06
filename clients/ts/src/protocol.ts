@@ -28,6 +28,13 @@ export const EnvelopeType = {
   SessionStateRequest: 'session.state.request',
   SessionStateResponse: 'session.state.response',
   SessionStateUpdated: 'session.state.updated',
+  SessionTaskStarted: 'session.task.started',
+  SessionTaskUpdated: 'session.task.updated',
+  SessionTaskEnded: 'session.task.ended',
+  SessionTaskCancelRequest: 'session.task.cancel.request',
+  SessionTaskCancelResponse: 'session.task.cancel.response',
+  SessionTaskOutputRequest: 'session.task.output.request',
+  SessionTaskOutputResponse: 'session.task.output.response',
   SessionListRequest: 'session.list.request',
   SessionListResponse: 'session.list.response',
   TranscriptLoadRequest: 'transcript.load.request',
@@ -607,6 +614,8 @@ export interface SessionState {
   status: SessionStatus;
   active_run_id?: string;
   active_runs?: ActiveRun[];
+  tasks?: SessionTask[];
+  tasks_truncated?: boolean;
   current_model_id?: string;
   transcript_cursor?: string;
   updated_at_ms?: number;
@@ -617,6 +626,43 @@ export interface SessionState {
   reasoning_level?: ReasoningLevel;
   compaction_policy?: CompactionPolicy;
 }
+
+export type SessionTaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+export type SessionTaskUpdateStatus = 'pending' | 'running' | 'paused';
+export type SessionTaskEndStatus = 'completed' | 'failed' | 'cancelled';
+export type SessionTaskCause = 'finished' | 'cancelled_by_host' | 'cancelled_by_model' | 'expired' | 'session_closed';
+
+export interface SessionTaskSchedule {
+  expression?: string;
+  time_zone?: string;
+  next_fire_at_ms?: number;
+  recurring?: boolean;
+  durable?: boolean;
+  expires_at_ms?: number;
+}
+
+export interface SessionTask {
+  task_id: string;
+  kind: 'command' | 'agent' | 'schedule' | 'other';
+  label?: string;
+  status: SessionTaskStatus;
+  run_id?: string;
+  tool_call_id?: string;
+  ambient?: boolean;
+  summary?: string;
+  cause?: SessionTaskCause;
+  extensions?: Record<string, unknown>;
+  cancellable: boolean;
+  schedule?: SessionTaskSchedule;
+}
+
+export interface SessionTaskStarted { task: SessionTask }
+export interface SessionTaskUpdated { task_id: string; status?: SessionTaskUpdateStatus; label?: string; next_fire_at_ms?: number }
+export interface SessionTaskEnded { task_id: string; status: SessionTaskEndStatus; summary?: string; cause: SessionTaskCause }
+export interface SessionTaskCancelRequest { session_id: string; task_id: string }
+export interface SessionTaskCancelResponse { outcome: 'requested' | 'already_ended' | 'not_cancellable' }
+export interface SessionTaskOutputRequest { session_id: string; task_id: string; from?: number }
+export interface SessionTaskOutputResponse { output: string; next: number; truncated: boolean; ended: boolean }
 
 export type ActiveRunRelationship = 'primary';
 

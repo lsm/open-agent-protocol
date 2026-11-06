@@ -78,6 +78,7 @@ impl State {
         let p: ActionCallPayload = payload(e);
         if next == "requested" {
             self.control_call_owner(at, e, &p);
+            self.call_source(at, e);
             self.control_call_requested(at, e, run_id, &p);
             return;
         }
@@ -384,10 +385,10 @@ impl State {
             .and_then(|tools| tools.iter().find(|t| t.name == p.name))
             .map(|t| s(&t.execution_owner))
             .or_else(|| {
-                self.catalog_owners
+                self.tool_catalogs
                     .get(p.session_id.as_str())
-                    .filter(|(revision, _)| revision == &self.current_capability)
-                    .and_then(|(_, owners)| owners.get(&p.name))
+                    .filter(|catalog| catalog.revision == self.current_capability)
+                    .and_then(|catalog| catalog.owners.get(&p.name))
                     .cloned()
             })
             .or_else(|| self.descriptor_owners.get(&p.name).cloned());

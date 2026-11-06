@@ -998,6 +998,12 @@ dependencies = [
 name = "oap-adapter-acp"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "futures-channel",
+ "futures-util",
+ "oap-adapter",
+ "oap-harness",
+ "oap-protocol",
  "serde",
  "serde_json",
 ]
@@ -1076,6 +1082,19 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "oap-protocol",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oap-conformance"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "oap-adapter",
+ "oap-protocol",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",

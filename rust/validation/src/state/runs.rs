@@ -16,6 +16,7 @@ pub(super) struct Run {
     pub(super) admitted_at: usize,
     pub(super) submit_request: String,
     pub(super) start_sequence: Option<u64>,
+    pub(super) started_at: Option<usize>,
     pub(super) terminal_at: Option<usize>,
     pub(super) terminal_sequence: Option<u64>,
     pub(super) started: bool,
@@ -400,6 +401,9 @@ impl State {
         let Some(run) = self.runs.get(&run_id) else {
             return;
         };
+        if !was_started && run.started {
+            self.active.insert(run.session.clone(), run_id.clone());
+        }
         if run.terminal
             && is_terminal(&e.envelope_type)
             && self.active.get(&run.session) == Some(&run_id)
@@ -490,6 +494,7 @@ impl State {
             }
             if !run.started {
                 run.start_sequence = e.sequence;
+                run.started_at = Some(at.0);
             }
             run.started = true;
             run.status = RunStatus::RUNNING;

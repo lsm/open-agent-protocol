@@ -23,6 +23,7 @@ type SubmissionID string
 type RunID string
 type MessageID string
 type ToolCallID string
+type TaskID string
 type InteractionID string
 
 type EnvelopeType string
@@ -51,6 +52,13 @@ const (
 	TypeSessionStateRequest             EnvelopeType = "session.state.request"
 	TypeSessionStateResponse            EnvelopeType = "session.state.response"
 	TypeSessionStateUpdated             EnvelopeType = "session.state.updated"
+	TypeSessionTaskStarted              EnvelopeType = "session.task.started"
+	TypeSessionTaskUpdated              EnvelopeType = "session.task.updated"
+	TypeSessionTaskEnded                EnvelopeType = "session.task.ended"
+	TypeSessionTaskCancelRequest        EnvelopeType = "session.task.cancel.request"
+	TypeSessionTaskCancelResponse       EnvelopeType = "session.task.cancel.response"
+	TypeSessionTaskOutputRequest        EnvelopeType = "session.task.output.request"
+	TypeSessionTaskOutputResponse       EnvelopeType = "session.task.output.response"
 	TypeSessionListRequest              EnvelopeType = "session.list.request"
 	TypeSessionListResponse             EnvelopeType = "session.list.response"
 	TypeTranscriptLoadRequest           EnvelopeType = "transcript.load.request"

@@ -1,7 +1,7 @@
 # Event-Driven Agent Loop
 
 Status: adopted plan. The owner chose this design on 2026-11-05, with the
-decisions listed at the end. Stage 0 is merged, and stage 1 comes next.
+decisions listed at the end. Stages 0 and 1 are done, and stage 2 comes next.
 
 Scope: the Zig runtime (`zig/src/agent`, `adapter/oapx`, `hub`, `providers`,
 `tools`). The loop itself changes no wire behaviour. [Slow commands](#slow-commands)
@@ -158,7 +158,7 @@ adapter. Five things are not:
    and events must carry copies or indexes. This is the riskiest refactor here,
    because a mistake is a use-after-free.
 3. **In-flight I/O.** A socket or a child process cannot be saved, which is why
-   only cold runs park.
+   only cold runs park: those holding neither.
 4. **Session-lifetime processes.** Background jobs and MCP servers outlive a run.
 5. **Implicit state.** The permission engine, the credential refresh lock and the
    title thread.
@@ -219,8 +219,8 @@ the lightweight task the goal asks for, and its stack is a plain struct.
 | Cancel | An event: `step` emits `abort_io`, which closes the socket or kills the child |
 
 The TLS approach was tried against a loopback LibreSSL server on TLS 1.2 and 1.3,
-feeding one byte at a time. That test used `no_verification`, so real certificate
-validation, partial writes and post-handshake messages are unverified.
+feeding one byte at a time. Stage 1 then validated real chains against real hosts.
+Partial writes and post-handshake messages are still unverified.
 
 ## Slow commands
 
@@ -398,10 +398,11 @@ Parking saves a cold run and frees it. A resident session keeps a small summary,
 and an event for a parked run loads it first. A parked run needs no thread or
 socket.
 
-**Only cold runs park:** `idle`, `gate` and `backoff`. These resume exactly. A run
-in `model` or `tool` is active and stays resident, so nothing restarts a model
-call and no tool outcome is ever unknown. This needs no wire change. A run waiting
-in `model_queued` or `tool_queued` also stays resident at first.
+**Only cold runs park:** `idle`, `gate`, `backoff`, `model_queued` and
+`tool_queued`. These resume exactly. A run in `model` or `tool` is active and stays
+resident, so nothing restarts a model call and no tool outcome is ever unknown. This
+needs no wire change. A queued run holds no socket or child, and it loads when it
+is admitted.
 
 `idle` wakes on a submit and `gate` on a resolution, but `backoff` wakes only on
 time. A parked `backoff` run therefore leaves one entry in its reactor's deadline
@@ -419,7 +420,7 @@ home, and run parking extends it rather than restating it:
 | Level | What it does | Condition |
 |---|---|---|
 | Session (#1615) | Stops an idle session's harness and keeps the session in Hub memory | No active run, no pending interaction, no live tool source or job. A third-party adapter parks only if it declares it can report live background work. For `oapx`, a job in the Hub's table does not count |
-| Run (stage 7) | Saves a run to disk and frees it, on the new loop | The run is in `idle`, `gate` or `backoff`, and no tool source is live. A job in the table does not count |
+| Run (stage 7) | Saves a run to disk and frees it, on the new loop | The run is in `idle`, `gate`, `backoff` or a model or tool queue, and no tool source is live. A job in the table does not count |
 
 A subscriber blocks neither level. Both use one resident summary, so `state` can
 answer for a parked session without waking it: its status and its active runs with
@@ -450,8 +451,8 @@ need about 79 GB, which does not fit in 48 GiB. All of these must hold:
    stage 0 an empty session is about 26 KiB. The target is under 20 KiB, or about
    2 GB at 100,000.
 3. Active runs have a memory budget. For example, 8 GiB holds about 10,000 runs of
-   800 KiB. In-flight limits bound how many runs are truly active, but runs queued
-   for a model or tool count too, so a large burst can exceed the budget.
+   800 KiB. In-flight limits bound how many runs are truly active, and runs queued
+   for a model or tool must park, or a large burst exceeds the budget.
 4. The journal is not resident.
 
 ## Global tool budget
@@ -598,7 +599,7 @@ lines, and stages 2-7 total about 8,400-14,500 in 60-100 pull requests.
 | Stage | Work | Lines | Pass condition |
 |---|---|---:|---|
 | 0 | Done: ring grows on demand (#1612), shared HTTP client (#1613) | Merged | Empty sessions 271 to 26 MiB and peak `TIME_WAIT` 8,000 to under 200, at N=1,000 |
-| 1 | Retire the unknowns below, on the prototype branch | No product code | Every stop condition below is clear |
+| 1 | Done: the unknowns below, on the prototype branch (#1623, #1625) | No product code | Every stop condition below is clear |
 | 2 | Hub ready queue, budgeted passes, batched saving, on the existing loop | 800-1,500 | `working` at N=1,500 stops degrading, `state` stays over 500 per second, and an idle Hub takes no wakeups for sessions with nothing to do |
 | 3 | Reactor and bounded pool on `kqueue` and `epoll`, unused | 800-1,200 | Unit tests on macOS and Linux, and an idle reactor takes zero wakeups |
 | 4 | Extract `step` from `runLoop`, with a blocking driver executing actions | 1,800-3,000 | The differential gate below passes on every scenario |
@@ -643,6 +644,42 @@ are justified. They use the prototype, not product code.
 If Linux or real sizes fail in a way that cannot be fixed, the plan stops at stage
 2, because stage 0 and the Hub work stand alone.
 
+No stop condition fired. These runs are `hold-gate` at N=10,000 on a 4-core GitHub
+Linux runner, against a scripted model:
+
+| Run | Threads | Held MiB | Per session | Resume p50 / p99 / max ms | Parked GB | Bad results |
+|---|---:|---:|---:|---:|---:|---:|
+| Not parked | 9 | 98.6 | 10.1 KiB | not applicable | none | 0 |
+| Parked | 9 | 22.8 | 2.3 KiB | 5 / 38 / 57 | 0.02 | 0 |
+| Parked, real sizes | 9 | 40.0 | 4.1 KiB | 87 / 446 / 3,078 | 8.97 | 0 |
+
+- Threads match N=1,000, which also held 9.
+- Parked agents cause no wakeups. Every context switch in the holds came within
+  two samples of a benchmark poll, and the rest of the samples show none.
+- Real sizes on the shared Mac gave 9 threads, 58.2 MiB held (6.0 KiB per session)
+  and resume at 54 / 323 / 798 ms.
+- The seeded history came to 876 KiB per file, because JSON escaping added about
+  10% to its 800 KiB of text. Disk is the file size and nothing more, so 800 KiB
+  files still need about 80 GB at 100,000. Histories this size would need 90 GB.
+- The standard TLS client validated real chains on macOS and Linux, with records
+  fed one byte at a time, against six provider hosts, the largest 122 records and
+  814,623 bytes. It also completed under TLS 1.2, and refused expired, wrong-host,
+  self-signed and untrusted-root chains.
+
+Four things these runs showed carry into later stages:
+
+- The TLS handshake blocks, so it stays on the pool as designed. Only records after
+  it move on the reactor.
+- Runs queued for a model must park too. With only `idle` and `gate` parked, a
+  burst held every queued run in memory, peaking at 5.8 GiB, against 752 MiB with
+  queued runs parked.
+- Run memory must map pages directly. `smp_allocator` never returns small-size
+  slabs, so its peak sets a floor: 800 KiB runs held 42.6 KiB per parked session
+  on it, and 24.4 KiB with queued runs parked, against 6.0 KiB with pages, where
+  the peak also fell to 275 MiB.
+- A park rewrites the whole history, so one 10,000-run flight wrote 65-68 GB.
+  Stage 7's journal should cut that, and it is not yet measured.
+
 ### The differential gate
 
 "No behaviour change" needs proof, because scripts written for `step` only test
@@ -653,6 +690,13 @@ trace, ignoring only ids and timestamps. A command past its 5 second budget is a
 deliberate change, so traces are recorded after the budget lands, or with commands
 shorter than it. Building that harness is part of stage 4's
 size, and the same traces gate stages 5 and 6.
+
+The traces live in `zig/src/agent/loop_traces/`, one `.jsonl` file per scenario, and
+`zig/src/agent/loop_traces.zig` holds the scenarios and fails on any difference. Each
+file lists the loop's events in order, then the model requests in order. Those are
+two lists because the old loop runs on its own thread, so a request has no fixed
+place among the queued events. Set `OAP_LOOP_TRACE_OUT` to a directory to write what
+a run produced, which is how a deliberate change updates a trace.
 
 Overflow and retry state (#1572, #1578, #1590) is already shaped as data and moves
 into `step` directly. Subscription lifetime (decision 0066) fits well, because a
@@ -677,9 +721,9 @@ its resume across runs must be designed with the on-disk journal.
 
 ## Not verified
 
-- Linux. The prototype has no `epoll` path and has never run there.
-- Real certificate validation, and real providers.
-- 100,000 runs of real size. Only one 808 KiB run was timed.
+- Real providers beyond an unauthenticated request, and a TLS handshake on a pool
+  thread inside the reactor rather than in a spike.
+- 100,000 runs of real size. Stage 1 stopped at 10,000.
 - Rate-limit pausing, fairness across reactors and per-tick work limits, which are
   design only.
 - The cause of the prototype's `hold-tool` loss.

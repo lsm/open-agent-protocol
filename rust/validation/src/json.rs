@@ -5,22 +5,30 @@ pub(crate) fn same_json(a: &str, b: &str) -> bool {
         serde_json::from_str::<Value>(a),
         serde_json::from_str::<Value>(b),
     ) {
-        (Ok(left), Ok(right)) => canonical(&left) == canonical(&right),
+        (Ok(left), Ok(right)) => same_value(&left, &right),
         _ => false,
     }
 }
 
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Number(number) => Value::String(exact(&number.to_string())),
-        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
-        Value::Object(members) => Value::Object(
-            members
-                .iter()
-                .map(|(k, v)| (k.clone(), canonical(v)))
-                .collect(),
-        ),
-        other => other.clone(),
+fn same_value(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => {
+            exact(&left.to_string()) == exact(&right.to_string())
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same_value(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, value)| {
+                    right.get(key).is_some_and(|other| same_value(value, other))
+                })
+        }
+        _ => left == right,
     }
 }
 

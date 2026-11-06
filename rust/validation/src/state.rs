@@ -11,12 +11,16 @@ mod models;
 mod name_pattern;
 mod provider_attach;
 mod queue;
+mod queue_leads;
+mod queue_models;
 mod redelivery;
 mod results;
 mod runs;
 mod session_list;
 mod snapshot_claims;
 mod snapshot_listing;
+mod source_catalog;
+mod source_state;
 mod steer;
 mod tool_sources;
 mod transcript;
@@ -75,6 +79,7 @@ pub(crate) struct State {
     session_models: HashMap<String, default_model::SessionModel>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
     snapshot_claims: Vec<snapshot_claims::Claim>,
+    queue_leads: Vec<queue_leads::Group>,
     admission_anchors: Vec<admission_anchors::Claim>,
     pending_open_settings: HashMap<String, controls::PendingOpenSettings>,
     pending_tool_lists: HashMap<String, controls::PendingToolList>,
@@ -83,7 +88,10 @@ pub(crate) struct State {
     pending_provides: HashMap<String, controls::PendingProvide>,
     descriptor_owners: HashMap<String, String>,
     declared_sources: HashSet<String>,
-    catalog_owners: HashMap<String, (String, HashMap<String, String>)>,
+    declared_descriptors: Vec<ToolSourceDescriptor>,
+    descriptor_attribution: HashMap<String, String>,
+    attached_sources: HashMap<String, Vec<ToolSourceDescriptor>>,
+    tool_catalogs: HashMap<String, source_state::Catalog>,
     order: HashMap<String, Vec<String>>,
     open_submits: HashMap<String, Vec<String>>,
     limits: Option<CapabilityLimits>,
@@ -353,6 +361,7 @@ impl State {
             session_models: HashMap::new(),
             steer_snapshots: Vec::new(),
             snapshot_claims: Vec::new(),
+            queue_leads: Vec::new(),
             admission_anchors: Vec::new(),
             pending_open_settings: HashMap::new(),
             pending_tool_lists: HashMap::new(),
@@ -361,7 +370,10 @@ impl State {
             pending_provides: HashMap::new(),
             descriptor_owners: HashMap::new(),
             declared_sources: HashSet::new(),
-            catalog_owners: HashMap::new(),
+            declared_descriptors: Vec::new(),
+            descriptor_attribution: HashMap::new(),
+            attached_sources: HashMap::new(),
+            tool_catalogs: HashMap::new(),
             order: HashMap::new(),
             open_submits: HashMap::new(),
             limits: None,
@@ -821,6 +833,7 @@ impl State {
     pub fn close(&mut self) {
         self.close_auth_flows();
         self.close_admission_anchors();
+        self.close_queue_leads();
         self.close_snapshot_claims();
         self.close_steer_snapshots();
         self.close_recoveries();

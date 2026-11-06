@@ -2952,13 +2952,14 @@ fn pending_bound(limit: usize) usize {
 
 const pollable = @import("builtin").os.tag != .windows;
 fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
-    if (comptime !pollable) return waitByPeeking(frontend, stream, wait_ns);
+    const budget_ns = frontend.hub.waitBudget(wait_ns);
+    if (comptime !pollable) return waitByPeeking(frontend, stream, budget_ns);
     const input = stream.readable orelse return true;
     const children = try frontend.hub.readableHandles(arena);
     var watched: std.ArrayList(std.posix.pollfd) = .empty;
     for (children) |handle| try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
     try watched.append(arena, .{ .fd = input, .events = std.posix.POLL.IN, .revents = 0 });
-    const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
+    const budget = hubmod.pollMillis(budget_ns);
     const awoken = std.posix.poll(watched.items, budget) catch 0;
     if (awoken == 0) return false;
     const input_events = watched.items[watched.items.len - 1].revents;
