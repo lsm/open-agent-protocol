@@ -628,6 +628,7 @@ export interface SessionState {
 }
 
 export type SessionTaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+export type SessionTaskUpdateStatus = 'pending' | 'running' | 'paused';
 export type SessionTaskEndStatus = 'completed' | 'failed' | 'cancelled';
 export type SessionTaskCause = 'finished' | 'cancelled_by_host' | 'cancelled_by_model' | 'expired' | 'session_closed';
 
@@ -656,7 +657,7 @@ export interface SessionTask {
 }
 
 export interface SessionTaskStarted { task: SessionTask }
-export interface SessionTaskUpdated { task_id: string; status?: SessionTaskStatus; label?: string; next_fire_at_ms?: number }
+export interface SessionTaskUpdated { task_id: string; status?: SessionTaskUpdateStatus; label?: string; next_fire_at_ms?: number }
 export interface SessionTaskEnded { task_id: string; status: SessionTaskEndStatus; summary?: string; cause: SessionTaskCause }
 export interface SessionTaskCancelRequest { session_id: string; task_id: string }
 export interface SessionTaskCancelResponse { outcome: 'requested' | 'already_ended' | 'not_cancellable' }

@@ -556,6 +556,8 @@
     "session-settings-state-omits-unknown",
     "session-settings-unadvertised-refused",
     "session-settings-unknown-level",
+    "session-task-ended-running",
+    "session-task-updated-terminal",
     "stale-capability",
     "state-omits-active-runs-with-pending-permission",
     "steer-applied-message-ids-mismatch",

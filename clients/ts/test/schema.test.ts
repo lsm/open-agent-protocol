@@ -760,6 +760,9 @@ test('every envelope type maps to the payload def its schema declares', () => {
 });
 
 test('the schema exclusivity rules are compile-time errors', () => {
+  // @ts-expect-error a terminal status is reported by session.task.ended
+  const terminalTaskUpdate: protocol.SessionTaskUpdated = { task_id: 't-1', status: 'completed' };
+  void terminalTaskUpdate;
   // @ts-expect-error url and inline data are mutually exclusive image forms
   const badImage: ImageContent = { url: 'https://example.test/i.png', data: 'aGk=', media_type: 'text/plain' };
   // @ts-expect-error an image with data requires its media type

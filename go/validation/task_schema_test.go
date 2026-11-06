@@ -17,6 +17,8 @@ func TestSessionTaskSchema(t *testing.T) {
 		{"started", "session.task.started", `{"task":{"task_id":"t","kind":"command","status":"running","cancellable":true,"run_id":"r","tool_call_id":"c"}}`, `,"sequence":1`, true},
 		{"ended", "session.task.ended", `{"task_id":"t","status":"cancelled","cause":"cancelled_by_model"}`, `,"sequence":2`, true},
 		{"missing sequence", "session.task.started", `{"task":{"task_id":"t","kind":"command","status":"running","cancellable":true}}`, ``, false},
+		{"paused update", "session.task.updated", `{"task_id":"t","status":"paused"}`, `,"sequence":2`, true},
+		{"terminal update", "session.task.updated", `{"task_id":"t","status":"completed"}`, `,"sequence":2`, false},
 		{"invalid end", "session.task.ended", `{"task_id":"t","status":"running","cause":"finished"}`, `,"sequence":2`, false},
 		{"output", "session.task.output.response", `{"output":"é","next":2,"truncated":false,"ended":true}`, `,"in_reply_to":"q"`, true},
 		{"negative offset", "session.task.output.request", `{"session_id":"s","task_id":"t","from":-1}`, ``, false},

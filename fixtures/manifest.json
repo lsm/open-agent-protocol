@@ -13587,6 +13587,16 @@
       ]
     },
     {
+      "id": "session-task-updated-terminal",
+      "path": "schema-invalid/session-task-updated-terminal.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": ["schema_invalid"],
+      "units": ["core"],
+      "provenance": ["drafts/triggered-runs.md"]
+    },
+    {
       "id": "session-task-ended-running",
       "path": "schema-invalid/session-task-ended-running.json",
       "kind": "schema-invalid",
