@@ -17,3 +17,14 @@ in where or how often it reports them. The script fails on any other
 disagreement, and on a listed fixture that has come to agree, which must then
 be deleted from the list. `disagreements.json` in the output directory holds
 each mismatch.
+
+Queue model captures are included in this check. A queued session mutation must
+leave the default unchanged until `run.started`. Capture anchors must name that
+start on the same session, and must remain valid across delayed delivery and
+settlement. Genesis cannot contradict the opening model or supersede a mutation.
+The `queue_models` regression replays the shared positive and negative fixtures
+through the public Rust validator, without the known-gap exemption:
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test queue_models
+```

@@ -11,14 +11,15 @@ pub(super) enum Kind {
     Queued,
     Reservation(bool),
     Settled,
+    Model(String),
 }
 
 pub(super) struct Claim {
-    kind: Kind,
-    run: String,
-    sequence: Option<u64>,
-    at: (usize, usize),
-    envelope: Envelope,
+    pub(super) kind: Kind,
+    pub(super) run: String,
+    pub(super) sequence: Option<u64>,
+    pub(super) at: (usize, usize),
+    pub(super) envelope: Envelope,
 }
 
 fn pending_matches(run: &Run, sequence: Option<u64>, listed: &HashSet<String>) -> bool {
@@ -158,6 +159,30 @@ impl State {
                 retained.push(claim);
                 continue;
             };
+            if let Kind::Model(model) = &claim.kind {
+                if !run.started || run.start_sequence != claim.sequence {
+                    retained.push(claim);
+                    continue;
+                }
+                match run.mutation_model() {
+                    None => self.add(
+                        codes::SESSION_STATE_MISMATCH,
+                        claim.at,
+                        &claim.envelope,
+                        "/payload/as_of/model_run_sequence",
+                        "model capture must name a session model mutation",
+                    ),
+                    Some(expected) if expected != model => self.add(
+                        codes::PREMATURE_SESSION_MUTATION,
+                        claim.at,
+                        &claim.envelope,
+                        "/payload/current_model_id",
+                        "the model must match the session mutation at the capture position",
+                    ),
+                    _ => {}
+                }
+                continue;
+            }
             let finding = match &claim.kind {
                 Kind::Settled => {
                     let terminal = matches!(
@@ -220,6 +245,10 @@ impl State {
     pub(super) fn close_snapshot_claims(&mut self) {
         for claim in std::mem::take(&mut self.snapshot_claims) {
             let finding = match claim.kind {
+                Kind::Model(_) => Some((
+                    "/payload/as_of/model_run_sequence",
+                    "the claimed model promotion never arrived",
+                )),
                 Kind::Settled => Some((
                     "/payload/as_of/settled",
                     "the claimed terminal never arrived",

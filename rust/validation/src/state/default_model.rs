@@ -7,6 +7,8 @@ use crate::codes;
 #[derive(Default)]
 pub(super) struct SessionModel {
     current: Option<String>,
+    pub(super) opening: Option<String>,
+    mutated: bool,
     guarded: Option<String>,
 }
 
@@ -19,6 +21,7 @@ impl State {
         if scope == SCOPE_RUN {
             track.guarded = track.current.clone();
         } else if scope == SCOPE_SESSION {
+            track.mutated = true;
             track.current = Some(model.to_owned());
         }
     }
@@ -35,10 +38,14 @@ impl State {
         self.apply_model_control(&session, &controls);
     }
 
-    pub(super) fn open_model(&mut self, e: &Envelope) {
+    pub(super) fn open_model(&mut self, at: (usize, usize), e: &Envelope) {
+        self.capture_model(at, e);
         let p: SessionState = payload(e);
         if !p.current_model_id.is_empty() {
             let track = self.session_models.entry(s(&p.session_id)).or_default();
+            if !track.mutated && track.opening.is_none() {
+                track.opening = Some(p.current_model_id.clone());
+            }
             track.current = Some(p.current_model_id);
         }
     }
@@ -67,17 +74,22 @@ impl State {
             );
         }
         let track = self.session_models.entry(s(&p.session_id)).or_default();
+        track.mutated = true;
         track.current = Some(p.model_id);
         track.guarded = None;
     }
 
     pub(super) fn state_model(&mut self, at: (usize, usize), e: &Envelope) {
+        self.capture_model(at, e);
         let p: SessionState = payload(e);
         let track = self.session_models.entry(s(&p.session_id)).or_default();
         let moved = track
             .guarded
             .clone()
             .filter(|expected| *expected != p.current_model_id);
+        if !track.mutated && track.opening.is_none() {
+            track.opening = Some(p.current_model_id.clone());
+        }
         track.current = Some(p.current_model_id.clone());
         if let Some(expected) = moved {
             let message = "a per_run model selection moved the session default";
