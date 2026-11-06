@@ -403,7 +403,6 @@ fn dropping_an_open_session_reaps_its_native_child() {
 
 #[test]
 fn a_model_switch_answers_an_interleaved_unknown_native_rpc() {
-    use std::future::Future;
     use std::task::{Context, Poll};
     use std::time::Instant;
     let fixture = Fixture::new();
