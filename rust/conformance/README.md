@@ -22,10 +22,22 @@ holds stdout open or the host has stopped draining the queue. `next` has a soft
 receive timeout. After stdout EOF, `wait_exit` kills an endpoint that outlives
 its exit budget. Call `close_input` to send stdin EOF first.
 
-Correlated response/event/control waits and conformance checks follow in
-subsequent slices.
+`Client` routes replies by envelope ID, events in arrival order, and control
+answers by transport ID. Each wait shares one deadline across unrelated frames
+and checks buffered answers before expiring. A zero deadline selects five
+minutes. Response, event and EOF-drain timeouts close the endpoint and retain a
+`closed_by_runner` reason. EOF draining shares one budget so a chatty endpoint
+cannot postpone termination. A control wait uses the smaller of the line
+deadline and ten seconds, and its timeout leaves the endpoint usable.
+
+The client records sent requests and received envelopes for `transcript()`.
+`probe` omits the request and its answers. `close_input` followed by `wait`
+drains stdout and observes the exit status, with an exit grace capped at thirty
+seconds. Conformance checks follow in subsequent slices.
 
 The public consumer journey is
 `.claude/skills/verify/journeys/rust-conformance-wire.md`.
 Process lifecycle coverage is in
 `.claude/skills/verify/journeys/rust-conformance-process.md`.
+Correlated-wait coverage is in
+`.claude/skills/verify/journeys/rust-conformance-client.md`.

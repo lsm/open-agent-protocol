@@ -17,5 +17,6 @@ in `consumer.txt`. Builds and the consumer source are retained.
 Runtime HOME/data/config are temporary and removed. The child is killed and
 reaped on every exit. The synthetic memory adapter needs no credentials.
 Run the complete baseline too. The consumer now also exercises process
-lifecycle as described in `rust-conformance-process.md`. Correlated waits and
-the full check runner follow in later slices.
+lifecycle as described in `rust-conformance-process.md`. The full check runner
+follows in later slices. Correlated waits are exercised
+by the same consumer and documented in `rust-conformance-client.md`.

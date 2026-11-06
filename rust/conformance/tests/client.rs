@@ -25,11 +25,21 @@ fn replies_events_and_controls_are_kept_until_their_caller_asks_for_them() {
     let mut client = client(&script, Duration::from_secs(2));
     client.send(request("a")).unwrap();
     client.send(request("b")).unwrap();
-    assert_eq!(client.response(&"b".into()).unwrap().id.as_str(), "b-response");
-    assert_eq!(client.response(&"a".into()).unwrap().id.as_str(), "a-response");
+    assert_eq!(
+        client.response(&"b".into()).unwrap().id.as_str(),
+        "b-response"
+    );
+    assert_eq!(
+        client.response(&"a".into()).unwrap().id.as_str(),
+        "a-response"
+    );
     assert_eq!(client.event().unwrap().id.as_str(), "event");
     assert_eq!(client.control("ctl").unwrap().control, "replay.accepted");
-    let ids: Vec<String> = client.transcript().iter().map(|e| e.id.to_string()).collect();
+    let ids: Vec<String> = client
+        .transcript()
+        .iter()
+        .map(|e| e.id.to_string())
+        .collect();
     assert_eq!(ids, ["a", "b", "event", "a-response", "b-response"]);
     client.close_input();
     assert!(client.wait().unwrap().success());
@@ -42,7 +52,10 @@ fn chatty_events_cannot_renew_a_response_budget() {
     client.send(request("missing")).unwrap();
     client.event().unwrap();
     let start = Instant::now();
-    assert!(matches!(client.response(&"missing".into()), Err(ClientError::Timeout { .. })));
+    assert!(matches!(
+        client.response(&"missing".into()),
+        Err(ClientError::Timeout { .. })
+    ));
     assert!(start.elapsed() >= Duration::from_secs(1));
     assert!(start.elapsed() < Duration::from_secs(2));
     assert!(client.transcript().len() > 3);
@@ -66,14 +79,26 @@ fn unrelated_answers_cannot_renew_an_event_budget() {
 fn an_unanswered_control_uses_one_budget_and_leaves_the_endpoint_usable() {
     let script = format!("{PRELUDE}sys.stdin.readline()\nend=time.monotonic()+1.2\ni=0\nwhile time.monotonic()<end:\n print(json.dumps({{'control':'replay.accepted','id':str(i)}}),flush=True)\n i+=1\n time.sleep(.005)\nsys.stdin.readline()\nemit('resumed','resume')\n");
     let mut client = client(&script, Duration::from_secs(1));
-    client.send_control(ControlFrame { control: "replay".into(), id: "missing".into(), ..ControlFrame::default() }).unwrap();
+    client
+        .send_control(ControlFrame {
+            control: "replay".into(),
+            id: "missing".into(),
+            ..ControlFrame::default()
+        })
+        .unwrap();
     let start = Instant::now();
-    assert!(matches!(client.control("missing"), Err(ClientError::ControlUnanswered)));
+    assert!(matches!(
+        client.control("missing"),
+        Err(ClientError::ControlUnanswered)
+    ));
     assert!(start.elapsed() >= Duration::from_secs(1));
     assert!(start.elapsed() < Duration::from_secs(2));
     assert!(client.closed_by_runner().is_none());
     client.send(request("resume")).unwrap();
-    assert_eq!(client.response(&"resume".into()).unwrap().id.as_str(), "resumed");
+    assert_eq!(
+        client.response(&"resume".into()).unwrap().id.as_str(),
+        "resumed"
+    );
 }
 
 #[test]
@@ -81,7 +106,10 @@ fn a_probe_and_its_answer_are_omitted_from_the_trace() {
     let script = format!("{PRELUDE}sys.stdin.readline()\nemit('refusal','probe')\n");
     let mut client = client(&script, Duration::from_secs(2));
     client.probe(request("probe")).unwrap();
-    assert_eq!(client.response(&"probe".into()).unwrap().id.as_str(), "refusal");
+    assert_eq!(
+        client.response(&"probe".into()).unwrap().id.as_str(),
+        "refusal"
+    );
     assert!(client.transcript().is_empty());
 }
 
@@ -95,4 +123,27 @@ fn a_chatty_endpoint_that_ignores_eof_gets_one_drain_budget() {
     assert!(start.elapsed() >= Duration::from_secs(1));
     assert!(start.elapsed() < Duration::from_secs(2));
     assert!(client.transcript().len() > 2);
+}
+
+#[test]
+fn a_zero_deadline_selects_the_default_and_can_wait_for_a_delayed_answer() {
+    let script = format!("{PRELUDE}sys.stdin.readline()\ntime.sleep(.05)\nemit('answer','a')\n");
+    let mut client = client(&script, Duration::ZERO);
+    client.send(request("a")).unwrap();
+    assert_eq!(client.response(&"a".into()).unwrap().id.as_str(), "answer");
+}
+
+#[test]
+fn a_control_wait_is_capped_at_ten_seconds_even_with_a_longer_line_deadline() {
+    let script = format!("{PRELUDE}emit('ready')\ntime.sleep(30)\n");
+    let mut client = client(&script, Duration::from_secs(20));
+    client.event().unwrap();
+    let start = Instant::now();
+    assert!(matches!(
+        client.control("missing"),
+        Err(ClientError::ControlUnanswered)
+    ));
+    assert!(start.elapsed() >= Duration::from_secs(10));
+    assert!(start.elapsed() < Duration::from_secs(12));
+    assert!(client.closed_by_runner().is_none());
 }
