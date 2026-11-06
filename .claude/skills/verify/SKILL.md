@@ -45,6 +45,7 @@ go test ./go/validation
 (cd rust && cargo run -p nocomment -- --check)
 (cd zig && zig build -Doptimize=ReleaseSafe)
 zig build --build-file zig/build.zig test-unit-validation -Doptimize=ReleaseSafe
+zig build --build-file zig/build.zig test-unit-reactor -Doptimize=ReleaseSafe
 go run ./go/tools/nocomment --check
 node scripts/check-no-comments.mjs --check
 ./scripts/check-zig-patterns.sh

@@ -6,8 +6,8 @@ integration. Current runtime entry points do not import them.
 `Poller` owns its kernel queue and wakeup descriptor. Descriptor watches borrow
 the caller's descriptor. Register, replace, remove and wait on the owner thread.
 Only `wake` may run concurrently, and its caller must finish before `deinit`.
-A watch selects read or write interest, replacing previous interest for that
-same descriptor. Remove the watch before closing a borrowed descriptor.
+A watch selects read, write or both interests, replacing previous interest for
+that same descriptor. A failed kqueue registration clears its descriptor watches. Remove the watch before closing a borrowed descriptor.
 
 Tokens identify registrations in returned readiness records. The maximum
 `usize` token is reserved for wakeups. A caller must keep tokens valid until
@@ -59,3 +59,34 @@ calls `shutdown` and `destroy`, after stopping other submitters. A callback must
 return and must never join or destroy its own pool. The supplied allocator is
 used by the owner to allocate and free pool storage. Worker argument storage
 uses the standard thread allocator.
+
+`Reactor.create` starts one owner thread with a bounded command queue and an
+explicit per-tick command budget. Other threads call `post`. Commands and event
+handlers run on the owner. Use its `poll` and `sources` only from those callbacks,
+and keep callbacks short and nonblocking. Use the shared bounded pool for
+blocking work and post its completions back to the owner. Job and command
+contexts must outlive all callbacks using them.
+
+Each tick processes at most the command budget, then observes kernel readiness.
+Pending commands schedule another explicit wake so I/O and timers still get
+service. Source readiness is classified for the entire returned batch before
+handlers run. Returned events may outlive cancellation, so callers validate
+active registration tokens and postpone token reuse until the batch is consumed.
+I/O callers use nonblocking descriptors and consume buffered data before EOF.
+
+`requestStop` may run in a callback. One external owner uses `stop` to reject new
+commands, drain accepted commands and join the thread. Stop other submitters
+before `destroy`, which stops the reactor and releases its owned resources.
+Borrowed descriptors and children remain the caller's responsibility. A kernel
+wait failure closes admission, drains queued commands and is returned by `stop`.
+If a wake fails before joining, `destroy` returns the error with the reactor
+still allocated for the caller to retry.
+
+`Poller.waitReturns()` counts every completed kernel wait syscall, including
+interruptions. The idle probe first confirms the OS reports the owner asleep,
+then requires this counter to stay zero through its hold. An explicit stop wake
+ends that hold with exactly one returned wait.
+
+Duplex I/O may arrive as two kqueue records or a combined epoll record. A handler
+acts on whichever readiness flags each record supplies. The same token may occur
+more than once in a returned batch, so retain its registration through the batch.
