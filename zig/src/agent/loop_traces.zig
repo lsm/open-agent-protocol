@@ -141,20 +141,30 @@ fn owned(a: std.mem.Allocator, text: []const u8) ![]u8 {
 fn reply(model: ai_types.Model, a: std.mem.Allocator, stream: *event_stream_module.AssistantMessageEventStream, step: Step) !void {
     const partial = ai_types.AssistantMessage{ .content = &.{}, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .stop, .timestamp = 0 };
     try stream.push(.{ .start = .{ .partial = partial } });
+    if (step == .text) try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = step.text, .partial = partial } });
     const blocks = try a.alloc(ai_types.AssistantContent, 1);
+    errdefer a.free(blocks);
+    const api = try owned(a, model.api);
+    errdefer a.free(api);
+    const provider = try owned(a, model.provider);
+    errdefer a.free(provider);
+    const model_id = try owned(a, model.id);
+    errdefer a.free(model_id);
     var stop_reason: ai_types.StopReason = .stop;
     switch (step) {
-        .text => |text| {
-            try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = text, .partial = partial } });
-            blocks[0] = .{ .text = .{ .text = try owned(a, text) } };
-        },
+        .text => |text| blocks[0] = .{ .text = .{ .text = try owned(a, text) } },
         .tool => |call| {
-            blocks[0] = .{ .tool_call = .{ .id = try owned(a, "call-1"), .name = try owned(a, call.name), .arguments_json = try owned(a, call.args) } };
+            const id = try owned(a, "call-1");
+            errdefer a.free(id);
+            const name = try owned(a, call.name);
+            errdefer a.free(name);
+            const arguments = try owned(a, call.args);
+            blocks[0] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = arguments } };
             stop_reason = .tool_use;
         },
         else => unreachable,
     }
-    stream.complete(.{ .content = blocks, .api = try owned(a, model.api), .provider = try owned(a, model.provider), .model = try owned(a, model.id), .usage = .{}, .stop_reason = stop_reason, .timestamp = 0, .is_owned = true });
+    stream.complete(.{ .content = blocks, .api = api, .provider = provider, .model = model_id, .usage = .{}, .stop_reason = stop_reason, .timestamp = 0, .is_owned = true });
 }
 
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: types.ProtocolOptions, a: std.mem.Allocator) anyerror!*event_stream_module.AssistantMessageEventStream {
