@@ -342,8 +342,10 @@ subscriptions on one session stay attributable.
 In the Zig hub an adapter may also deliver session-scoped events on the same
 ordered channel. These have `session_id` without `run_id` and carry their own
 session-domain `sequence` inside the envelope. They go live to subscribers,
-do not advance a run cursor, and are not replayed. The stdio wrapper leaves out
-its outer `sequence` for them. Go's session-event channel follows separately.
+do not advance a run cursor, and are not replayed. After an overflow the host
+reads session state to recover tasks, as well as resuming any run cursor. The
+stdio wrapper leaves out its outer `sequence` for session events. Go's
+session-event channel follows separately.
 
 The stdio overflow regression drives one producer run, then drains its queued
 lines. It checks that the overflow names that run and that its cursor is not
@@ -711,7 +713,8 @@ text/event-stream` and `Cache-Control: no-cache`, flushed before the first
 frame. An envelope is written `id: <run_id>:<sequence>\ndata: <envelope>\n\n`, so a
 client may reconnect with `Last-Event-ID` and land on the same cursor; the id
 splits at its last colon, and a bare sequence is still read as the current run's.
-A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
+A session-scoped envelope has no SSE `id`: it does not change the last run
+cursor and is not replayed. A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
 with no `id`: a reconnect then resumes from the last id it saw, which can repeat
 events but never lands on another run. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 `id`, because a signal is not a position in the stream.
@@ -738,7 +741,7 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | SSE rule | pinned by |
 | --- | --- |
 | An envelope arrives in emission order with its sequences | `TestSSEEnvelopeOrderAndSequences`, `TestClientRejectsFrameIDDisagreement` |
-| The `id:` field and the envelope's own `sequence` agree; a frame whose `id` disagrees is refused | `TestClientRejectsFrameIDDisagreement` |
+| A run envelope's `id:` field and its own `sequence` agree; a frame whose `id` disagrees is refused | `TestClientRejectsFrameIDDisagreement` |
 | An `after` cursor replays the journal's retained suffix | `TestSSEReplayAfterCursor` |
 | `Last-Event-ID` reconnects | `TestSSELastEventIDReconnect` |
 | An explicit `?after=` wins over the header | `TestSSEQueryCursorWinsOverHeader` |

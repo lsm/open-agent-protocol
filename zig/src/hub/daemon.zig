@@ -389,10 +389,7 @@ pub const Daemon = struct {
     pub fn fill(self: *Daemon, out: *std.ArrayList(u8), subscription: *hubmod.Subscription, budget: usize) !Fill {
         while (out.items.len < budget) {
             const delivered = subscription.next() orelse break;
-            try appendEventId(self.allocator, out, delivered.run_id, delivered.sequence);
-            try out.appendSlice(self.allocator, "data: ");
-            try out.appendSlice(self.allocator, delivered.line);
-            try out.appendSlice(self.allocator, "\n\n");
+            try appendEnvelope(self.allocator, out, delivered);
         }
         if (out.items.len >= budget) return .open;
         switch (subscription.ending) {
@@ -412,6 +409,13 @@ pub const Daemon = struct {
         }
     }
 };
+
+fn appendEnvelope(allocator: std.mem.Allocator, out: *std.ArrayList(u8), delivered: hubmod.Delivery) !void {
+    if (delivered.run_id.len > 0) try appendEventId(allocator, out, delivered.run_id, delivered.sequence);
+    try out.appendSlice(allocator, "data: ");
+    try out.appendSlice(allocator, delivered.line);
+    try out.appendSlice(allocator, "\n\n");
+}
 
 fn appendEventId(allocator: std.mem.Allocator, out: *std.ArrayList(u8), run: []const u8, sequence: u64) !void {
     if (std.mem.indexOfAny(u8, run, "\r\n\x00") != null) return;
@@ -1619,6 +1623,15 @@ test "an event's id names its run and sequence, and Last-Event-ID reads that for
     const by_query = try fixture.daemon.respond(arena, request);
     try testing.expectEqual(@as(u64, 4), by_query.stream.next().?.sequence);
     fixture.daemon.leave(by_query.stream);
+}
+
+test "session event SSE frames omit ids and retain the last run cursor" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(testing.allocator);
+    try appendEnvelope(testing.allocator, &out, .{ .line = "{\"run_id\":\"r\",\"sequence\":1}", .run_id = "r", .sequence = 1 });
+    try appendEnvelope(testing.allocator, &out, .{ .line = "{\"session_id\":\"s\",\"sequence\":7}", .run_id = "", .sequence = 0 });
+    try appendEnvelope(testing.allocator, &out, .{ .line = "{\"run_id\":\"r\",\"sequence\":2}", .run_id = "r", .sequence = 2 });
+    try testing.expectEqualStrings("id: r:1\ndata: {\"run_id\":\"r\",\"sequence\":1}\n\ndata: {\"session_id\":\"s\",\"sequence\":7}\n\nid: r:2\ndata: {\"run_id\":\"r\",\"sequence\":2}\n\n", out.items);
 }
 
 test "an event id names its run only when it has one" {

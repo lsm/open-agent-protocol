@@ -844,6 +844,11 @@ pub fn deserializeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_
     var envelope = try decodeEnvelope(line, allocator);
     errdefer envelope.deinit(allocator);
     switch (envelope.payload) {
+        .session_open_response, .session_state_response, .session_state_updated => |*payload| if (payload.tasks_json) |loose| {
+            const written = try writtenTasks(line, allocator);
+            allocator.free(loose);
+            payload.tasks_json = written;
+        },
         .call_resolve_request => |*payload| if (payload.result_json) |loose| {
             const written = try writtenResult(line, allocator);
             allocator.free(loose);
@@ -852,6 +857,14 @@ pub fn deserializeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_
         else => {},
     }
     return envelope;
+}
+
+fn writtenTasks(line: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), line, .{ .parse_numbers = false });
+    const tasks = root.object.get("payload").?.object.get("tasks").?;
+    return json_encode.valueAlloc(allocator, tasks);
 }
 
 fn writtenResult(line: []const u8, allocator: std.mem.Allocator) ![]const u8 {
@@ -3328,7 +3341,7 @@ test "session state, models and capabilities round trip the members goap serves"
     const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
         "\",\"id\":\"e-1\",\"type\":\"session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"waiting_for_input\",\"active_run_id\":\"r\"," ++
         "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]," ++
-        "\"tasks\":[{\"task_id\":\"t\",\"kind\":\"command\",\"status\":\"running\",\"cancellable\":false}],\"tasks_truncated\":true," ++
+        "\"tasks\":[{\"task_id\":\"t\",\"kind\":\"command\",\"status\":\"running\",\"cancellable\":false,\"extensions\":{\"wide\":18446744073709551615,\"fraction\":1.234567890123456789}}],\"tasks_truncated\":true," ++
         "\"transcript_cursor\":\"4\",\"updated_at_ms\":7,\"metadata\":{\"claude_native_session_id\":\"n-1\"},\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}}}";
     var decoded = try deserializeEnvelope(line, allocator);
     defer decoded.deinit(allocator);
@@ -3337,6 +3350,8 @@ test "session state, models and capabilities round trip the members goap serves"
     try std.testing.expectEqualStrings("p", state.active_runs[0].pending_interactions[0]);
     try std.testing.expect(state.tasks_truncated);
     try std.testing.expect(std.mem.indexOf(u8, state.tasks_json.?, "\"task_id\":\"t\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.tasks_json.?, "18446744073709551615") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.tasks_json.?, "1.234567890123456789") != null);
     try std.testing.expectEqualStrings("4", state.transcript_cursor.?);
     try std.testing.expectEqual(@as(u64, 12), state.as_of.?.settled[0].sequence);
     const encoded = try serializeEnvelope(decoded, allocator);
