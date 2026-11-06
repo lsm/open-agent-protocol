@@ -21,7 +21,17 @@ jobs:
         run: zig build-exe zig/proto/async_loop.zig -O ReleaseSafe -lc -femit-bin=/tmp/proto
       - name: Self-test
         run: PROTO_SELFTEST=1 /tmp/proto
+      - name: TLS against real hosts
+        run: |
+          zig build-exe zig/proto/tls_spike.zig -O ReleaseSafe -lc -femit-bin=/tmp/tls-spike
+          for target in api.anthropic.com:/v1/models api.openai.com:/v1/models api.deepseek.com:/models \
+            api.z.ai:/api/paas/v4/models openrouter.ai:/api/v1/models generativelanguage.googleapis.com:/v1beta/models \
+            tls-v1-2.badssl.com:/ expired.badssl.com:/ wrong.host.badssl.com:/ self-signed.badssl.com:/ untrusted-root.badssl.com:/; do
+            SPIKE_HOST=${target%%:*} SPIKE_PATH=${target#*:} /tmp/tls-spike
+          done
       - name: hold-gate, then working
+        env:
+          BENCH_TOOL_BOUND: 1024
         run: |
           ulimit -n 65536
           python3 scripts/bench-resources.py --targets zig-loop --loop-binary /tmp/proto --no-build \

@@ -621,6 +621,8 @@ const Session = struct {
     gate_seq: u32 = 0,
     saving: bool = false,
     loading: bool = false,
+    load_started_ns: u64 = 0,
+    parked_size: usize = 0,
     pending: Pending = .none,
     conn: ?*Conn = null,
     child: ?*Child = null,
@@ -684,6 +686,7 @@ const Config = struct {
     first_byte_ms: u32 = 180_000,
     park: bool = false,
     park_dir: []const u8 = "",
+    history_kib: usize = 0,
     host_port: u16 = 0,
 };
 
@@ -705,6 +708,7 @@ const Reactor = struct {
     journal: std.ArrayList(u8) = .empty,
     journal_fd: c.fd_t = -1,
     journal_sync: bool = false,
+    resumes_ns: std.ArrayList(u64) = .empty,
 
     fn post(self: *Reactor, cmd: Cmd) void {
         self.lock.acquire();
@@ -1091,6 +1095,9 @@ const Reactor = struct {
         run.destroy();
         s.run = null;
         s.saving = true;
+        _ = parked_bytes.fetchAdd(bytes.len, .monotonic);
+        _ = parked_bytes.fetchSub(s.parked_size, .monotonic);
+        s.parked_size = bytes.len;
         pool.submit(.{ .reactor = self, .session = s, .kind = .park_write, .bytes = bytes, .path = parkPath(s) });
     }
 
@@ -1101,6 +1108,7 @@ const Reactor = struct {
     fn load(self: *Reactor, s: *Session) void {
         if (s.saving or s.loading) return;
         s.loading = true;
+        s.load_started_ns = nowNs();
         pool.submit(.{ .reactor = self, .session = s, .kind = .park_read, .path = parkPath(s) });
     }
 
@@ -1136,6 +1144,7 @@ const Reactor = struct {
             .open => |o| {
                 const s = try gpa.create(Session);
                 s.* = .{ .id = o.session, .reactor = self, .run = try Run.create(o.session, o.workspace, o.ask) };
+                try seedHistory(s.run.?, config.history_kib);
                 gpa.free(o.workspace);
                 try self.sessions.put(gpa, s.id, s);
                 self.maybePark(s);
@@ -1195,11 +1204,46 @@ const Reactor = struct {
                 const s = l.session;
                 s.loading = false;
                 s.run = try Run.decode(l.bytes);
+                try self.resumes_ns.append(gpa, nowNs() - s.load_started_ns);
                 try self.deliver(s);
             },
         }
     }
 };
+
+var parked_bytes = std.atomic.Value(u64).init(0);
+
+fn seedHistory(run: *Run, kib: usize) !void {
+    const a = run.arena.allocator();
+    const line = "    const value = try parse(\"line\", options);\n    if (value.len == 0) return error.Empty;\n";
+    var held: usize = 0;
+    var turn: usize = 0;
+    while (held < kib * 1024) : (turn += 1) {
+        const result = try a.alloc(u8, line.len * (40 + turn % 80));
+        var at: usize = 0;
+        while (at < result.len) : (at += line.len) @memcpy(result[at..][0..line.len], line);
+        const id = try std.fmt.allocPrint(a, "call_{x:0>12}", .{turn});
+        const args = try std.fmt.allocPrint(a, "{{\"path\":\"src/module_{d}.zig\",\"description\":\"read the module\"}}", .{turn});
+        const ask = try std.fmt.allocPrint(a, "Look at module {d} and tell me what it returns when the value is empty.", .{turn});
+        try run.messages.append(a, .{ .role = .user, .content = ask });
+        try run.messages.append(a, .{ .role = .assistant, .tool_call_id = id, .tool_name = "Read", .tool_args = args });
+        try run.messages.append(a, .{ .role = .tool, .content = result, .tool_call_id = id, .tool_name = "Read" });
+        held += result.len + ask.len + args.len + id.len;
+    }
+}
+
+fn writeStats() void {
+    const path = c.getenv("PROTO_STATS") orelse return;
+    var all: std.ArrayList(u64) = .empty;
+    for (reactors) |*reactor| all.appendSlice(gpa, reactor.resumes_ns.items) catch return;
+    std.mem.sort(u64, all.items, {}, std.sort.asc(u64));
+    const count = all.items.len;
+    const p50 = if (count > 0) all.items[count / 2] else 0;
+    const p99 = if (count > 0) all.items[count * 99 / 100] else 0;
+    const worst = if (count > 0) all.items[count - 1] else 0;
+    const text = std.fmt.allocPrint(gpa, "{{\"resumes\":{d},\"resume_p50_ms\":{d},\"resume_p99_ms\":{d},\"resume_max_ms\":{d},\"parked_bytes\":{d}}}\n", .{ count, p50 / std.time.ns_per_ms, p99 / std.time.ns_per_ms, worst / std.time.ns_per_ms, parked_bytes.load(.monotonic) }) catch return;
+    _ = writeFile(std.mem.span(path), text);
+}
 
 fn requestBytes(run: *const Run) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -1502,6 +1546,7 @@ pub fn main() !void {
     config.model_limit = envNumber("PROTO_MODEL_LIMIT", 4096);
     config.tool_limit = envNumber("PROTO_TOOL_LIMIT", default_tool_limit);
     config.park = default_park or c.getenv("PROTO_PARK") != null;
+    config.history_kib = envNumber("PROTO_HISTORY_KIB", 0);
     if (config.park) {
         const dir = std.mem.span(c.getenv("TMPDIR") orelse return error.NoTmp);
         const path = try std.fmt.allocPrintSentinel(gpa, "{s}/park", .{dir}, 0);
@@ -1533,5 +1578,6 @@ pub fn main() !void {
         }
         buffer.replaceRange(gpa, 0, at, &.{}) catch unreachable;
     }
+    writeStats();
     c._exit(0);
 }
