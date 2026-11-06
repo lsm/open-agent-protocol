@@ -8,3 +8,5 @@ pub use adapter::{pin, Adapter, Config};
 
 mod operation;
 pub use operation::Operation;
+
+mod session;

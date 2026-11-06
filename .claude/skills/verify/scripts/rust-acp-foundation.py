@@ -40,7 +40,7 @@ def main():
             'servers': [{'name': 'local', 'command': '/synthetic/mcp', 'args': []}],
         }
         for name, patch, expected in [
-            ('probe', {}, 'session.open'),
+            ('probe', {}, None),
             ('participant', {'participant': ''}, 'participant identity is required'),
             ('reasoning', {'reasoning_level': 'high'}, 'session.reasoning'),
             ('empty-executable', {'path': ''}, 'executable is required'),
@@ -56,15 +56,22 @@ def main():
                 assert expected in result['configError'], result
             else:
                 assert result['admitError'] == result['openError'], result
-                assert expected in result['openError'], result
+                if expected is None:
+                    assert result['openError'] is None, result
+                else:
+                    assert expected in result['openError'], result
                 assert result['descriptor']['endpoint']['version'] == pin['endpoint_version']
-                assert result['revision'] == pin['capability_revision'] + '-rust-foundation'
+                assert result['revision'] == pin['capability_revision'] + '-rust-open'
                 assert result['corpus'] == pin['corpus']
                 assert result['journalReplay'] == 'unavailable'
                 assert result['descriptor']['sources'] == [
                     {'id': 'local', 'kind': 'process', 'protocol': 'mcp'}]
                 for key, support in result['descriptor']['features'].items():
-                    level = 'emulated' if key in ['protocol.initialize', 'capabilities'] else 'unavailable'
+                    level = {
+                        'protocol.initialize': 'emulated', 'capabilities': 'emulated',
+                        'session.open': 'native', 'session.state': 'emulated',
+                        'models.list': 'degraded',
+                    }.get(key, 'unavailable')
                     assert support['level'] == level, (key, support)
                 observed = result
             assert not marker.exists(), 'probe/admission unexpectedly launched the configured process'

@@ -17,6 +17,9 @@ Use a fresh branch/worktree under `~/focus/worktrees/<name>`. Never run a bare
 remove your worktree with `git worktree remove <path>` from another checkout.
 
 Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python >=3.11.
+Check `python3 --version` before running the scripts. If it selects an older
+Xcode Python, put a temporary `python3` launcher for an installed Python 3.11 or
+newer first on PATH for the baseline and journeys, then remove the launcher.
 Run `npm ci --ignore-scripts` at the root and
 `npm --prefix clients/ts ci --ignore-scripts` for SDK/client consumer journeys
 and the comment checker.

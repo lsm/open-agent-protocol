@@ -9,18 +9,17 @@ python3 .claude/skills/verify/scripts/rust-acp-foundation.py --output-dir /tmp/o
 
 The standalone Rust library consumer calls the public ACP `Adapter` through the
 shared `Adapter` and `Admitter` traits. Its configuration points at a synthetic
-executable that would leave a marker if launched. Probing, admission and open
-must leave no marker. The consumer observes invalid configuration errors,
+executable that would leave a marker if launched. Probing, valid admission and refused open requests
+must leave no marker. Valid session creation is exercised in rust-acp-session.md. The consumer observes invalid configuration errors,
 participant and reasoning refusals, the catalog-derived endpoint version and
-corpus, configured MCP source descriptors and explicit unavailable support for
-all session capabilities. Admission and open must return the same refusal.
+corpus, configured MCP source descriptors and the staged capability levels.
+Invalid admission and open requests must return the same refusal.
 
 The temporary foundation descriptor uses the catalog's current revision with
-`-rust-foundation` appended. It must not reuse Go's full capability revision
+`-rust-open` appended. It must not reuse Go's full capability revision
 while disclosing fewer capabilities. The script wraps the public descriptor in
 a real capabilities exchange and runs all three validators over it, retaining
-the exchange and each validator's output. This verifies the staged library
-surface, with session creation still explicitly unavailable. It does not claim
+the exchange and each validator's output. This verifies the capability/admission library surface. It does not claim
 session or corpus parity. The separate rust-acp-process journey exercises the
 already implemented subprocess handshake.
 

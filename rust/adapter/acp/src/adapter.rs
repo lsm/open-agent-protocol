@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::AtomicU64;
 
 use oap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
@@ -24,14 +25,15 @@ pub struct Config {
 
 pub struct Adapter {
     config: Config,
+    next_session: AtomicU64,
 }
 
 pub fn pin() -> &'static oap_harness::Version {
     oap_harness::current("acp").expect("embedded ACP catalog has a current version")
 }
 
-fn unavailable() -> Error {
-    Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised("session.open")))
+pub(crate) fn unavailable(feature: &str) -> Error {
+    Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(feature)))
 }
 
 impl Adapter {
@@ -58,7 +60,10 @@ impl Adapter {
                 )));
             }
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            next_session: AtomicU64::new(0),
+        })
     }
 
     pub fn describe(&self) -> Descriptor {
@@ -107,6 +112,13 @@ impl Adapter {
                 },
             );
         }
+        for (key, level, reason) in [
+            ("session.open", SupportLevel::NATIVE, "session/new opens an ACP session"),
+            ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
+            (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the session/new model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
+        ] {
+            features.insert(key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() });
+        }
         Descriptor {
             capabilities: CapabilityDescriptor {
                 endpoint: EndpointDescriptor {
@@ -131,7 +143,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-foundation", pin().capability_revision),
+            capability_revision: format!("{}-rust-open", pin().capability_revision),
             journal: JournalDescriptor {
                 replay: SupportLevel::UNAVAILABLE,
                 ..JournalDescriptor::default()
@@ -143,6 +155,9 @@ impl Adapter {
     fn validate_open(&self, request: &OpenRequest) -> Result<(), Error> {
         if request.participant.id.as_str().is_empty() {
             return Err(Error::InvalidParticipant);
+        }
+        if request.reopen {
+            return Err(unavailable(FEATURE_OPEN_REOPEN));
         }
         refuse_unadvertised_tool_sources(request, &[])?;
         refuse_unadvertised_tools(request, &[])?;
@@ -158,7 +173,13 @@ impl AdapterContract for Adapter {
     fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn Session>> {
         Box::pin(async move {
             self.validate_open(&request)?;
-            Err(unavailable())
+            crate::session::Session::open(
+                &self.config,
+                request,
+                self.describe(),
+                &self.next_session,
+            )
+            .await
         })
     }
 
@@ -170,9 +191,6 @@ impl AdapterContract for Adapter {
 impl Admitter for Adapter {
     fn admit(&self, request: &OpenRequest) -> BoxFuture<'_, ()> {
         let result = self.validate_open(request);
-        Box::pin(async move {
-            result?;
-            Err(unavailable())
-        })
+        Box::pin(async move { result })
     }
 }
