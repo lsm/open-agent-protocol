@@ -76,6 +76,8 @@ def main():
         ("undeclared-gate-target", {"gates": [gate, {"type": name + ".other", "ungated": True}]}, []),
         ("undeclared-gate-key", {"gates": [{"type": name, "capability": "com.example.stage.key"}]}, ["pack_ungated_type"]),
         ("core-root-key", {"capability_keys": ["session.open.feature"]}, ["pack_unprefixed_name"]),
+        ("two-label-run-root", {"capability_keys": ["run.started.extension"]}, ["pack_unprefixed_name"]),
+        ("two-label-content-root", {"capability_keys": ["content.delta.extension"]}, ["pack_unprefixed_name"]),
         ("foreign-key", {"capability_keys": ["org.example.feature"]}, ["pack_foreign_prefix"]),
     ]
     for label, patch, codes in malformed:
@@ -102,7 +104,7 @@ def main():
     data = json.loads(control.stdout)
     assert control.returncode == 0 and len(data["ids"]) == 2, data
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    print(f"PASS: {len(results)} declaration refusals (12 shared, 10 synthetic) agree with Go; two descriptors read by an external Rust consumer")
+    print(f"PASS: {len(results)} declaration refusals (12 shared, 12 synthetic) agree with Go; two descriptors read by an external Rust consumer")
     print("STAGED: schema documents, members, dependencies, references, branches and corpora are not loaded by this API")
 
 

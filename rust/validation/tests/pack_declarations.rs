@@ -63,3 +63,51 @@ fn a_descriptor_reader_retains_the_named_roots_and_descriptors() {
     assert_eq!(descriptors[0].1["id"], "com.example.storage");
     assert_eq!(descriptors[1].1["id"], "com.example.index");
 }
+
+#[test]
+fn two_label_core_types_reserve_their_namespace() {
+    let directory = std::env::temp_dir().join(format!(
+        "oap-pack-core-roots-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let mut observed = Vec::new();
+    for root in [
+        "run.started",
+        "run.failed",
+        "content.delta",
+        "content.completed",
+        "capabilities.request",
+        "models.response",
+        "error.response",
+    ] {
+        let descriptor = serde_json::json!({
+            "id": "com.example.stage", "version": "1", "schemas": ["types.json"],
+            "capability_keys": [format!("{root}.extension")]
+        });
+        std::fs::write(
+            directory.join("pack.json"),
+            serde_json::to_vec(&descriptor).unwrap(),
+        )
+        .unwrap();
+        let error = PackLoader::read(std::slice::from_ref(&directory))
+            .err()
+            .unwrap();
+        observed.push((
+            root,
+            error
+                .codes()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        ));
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+    for (root, codes) in observed {
+        assert_eq!(codes, ["pack_unprefixed_name"], "{root}");
+    }
+}
