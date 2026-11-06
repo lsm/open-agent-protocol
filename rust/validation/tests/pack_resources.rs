@@ -60,3 +60,47 @@ fn resources_retain_schema_documents_and_contained_manifest_paths() {
         std::fs::canonicalize(root.join("storage/fixtures/manifest.json")).unwrap()
     );
 }
+
+#[test]
+fn a_member_needs_its_own_valid_gate() {
+    let directory =
+        std::env::temp_dir().join(format!("oap-pack-member-gates-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let mut observed = Vec::new();
+    for mixed in [false, true] {
+        let mut gate = serde_json::json!({"payload_type":"run.completed", "member":"com.example.stage.extra", "ungated":true});
+        let mut descriptor = serde_json::json!({
+            "id":"com.example.stage", "version":"1", "schemas":["types.json"],
+            "payload_members":[{"payload_type":"run.completed", "member":"com.example.stage.extra", "schema":{}}]
+        });
+        if mixed {
+            gate["type"] = "com.example.stage.event".into();
+            descriptor["envelope_types"] = serde_json::json!([{"type":"com.example.stage.event", "role":"event", "schema":"types.json"}]);
+        } else {
+            gate["capability"] = "com.example.stage.feature".into();
+            descriptor["capability_keys"] = serde_json::json!(["com.example.stage.feature"]);
+        }
+        descriptor["gates"] = serde_json::json!([gate]);
+        std::fs::write(
+            directory.join("pack.json"),
+            serde_json::to_vec(&descriptor).unwrap(),
+        )
+        .unwrap();
+        let codes = PackLoader::read(std::slice::from_ref(&directory))
+            .err()
+            .map(|error| {
+                error
+                    .codes()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        observed.push(codes);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+    assert_eq!(
+        observed,
+        vec![vec!["pack_ungated_type"], vec!["pack_ungated_type"]]
+    );
+}

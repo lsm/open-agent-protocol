@@ -74,6 +74,22 @@ def main():
             descriptor["fixtures"] = manifest
         (directory / "pack.json").write_text(json.dumps(descriptor))
         cases.append((label, [directory], codes))
+    for label, mixed in [("member-gate-both-modes", False), ("member-gate-also-names-type", True)]:
+        directory = output / label
+        directory.mkdir()
+        (directory / "types.json").write_text("{}")
+        member = "com.example.resources.extra"
+        gate = {"payload_type": "run.completed", "member": member, "ungated": True}
+        descriptor = dict(base, payload_members=[{"payload_type": "run.completed", "member": member, "schema": {}}])
+        if mixed:
+            gate["type"] = "com.example.resources.event"
+            descriptor["envelope_types"] = [{"type": gate["type"], "role": "event", "schema": "types.json"}]
+        else:
+            gate["capability"] = "com.example.resources.feature"
+            descriptor["capability_keys"] = [gate["capability"]]
+        descriptor["gates"] = [gate]
+        (directory / "pack.json").write_text(json.dumps(descriptor))
+        cases.append((label, [directory], ["pack_ungated_type"]))
     results = []
     for label, paths, codes in cases:
         rust = run([str(consumer), *map(str, paths)], label + ".rust")
