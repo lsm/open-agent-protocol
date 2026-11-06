@@ -8,10 +8,11 @@ cargo test --manifest-path rust/Cargo.toml -p oap-conformance --test models --te
 ```
 
 Inspect `consumer.txt` for a real model change on the rebuilt Rust memory
-endpoint. The consumer elects an alternative from its catalog, checks the
-switch response and canonical state event, reconciles state, and observes the
-missing-model refusal naming the requested id. It also checks the declared
-session-list outcome. Require ten passing named checks, EOF exit 0 and PASS.
+endpoint. The consumer first elects a model, then switches between two catalog
+entries. It checks the switch responses and canonical state events, reconciles
+state, and observes missing-model refusals naming the requested id. It also
+checks the declared session-list outcome. Require thirteen passing named
+checks, EOF exit 0 and PASS.
 The listing probe must be absent from the collected trace.
 
 Public API tests cover explicit model selection, unavailable/malformed catalogs,

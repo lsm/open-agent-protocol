@@ -156,8 +156,12 @@ for line in sys.stdin:
         assert_ne!(selected, opened.current_model_id);
         assert!(runner.switch_model(&selected, &opened.current_model_id));
         assert_eq!(runner.checks().len(), 10);
+        let alternate = runner.select_model(&descriptor, &selected, "");
+        assert_ne!(alternate, selected);
+        assert!(runner.switch_model(&alternate, &selected));
+        assert_eq!(runner.checks().len(), 13);
         assert!(runner.checks().iter().all(|check| check.passed));
-        println!("model changed from {} to {}; checks {}", opened.current_model_id, selected, serde_json::to_string(&runner.into_checks()).unwrap());
+        println!("model changed from {} to {}; checks {}", selected, alternate, serde_json::to_string(&runner.into_checks()).unwrap());
         assert!(client.transcript().iter().all(|envelope| !envelope.envelope_type.as_str().starts_with("session.list.")));
         client.close_input();
         assert!(client.wait().unwrap().success());
