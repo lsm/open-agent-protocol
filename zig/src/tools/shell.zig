@@ -30,7 +30,21 @@ pub const Jobs = struct {
         leader: std.posix.pid_t,
         term: ?std.process.Child.Term = null,
         killed: bool = false,
+        noticed: bool = false,
         watcher: ?std.Thread = null,
+
+        fn owesNotice(self: *const Job) bool {
+            return self.term != null and !self.killed and !self.noticed;
+        }
+    };
+
+    pub const Notice = struct {
+        task_id: []const u8,
+        text: []u8,
+
+        pub fn deinit(self: Notice, allocator: std.mem.Allocator) void {
+            allocator.free(self.text);
+        }
     };
 
     pub const Started = struct { task_id: []const u8, output_path: []const u8 };
@@ -134,6 +148,34 @@ pub const Jobs = struct {
         };
     }
 
+    pub fn noticeWaiting(self: *Jobs) bool {
+        self.lock();
+        defer self.mutex.unlock();
+        for (self.list.items) |job| {
+            if (job.owesNotice()) return true;
+        }
+        return false;
+    }
+
+    pub fn takeNotice(self: *Jobs, allocator: std.mem.Allocator) !?Notice {
+        self.lock();
+        defer self.mutex.unlock();
+        var text = std.ArrayList(u8).empty;
+        errdefer text.deinit(allocator);
+        var first: ?[]const u8 = null;
+        for (self.list.items) |job| {
+            if (!job.owesNotice()) continue;
+            try appendNotice(allocator, &text, job);
+            first = first orelse job.id;
+        }
+        const task_id = first orelse return null;
+        const owned = try text.toOwnedSlice(allocator);
+        for (self.list.items) |job| {
+            if (job.owesNotice()) job.noticed = true;
+        }
+        return .{ .task_id = task_id, .text = owned };
+    }
+
     pub fn anyRunning(self: *Jobs) bool {
         self.reap();
         self.lock();
@@ -180,6 +222,37 @@ pub const Jobs = struct {
         if (watcher) |thread| thread.join();
     }
 
+    fn appendNotice(allocator: std.mem.Allocator, text: *std.ArrayList(u8), job: *const Job) !void {
+        if (text.items.len > 0) try text.appendSlice(allocator, "\n\n");
+        const ended = switch (job.term.?) {
+            .exited => |code| try std.fmt.allocPrint(allocator, "exited with code {d}", .{code}),
+            .signal => |sig| try std.fmt.allocPrint(allocator, "ended by signal {d}", .{@backingInt(sig)}),
+            else => try allocator.dupe(u8, "ended"),
+        };
+        defer allocator.free(ended);
+        const tail = try outputTail(allocator, job.*);
+        defer allocator.free(tail);
+        const line = try std.fmt.allocPrint(allocator, notice_format, .{ job.id, ended, job.output, tail });
+        defer allocator.free(line);
+        try text.appendSlice(allocator, line);
+    }
+
+    fn outputTail(allocator: std.mem.Allocator, job: Job) ![]u8 {
+        var dir = common.openWorkspace(job.workspace_root, false) catch return allocator.dupe(u8, "");
+        defer dir.close(common.defaultIo());
+        const file = dir.openFile(common.defaultIo(), job.output, .{}) catch return allocator.dupe(u8, "");
+        defer file.close(common.defaultIo());
+        const size = (file.stat(common.defaultIo()) catch return allocator.dupe(u8, "")).size;
+        const length: usize = @intCast(@min(size, notice_tail_bytes));
+        const tail = try allocator.alloc(u8, length);
+        defer allocator.free(tail);
+        const read = file.readPositionalAll(common.defaultIo(), tail, size - length) catch 0;
+        var first: usize = 0;
+        while (first < read and tail[first] & 0xC0 == 0x80) first += 1;
+        const text = tail[first..read];
+        return allocator.dupe(u8, if (std.unicode.utf8ValidateSlice(text)) text else "(not text)");
+    }
+
     fn outputBytes(job: Job) u64 {
         var dir = common.openWorkspace(job.workspace_root, false) catch return 0;
         defer dir.close(common.defaultIo());
@@ -189,6 +262,13 @@ pub const Jobs = struct {
         return st.size;
     }
 };
+
+const notice_tail_bytes = 2048;
+const notice_format =
+    \\[SYSTEM NOTIFICATION - NOT USER INPUT]
+    \\Background job {s} {s}. Its output is in {s}; the end of it:
+    \\{s}
+;
 
 const end_directory_script =
     \\__oap_cmd=$1
@@ -856,6 +936,60 @@ test "ShellJob reports a finished job's exit code and ends a running one on kill
     var killed = try tools[1].runtime_execute.?(tools[1].runtime_ctx, "call-kill", kill_args, null, null, null, std.testing.allocator);
     defer killed.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, killed.getDetailsJson().?, "\"status\":\"killed\"") != null);
+}
+
+test "a notice whose tail starts inside a character is still text" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    const tools = sessionTools(&jobs);
+    const wide = try backgroundArgs(&case, "i=0; while [ $i -lt 1500 ]; do printf '\u{e9}'; i=$((i+1)); done; printf x");
+    defer std.testing.allocator.free(wide);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-wide", wide, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+
+    const by = common.nowMs() + 5_000;
+    while (!jobs.noticeWaiting() and common.nowMs() < by) {}
+    var notice = (try jobs.takeNotice(std.testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer notice.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "(not text)") == null);
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, notice.text, "\n"), "\u{e9}\u{e9}x"));
+}
+
+test "a notice that cannot be built stays owed" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    const tools = sessionTools(&jobs);
+    const quick = try backgroundArgs(&case, "echo finished");
+    defer std.testing.allocator.free(quick);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-quick", quick, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+    const by = common.nowMs() + 5_000;
+    while (!jobs.noticeWaiting() and common.nowMs() < by) {}
+    try std.testing.expect(jobs.noticeWaiting());
+
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const taken = jobs.takeNotice(failing.allocator()) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(jobs.noticeWaiting());
+            continue;
+        };
+        var notice = taken orelse return error.TestUnexpectedResult;
+        defer notice.deinit(failing.allocator());
+        try std.testing.expect(fail_index > 1);
+        try std.testing.expect(!jobs.noticeWaiting());
+        break;
+    }
 }
 
 test "anyRunning counts a job until it ends" {

@@ -277,6 +277,7 @@ const Run = struct {
     id: []const u8,
     input_text: []const u8 = "",
     submit_id: []const u8 = "",
+    trigger_task: []const u8 = "",
     started: bool = false,
     next_sequence: u64 = 1,
     status: oap_types.RunStatus = .running,
@@ -425,6 +426,8 @@ pub const Session = struct {
             .tool_approval_ctx = self,
             .tool_approval_callback = approveTool,
             .run_async = options.run_async,
+            .notices_ctx = jobs,
+            .notices_fn = takeJobNotices,
         });
         errdefer loop.deinit();
         options.loop = loop.loop();
@@ -496,6 +499,12 @@ pub const Session = struct {
     fn transcriptWriter(self: *Session) ?session_runtime.SessionRuntime.TranscriptWriter {
         if (self.owner.transcripts == null) return null;
         return .{ .ctx = self, .save_fn = saveTranscript };
+    }
+
+    fn takeJobNotices(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+        const jobs: *local_tools.shell.Jobs = @ptrCast(@alignCast(ctx.?));
+        const notice = (try jobs.takeNotice(allocator)) orelse return null;
+        return notice.text;
     }
 
     fn saveTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
@@ -763,7 +772,7 @@ pub const Session = struct {
         var settled: std.ArrayList(oap_types.RunPosition) = .empty;
         var position: u64 = 0;
         for (self.runs.items) |run| {
-            if (!listsId(admitted.items, run.submit_id)) try admitted.append(arena, run.submit_id);
+            if (run.submit_id.len > 0 and !listsId(admitted.items, run.submit_id)) try admitted.append(arena, run.submit_id);
             if (run.terminal) {
                 try settled.append(arena, .{ .run_id = run.id, .sequence = run.next_sequence - 1 });
                 continue;
@@ -777,9 +786,10 @@ pub const Session = struct {
                 if (call.acknowledged) try acknowledged.append(arena, call.interaction_id);
             };
             const pending = pending_ids.items;
-            const anchors = try arena.alloc([]const u8, 1 + run.admitted_steers.items.len);
-            anchors[0] = run.submit_id;
-            @memcpy(anchors[1..], run.admitted_steers.items);
+            const submitted: usize = @intFromBool(run.submit_id.len > 0);
+            const anchors = try arena.alloc([]const u8, submitted + run.admitted_steers.items.len);
+            if (submitted > 0) anchors[0] = run.submit_id;
+            @memcpy(anchors[submitted..], run.admitted_steers.items);
             const steers = try arena.alloc(oap_types.PendingSteer, run.steers.items.len);
             for (run.steers.items, steers) |pending_steer, *slot| slot.* = .{ .submission_id = pending_steer.submission_id, .request_id = pending_steer.request_id, .message_ids = pending_steer.message_ids };
             try entries.append(arena, .{
@@ -963,6 +973,12 @@ pub const Session = struct {
         try started.put("status", .{ .string = "running" });
         if (run.model_id.len > 0) try started.put("model_id", .{ .string = run.model_id });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
+        if (run.trigger_task.len > 0) {
+            var trigger = Payload.init(a);
+            try trigger.put("kind", .{ .string = "background_task" });
+            try trigger.put("task_id", .{ .string = run.trigger_task });
+            try started.put("trigger", trigger.value());
+        }
         const prepared = try self.prepareEvent(run, "run.started", started.value(), false, .{});
         errdefer {
             self.gpa.free(prepared.line);
@@ -1018,9 +1034,35 @@ pub const Session = struct {
         self.restore_model = "";
     }
 
+    fn admitNotices(self: *Session) contract.Failure!void {
+        if (!self.jobs.noticeWaiting()) return;
+        try self.runs.ensureUnusedCapacity(self.gpa, 1);
+        const keep = self.keep.allocator();
+        const run = try keep.create(Run);
+        const id = try self.owner.nextID(keep, "run");
+        const model_id = (try self.currentModelRef(keep)) orelse "";
+        const notice = (self.jobs.takeNotice(self.gpa) catch return error.OutOfMemory) orelse return;
+        run.* = .{
+            .id = id,
+            .input_text = notice.text,
+            .model_id = model_id,
+            .trigger_task = notice.task_id,
+            .status = .queued,
+        };
+        self.runs.insertAssumeCapacity(self.firstWaiting(), run);
+    }
+
+    fn firstWaiting(self: *Session) usize {
+        for (self.runs.items, 0..) |run, index| {
+            if (!run.terminal and !run.started) return index;
+        }
+        return self.runs.items.len;
+    }
+
     fn promote(self: *Session) contract.Failure!bool {
         if (self.runtime.isIdle()) self.restoreModel();
         if (self.live() != null or !self.runtime.isIdle()) return false;
+        try self.admitNotices();
         for (self.runs.items) |run| {
             if (run.terminal or run.started) continue;
             var refusal = contract.Refusal{};
@@ -1706,7 +1748,8 @@ pub const Session = struct {
     }
 
     fn liveWork(ptr: *anyopaque) bool {
-        return cast(ptr).jobs.anyRunning();
+        const jobs = cast(ptr).jobs;
+        return jobs.anyRunning() or jobs.noticeWaiting();
     }
 
     fn activity(ptr: *anyopaque) contract.Activity {
@@ -2343,14 +2386,19 @@ const Script = struct {
     last_max_tokens: ?u32 = null,
     reply: []const u8 = "hello",
     tool_first: bool = false,
+    tool_twice: bool = false,
     tool_name: []const u8 = "echo_tool",
     tool_arguments: []const u8 = "{\"say\":\"hi\"}",
     wait_for_cancel: bool = false,
+    hold_first_reply: bool = false,
+    replying: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     received_answers: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_steer: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_notice: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
 var held_tool = std.atomic.Value(bool).init(false);
+var entered_tool = std.atomic.Value(bool).init(false);
 var echo_image = std.atomic.Value(bool).init(false);
 var scripted_usage: ai_types.Usage = .{ .input = 11, .output = 7 };
 
@@ -2382,12 +2430,37 @@ fn finish(stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.
     stream.complete(try scriptedMessage(allocator, model, content, reason));
 }
 
+fn messageHolds(message: ai_types.UserMessage, wanted: []const u8) bool {
+    switch (message.content) {
+        .text => |text| return std.mem.indexOf(u8, text, wanted) != null,
+        .parts => |parts| {
+            for (parts) |part| {
+                if (part == .text and std.mem.indexOf(u8, part.text.text, wanted) != null) return true;
+            }
+            return false;
+        },
+    }
+}
+
+fn startJob(session: *Session, root: []const u8, command: []const u8) !void {
+    for (session.runtime.availableTools()) |tool| {
+        if (!std.mem.eql(u8, tool.name, "Shell")) continue;
+        const args = try std.fmt.allocPrint(testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"{s}\",\"run_in_background\":true}}", .{ root, command });
+        defer testing.allocator.free(args);
+        var result = try tool.runtime_execute.?(tool.runtime_ctx, "call-job", args, null, null, null, testing.allocator);
+        result.deinit(testing.allocator);
+        return;
+    }
+    return error.TestUnexpectedResult;
+}
+
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.calls += 1;
     script.last_model = model.id;
     script.last_max_tokens = options.max_tokens;
     for (context.messages) |message| {
+        if (message == .user and messageHolds(message.user, "SYSTEM NOTIFICATION")) script.saw_notice.store(true, .release);
         if (message == .user and message.user.content == .text and std.mem.indexOf(u8, message.user.content.text, "change course") != null) script.saw_steer.store(true, .release);
         if (message != .tool_result) continue;
         for (message.tool_result.content) |part| {
@@ -2409,9 +2482,19 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     }
     if (script.tool_first and script.calls == 1) {
         try stream.push(.{ .start = .{ .partial = bareMessage(model, .tool_use) } });
-        const content = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = script.tool_name, .arguments_json = script.tool_arguments } }};
-        try finish(stream, allocator, model, &content, .tool_use);
+        const content = [_]ai_types.AssistantContent{
+            .{ .tool_call = .{ .id = "call-1", .name = script.tool_name, .arguments_json = script.tool_arguments } },
+            .{ .tool_call = .{ .id = "call-2", .name = script.tool_name, .arguments_json = script.tool_arguments } },
+        };
+        try finish(stream, allocator, model, content[0..if (script.tool_twice) 2 else 1], .tool_use);
         return stream;
+    }
+    if (script.hold_first_reply and script.calls == 1) {
+        script.replying.store(true, .release);
+        var waits: usize = 0;
+        while (held_tool.load(.acquire) and waits < 5000) : (waits += 1) {
+            std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+        }
     }
     const partial = bareMessage(model, .stop);
     try stream.push(.{ .start = .{ .partial = partial } });
@@ -2427,6 +2510,7 @@ fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_t
     _ = cancel_token;
     _ = on_update_ctx;
     _ = on_update;
+    entered_tool.store(true, .release);
     var waits: usize = 0;
     while (held_tool.load(.acquire) and waits < 5000) : (waits += 1) {
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
@@ -2958,6 +3042,172 @@ test "a background shell job the session started keeps running after its call an
     const closed_at = (try tmp.dir.statFile(testing.io, output, .{})).size;
     compat.time.sleepMs(300);
     try testing.expectEqual(closed_at, (try tmp.dir.statFile(testing.io, output, .{})).size);
+}
+
+fn countKind(harness: *const Harness, kind: []const u8) usize {
+    var count: usize = 0;
+    for (harness.seen.items) |parsed| {
+        if (std.mem.eql(u8, parsed.value.object.get("type").?.string, kind)) count += 1;
+    }
+    return count;
+}
+
+test "a job that ends on an idle session starts a run that tells the model" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+
+    try startJob(session, root, "echo finished");
+    try harness.untilTerminal();
+
+    try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 1), script.calls);
+    try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
+    const started = harness.seen.items[0].value.object.get("payload").?.object;
+    const trigger = started.get("trigger").?.object;
+    try testing.expectEqualStrings("background_task", trigger.get("kind").?.string);
+    try testing.expectEqualStrings(session.jobs.list.items[0].id, trigger.get("task_id").?.string);
+    try testing.expect(harness.session.holdsNoLiveWork());
+}
+
+test "a job that ends during a turn folds into its next request and starts no run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .tool_first = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+
+    entered_tool.store(false, .release);
+    _ = try harness.submit("go");
+    const by = compat.time.nowMillis() + 5_000;
+    while (!entered_tool.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(entered_tool.load(.acquire));
+    try startJob(session, root, "true");
+    while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(session.jobs.noticeWaiting());
+    try testing.expect(!harness.session.holdsNoLiveWork());
+    held_tool.store(false, .release);
+    try harness.untilTerminal();
+
+    try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
+    try testing.expect(!session.jobs.noticeWaiting());
+}
+
+test "a job that ends during the last request gets one more request and starts no run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .hold_first_reply = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+
+    _ = try harness.submit("go");
+    const by = compat.time.nowMillis() + 5_000;
+    while (!script.replying.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(script.replying.load(.acquire));
+    try startJob(session, root, "true");
+    while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(session.jobs.noticeWaiting());
+    held_tool.store(false, .release);
+    try harness.untilTerminal();
+
+    try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
+    try testing.expect(!session.jobs.noticeWaiting());
+}
+
+test "a job that ends between two tool calls leaves the second call to run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .tool_first = true, .tool_twice = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+
+    entered_tool.store(false, .release);
+    _ = try harness.submit("go");
+    const by = compat.time.nowMillis() + 5_000;
+    while (!entered_tool.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(entered_tool.load(.acquire));
+    try startJob(session, root, "true");
+    while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(session.jobs.noticeWaiting());
+    held_tool.store(false, .release);
+    try harness.untilTerminal();
+
+    try testing.expectEqual(@as(usize, 2), countKind(&harness, "action.call.completed"));
+    try testing.expectEqual(@as(usize, 0), countKind(&harness, "action.call.failed"));
+    try testing.expect(script.saw_notice.load(.acquire));
+}
+
+test "a run a job started leaves no empty id in the session's state" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+
+    try startJob(session, root, "true");
+    try harness.untilTerminal();
+
+    const captured = try session.snapshot(harness.arena.allocator());
+    try testing.expectEqual(@as(usize, 1), captured.as_of.?.settled.len);
+    try testing.expectEqual(@as(usize, 0), captured.as_of.?.admitted_submit_requests.len);
+}
+
+test "a job the model killed tells it nothing and starts no run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+
+    try startJob(session, root, "sleep 30");
+    _ = try session.jobs.report(session.jobs.list.items[0].output, true);
+    _ = try harness.session.pump(0);
+    try harness.collect();
+
+    try testing.expect(!session.jobs.noticeWaiting());
+    try testing.expectEqual(@as(usize, 0), countKind(&harness, "run.started"));
 }
 
 test "a session reports a live background job, so the hub will not park it" {

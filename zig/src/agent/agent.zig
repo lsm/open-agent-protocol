@@ -34,6 +34,8 @@ pub const GetApiKeyFn = types.GetApiKeyFn;
 pub const GetSteeringMessagesFn = types.GetSteeringMessagesFn;
 pub const GetFollowUpMessagesFn = types.GetFollowUpMessagesFn;
 
+pub const NoticesFn = types.GetNoticeFn;
+
 pub const AgentOptions = struct {
     initial_state: ?AgentState = null,
 
@@ -46,6 +48,9 @@ pub const AgentOptions = struct {
 
     steering_mode: QueueMode = .one_at_a_time,
     follow_up_mode: QueueMode = .one_at_a_time,
+
+    notices_fn: ?NoticesFn = null,
+    notices_ctx: ?*anyopaque = null,
 
     session_id: ?[]const u8 = null,
     execute_tool_via_protocol_fn: ?types.ToolProtocolExecuteFn = null,
@@ -85,6 +90,8 @@ pub const Agent = struct {
     _steering_consumed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     _skip_initial_steering_poll: bool,
+    _notices_fn: ?NoticesFn,
+    _notices_ctx: ?*anyopaque,
 
     _convert_to_llm_fn: ?ConvertToLlmFn,
     _convert_to_llm_ctx: ?*anyopaque,
@@ -132,6 +139,8 @@ pub const Agent = struct {
             ._steering_mode = options.steering_mode,
             ._follow_up_mode = options.follow_up_mode,
             ._skip_initial_steering_poll = false,
+            ._notices_fn = options.notices_fn,
+            ._notices_ctx = options.notices_ctx,
             ._convert_to_llm_fn = options.convert_to_llm_fn,
             ._convert_to_llm_ctx = options.convert_to_llm_ctx,
             ._transform_context_fn = options.transform_context_fn,
@@ -1288,6 +1297,8 @@ pub const Agent = struct {
             .transform_context_ctx = self._transform_context_ctx,
             .get_steering_messages_fn = getSteeringMessages,
             .get_steering_messages_ctx = self,
+            .get_notice_fn = self._notices_fn,
+            .get_notice_ctx = self._notices_ctx,
             .prompts_are_steering = options.prompts_are_steering,
             .get_follow_up_messages_fn = getFollowUpMessages,
             .get_follow_up_messages_ctx = self,

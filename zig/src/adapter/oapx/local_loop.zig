@@ -35,6 +35,8 @@ pub const Options = struct {
     tool_approval_ctx: ?*anyopaque = null,
     tool_approval_callback: ?ToolApprovalCallback = null,
     run_async: bool = true,
+    notices_ctx: ?*anyopaque = null,
+    notices_fn: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 = null,
 };
 
 const ApprovalDecisionState = struct {
@@ -74,6 +76,8 @@ pub const LocalLoop = struct {
     run_transcripts: std.ArrayList([]u8) = .empty,
     run_transcript_saved: []const u8 = "",
     run_async: bool,
+    notices_ctx: ?*anyopaque = null,
+    notices_fn: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) LocalLoop {
         if (options.permission_engine) |engine| engine.setBypassAll(options.permission_mode == .bypass);
@@ -84,6 +88,8 @@ pub const LocalLoop = struct {
             .tool_approval_callback = options.tool_approval_callback,
             .permission_engine = options.permission_engine,
             .run_async = options.run_async,
+            .notices_ctx = options.notices_ctx,
+            .notices_fn = options.notices_fn,
         };
     }
 
@@ -178,6 +184,8 @@ pub const LocalLoop = struct {
             .execute_tool_via_protocol_ctx = self,
             .rewrite_tool_args_fn = rewriteToolArgs,
             .rewrite_tool_args_ctx = self,
+            .notices_fn = if (self.notices_fn != null) takeNotices else null,
+            .notices_ctx = self,
         });
         self.local_agent.?.subscribeWithContext(self, onAgentEvent);
         self.local_agent.?.setCompactToolOutput(runtime.compact_output);
@@ -303,6 +311,12 @@ pub const LocalLoop = struct {
         try local.steer(msg);
         queued = true;
         try self.resumeQueuedMessagesIfIdle();
+    }
+
+    fn takeNotices(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?ai_types.Message {
+        const self = cast(ctx.?);
+        const text = (try self.notices_fn.?(self.notices_ctx, allocator)) orelse return null;
+        return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
     }
 
     fn queueSteer(ctx: *anyopaque, text: []const u8) anyerror!void {
@@ -2175,6 +2189,47 @@ test "runtime compaction reports a provider failure and keeps the history" {
     try std.testing.expect(seen.message_has_error);
     try std.testing.expectEqual(@as(usize, 2), runtime.history().len);
     try std.testing.expectEqualStrings("first", runtime.history()[0].user.content.text);
+}
+
+fn oneNotice(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+    const pending: *bool = @ptrCast(@alignCast(ctx.?));
+    if (!pending.*) return null;
+    pending.* = false;
+    return try allocator.dupe(u8, "the job ended");
+}
+
+test "a notice reaches the model unmarked as a steer and counts as none" {
+    var mock = MockProtocolCtx{};
+    const models = [_]ai_types.Model{test_model_a};
+    var pending = true;
+    const runtime_loop = try LoopRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
+    defer runtime_loop.deinit();
+    runtime_loop.loop.notices_ctx = &pending;
+    runtime_loop.loop.notices_fn = oneNotice;
+    const runtime = &runtime_loop.runtime;
+
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+
+    if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
+
+    try std.testing.expectEqual(@as(u64, 0), runtime.steersConsumedCount());
+    var notice_seen = false;
+    var notice_tagged = false;
+    while (handle.popEvent()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .message_end => |payload| if (payload.role == .user and std.mem.eql(u8, payload.text.slice(), "the job ended")) {
+                notice_seen = true;
+                notice_tagged = payload.steering;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(notice_seen);
+    try std.testing.expect(!notice_tagged);
 }
 
 test "runtime tags consumed steer message_end with steering provenance" {

@@ -402,6 +402,8 @@ pub const TransformContextFn = *const fn (
     allocator: std.mem.Allocator,
 ) anyerror![]const ai_types.Message;
 
+pub const GetNoticeFn = *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?ai_types.Message;
+
 pub const GetSteeringMessagesFn = *const fn (
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -462,6 +464,8 @@ pub const AgentLoopConfig = struct {
     transform_context_ctx: ?*anyopaque = null,
     get_steering_messages_fn: ?GetSteeringMessagesFn = null,
     get_steering_messages_ctx: ?*anyopaque = null,
+    get_notice_fn: ?GetNoticeFn = null,
+    get_notice_ctx: ?*anyopaque = null,
     prompts_are_steering: bool = false,
     get_follow_up_messages_fn: ?GetFollowUpMessagesFn = null,
     get_follow_up_messages_ctx: ?*anyopaque = null,
