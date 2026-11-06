@@ -323,6 +323,98 @@ fn a_call_reports_its_admission_through_an_unbuffered_channel_once_and_then_clos
     assert!(admitted.recv_timeout(WAIT).is_err());
 }
 
+struct GatedWrite {
+    writer: PipeWriter,
+    entered: crossbeam_channel::Sender<()>,
+    release: crossbeam_channel::Receiver<()>,
+}
+
+impl Write for GatedWrite {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.entered.send(()).unwrap();
+        self.release.recv().unwrap();
+        self.writer.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+#[test]
+fn admission_observers_wait_for_the_actual_write_and_run_once() {
+    let (reader, mut server) = std::io::pipe().unwrap();
+    let (native, writer) = std::io::pipe().unwrap();
+    let (entered, writing) = crossbeam_channel::bounded(1);
+    let (release, waiting) = crossbeam_channel::bounded(1);
+    let client = RpcClient::new(
+        D,
+        reader,
+        GatedWrite {
+            writer,
+            entered,
+            release: waiting,
+        },
+        ClientOptions::default(),
+    );
+    let (reported, reports) = crossbeam_channel::bounded(1);
+    let call = std::thread::spawn(move || {
+        client.call_reported("session/prompt", None, None, move |error| {
+            reported.send(error).unwrap();
+        })
+    });
+    writing.recv_timeout(WAIT).unwrap();
+    assert!(reports.try_recv().is_err());
+    release.send(()).unwrap();
+    let mut frame = String::new();
+    BufReader::new(native).read_line(&mut frame).unwrap();
+    assert_eq!(reports.recv_timeout(WAIT).unwrap(), None);
+    server
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n")
+        .unwrap();
+    assert_eq!(call.join().unwrap().unwrap().get(), "{}");
+    assert!(reports.recv_timeout(WAIT).is_err());
+}
+
+#[test]
+fn admission_observers_report_local_refusals_once() {
+    let peer = peer(false);
+    let mut reports = Vec::new();
+    let error = peer
+        .client
+        .call_reported("", None, None, |error| reports.push(error))
+        .unwrap_err();
+    assert_eq!(reports, vec![Some(error.to_string())]);
+    peer.client.close();
+    reports.clear();
+    let error = peer
+        .client
+        .call_reported("session/prompt", None, None, |error| reports.push(error))
+        .unwrap_err();
+    assert_eq!(reports, vec![Some(error.to_string())]);
+}
+
+#[test]
+fn admission_observers_report_a_failed_frame_write_once() {
+    let (reader, _server) = std::io::pipe().unwrap();
+    let client = RpcClient::new(
+        Dialect::strict("fixture"),
+        reader,
+        std::io::sink(),
+        ClientOptions {
+            frame_limit: 8,
+            ..ClientOptions::default()
+        },
+    );
+    let mut reports = Vec::new();
+    let error = client
+        .call_reported("session/prompt", None, None, |error| reports.push(error))
+        .unwrap_err();
+    assert!(matches!(error.fault, Fault::FrameTooLarge));
+    assert_eq!(reports, vec![Some(error.to_string())]);
+    client.close();
+}
+
 #[test]
 fn a_response_being_routed_when_the_client_closes_still_reaches_its_call() {
     let mut peer = peer(false);

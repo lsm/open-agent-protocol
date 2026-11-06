@@ -8,6 +8,7 @@ license = "CC0-1.0"
 publish = false
 
 [dependencies]
+crossbeam-channel = "0.5"
 futures-channel = "0.3"
 futures-util = "0.3"
 oap-adapter = { path = ".." }

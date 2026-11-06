@@ -136,3 +136,32 @@ The feature remains degraded because model identity is the agent's word.
 Unsolicited config-option updates and prompt/event mapping are later slices.
 Run `.claude/skills/verify/journeys/rust-acp-model-switch.md` for public Go/Rust
 consumer comparisons, captured native frames and wire validation.
+
+## Native prompt bridge
+
+`PromptBridge::new(process, handler)` takes a successfully initialized process
+and owns an ordered inbound dispatcher. The handler receives native notifications
+and reverse requests and may answer each reverse request through its responder.
+Handlers finish promptly and avoid reentrant blocking calls or bridge shutdown.
+The bridge acknowledges internal RPC barriers after earlier handlers return.
+A prompt's native result therefore follows all earlier inbound observations.
+A handler panic closes the RPC client and is reported during shutdown.
+
+Use `bridge.call(method, params, deadline)` for native session setup or other
+RPCs. `bridge.prompt(params, deadline)` returns an owning `PromptCall` future.
+Await `call.admitted()` once to observe serialized writer completion, then await
+the call for the typed native result. Successful admission establishes the write
+boundary. The agent's response establishes completion. Both futures wake their
+consumer while a quiet agent leaves polling pending.
+
+Dropping an unfinished prompt cancels the shared process, waits for its child
+exit and joins the call worker. `Arc::new(bridge).close().await` closes the child
+and joins the inbound dispatcher before returning. Dropping the last bridge
+owner also performs shutdown and joining. A child ignoring EOF is killed and
+reaped after the configured timeout. The shared helper's documented
+grandchild-held-pipe limitations remain applicable.
+
+This low-level native layer leaves OAP `session.message.submit` unavailable.
+Its public synthetic stdio proof is in
+`.claude/skills/verify/journeys/rust-acp-prompt.md`. OAP run/event mapping follows
+in the next approved #1439 slice.
