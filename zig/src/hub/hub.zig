@@ -17,6 +17,8 @@ pub const default_shutdown_ns = 10 * std.time.ns_per_s;
 pub const close_attempts = 3;
 pub const close_retry_wait_ns = 100 * std.time.ns_per_ms;
 pub const default_participant = "user";
+pub const pass_sessions: usize = 64;
+pub const pass_budget_ns: u64 = std.time.ns_per_ms;
 
 pub const Failure = error{
     UnknownAdapter,
@@ -577,6 +579,8 @@ pub const Hub = struct {
     bound: std.ArrayList(Bound) = .empty,
     bindings: ?binding.Bindings = null,
     shutting_down: bool = false,
+    next_entry: usize = 0,
+    pass_remaining: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -1643,17 +1647,70 @@ pub const Hub = struct {
         return false;
     }
 
-    fn drive(self: *Hub, share: u64) !void {
-        for (self.entries.items) |*entry| {
-            if (entry.parked) continue;
-            const wait = if (handleOf(entry) != null) 0 else share;
-            _ = entry.session.pump(wait) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    self.failStream(entry, entry.session.streamFailure());
-                },
+    pub fn hasPendingPass(self: *const Hub) bool {
+        return self.pass_remaining > 0;
+    }
+
+    fn deliver(self: *Hub, entry: *Entry, arena: std.mem.Allocator) !bool {
+        var events = std.ArrayList(contract.Event).empty;
+        entry.session.drain(arena, &events) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                self.failStream(entry, entry.session.streamFailure());
+                return false;
+            },
+        };
+        if (events.items.len > 0) entry.active_ns = self.clock();
+        for (events.items) |event| {
+            const settled = terminal(self.allocator, event.line) catch |err| {
+                if (err != error.OutOfMemory) return err;
+                self.endSubscriptions(entry, .stream_failed);
+                return err;
+            };
+            self.remember(entry, event, settled) catch |err| {
+                self.endSubscriptions(entry, .stream_failed);
+                return err;
+            };
+            self.fanOut(entry, event, settled) catch |err| {
+                self.endSubscriptions(entry, .stream_failed);
+                return err;
             };
         }
+        return events.items.len > 0;
+    }
+
+    fn drivePass(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
+        const count = self.entries.items.len;
+        if (count == 0) {
+            self.pass_remaining = 0;
+            self.next_entry = 0;
+            return false;
+        }
+        if (self.pass_remaining == 0) self.pass_remaining = count;
+        const visits = @min(pass_sessions, self.pass_remaining);
+        const started = self.clock();
+        const share = wait_ns / @max(count, 1);
+        var moved = false;
+        for (0..visits) |_| {
+            self.next_entry %= count;
+            const entry = &self.entries.items[self.next_entry];
+            self.next_entry = (self.next_entry + 1) % count;
+            self.pass_remaining -= 1;
+            if (!entry.parked) {
+                const wait = if (handleOf(entry) != null) 0 else share;
+                const pumped = entry.session.pump(wait) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => failed: {
+                        self.failStream(entry, entry.session.streamFailure());
+                        break :failed false;
+                    },
+                };
+                const delivered = try self.deliver(entry, arena);
+                moved = moved or pumped or delivered;
+            }
+            if (self.clock() -| started >= pass_budget_ns) break;
+        }
+        return moved;
     }
 
     pub fn pump(self: *Hub, allocator: std.mem.Allocator, wait_ns: u64) !void {
@@ -1661,34 +1718,10 @@ pub const Hub = struct {
         self.reclaim();
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
-        const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
-        try self.drive(share);
-        if (try self.awaitAny(scratch.allocator(), wait_ns)) try self.drive(share);
-        for (self.entries.items) |*entry| {
-            if (entry.parked) continue;
-            var events = std.ArrayList(contract.Event).empty;
-            entry.session.drain(scratch.allocator(), &events) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    self.failStream(entry, entry.session.streamFailure());
-                    continue;
-                },
-            };
-            if (events.items.len > 0) entry.active_ns = self.clock();
-            for (events.items) |event| {
-                const settled = terminal(self.allocator, event.line) catch |err| {
-                    if (err != error.OutOfMemory) return err;
-                    self.endSubscriptions(entry, .stream_failed);
-                    return err;
-                };
-                self.remember(entry, event, settled) catch |err| {
-                    self.endSubscriptions(entry, .stream_failed);
-                    return err;
-                };
-                self.fanOut(entry, event, settled) catch |err| {
-                    self.endSubscriptions(entry, .stream_failed);
-                    return err;
-                };
+        const moved = try self.drivePass(scratch.allocator(), wait_ns);
+        if (!moved and !self.hasPendingPass() and wait_ns > 0) {
+            if (try self.awaitAny(scratch.allocator(), wait_ns)) {
+                _ = try self.drivePass(scratch.allocator(), 0);
             }
         }
         try self.parkIdle(scratch.allocator());
@@ -2130,6 +2163,8 @@ pub const Hub = struct {
         for (self.entries.items, 0..) |*candidate, index| {
             if (candidate.session_id.ptr != entry.session_id.ptr) continue;
             var removed = self.entries.orderedRemove(index);
+            if (index < self.next_entry) self.next_entry -= 1;
+            self.pass_remaining = @min(self.pass_remaining, self.entries.items.len);
             removed.deinit(self.allocator);
             return;
         }
@@ -6040,7 +6075,6 @@ test "a seeded interleaving of hub calls keeps every run's sequence contiguous a
         try testing.expect(ends > 0);
     }
 }
-
 
 test "a large batch leaves time between slices and eventually delivers every session" {
     var adapter = memory.Adapter.init(testing.allocator);
