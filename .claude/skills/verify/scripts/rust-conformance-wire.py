@@ -144,7 +144,28 @@ for line in sys.stdin:
         runner.into_checks();
         client.close_input();
         assert!(client.wait().unwrap().success());
-        println!("PASS: real endpoint/process/Client exchange and EOF; shared budgets; bootstrap checks and safe malformed-object failure; trace ordering; exact cursors");
+        let mut endpoint = Command::new(std::env::args().nth(1).unwrap());
+        endpoint.args(["serve", "agent"]).stderr(Stdio::null());
+        let mut client = Client::spawn(&mut endpoint, Duration::from_secs(2)).unwrap();
+        let mut runner = Runner::new(&mut client, "models");
+        runner.initialize();
+        let descriptor = runner.capabilities().unwrap();
+        let opened = runner.open().unwrap();
+        runner.list_sessions(&descriptor);
+        let selected = runner.select_model(&descriptor, &opened.current_model_id, "");
+        assert_ne!(selected, opened.current_model_id);
+        assert!(runner.switch_model(&selected, &opened.current_model_id));
+        assert_eq!(runner.checks().len(), 10);
+        let alternate = runner.select_model(&descriptor, &selected, "");
+        assert_ne!(alternate, selected);
+        assert!(runner.switch_model(&alternate, &selected));
+        assert_eq!(runner.checks().len(), 13);
+        assert!(runner.checks().iter().all(|check| check.passed));
+        println!("model changed from {} to {}; checks {}", selected, alternate, serde_json::to_string(&runner.into_checks()).unwrap());
+        assert!(client.transcript().iter().all(|envelope| !envelope.envelope_type.as_str().starts_with("session.list.")));
+        client.close_input();
+        assert!(client.wait().unwrap().success());
+        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list checks; malformed-object rejection; trace ordering; exact cursors");
 }
 '''
 
