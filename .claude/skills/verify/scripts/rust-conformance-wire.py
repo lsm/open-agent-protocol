@@ -10,7 +10,7 @@ SOURCE = r'''
 use std::io::Cursor;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use oap_conformance::{read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Transcript};
+use oap_conformance::{read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Runner, Transcript};
 use oap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
@@ -114,7 +114,37 @@ print(json.dumps({'protocol':'open-agent-protocol','type':'capabilities.response
         client.send(Envelope::new(EnvelopeType::CAPABILITIES_REQUEST, "resume", &json!({})).unwrap()).unwrap();
         assert_eq!(client.response(&"resume".into()).unwrap().id.as_str(), "answer");
         println!("unanswered control used one budget; endpoint then answered resume");
-        println!("PASS: real endpoint/process/Client exchange and EOF; shared wait budgets; soft control timeout; trace ordering; exact cursors; malformed JSON refused");
+        let mut endpoint = Command::new(std::env::args().nth(1).unwrap());
+        endpoint.args(["serve", "agent"]).stderr(Stdio::null());
+        let mut client = Client::spawn(&mut endpoint, Duration::from_secs(2)).unwrap();
+        let mut runner = Runner::new(&mut client, "bootstrap");
+        runner.initialize();
+        runner.capabilities().unwrap();
+        assert_eq!(runner.open().unwrap().session_id.as_str(), "bootstrap");
+        assert_eq!(runner.checks().len(), 6);
+        assert!(runner.checks().iter().all(|check| check.passed));
+        println!("bootstrap checks {}", serde_json::to_string(&runner.into_checks()).unwrap());
+        assert_eq!(client.transcript().len(), 6);
+        client.close_input();
+        assert!(client.wait().unwrap().success());
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", r#"import json,sys
+for line in sys.stdin:
+ request=json.loads(line)
+ print(json.dumps({'protocol':'open-agent-protocol','type':'protocol.initialize.response','id':'bad','in_reply_to':request['id'],'payload':['synthetic-private-sentinel']}),flush=True)
+"#]);
+        let mut client = Client::spawn(&mut command, Duration::from_secs(2)).unwrap();
+        let mut runner = Runner::new(&mut client, "bootstrap");
+        runner.initialize();
+        assert_eq!(runner.checks().len(), 1);
+        let check = &runner.checks()[0];
+        assert!(!check.passed && check.name == "protocol.initialize.response decodes");
+        assert!(!check.detail.contains("synthetic-private-sentinel"));
+        println!("malformed bootstrap {}: {}", check.name, check.detail);
+        runner.into_checks();
+        client.close_input();
+        assert!(client.wait().unwrap().success());
+        println!("PASS: real endpoint/process/Client exchange and EOF; shared budgets; bootstrap checks and safe malformed-object failure; trace ordering; exact cursors");
 }
 '''
 

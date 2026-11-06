@@ -1,10 +1,14 @@
 #[cfg(unix)]
 mod process;
+#[cfg(unix)]
+mod runner;
 mod transcript;
 mod wire;
 
 #[cfg(unix)]
 pub use process::{Process, ProcessError};
+#[cfg(unix)]
+pub use runner::{Check, Runner};
 pub use transcript::Transcript;
 pub use wire::{read_frame, write_frame, ControlFrame, Frame, WireError};
 #[cfg(unix)]
