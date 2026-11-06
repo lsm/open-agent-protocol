@@ -308,16 +308,26 @@ const ServedSessions = struct {
     }
 
     fn writeQueued(self: *ServedSessions) void {
-        var batch: [64]Queued = undefined;
+        var queued: [64]Queued = undefined;
+        var batch = session_store.Batch{ .allocator = self.allocator };
+        defer batch.deinit();
+        var store = self.store;
+        store.batch = &batch;
         while (true) {
-            const count = self.queue.getUncancelable(hubIo(), &batch, 1) catch break;
-            for (batch[0..count]) |*item| switch (item.*) {
+            const count = self.queue.getUncancelable(hubIo(), &queued, 1) catch break;
+            self.recorders_mutex.lockUncancelable(hubIo());
+            defer self.recorders_mutex.unlock(hubIo());
+            for (queued[0..count]) |*item| switch (item.*) {
                 .event => |*captured| {
-                    self.write(captured.metadata, &captured.event);
+                    self.writeTo(store, captured.metadata, &captured.event);
                     captured.deinit(self.allocator);
                 },
-                .barrier => |done| done.set(hubIo()),
+                .barrier => |done| {
+                    batch.flush(self.store);
+                    done.set(hubIo());
+                },
             };
+            batch.flush(self.store);
         }
     }
 
@@ -415,9 +425,13 @@ const ServedSessions = struct {
     fn write(self: *ServedSessions, meta: session_store.SessionMetadata, event: *const tui_app.SessionEvent) void {
         self.recorders_mutex.lockUncancelable(hubIo());
         defer self.recorders_mutex.unlock(hubIo());
+        self.writeTo(self.store, meta, event);
+    }
+
+    fn writeTo(self: *ServedSessions, store: session_store.Store, meta: session_store.SessionMetadata, event: *const tui_app.SessionEvent) void {
         const recorder = self.recorderFor(meta.session_id) catch return;
-        const saved = recorder.record(self.allocator, self.store, meta, event.*) orelse return;
-        if (saved.metadata or event.* == .agent_end) self.store.saveIndex(meta) catch {};
+        const saved = recorder.record(self.allocator, store, meta, event.*) orelse return;
+        if (saved.metadata or event.* == .agent_end) store.saveIndex(meta) catch {};
     }
 };
 

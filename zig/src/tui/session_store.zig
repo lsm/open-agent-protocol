@@ -36,12 +36,13 @@ fn defaultIo() std.Io {
         std.Io.Threaded.global_single_threaded.io();
 }
 
-fn appendFile(path: []const u8, data: []const u8) !void {
+fn appendFile(path: []const u8, data: []const u8, settled: bool) !void {
     _ = builtin;
     var file = try compat.fs.getCwd().createFile(defaultIo(), path, .{ .truncate = false, .read = true, .lock = .exclusive, .permissions = compat.fs.default_file_mode });
     defer file.close(defaultIo());
     const stat = try file.stat(defaultIo());
     try file.writePositionalAll(defaultIo(), data, stat.size);
+    if (settled) try file.sync(defaultIo());
 }
 
 const metadata_max_bytes = 1024 * 1024;
@@ -400,9 +401,82 @@ pub const LoadedSession = struct {
     }
 };
 
+pub const Batch = struct {
+    allocator: std.mem.Allocator,
+    pending: std.StringHashMapUnmanaged(Pending) = .empty,
+
+    const Pending = struct {
+        bytes: std.ArrayList(u8) = .empty,
+        metadata: ?SessionMetadata = null,
+        settled: bool = false,
+
+        fn deinit(self: *Pending, allocator: std.mem.Allocator) void {
+            self.bytes.deinit(allocator);
+            if (self.metadata) |*metadata| metadata.deinit(allocator);
+            self.* = undefined;
+        }
+    };
+
+    pub fn deinit(self: *Batch) void {
+        self.clear();
+        self.pending.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn clear(self: *Batch) void {
+        var entries = self.pending.iterator();
+        while (entries.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.pending.clearRetainingCapacity();
+    }
+
+    fn forSession(self: *Batch, session_id: []const u8) !*Pending {
+        const entry = try self.pending.getOrPut(self.allocator, session_id);
+        if (!entry.found_existing) {
+            errdefer _ = self.pending.remove(session_id);
+            entry.key_ptr.* = try self.allocator.dupe(u8, session_id);
+            entry.value_ptr.* = .{};
+        }
+        return entry.value_ptr;
+    }
+
+    fn append(self: *Batch, session_id: []const u8, line: []const u8, settled: bool) !void {
+        const pending = try self.forSession(session_id);
+        try pending.bytes.appendSlice(self.allocator, line);
+        pending.settled = pending.settled or settled;
+    }
+
+    fn index(self: *Batch, metadata: SessionMetadata) !void {
+        var copy = try metadata.clone(self.allocator);
+        errdefer copy.deinit(self.allocator);
+        const pending = try self.forSession(metadata.session_id);
+        if (pending.metadata) |*previous| previous.deinit(self.allocator);
+        pending.metadata = copy;
+    }
+
+    pub fn flush(self: *Batch, store: Store) void {
+        defer self.clear();
+        var direct = store;
+        direct.batch = null;
+        var entries = self.pending.iterator();
+        while (entries.next()) |entry| {
+            const pending = entry.value_ptr;
+            if (pending.bytes.items.len > 0) {
+                const path = sessionFilePath(self.allocator, store.base_dir, entry.key_ptr.*, ".jsonl") catch continue;
+                defer self.allocator.free(path);
+                appendFile(path, pending.bytes.items, pending.settled) catch continue;
+            }
+            if (pending.metadata) |metadata| direct.saveIndex(metadata) catch {};
+        }
+    }
+};
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     base_dir: []u8,
+    batch: ?*Batch = null,
 
     pub fn init(allocator: std.mem.Allocator, base_dir: []const u8) !Store {
         return .{ .allocator = allocator, .base_dir = try allocator.dupe(u8, base_dir) };
@@ -438,10 +512,18 @@ pub const Store = struct {
         defer self.allocator.free(path);
         const line = try serializeEventRecord(self.allocator, metadata, event);
         defer self.allocator.free(line);
-        try appendFile(path, line);
+        if (self.batch) |batch| {
+            batch.append(session_id, line, event == .agent_end) catch {
+                batch.flush(self);
+                return appendFile(path, line, event == .agent_end);
+            };
+            return;
+        }
+        try appendFile(path, line, event == .agent_end);
     }
 
     pub fn conversationBytes(self: Store, session_id: []const u8) !u64 {
+        if (self.batch) |batch| batch.flush(self);
         const path = try sessionPath(self.allocator, self.base_dir, session_id);
         defer self.allocator.free(path);
         var file = compat.fs.getCwd().openFile(defaultIo(), path, .{}) catch |err| switch (err) {
@@ -453,6 +535,15 @@ pub const Store = struct {
     }
 
     pub fn saveIndex(self: Store, metadata: SessionMetadata) !void {
+        if (self.batch) |batch| {
+            batch.index(metadata) catch {
+                batch.flush(self);
+                var direct = self;
+                direct.batch = null;
+                return direct.saveIndex(metadata);
+            };
+            return;
+        }
         try compat.fs.createDir(compat.fs.getCwd(), self.base_dir);
         const path = try sessionFilePath(self.allocator, self.base_dir, metadata.session_id, index_suffix);
         defer self.allocator.free(path);
@@ -1880,7 +1971,7 @@ test "corrupted JSONL line is skipped" {
     try store.save(meta, .{ .turn_start = .{} });
     const path = try sessionPath(std.testing.allocator, base, "s2");
     defer std.testing.allocator.free(path);
-    try appendFile(path, "{bad json}\n");
+    try appendFile(path, "{bad json}\n", false);
     try store.save(meta, .{ .agent_end = .{ .reason = .completed } });
     var loaded = try store.load("s2");
     defer loaded.deinit(std.testing.allocator);
@@ -1938,8 +2029,8 @@ test "metadata loads from tail of large session file" {
     const padding = try std.testing.allocator.alloc(u8, metadata_max_bytes + 16);
     defer std.testing.allocator.free(padding);
     @memset(padding, ' ');
-    try appendFile(path, padding);
-    try appendFile(path, "\n");
+    try appendFile(path, padding, false);
+    try appendFile(path, "\n", false);
     try store.save(meta, .{ .turn_start = .{} });
 
     var list = try store.list();
@@ -2051,8 +2142,8 @@ test "load skips malformed json but propagates replay errors" {
     try store.save(meta, .{ .turn_start = .{} });
     const path = try sessionPath(std.testing.allocator, base, "bad-replay");
     defer std.testing.allocator.free(path);
-    try appendFile(path, "{bad json}\n");
-    try appendFile(path, "{\"event\":{\"type\":\"message_end\",\"role\":\"assistant\",\"content_json\":\"{}\"}}\n");
+    try appendFile(path, "{bad json}\n", false);
+    try appendFile(path, "{\"event\":{\"type\":\"message_end\",\"role\":\"assistant\",\"content_json\":\"{}\"}}\n", false);
     try std.testing.expectError(error.InvalidMessage, store.load("bad-replay"));
 }
 
@@ -2066,8 +2157,8 @@ test "load counts raw JSONL line bytes against caps" {
     const padding = try std.testing.allocator.alloc(u8, max_jsonl_line_bytes + 1);
     defer std.testing.allocator.free(padding);
     @memset(padding, ' ');
-    try appendFile(path, padding);
-    try appendFile(path, "\n");
+    try appendFile(path, padding, false);
+    try appendFile(path, "\n", false);
     var store = try Store.init(std.testing.allocator, base);
     defer store.deinit();
     try std.testing.expectError(error.StreamTooLong, store.load("raw-cap"));
@@ -2343,7 +2434,7 @@ test "load reads the whole file when the indexed compaction record is torn" {
     defer std.testing.allocator.free(record);
     const path = try sessionPath(std.testing.allocator, base, "torn");
     defer std.testing.allocator.free(path);
-    try appendFile(path, record[0 .. record.len - 8]);
+    try appendFile(path, record[0 .. record.len - 8], false);
     try std.testing.expect(startsCompaction(path, offset));
     var after = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
     defer after.deinit(std.testing.allocator);
@@ -2405,8 +2496,8 @@ test "list falls back to the first record's metadata when the tail has none" {
     const padding = try std.testing.allocator.alloc(u8, metadata_max_bytes + 16);
     defer std.testing.allocator.free(padding);
     @memset(padding, ' ');
-    try appendFile(path, padding);
-    try appendFile(path, "\n");
+    try appendFile(path, padding, false);
+    try appendFile(path, "\n", false);
     try store.saveEvent("head-metadata", .{ .turn_start = .{} });
 
     var list = try store.list();
