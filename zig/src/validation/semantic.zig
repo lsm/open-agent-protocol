@@ -4692,8 +4692,11 @@ pub const Machine = struct {
     fn admitTriggered(self: *Machine, index: usize, envelope: std.json.Value, run_id: []const u8) !*Run {
         const session_id = field(envelope, "session_id");
         const holder = try self.sessionFor(session_id);
-        if (self.runs.get(holder.active)) |previous| {
-            if (previous.started and !previous.terminal) try self.add(code_illegal_run_transition, index);
+        for (holder.order.items) |id| {
+            const running = self.runs.get(id) orelse continue;
+            if (!running.started or running.terminal) continue;
+            try self.add(code_illegal_run_transition, index);
+            break;
         }
         var position = holder.order.items.len;
         for (holder.order.items, 0..) |id, at| {
@@ -4783,6 +4786,7 @@ pub const Machine = struct {
                 try self.reconcileModelClaims(state);
                 try self.reconcileQueueClaims(state);
                 try self.settingsBeforeRun(index, state.session);
+                if (triggered) try self.refreshQueueWindows(state.session);
                 if (state.admitted_model.len != 0) {
                     const reported = memberString(member(envelope, "payload") orelse std.json.Value{ .null = {} }, "model_id");
                     if (reported.len == 0 and state.controls.model_present) {

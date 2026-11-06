@@ -360,6 +360,9 @@ impl State {
         let live = self.runs.get(&run_id).is_some_and(|run| !run.terminal);
         let was_started = self.runs.get(&run_id).is_some_and(|run| run.started);
         let (found, plain) = self.advance(at, e, &run_id);
+        if triggered {
+            self.refresh_queue_windows(&os(&e.session_id));
+        }
         self.promote_controls(&run_id, was_started);
         for (code, pointer, message, expected, actual) in found {
             let related: &[&str] = if code == codes::SCOPE_MISMATCH {

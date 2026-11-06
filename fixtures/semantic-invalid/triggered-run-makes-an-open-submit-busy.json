@@ -1,0 +1,98 @@
+[
+  {
+    "id": "capq",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "cap-v1",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {}
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "cap-v1",
+    "id": "sub2",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "go",
+          "role": "user"
+        }
+      ],
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  },
+  {
+    "id": "started-t1",
+    "payload": {
+      "run_id": "t1",
+      "session_id": "s1",
+      "status": "running",
+      "trigger": {
+        "kind": "background_task",
+        "task_id": "job-1"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "t1",
+    "sequence": 1,
+    "session_id": "s1",
+    "type": "run.started",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "cap-v1",
+    "id": "err1",
+    "in_reply_to": "sub2",
+    "payload": {
+      "error": {
+        "code": "internal_error",
+        "message": "refused"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "error.response",
+    "version": "0.1"
+  },
+  {
+    "id": "done-t1",
+    "payload": {
+      "final_response": {
+        "content": "ok",
+        "role": "assistant"
+      },
+      "run_id": "t1",
+      "session_id": "s1",
+      "stop_reason": "end_turn"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "t1",
+    "sequence": 2,
+    "session_id": "s1",
+    "type": "run.completed",
+    "version": "0.1"
+  }
+]

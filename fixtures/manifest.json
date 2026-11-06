@@ -16923,6 +16923,46 @@
         "0069#a-triggered-run-starts-only-on-an-idle-session/1",
         "0007#one-run-executes-at-a-time-in-admission-order/1"
       ]
+    },
+    {
+      "id": "triggered-run-after-one-refused-during-a-run",
+      "path": "semantic-invalid/triggered-run-after-one-refused-during-a-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition",
+        "queue_order_violation"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-triggered-run-starts-only-on-an-idle-session/1",
+        "0007#one-run-executes-at-a-time-in-admission-order/1"
+      ]
+    },
+    {
+      "id": "triggered-run-makes-an-open-submit-busy",
+      "path": "semantic-invalid/triggered-run-makes-an-open-submit-busy.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0069-triggered-runs-graduate.md"
+      ],
+      "rules": [
+        "0069#a-triggered-run-starts-only-on-an-idle-session/2"
+      ]
     }
   ]
 }

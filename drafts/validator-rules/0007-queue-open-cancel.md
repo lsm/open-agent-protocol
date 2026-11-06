@@ -133,6 +133,7 @@ Source: [`decisions/0069-triggered-runs-graduate.md`](../../decisions/0069-trigg
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0069#a-triggered-run-starts-only-on-an-idle-session/1` | A `run.started` with `trigger` MUST NOT arrive while a run of the session is started and nonterminal. | L39–41 | `illegal_run_transition` | `state.go:admitTriggered` | `semantic.zig:admitTriggered` | `runs.rs:admit_triggered` |
+| `0069#a-triggered-run-starts-only-on-an-idle-session/2` | A triggered run makes its session busy like any other, so a submit open while it starts is refused `run_active`. | L39–41 | `illegal_run_transition` | `queue.go:settleQueueRefusal` | `semantic.zig:refreshQueueWindows` | `queue.rs:refresh_queue_windows` |
 
 ### [0069] A trigger belongs to a run nothing reserved
 

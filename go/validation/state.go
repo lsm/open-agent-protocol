@@ -996,8 +996,11 @@ func (s *state) admitTriggered(i, line int, e protocol.Envelope) *runState {
 		st = &sessionTrack{}
 		s.sessions[e.SessionID] = st
 	}
-	if prev := s.runs[st.active]; prev != nil && prev.started && !prev.terminal {
-		s.add(CodeIllegalRunTransition, i, line, e, "/payload/trigger", "a triggered run starts only on an idle session")
+	for _, id := range st.order {
+		if running := s.runs[id]; running != nil && running.started && !running.terminal {
+			s.add(CodeIllegalRunTransition, i, line, e, "/payload/trigger", "a triggered run starts only on an idle session")
+			break
+		}
 	}
 	position := len(st.order)
 	for index, id := range st.order {
@@ -1029,6 +1032,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	}
 	if triggered && r == nil {
 		r = s.admitTriggered(i, line, e)
+		defer s.refreshQueueWindows(e.SessionID)
 	}
 	if r == nil {
 		s.add(CodeIllegalRunTransition, i, line, e, "/run_id", "run event has no accepted admission")
