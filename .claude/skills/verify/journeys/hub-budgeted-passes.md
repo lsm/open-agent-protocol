@@ -41,3 +41,26 @@ This slice bounds session visits and elapsed work between sessions. Readiness
 notifications and batched persistence are separate Stage 2 slices. The full
 stage still requires over 500 state replies per second at N=1,500 and no
 wakeups caused by sessions with no work.
+
+## Hold expiry and reclamation
+
+After changing hold scheduling or subscription cleanup, run the real HTTP
+expiry case in addition to the regular journey:
+
+```sh
+python3 .claude/skills/verify/scripts/hub-budgeted-passes.py --hold-expiry --output-dir "$EVIDENCE/hold-expiry"
+```
+
+The script opens subscribing sessions and fills their held mailboxes. It leaves
+an events request partially written on an accepted connection, stops only its
+owned Hub process, finishes the request, waits past the 30-second hold deadline,
+and resumes the Hub. The first SSE signal must be `oap-subscribed` with a positive
+`joined_after`, rather than replaying an envelope from the expired hold. Inspect
+`expired-stream.txt`, the gate states and `cleanup.json`. Every run must cancel,
+every session must close, and the server must exit 0 and be reaped. The optional
+`--binary` argument can reproduce this against an earlier ReleaseSafe binary.
+
+The Hub tests cover a subscriber arriving after its deadline before a cleanup
+pass. Expiration visits only due holds and cleanup visits only subscriptions
+that became reclaimable. Both maintenance queues are processed in bounded
+slices, and transport waits are capped by the next hold deadline.
