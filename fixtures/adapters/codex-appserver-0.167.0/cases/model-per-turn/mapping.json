@@ -1,0 +1,20 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "native",
+    "index": 1,
+    "method": "turn/started"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "native",
+    "index": 2,
+    "method": "item/agentMessage/delta"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 3,
+    "method": "turn/completed"
+  }
+]
