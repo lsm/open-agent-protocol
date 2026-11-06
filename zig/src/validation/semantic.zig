@@ -4692,9 +4692,8 @@ pub const Machine = struct {
     fn admitTriggered(self: *Machine, index: usize, envelope: std.json.Value, run_id: []const u8) !*Run {
         const session_id = field(envelope, "session_id");
         const holder = try self.sessionFor(session_id);
-        for (holder.order.items) |id| {
-            const running = self.runs.get(id) orelse continue;
-            if (!running.started or running.terminal) continue;
+        for (self.runs.values()) |running| {
+            if (!std.mem.eql(u8, running.session, session_id) or !running.started or running.terminal) continue;
             try self.add(code_illegal_run_transition, index);
             break;
         }

@@ -996,8 +996,8 @@ func (s *state) admitTriggered(i, line int, e protocol.Envelope) *runState {
 		st = &sessionTrack{}
 		s.sessions[e.SessionID] = st
 	}
-	for _, id := range st.order {
-		if running := s.runs[id]; running != nil && running.started && !running.terminal {
+	for _, running := range s.runs {
+		if running.session == e.SessionID && running.started && !running.terminal {
 			s.add(CodeIllegalRunTransition, i, line, e, "/payload/trigger", "a triggered run starts only on an idle session")
 			break
 		}
