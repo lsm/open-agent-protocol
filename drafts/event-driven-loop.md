@@ -263,9 +263,10 @@ that wants to hear about an error or a server coming up can ask. A rule fires on
 and is then gone, which stops a noisy log waking the session hundreds of times.
 Decision 0068 rule 8 has the whole rule.
 
-**How output is read.** A job's stdout and stderr go straight to its file, so the
-Hub holds no pipe to read. The matcher reads the file instead. A pipe would let a
-slow matcher stall the job, and the file is already the record the model reads.
+**How output is read.** A job's stdout and stderr reach its file through the job
+table's copier, which never waits on anything but the file. The matcher reads the
+file. Reading the pipes would let a slow matcher stall the job, and the file is
+already the record the model reads.
 
 - A job with no rule costs nothing here: no watch, and no byte read.
 - Setting a rule opens a read descriptor at the line holding the offset the model

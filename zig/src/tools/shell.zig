@@ -93,10 +93,13 @@ pub const Jobs = struct {
     }
 
     fn newJob(self: *Jobs, workspace_root: []const u8) !*Job {
+        self.lock();
         self.next += 1;
+        const number = self.next;
+        self.mutex.unlock();
         var entropy: [6]u8 = undefined;
         compat.random.fillSecureBytes(&entropy);
-        const id = try std.fmt.allocPrint(self.allocator, "job-{d}-{x}", .{ self.next, entropy });
+        const id = try std.fmt.allocPrint(self.allocator, "job-{d}-{x}", .{ number, entropy });
         errdefer self.allocator.free(id);
         const output = try std.fmt.allocPrint(self.allocator, jobs_dir ++ "/{s}.log", .{id});
         errdefer self.allocator.free(output);
@@ -137,10 +140,6 @@ pub const Jobs = struct {
         defer dir.close(common.defaultIo());
         try dir.createDirPath(common.defaultIo(), jobs_dir);
         self.reap();
-        self.lock();
-        defer self.mutex.unlock();
-        try self.startLimiter();
-        try self.list.ensureUnusedCapacity(self.allocator, 1);
         const job = try self.newJob(workspace_root);
         errdefer self.freeJob(job);
         const file = try dir.createFile(common.defaultIo(), job.output, .{});
@@ -149,12 +148,17 @@ pub const Jobs = struct {
         try file.writeStreamingAll(common.defaultIo(), moved.stdout_head);
         try file.writeStreamingAll(common.defaultIo(), moved.stderr_head);
         var stop: [2]std.posix.fd_t = undefined;
-        if (std.posix.errno(std.posix.system.pipe(&stop)) != .SUCCESS) return error.SystemResources;
+        try closedOnExecPipe(&stop);
         var stop_open = true;
         defer if (stop_open) {
             _ = std.posix.system.close(stop[0]);
             _ = std.posix.system.close(stop[1]);
         };
+        self.lock();
+        var locked = true;
+        defer if (locked) self.mutex.unlock();
+        try self.startLimiter();
+        try self.list.ensureUnusedCapacity(self.allocator, 1);
         const copier = try std.Thread.spawn(.{}, copyOutput, .{ moved.stdout, moved.stderr, stop[0], file });
         job.leader = moved.leader;
         job.limit_ms = options.limit_ms;
@@ -172,15 +176,18 @@ pub const Jobs = struct {
             return err;
         };
         self.list.appendAssumeCapacity(job);
-        if (job.killed) process_runner.endGroup(job.leader);
         _ = std.posix.system.write(self.limiter_wake[1], "x", 1);
+        const killed = job.killed;
+        self.mutex.unlock();
+        locked = false;
+        if (killed) process_runner.endGroup(moved.leader);
         return .{ .task_id = job.id, .output_path = job.output, .bytes = moved.stdout_head.len + moved.stderr_head.len };
     }
 
     fn startLimiter(self: *Jobs) !void {
         if (self.limiter != null) return;
         var wake: [2]std.posix.fd_t = undefined;
-        if (std.posix.errno(std.posix.system.pipe(&wake)) != .SUCCESS) return error.SystemResources;
+        try closedOnExecPipe(&wake);
         errdefer {
             _ = std.posix.system.close(wake[0]);
             _ = std.posix.system.close(wake[1]);
@@ -441,7 +448,7 @@ const limited_format = "was ended because it reached its time limit of {d} secon
 const moved_tail_bytes = 4096;
 const moved_format =
     \\The command is still running in the background as job {s}. It has not failed.
-    \\Output so far, up to byte {d}, is at the end of this message; all of it goes to {s}.
+    \\It has written {d} bytes so far. The last of them are at the end of this message, and all of its output goes to {s}.
     \\You will be told when the command ends, so keep working.
     \\
     \\{s}
@@ -637,6 +644,11 @@ fn startBackground(jobs: *Jobs, obj: std.json.ObjectMap, cancel_token: ?ai_types
     defer allocator.free(outcome.moved.stdout_head);
     defer allocator.free(outcome.moved.stderr_head);
     return jobs.adopt(workspace_root, outcome.moved, .{ .limit_ms = limit_ms, .started_ms = started_ms, .ends_with_run = false });
+}
+
+fn closedOnExecPipe(fds: *[2]std.posix.fd_t) !void {
+    if (std.posix.errno(std.posix.system.pipe(fds)) != .SUCCESS) return error.SystemResources;
+    for (fds) |fd| _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(c_int, std.posix.FD_CLOEXEC));
 }
 
 fn wholeCharacters(bytes: []const u8) []const u8 {
@@ -880,12 +892,13 @@ test "a command started while a job runs inherits none of the job's pipes" {
     defer case.deinit();
     var jobs = Jobs.init(std.testing.allocator);
     defer jobs.deinit();
-    jobs.foreground_budget_ms = 50;
 
     var before = try movedCase(&jobs, &case, "ls /dev/fd | wc -l");
     defer before.deinit(std.testing.allocator);
+    jobs.foreground_budget_ms = 50;
     var moved = try movedCase(&jobs, &case, "sleep 30");
     defer moved.deinit(std.testing.allocator);
+    jobs.foreground_budget_ms = default_foreground_budget_ms;
     var after = try movedCase(&jobs, &case, "ls /dev/fd | wc -l");
     defer after.deinit(std.testing.allocator);
     jobs.endAll();
