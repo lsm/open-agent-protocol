@@ -177,3 +177,7 @@ test "a refused nonblocking connection reports socket failure" {
     try std.testing.expectEqual(@as(usize, 77), events[0].token);
     try std.testing.expect(events[0].failed);
 }
+
+comptime {
+    _ = @import("sources_test.zig");
+}
