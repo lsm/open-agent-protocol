@@ -1,5 +1,5 @@
 use oap_protocol::{
-    CapabilitiesRequest, CapabilityDescriptor, Envelope, EnvelopeType, ErrorResponse,
+    CapabilitiesRequest, CapabilityDescriptor, Envelope, EnvelopeId, EnvelopeType, ErrorResponse,
     InitializeRequest, InitializeResponse, Participant, SessionId, SessionOpenRequest,
     SessionState, SupportLevel, PROFILE, VERSION,
 };
@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::Client;
+
+mod models;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -106,12 +108,7 @@ impl<'a> Runner<'a> {
             Check::passed(REVISION)
         });
         const SWITCH: &str = "core session.model.switch is advertised";
-        let supported = descriptor
-            .features
-            .get("session.model.switch")
-            .is_some_and(|support| {
-                !support.level.as_str().is_empty() && support.level != SupportLevel::UNAVAILABLE
-            });
+        let supported = supports(&descriptor, "session.model.switch");
         self.checks.push(if supported {
             Check::passed(SWITCH)
         } else {
@@ -153,23 +150,7 @@ impl<'a> Runner<'a> {
         kind: EnvelopeType,
         payload: &impl Serialize,
     ) -> Result<Envelope, String> {
-        self.ids += 1;
-        let mut envelope = Envelope::new(
-            kind.clone(),
-            format!("conformance-request-{}", self.ids),
-            payload,
-        )
-        .map_err(|error| error.to_string())?;
-        envelope.session_id = Some(self.session.clone());
-        envelope.capability_revision = (!self.revision.is_empty()).then(|| self.revision.clone());
-        let id = envelope.id.clone();
-        self.client
-            .send(envelope)
-            .map_err(|error| error.to_string())?;
-        let answer = self
-            .client
-            .response(&id)
-            .map_err(|error| error.to_string())?;
+        let answer = self.exchange(kind.clone(), payload)?;
         if answer.envelope_type == EnvelopeType::ERROR_RESPONSE {
             let failure: ErrorResponse = decode_payload(&answer)?;
             return Err(format!(
@@ -180,17 +161,40 @@ impl<'a> Runner<'a> {
         Ok(answer)
     }
 
+    fn next(&mut self, kind: &str) -> EnvelopeId {
+        self.ids += 1;
+        format!("conformance-{kind}-{}", self.ids).into()
+    }
+
+    fn envelope(
+        &mut self,
+        kind: EnvelopeType,
+        payload: &impl Serialize,
+    ) -> Result<Envelope, String> {
+        let mut envelope = Envelope::new(kind, self.next("request"), payload)
+            .map_err(|error| error.to_string())?;
+        envelope.session_id = Some(self.session.clone());
+        envelope.capability_revision = (!self.revision.is_empty()).then(|| self.revision.clone());
+        Ok(envelope)
+    }
+
+    fn exchange(
+        &mut self,
+        kind: EnvelopeType,
+        payload: &impl Serialize,
+    ) -> Result<Envelope, String> {
+        let envelope = self.envelope(kind, payload)?;
+        let id = envelope.id.clone();
+        self.client
+            .send(envelope)
+            .map_err(|error| error.to_string())?;
+        self.client.response(&id).map_err(|error| error.to_string())
+    }
+
     fn record(&mut self, name: &str, result: Result<Envelope, String>) -> Option<Envelope> {
-        match result {
-            Ok(answer) => {
-                self.checks.push(Check::passed(name));
-                Some(answer)
-            }
-            Err(error) => {
-                self.checks.push(Check::failed(name, error));
-                None
-            }
-        }
+        let answer = self.result(name, result)?;
+        self.checks.push(Check::passed(name));
+        Some(answer)
     }
 
     fn decode<T: DeserializeOwned + Default>(
@@ -198,7 +202,11 @@ impl<'a> Runner<'a> {
         answer: &Envelope,
         name: &str,
     ) -> Option<T> {
-        match decode_payload(answer) {
+        self.result(name, decode_payload(answer))
+    }
+
+    fn result<T>(&mut self, name: &str, result: Result<T, String>) -> Option<T> {
+        match result {
             Ok(payload) => Some(payload),
             Err(error) => {
                 self.checks.push(Check::failed(name, error));
@@ -206,6 +214,12 @@ impl<'a> Runner<'a> {
             }
         }
     }
+}
+
+fn supports(descriptor: &CapabilityDescriptor, feature: &str) -> bool {
+    descriptor.features.get(feature).is_some_and(|support| {
+        !support.level.as_str().is_empty() && support.level != SupportLevel::UNAVAILABLE
+    })
 }
 
 fn decode_payload<T: DeserializeOwned + Default>(answer: &Envelope) -> Result<T, String> {
