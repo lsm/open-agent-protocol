@@ -2398,6 +2398,7 @@ const Script = struct {
 };
 
 var held_tool = std.atomic.Value(bool).init(false);
+var entered_tool = std.atomic.Value(bool).init(false);
 var echo_image = std.atomic.Value(bool).init(false);
 var scripted_usage: ai_types.Usage = .{ .input = 11, .output = 7 };
 
@@ -2509,6 +2510,7 @@ fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_t
     _ = cancel_token;
     _ = on_update_ctx;
     _ = on_update;
+    entered_tool.store(true, .release);
     var waits: usize = 0;
     while (held_tool.load(.acquire) and waits < 5000) : (waits += 1) {
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
@@ -3089,9 +3091,12 @@ test "a job that ends during a turn folds into its next request and starts no ru
     held_tool.store(true, .release);
     defer held_tool.store(false, .release);
 
+    entered_tool.store(false, .release);
     _ = try harness.submit("go");
-    try startJob(session, root, "true");
     const by = compat.time.nowMillis() + 5_000;
+    while (!entered_tool.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(entered_tool.load(.acquire));
+    try startJob(session, root, "true");
     while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
     try testing.expect(session.jobs.noticeWaiting());
     try testing.expect(!harness.session.holdsNoLiveWork());
@@ -3148,9 +3153,12 @@ test "a job that ends between two tool calls leaves the second call to run" {
     held_tool.store(true, .release);
     defer held_tool.store(false, .release);
 
+    entered_tool.store(false, .release);
     _ = try harness.submit("go");
-    try startJob(session, root, "true");
     const by = compat.time.nowMillis() + 5_000;
+    while (!entered_tool.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(entered_tool.load(.acquire));
+    try startJob(session, root, "true");
     while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
     try testing.expect(session.jobs.noticeWaiting());
     held_tool.store(false, .release);
