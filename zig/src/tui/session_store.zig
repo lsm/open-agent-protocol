@@ -41,7 +41,10 @@ fn appendFile(path: []const u8, data: []const u8, settled: bool) !void {
     var file = try compat.fs.getCwd().createFile(defaultIo(), path, .{ .truncate = false, .read = true, .lock = .exclusive, .permissions = compat.fs.default_file_mode });
     defer file.close(defaultIo());
     const stat = try file.stat(defaultIo());
-    try file.writePositionalAll(defaultIo(), data, stat.size);
+    file.writePositionalAll(defaultIo(), data, stat.size) catch |err| {
+        file.setLength(defaultIo(), stat.size) catch {};
+        return err;
+    };
     if (settled) try file.sync(defaultIo());
 }
 

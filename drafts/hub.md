@@ -525,6 +525,9 @@ and compaction-offset reads flush pending bytes. A failed append allows the
 next batch to write metadata again. The served-session test above and the
 storage-recovery restart journey obstruct a transcript, restore storage, and
 observe the next saved reply with its model and provider.
+Failed appends truncate back to their previous length. The partial-write
+restart journey enforces a child file-size limit, exceeds it with a synthetic
+reply, then observes a later small turn surviving a fresh process.
 `goap hub` takes the lock on Unix only: on Windows it opens the lock file
 without locking it, a gap recorded here rather than closed, since `goap` is
 never released and CI runs it on Unix. `goap hub` has no

@@ -5,6 +5,7 @@ Build ReleaseSafe with the shared setup in `SKILL.md`, then run:
 ```sh
 python3 .claude/skills/verify/scripts/oapx-session-restart.py --output-dir /tmp/oap-session-restart-<unique-name>
 python3 .claude/skills/verify/scripts/oapx-session-restart.py --storage-recovery --output-dir /tmp/oap-session-storage-recovery-<unique-name>
+python3 .claude/skills/verify/scripts/oapx-session-restart.py --partial-write-recovery --output-dir /tmp/oap-session-partial-recovery-<unique-name>
 ```
 
 First it checks that `--no-save-oapx-sessions` omits reopen support and writes
@@ -31,6 +32,14 @@ submits another turn. Require the recovered transcript to include the selected
 model and provider metadata in `storage-recovered.jsonl`, then require the same
 restart and restored-request checks. A failed batch must allow later saves to
 write their metadata again.
+
+The partial-write invocation limits only the child Hub's regular files to
+128 KiB and ignores its file-size signal. A large synthetic reply must exceed
+that limit. The next small turn must still persist, survive restart and enter
+the next provider request. Inspect `partial-before.jsonl` alongside the normal
+restart artifacts. A failed append must truncate back to its previous length
+before a later batch appends. The provider emits its large reply only for the
+special current prompt.
 
 After changing the served-session writer, also run:
 
