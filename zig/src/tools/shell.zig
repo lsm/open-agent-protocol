@@ -7,7 +7,7 @@ const common = @import("tools/common");
 const process_runner = @import("tools/process_runner");
 
 pub const schema_execute =
-    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"run_in_background":{"type":"boolean","description":"Start the command as a background job that outlives this call. It ends when the session closes or at its time limit of at most 1 hour or at its time limit: timeout_ms, at most 1 hour. Returns task_id and output_path at once; read output_path with Read and check or stop the job with ShellJob."}},"required":["description","workspace_root","command"],"additionalProperties":false}
+    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"run_in_background":{"type":"boolean","description":"Start the command as a background job that outlives this call. It ends when the session closes or at its time limit: timeout_ms, at most 1 hour. Returns task_id and output_path at once; read output_path with Read and check or stop the job with ShellJob."}},"required":["description","workspace_root","command"],"additionalProperties":false}
 ;
 
 pub const schema_job =
@@ -843,6 +843,22 @@ test "a command past its budget returns while it keeps running, and its end is r
     defer notice.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, notice.text, "exited with code 0") != null);
     try std.testing.expect(std.mem.indexOf(u8, notice.text, "early\nlate") != null);
+}
+
+test "a moved result shows text whose last bytes cut a character at either end" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 1_000;
+
+    var result = try movedCase(&jobs, &case, "awk 'BEGIN { for (i = 0; i < 3000; i++) printf \\\"\\\\303\\\\251\\\"; printf \\\"tail\\\\303\\\" }'; sleep 30");
+    defer result.deinit(std.testing.allocator);
+    jobs.endAll();
+    const text = result.content.slice()[0].text.text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "(not text)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "tail") != null);
 }
 
 test "a command within its budget answers as it always did and leaves no job" {
