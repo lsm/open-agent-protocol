@@ -8217,6 +8217,20 @@ test "a served oapx session's events are saved, read back without adopting it, a
             try std.testing.expectEqualStrings(text, queued[index * 2].user.content.text);
             try std.testing.expectEqualStrings("general kenobi", queued[index * 2 + 1].assistant.content[0].text.text);
         }
+        try tmp.dir.createDir(std.testing.io, "blocked.jsonl", .default_dir);
+        ServedSessions.record(&saved, "blocked", model, &events[0]);
+        saved.flush();
+        try tmp.dir.deleteDir(std.testing.io, "blocked.jsonl");
+        for (&events) |*event| ServedSessions.record(&saved, "blocked", model, event);
+        saved.flush();
+        var recovered = try saved.store.load("blocked");
+        defer recovered.deinit(allocator);
+        try std.testing.expectEqualStrings("served-model", recovered.metadata.model);
+        try std.testing.expectEqualStrings("served-provider", recovered.metadata.provider);
+        try std.testing.expectEqual(@as(usize, 2), recovered.messages.items.len);
+        const recovered_entries = try saved.store.readEntries(live.allocator(), "blocked");
+        try std.testing.expectEqualStrings("served-model", recovered_entries[1].item.message.assistant.model);
+        try std.testing.expectEqualStrings("served-provider", recovered_entries[1].item.message.assistant.provider);
         for (&events) |*event| ServedSessions.record(&saved, "session-2", model, event);
     }
     var reopened = ServedSessions.init(allocator, try session_store.Store.init(allocator, base));
