@@ -526,7 +526,7 @@ pub const Store = struct {
             };
             return;
         }
-        try appendFile(path, line, event == .agent_end);
+        try appendFile(path, line, false);
     }
 
     pub fn conversationBytes(self: Store, session_id: []const u8) !u64 {
