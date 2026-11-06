@@ -14,8 +14,18 @@ can come from a submit response or an open response carrying an active run.
 Unadmitted events remain at the tail in their first-observed run order, so
 later validation can report them.
 
-The process client, bounded waits and conformance checks follow in subsequent
-slices. This crate currently provides framing and transcript assembly.
+`Process` exchanges frames with a caller-configured `std::process::Command`.
+The caller controls its environment, directory and stderr. Its Unix stdout
+reader has a 64-frame queue and a cancellation descriptor. `close` and Drop
+kill and reap the endpoint and join its reader, including when another process
+holds stdout open or the host has stopped draining the queue. `next` has a soft
+receive timeout. After stdout EOF, `wait_exit` kills an endpoint that outlives
+its exit budget. Call `close_input` to send stdin EOF first.
+
+Correlated response/event/control waits and conformance checks follow in
+subsequent slices.
 
 The public consumer journey is
 `.claude/skills/verify/journeys/rust-conformance-wire.md`.
+Process lifecycle coverage is in
+`.claude/skills/verify/journeys/rust-conformance-process.md`.

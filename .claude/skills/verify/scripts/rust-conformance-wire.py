@@ -7,34 +7,36 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = r'''
-use std::io::{BufReader, Cursor};
+use std::io::Cursor;
 use std::process::{Command, Stdio};
-use oap_conformance::{read_frame, write_frame, Frame, Transcript};
+use std::time::{Duration, Instant};
+use oap_conformance::{read_frame, Frame, Process, ProcessError, Transcript};
 use oap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 fn main() {
-    let mut child = Command::new(std::env::args().nth(1).unwrap())
-        .args(["serve", "agent"]).stdin(Stdio::piped()).stdout(Stdio::piped())
-        .spawn().unwrap();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut input = child.stdin.take().unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut endpoint = Command::new(std::env::args().nth(1).unwrap());
+    endpoint.args(["serve", "agent"]).stderr(Stdio::null());
+    let mut process = Process::spawn(&mut endpoint).unwrap();
         let mut transcript = Transcript::default();
         for (kind, id, payload, expected) in [
             ("protocol.initialize.request", "init", json!({"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"]}), "protocol.initialize.response"),
             ("capabilities.request", "caps", json!({}), "capabilities.response"),
         ] {
             let request = Envelope::new(EnvelopeType::from(kind), id, &payload).unwrap();
-            write_frame(&mut input, &Frame::Envelope(Box::new(request.clone()))).unwrap();
+            process.send(&Frame::Envelope(Box::new(request.clone()))).unwrap();
             transcript.push(request);
-            let Some(Frame::Envelope(answer)) = read_frame(&mut output).unwrap() else { panic!("no envelope"); };
+            let Some(Frame::Envelope(answer)) = process.next(Duration::from_secs(2)).unwrap() else { panic!("no envelope"); };
             assert_eq!(answer.in_reply_to.as_ref().unwrap().as_str(), id);
             assert_eq!(answer.envelope_type.as_str(), expected);
             transcript.push(*answer);
             println!("endpoint answered {expected}");
         }
         assert_eq!(transcript.envelopes().len(), 4);
+        process.close_input();
+        assert!(process.next(Duration::from_secs(2)).unwrap().is_none());
+        assert!(process.wait_exit(Duration::from_secs(2)).unwrap().success());
+        println!("endpoint exited 0 after EOF");
         let mut trace = Transcript::default();
         let mut event = Envelope::new(EnvelopeType::RUN_STARTED, "event", &json!({})).unwrap();
         event.run_id = Some("r".into()); event.sequence = Some(1);
@@ -48,11 +50,25 @@ fn main() {
         let Some(Frame::Control(control)) = read_frame(&mut cursor).unwrap() else { panic!("no control"); };
         assert_eq!(control.after, Some(0)); assert_eq!(control.latest_available, u64::MAX);
         assert!(read_frame(&mut Cursor::new("{")).is_err());
-        println!("PASS: real endpoint answers; early admission ordered; duplicates/probes excluded; exact cursors; malformed JSON refused");
-    }));
-    let _ = child.kill();
-    child.wait().unwrap();
-    result.unwrap();
+        for (script, closes_stdout) in [
+            ("import time; time.sleep(30)", false),
+            ("import os,time; os.close(1); time.sleep(30)", true),
+        ] {
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", script]);
+            let mut peer = Process::spawn(&mut command).unwrap();
+            let start = Instant::now();
+            if closes_stdout {
+                assert!(peer.next(Duration::from_secs(2)).unwrap().is_none());
+                assert!(matches!(peer.wait_exit(Duration::from_millis(100)), Err(ProcessError::ExitTimeout(_))));
+            } else {
+                assert!(matches!(peer.next(Duration::from_millis(100)), Err(ProcessError::Timeout)));
+                peer.close().unwrap();
+            }
+            assert!(start.elapsed() < Duration::from_secs(3));
+            println!("bounded cleanup of synthetic peer, stdout closed = {closes_stdout}");
+        }
+        println!("PASS: real endpoint answers and EOF exit; bounded silent/closed-stdout peers; early admission ordered; duplicates/probes excluded; exact cursors; malformed JSON refused");
 }
 '''
 
