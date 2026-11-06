@@ -20,8 +20,7 @@ fn main() -> ExitCode {
     match PackLoader::read(&paths).and_then(PackLoader::read_resources) {
         Ok(resources) => {
             let ids: Vec<_> = resources.descriptors().map(|(_, d)| d["id"].as_str().unwrap()).collect();
-            let documents: Vec<_> = resources.documents().keys().collect();
-            println!("{}", serde_json::json!({"stage":"resources", "ids":ids, "documents":documents, "manifests":resources.manifests().len()}));
+            println!("{}", serde_json::json!({"stage":"resources", "ids":ids, "documents":resources.documents(), "manifests":resources.manifests().len()}));
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -126,6 +125,8 @@ def main():
     positive = run([str(consumer), str(ROOT / "fixtures/packs/storage"), str(ROOT / "fixtures/packs/index")], "shared-positive")
     data = json.loads(positive.stdout)
     assert positive.returncode == 0 and len(data["documents"]) == 2 and data["manifests"] == 1, data
+    storage = "https://open-agent-protocol.local/ext/com.example.storage/1.0.0/storage.schema.json"
+    assert data["documents"][storage]["$defs"]["objectsRead"]["properties"]["type"]["const"] == "com.example.storage.objects.read", data
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public Rust/Go cases agree, with shared positive resources retained")
     print("STAGED: reference ownership, branch compilation and corpus checks follow in loader stage three")
