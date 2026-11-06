@@ -12,7 +12,17 @@ impl State {
     ) {
         let attached = self.attached_sources.entry(session.to_owned()).or_default();
         for attachment in &asked.tool_sources {
-            let mut descriptor = attachment.descriptor();
+            let descriptor = attachment.descriptor();
+            if let Some(existing) = attached
+                .iter_mut()
+                .find(|source| source.id == descriptor.id)
+            {
+                *existing = descriptor;
+            } else {
+                attached.push(descriptor);
+            }
+        }
+        for descriptor in attached {
             if let Some(source) = published.sources.iter().find(|source| {
                 source.id == descriptor.id
                     && source.kind == descriptor.kind
@@ -24,15 +34,7 @@ impl State {
                     .iter()
                     .all(|(asked, got)| asked.is_empty() || asked == got)
             }) {
-                descriptor = source.clone();
-            }
-            if let Some(existing) = attached
-                .iter_mut()
-                .find(|source| source.id == descriptor.id)
-            {
-                *existing = descriptor;
-            } else {
-                attached.push(descriptor);
+                *descriptor = source.clone();
             }
         }
     }

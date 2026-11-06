@@ -26,8 +26,8 @@ reply and quit journey. No credentials, providers or real authentication are use
 
 For strict session-catalog lifetime and refresh rules, also run
 `cargo test --manifest-path rust/Cargo.toml -p oap-validation --test session_tool_catalog`
-and the shared `rust-go-parity.py` journey. Attached source metadata is adopted
-only when the open agrees with the stated attachment members. Catalogs retain
+and the shared `rust-go-parity.py` journey. Attaching opens and plain reopens adopt source metadata only when their
+responses agree with the already stated attachment members. Catalogs retain
 that description and the latest provided-tool definitions, including equivalent
 JSON schemas. Refreshes cannot collide with session attachments or provided tools.
 Tolerant-mode field leaks remain for the final #1440 slice; snapshot source-union
