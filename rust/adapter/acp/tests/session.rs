@@ -16,6 +16,10 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        Self::with_timestamp(suffix)
+    }
+
+    fn with_timestamp(suffix: u128) -> Self {
         let path =
             std::env::temp_dir().join(format!("oap-acp-session-{}-{suffix}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
@@ -180,4 +184,11 @@ fn a_missing_native_model_option_is_a_typed_catalog_refusal() {
     assert_eq!(control.reason, "unsatisfiable");
     block_on(session.close()).unwrap();
     fixture.assert_reaped();
+}
+
+#[test]
+fn fixture_paths_are_unique_for_equal_clock_readings() {
+    let first = Fixture::with_timestamp(0);
+    let second = Fixture::with_timestamp(0);
+    assert_ne!(first.0, second.0);
 }
