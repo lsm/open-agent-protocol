@@ -523,8 +523,9 @@ pub const Store = struct {
         const line = try serializeEventRecord(self.allocator, metadata, event);
         defer self.allocator.free(line);
         if (self.batch) |batch| {
-            batch.append(session_id, line, event == .agent_end) catch {
+            batch.append(session_id, line, event == .agent_end) catch |err| {
                 batch.flush(self);
+                if (batch.failed) return err;
                 return appendFile(path, line, event == .agent_end);
             };
             return;
@@ -548,6 +549,7 @@ pub const Store = struct {
         if (self.batch) |batch| {
             batch.index(metadata) catch {
                 batch.flush(self);
+                if (batch.failed) return;
                 var direct = self;
                 direct.batch = null;
                 return direct.saveIndex(metadata);
@@ -574,6 +576,11 @@ pub const Store = struct {
     }
 
     pub fn loadIndex(self: Store, session_id: []const u8) !SessionMetadata {
+        if (self.batch) |batch| {
+            if (batch.pending.get(session_id)) |pending| {
+                if (pending.metadata) |metadata| return metadata.clone(self.allocator);
+            }
+        }
         const path = try sessionFilePath(self.allocator, self.base_dir, session_id, index_suffix);
         defer self.allocator.free(path);
         const data = try compat.fs.readFileAlloc(self.allocator, compat.fs.getCwd(), path, index_max_bytes);
@@ -2780,6 +2787,12 @@ test "batched conversations keep compaction offsets and the latest index when re
     try store.saveEvent(meta.session_id, .{ .agent_end = .{ .reason = .completed } });
     meta.last_active = 321;
     try store.saveIndex(meta);
+    {
+        var pending_index = try store.loadIndex(meta.session_id);
+        defer pending_index.deinit(allocator);
+        try std.testing.expectEqual(@as(i64, 321), pending_index.last_active);
+        try std.testing.expectEqual(meta.compaction_offset, pending_index.compaction_offset);
+    }
     batch.flush(store);
     var reopened = try Store.init(allocator, base);
     defer reopened.deinit();

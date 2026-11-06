@@ -149,9 +149,10 @@ def main():
     parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
     parser.add_argument("--storage-recovery", action="store_true",
                         help="temporarily obstruct the transcript, then verify later saves recover metadata")
-    parser.add_argument("--partial-write-recovery", action="store_true",
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--partial-write-recovery", action="store_true",
                         help="limit child file sizes, then recover after an oversized transcript append")
-    parser.add_argument("--compaction-offset", action="store_true",
+    mode.add_argument("--compaction-offset", action="store_true",
                         help="compact a saved conversation and retain its index offset through another turn")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()

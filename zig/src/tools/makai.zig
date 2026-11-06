@@ -436,7 +436,21 @@ const ServedSessions = struct {
     fn writeTo(self: *ServedSessions, store: session_store.Store, meta: session_store.SessionMetadata, event: *const tui_app.SessionEvent) void {
         const recorder = self.recorderFor(meta.session_id) catch return;
         const saved = recorder.record(self.allocator, store, meta, event.*) orelse return;
-        if (saved.metadata or event.* == .agent_end) store.saveIndex(meta) catch {};
+        if (!saved.metadata and event.* != .agent_end) return;
+        var previous: ?session_store.SessionMetadata = store.loadIndex(meta.session_id) catch |err| switch (err) {
+            error.OutOfMemory => return,
+            else => null,
+        };
+        defer if (previous) |*metadata| metadata.deinit(self.allocator);
+        var next = previous orelse meta;
+        next.model = meta.model;
+        next.provider = meta.provider;
+        next.last_active = meta.last_active;
+        if (saved.compaction_offset) |offset| {
+            next.compaction_offset = offset;
+            next.compactions +|= 1;
+        }
+        store.saveIndex(next) catch {};
     }
 };
 
@@ -8189,6 +8203,26 @@ test "a served oapx session's events are saved, read back without adopting it, a
         const current = (try ServedSessions.read(&saved, live.allocator(), "session-1")).?;
         try std.testing.expectEqual(@as(usize, 2), current.len);
         try std.testing.expectEqualStrings("general kenobi", current[1].assistant.content[0].text.text);
+        for (&events) |*event| ServedSessions.record(&saved, "compacted-session", model, event);
+        saved.flush();
+        const compacted_bytes = try saved.store.conversationBytes("compacted-session");
+        const compacted = tui_app.SessionEvent{ .compaction_end = .{
+            .outcome = .completed,
+            .text = OwnedText.initBorrowed("This conversation was compacted.\n\n<summary>kept state</summary>"),
+        } };
+        ServedSessions.record(&saved, "compacted-session", model, &compacted);
+        ServedSessions.record(&saved, "compacted-session", model, &events[events.len - 1]);
+        saved.flush();
+        var compacted_index = try saved.store.loadIndex("compacted-session");
+        defer compacted_index.deinit(allocator);
+        try std.testing.expectEqual(compacted_bytes, compacted_index.compaction_offset);
+        try std.testing.expectEqual(@as(u32, 1), compacted_index.compactions);
+        for (&events) |*event| ServedSessions.record(&saved, "compacted-session", model, event);
+        saved.flush();
+        var later_index = try saved.store.loadIndex("compacted-session");
+        defer later_index.deinit(allocator);
+        try std.testing.expectEqual(compacted_bytes, later_index.compaction_offset);
+        try std.testing.expectEqual(@as(u32, 1), later_index.compactions);
         const Producer = struct {
             saved: *ServedSessions,
             events: []const tui_app.SessionEvent,

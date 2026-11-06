@@ -528,6 +528,11 @@ observe the next saved reply with its model and provider.
 Failed appends truncate back to their previous length. The partial-write
 restart journey enforces a child file-size limit, exceeds it with a synthetic
 reply, then observes a later small turn surviving a fresh process.
+The served writer applies completed compaction offsets to the index and carries
+them, the compaction count and prior index fields through later saves. Index
+reads within a batch see its latest pending update. The compaction-offset
+restart journey completes a real compaction and a later turn, then checks that
+the saved offset survives both that turn and a fresh process.
 `goap hub` takes the lock on Unix only: on Windows it opens the lock file
 without locking it, a gap recorded here rather than closed, since `goap` is
 never released and CI runs it on Unix. `goap hub` has no

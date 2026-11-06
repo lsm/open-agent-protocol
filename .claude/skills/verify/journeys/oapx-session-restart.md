@@ -6,6 +6,7 @@ Build ReleaseSafe with the shared setup in `SKILL.md`, then run:
 python3 .claude/skills/verify/scripts/oapx-session-restart.py --output-dir /tmp/oap-session-restart-<unique-name>
 python3 .claude/skills/verify/scripts/oapx-session-restart.py --storage-recovery --output-dir /tmp/oap-session-storage-recovery-<unique-name>
 python3 .claude/skills/verify/scripts/oapx-session-restart.py --partial-write-recovery --output-dir /tmp/oap-session-partial-recovery-<unique-name>
+python3 .claude/skills/verify/scripts/oapx-session-restart.py --compaction-offset --output-dir /tmp/oap-session-compaction-offset-<unique-name>
 ```
 
 First it checks that `--no-save-oapx-sessions` omits reopen support and writes
@@ -42,6 +43,13 @@ restart artifacts, captured after a `work.read` barrier. A fresh helper process
 sets the file-size limit and execs the Hub. A failed append must truncate back to its previous length
 before a later batch appends. The provider emits its large reply only for the
 special current prompt.
+
+The compaction-offset invocation submits a real `session.compact.request`,
+observes a completed compaction record, and checks the saved index's nonzero
+offset and count. It submits another turn and requires both fields to survive,
+then repeats the restart and restored-provider-request checks. Inspect
+`compaction-index.json` and `later-index.json`. Run this invocation separately
+from the file-size fault so its archived transcript can include the history.
 
 After changing the served-session writer, also run:
 
