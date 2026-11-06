@@ -1,0 +1,18 @@
+{"event":"message_start","message":"user:start"}
+{"event":"message_end","message":"user:start","steering":false}
+{"event":"agent_start"}
+{"event":"turn_start"}
+{"event":"prompt_segment_usage","total_bytes":0,"segment":"system_prompt","item_count":0}
+{"event":"prompt_segment_usage","total_bytes":28,"segment":"tool_definitions","item_count":1}
+{"event":"prompt_segment_usage","total_bytes":5,"segment":"message_history","item_count":1}
+{"event":"context_usage","total_bytes":33,"estimated_tokens":27,"message_count":1,"tool_count":1}
+{"event":"message_start","message":"assistant:"}
+{"event":"message_end","message":"assistant:[echo {\"say\":\"hi\"}]","steering":false}
+{"event":"tool_execution_start","tool":"echo","args":"{\"say\":\"hi\"}"}
+{"event":"tool_execution_update","tool":"echo","result":"{\"partial\":true}"}
+{"event":"tool_execution_end","tool":"echo","result":"null","is_error":false,"returned_bytes":18}
+{"event":"turn_end","message":"assistant:[echo {\"say\":\"hi\"}]","input_dropped":false,"stop_reason":"tool_use"}
+{"event":"message_start","message":"tool_result:echo:false:echoed"}
+{"event":"message_end","message":"tool_result:echo:false:echoed","steering":false}
+{"event":"agent_end","stop_reason":"tool_use","termination":"cancelled"}
+{"event":"model_request","messages":["user:start"]}

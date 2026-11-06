@@ -688,6 +688,13 @@ deliberate change, so traces are recorded after the budget lands, or with comman
 shorter than it. Building that harness is part of stage 4's
 size, and the same traces gate stages 5 and 6.
 
+The traces live in `zig/src/agent/loop_traces/`, one `.jsonl` file per scenario, and
+`zig/src/agent/loop_traces.zig` holds the scenarios and fails on any difference. Each
+file lists the loop's events in order, then the model requests in order. Those are
+two lists because the old loop runs on its own thread, so a request has no fixed
+place among the queued events. Set `OAP_LOOP_TRACE_OUT` to a directory to write what
+a run produced, which is how a deliberate change updates a trace.
+
 Overflow and retry state (#1572, #1578, #1590) is already shaped as data and moves
 into `step` directly. Subscription lifetime (decision 0066) fits well, because a
 subscription belongs to a connection and a session rather than a run thread, but

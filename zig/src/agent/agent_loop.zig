@@ -242,6 +242,10 @@ fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
     };
 }
 
+test {
+    _ = @import("loop_traces.zig");
+}
+
 test "outputRequest asks for the default, the model's maximum, or a count, and never above the maximum the model reports" {
     const large = outputLimitModel(1_048_576, 393_216);
     try std.testing.expectEqual(default_output_tokens, outputRequest(large, .auto));
