@@ -32,3 +32,5 @@ that description and the latest provided-tool definitions, including equivalent
 JSON schemas. Refreshes cannot collide with session attachments or provided tools.
 Tolerant-mode field leaks remain for the final #1440 slice; snapshot source-union
 checks remain in the following calls/state slice.
+The session-catalog regression also requires `1` and `1.0` schema constants to
+compare equal while the string `"1e0"` remains a different schema.
