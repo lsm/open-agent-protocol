@@ -27,15 +27,26 @@ pub const Jobs = struct {
         id: []u8,
         output: []u8,
         workspace_root: []u8,
+        tool_call_id: []u8,
         leader: std.posix.pid_t,
         term: ?std.process.Child.Term = null,
         killed: bool = false,
+        cause: ?Cause = null,
         noticed: bool = false,
         watcher: ?std.Thread = null,
 
         fn owesNotice(self: *const Job) bool {
             return self.term != null and !self.killed and !self.noticed;
         }
+    };
+
+    pub const Cause = enum { finished, cancelled_by_host, cancelled_by_model, session_closed };
+    pub const Status = enum { running, completed, failed, cancelled };
+    pub const Task = struct {
+        task_id: []const u8,
+        tool_call_id: []const u8,
+        status: Status,
+        cause: ?Cause,
     };
 
     pub const Notice = struct {
@@ -68,6 +79,7 @@ pub const Jobs = struct {
             self.allocator.free(job.id);
             self.allocator.free(job.output);
             self.allocator.free(job.workspace_root);
+            self.allocator.free(job.tool_call_id);
             self.allocator.destroy(job);
         }
         self.list.deinit(self.allocator);
@@ -78,7 +90,7 @@ pub const Jobs = struct {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
-    pub fn start(self: *Jobs, scratch: std.mem.Allocator, workspace_root: []const u8, command: []const u8) !Started {
+    pub fn start(self: *Jobs, scratch: std.mem.Allocator, workspace_root: []const u8, command: []const u8, tool_call_id: []const u8) !Started {
         var dir = try common.openWorkspace(workspace_root, false);
         defer dir.close(common.defaultIo());
         try dir.createDirPath(common.defaultIo(), jobs_dir);
@@ -95,11 +107,13 @@ pub const Jobs = struct {
         errdefer self.allocator.free(output);
         const root = try self.allocator.dupe(u8, workspace_root);
         errdefer self.allocator.free(root);
+        const call_id = try self.allocator.dupe(u8, tool_call_id);
+        errdefer self.allocator.free(call_id);
         const job = try self.allocator.create(Job);
         errdefer self.allocator.destroy(job);
         const argv = [_][]const u8{ "/bin/sh", "-c", "exec >\"$0\" 2>&1 </dev/null; exec /bin/sh -c \"$1\"", output, command };
         const leader = try process_runner.spawnGroup(scratch, &argv, .{ .dir = dir });
-        job.* = .{ .id = id, .output = output, .workspace_root = root, .leader = leader };
+        job.* = .{ .id = id, .output = output, .workspace_root = root, .tool_call_id = call_id, .leader = leader };
         job.watcher = std.Thread.spawn(.{}, watch, .{ self, job }) catch |err| {
             process_runner.endGroup(leader);
             _ = process_runner.waitLeader(leader) catch {};
@@ -113,6 +127,7 @@ pub const Jobs = struct {
         const term = process_runner.waitLeader(job.leader) catch std.process.Child.Term{ .unknown = 0 };
         self.lock();
         job.term = term;
+        if (job.cause == null) job.cause = .finished;
         self.mutex.unlock();
         process_runner.endGroup(job.leader);
     }
@@ -124,7 +139,10 @@ pub const Jobs = struct {
             self.mutex.unlock();
             return error.UnknownJob;
         };
-        if (kill and job.term == null) job.killed = true;
+        if (kill and job.term == null) {
+            job.killed = true;
+            job.cause = .cancelled_by_model;
+        }
         self.mutex.unlock();
         if (kill) self.end(job);
         self.lock();
@@ -146,6 +164,60 @@ pub const Jobs = struct {
             .bytes = outputBytes(job.*),
             .output_path = job.output,
         };
+    }
+
+    pub fn tasks(self: *Jobs, allocator: std.mem.Allocator) ![]Task {
+        self.lock();
+        defer self.mutex.unlock();
+        const result = try allocator.alloc(Task, self.list.items.len);
+        var filled: usize = 0;
+        errdefer {
+            for (result[0..filled]) |task| {
+                allocator.free(task.task_id);
+                allocator.free(task.tool_call_id);
+            }
+            allocator.free(result);
+        }
+        for (self.list.items, result) |job, *task| {
+            const id = try allocator.dupe(u8, job.id);
+            errdefer allocator.free(id);
+            task.* = .{
+                .task_id = id,
+                .tool_call_id = try allocator.dupe(u8, job.tool_call_id),
+                .status = taskStatus(job),
+                .cause = if (job.term == null) null else job.cause,
+            };
+            filled += 1;
+        }
+        return result;
+    }
+
+    fn taskStatus(job: *const Job) Status {
+        const term = job.term orelse return .running;
+        if (job.cause != null and job.cause.? != .finished) return .cancelled;
+        return switch (term) {
+            .exited => |code| if (code == 0) .completed else .failed,
+            else => .failed,
+        };
+    }
+
+    pub fn cancelTask(self: *Jobs, task_id: []const u8) !bool {
+        self.lock();
+        const job = for (self.list.items) |candidate| {
+            if (std.mem.eql(u8, candidate.id, task_id)) break candidate;
+        } else {
+            self.mutex.unlock();
+            return error.UnknownJob;
+        };
+        if (job.term != null or job.cause != null) {
+            self.mutex.unlock();
+            return false;
+        }
+        job.killed = true;
+        job.cause = .cancelled_by_host;
+        self.mutex.unlock();
+        self.end(job);
+        return true;
     }
 
     pub fn noticeWaiting(self: *Jobs) bool {
@@ -190,7 +262,15 @@ pub const Jobs = struct {
         self.lock();
         const jobs = self.list.items;
         self.mutex.unlock();
-        for (jobs) |job| self.end(job);
+        for (jobs) |job| {
+            self.lock();
+            if (job.term == null and job.cause == null) {
+                job.killed = true;
+                job.cause = .session_closed;
+            }
+            self.mutex.unlock();
+            self.end(job);
+        }
     }
 
     fn find(self: *Jobs, output_path: []const u8) ?*Job {
@@ -413,7 +493,7 @@ fn executeIn(ctx: ?*anyopaque, tool_call_id: []const u8, args_json: []const u8, 
     if (!common.optionalBool(obj, "run_in_background", false)) return runForeground(tool_call_id, args_json, cancel_token, on_update_ctx, on_update, allocator);
     if (common.isCancelled(cancel_token)) return error.Cancelled;
     const jobs: *Jobs = @ptrCast(@alignCast(ctx orelse return error.BackgroundJobsUnavailable));
-    const started = try jobs.start(allocator, try common.requiredString(obj, "workspace_root"), try common.requiredString(obj, "command"));
+    const started = try jobs.start(allocator, try common.requiredString(obj, "workspace_root"), try common.requiredString(obj, "command"), tool_call_id);
     const details = try common.jsonString(allocator, .{ .ok = true, .task_id = started.task_id, .output_path = started.output_path });
     errdefer allocator.free(details);
     const text = try std.fmt.allocPrint(allocator, "started background job {s}; its stdout and stderr go to {s}. Read that file for output, and pass its path to ShellJob to check or stop the job. It ends when the session closes.", .{ started.task_id, started.output_path });
@@ -936,6 +1016,86 @@ test "ShellJob reports a finished job's exit code and ends a running one on kill
     var killed = try tools[1].runtime_execute.?(tools[1].runtime_ctx, "call-kill", kill_args, null, null, null, std.testing.allocator);
     defer killed.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, killed.getDetailsJson().?, "\"status\":\"killed\"") != null);
+}
+
+test "background task snapshots retain call identity and host cancellation cause" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tools = sessionTools(&jobs);
+    const args = try backgroundArgs(&case, ticking);
+    defer std.testing.allocator.free(args);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-1", args, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+    const before = try jobs.tasks(arena.allocator());
+    try std.testing.expectEqual(@as(usize, 1), before.len);
+    try std.testing.expectEqualStrings("call-1", before[0].tool_call_id);
+    try std.testing.expectEqual(Jobs.Status.running, before[0].status);
+    try std.testing.expectEqual(@as(?Jobs.Cause, null), before[0].cause);
+    try std.testing.expect(try jobs.cancelTask(before[0].task_id));
+    try std.testing.expect(!(try jobs.cancelTask(before[0].task_id)));
+    try std.testing.expectError(error.UnknownJob, jobs.cancelTask("missing"));
+    const after = try jobs.tasks(arena.allocator());
+    try std.testing.expectEqual(Jobs.Status.cancelled, after[0].status);
+    try std.testing.expectEqual(@as(?Jobs.Cause, .cancelled_by_host), after[0].cause);
+    try std.testing.expect(!jobs.noticeWaiting());
+}
+
+test "ending the session records why a running task ended" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tools = sessionTools(&jobs);
+    const args = try backgroundArgs(&case, ticking);
+    defer std.testing.allocator.free(args);
+    var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-close", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    jobs.endAll();
+    const tasks = try jobs.tasks(arena.allocator());
+    try std.testing.expectEqual(Jobs.Status.cancelled, tasks[0].status);
+    try std.testing.expectEqual(@as(?Jobs.Cause, .session_closed), tasks[0].cause);
+    try std.testing.expect(!jobs.noticeWaiting());
+}
+
+test "background task snapshots distinguish successful, failed and model-cancelled jobs" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tools = sessionTools(&jobs);
+    for ([_][]const u8{ "exit 0", "exit 3", ticking }, 0..) |command, index| {
+        const args = try backgroundArgs(&case, command);
+        defer std.testing.allocator.free(args);
+        const call_id = try std.fmt.allocPrint(arena.allocator(), "call-{d}", .{index});
+        var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, call_id, args, null, null, null, std.testing.allocator);
+        result.deinit(std.testing.allocator);
+    }
+    const by = common.nowMs() + 5_000;
+    while (common.nowMs() < by) {
+        const a = try jobs.report(jobs.list.items[0].output, false);
+        const b = try jobs.report(jobs.list.items[1].output, false);
+        if (!std.mem.eql(u8, a.status, "running") and !std.mem.eql(u8, b.status, "running")) break;
+        compat.time.sleepMs(10);
+    }
+    _ = try jobs.report(jobs.list.items[2].output, true);
+    const tasks = try jobs.tasks(arena.allocator());
+    try std.testing.expectEqual(Jobs.Status.completed, tasks[0].status);
+    try std.testing.expectEqual(Jobs.Status.failed, tasks[1].status);
+    try std.testing.expectEqual(Jobs.Status.cancelled, tasks[2].status);
+    try std.testing.expectEqual(@as(?Jobs.Cause, .finished), tasks[0].cause);
+    try std.testing.expectEqual(@as(?Jobs.Cause, .finished), tasks[1].cause);
+    try std.testing.expectEqual(@as(?Jobs.Cause, .cancelled_by_model), tasks[2].cause);
 }
 
 test "a notice whose tail starts inside a character is still text" {
