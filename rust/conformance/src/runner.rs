@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::Client;
 
 mod models;
+mod runs;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -150,7 +151,13 @@ impl<'a> Runner<'a> {
         kind: EnvelopeType,
         payload: &impl Serialize,
     ) -> Result<Envelope, String> {
-        let answer = self.exchange(kind.clone(), payload)?;
+        let envelope = self.envelope(kind, payload)?;
+        self.request_envelope(envelope)
+    }
+
+    fn request_envelope(&mut self, envelope: Envelope) -> Result<Envelope, String> {
+        let kind = envelope.envelope_type.clone();
+        let answer = self.exchange_envelope(envelope)?;
         if answer.envelope_type == EnvelopeType::ERROR_RESPONSE {
             let failure: ErrorResponse = decode_payload(&answer)?;
             return Err(format!(
@@ -184,6 +191,10 @@ impl<'a> Runner<'a> {
         payload: &impl Serialize,
     ) -> Result<Envelope, String> {
         let envelope = self.envelope(kind, payload)?;
+        self.exchange_envelope(envelope)
+    }
+
+    fn exchange_envelope(&mut self, envelope: Envelope) -> Result<Envelope, String> {
         let id = envelope.id.clone();
         self.client
             .send(envelope)
