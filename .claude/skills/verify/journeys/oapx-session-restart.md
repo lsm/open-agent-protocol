@@ -28,7 +28,8 @@ and recovery of an interrupted active run are not exercised by this journey.
 
 The storage-recovery invocation first obstructs the synthetic session's
 transcript with a directory, completes a turn, removes the obstruction, and
-submits another turn. Require the recovered transcript to include the selected
+submits another turn. A `work.read` barrier drains saving before removing the
+obstruction. Require the recovered transcript to include the selected
 model and provider metadata in `storage-recovered.jsonl`, then require the same
 restart and restored-request checks. A failed batch must allow later saves to
 write their metadata again.
@@ -37,7 +38,8 @@ The partial-write invocation limits only the child Hub's regular files to
 128 KiB and ignores its file-size signal. A large synthetic reply must exceed
 that limit. The next small turn must still persist, survive restart and enter
 the next provider request. Inspect `partial-before.jsonl` alongside the normal
-restart artifacts. A failed append must truncate back to its previous length
+restart artifacts, captured after a `work.read` barrier. A fresh helper process
+sets the file-size limit and execs the Hub. A failed append must truncate back to its previous length
 before a later batch appends. The provider emits its large reply only for the
 special current prompt.
 

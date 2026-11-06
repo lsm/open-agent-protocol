@@ -6,9 +6,7 @@ import json
 import os
 from pathlib import Path
 import queue
-import resource
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -53,16 +51,18 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
 class Hub:
     def __init__(self, command, environment, root, output, label, flags=(), file_limit=None):
-        def limit_files():
-            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
-            resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
-
+        if file_limit:
+            setup = ("import os, resource, signal, sys\n"
+                     "limit = int(sys.argv[1])\n"
+                     "resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))\n"
+                     "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+                     "os.execv(sys.argv[2], sys.argv[2:])\n")
+            command = [sys.executable, "-I", "-c", setup, str(file_limit), *command]
         self.log = (output / (label + ".jsonl")).open("w")
         self.errors = (output / (label + "-stderr.txt")).open("w")
         self.process = subprocess.Popen(command + ["serve", "--stdio", "--config", str(root / "hub.json"), *flags],
                                         cwd=root, env=environment, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=self.errors, text=True,
-                                        preexec_fn=limit_files if file_limit else None)
+                                        stdout=subprocess.PIPE, stderr=self.errors, text=True)
         self.lines = queue.Queue()
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -190,9 +190,11 @@ def main():
             if args.storage_recovery:
                 transcript_path.mkdir(parents=True)
                 submit(hub, "restart-proof", "synthetic failed storage turn")
+                hub.call("work.read", session_id="restart-proof")
                 transcript_path.rmdir()
             if args.partial_write_recovery:
                 submit(hub, "restart-proof", PARTIAL_PROMPT)
+                hub.call("work.read", session_id="restart-proof")
                 (output / "partial-before.jsonl").write_bytes(transcript_path.read_bytes())
             submit(hub, "restart-proof", PROMPT)
             before = hub.call("work.read", session_id="restart-proof")
