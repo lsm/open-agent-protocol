@@ -180,4 +180,5 @@ test "a refused nonblocking connection reports socket failure" {
 
 comptime {
     _ = @import("sources_test.zig");
+    _ = @import("pool_test.zig");
 }

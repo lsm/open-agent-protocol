@@ -23,3 +23,9 @@ child exit through an anonymous-pipe gate, an already-reaped child, duplicate
 registrations and allocation failures. The child test releases and reaps its
 child, with kill-and-reap cleanup on every parent failure path. It verifies that
 a child-exit notice is distinct from an I/O error.
+
+Pool tests block real callbacks behind a condition-variable gate. They require
+an immediate full-queue result while workers are busy, FIFO execution with one
+worker, concurrent progress with two workers, draining accepted work on shutdown,
+closed-pool rejection, and allocation-failure cleanup. Every failure path opens
+the gate before joining workers, and every created pool is destroyed.

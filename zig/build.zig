@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const repeat_test = b.addTest(.{ .root_module = repeat_mod });
     const reactor_mod = b.createModule(.{ .root_source_file = b.path("src/reactor/poller_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
     const reactor_test = b.addTest(.{ .root_module = reactor_mod });
-    const test_unit_reactor_step = b.step("test-unit-reactor", "Run the reactor poller tests");
+    const test_unit_reactor_step = b.step("test-unit-reactor", "Run the reactor primitive tests");
     test_unit_reactor_step.dependOn(&b.addRunArtifact(reactor_test).step);
     const manifest: struct {
         name: @TypeOf(.makai),
