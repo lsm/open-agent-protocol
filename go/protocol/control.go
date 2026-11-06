@@ -594,6 +594,8 @@ type SessionState struct {
 	SessionID        SessionID                  `json:"session_id"`
 	Status           SessionStatus              `json:"status"`
 	ActiveRunID      RunID                      `json:"active_run_id,omitempty"`
+	Tasks            []SessionTask              `json:"tasks,omitempty"`
+	TasksTruncated   bool                       `json:"tasks_truncated,omitempty"`
 	ActiveRuns       []ActiveRun                `json:"active_runs,omitempty"`
 	CurrentModelID   string                     `json:"current_model_id,omitempty"`
 	TranscriptCursor string                     `json:"transcript_cursor,omitempty"`
