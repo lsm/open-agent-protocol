@@ -845,10 +845,14 @@ pub const Frontend = struct {
             else
                 try std.fmt.allocPrint(arena, "{{\"event\":\"envelope\",\"id\":{d},\"session_id\":{s},\"envelope\":{s}}}", .{ watched.id, session_json, delivered.line });
             if (line.len > self.frame_limit) {
-                var object = try signalObject(arena, "oap-frame-limit", watched.id, subscription.session_id);
-                try object.put(arena, "run_id", .{ .string = delivered.run_id });
-                try object.put(arena, "sequence", .{ .integer = @intCast(if (delivered.sequence > 0) delivered.sequence else watched.sequence) });
-                try object.put(arena, "message", .{ .string = "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it" });
+                const session_event = delivered.run_id.len == 0;
+                const has_run = watched.run.items.len > 0;
+                const signal = if (session_event and !has_run) "oap-stream-failed" else "oap-frame-limit";
+                var object = try signalObject(arena, signal, watched.id, subscription.session_id);
+                if (!session_event or has_run) try object.put(arena, "run_id", .{ .string = if (session_event) watched.run.items else delivered.run_id });
+                try object.put(arena, "sequence", .{ .integer = @intCast(if (session_event) watched.sequence else delivered.sequence) });
+                const message = if (session_event) "session event too large; read state, then resume the run if present" else "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it";
+                try object.put(arena, "message", .{ .string = message });
                 try self.writeSignal(arena, object);
                 return true;
             }
@@ -3175,6 +3179,7 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
         .cancel = referenceCancel,
         .pump = referencePump,
         .drain = referenceDrain,
+        .drain_mixed = referenceDrain,
         .activity = referenceActivity,
         .close = referenceClose,
         .models = referenceModels,
@@ -4223,6 +4228,39 @@ test "events acknowledges, then streams the run's envelopes on its own id and st
         try testing.expectEqualStrings("run-1", value.object.get("envelope").?.object.get("run_id").?.string);
     }
     try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+}
+
+test "an oversized session event reports the last run cursor or a session stream failure" {
+    for ([_]bool{ false, true }) |with_run| {
+        const frame_limit: usize = if (with_run) 800 else minimum_frame_limit;
+        const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = frame_limit });
+        defer harness.deinit();
+        defer reference_holder.pending_events = &.{};
+        try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+        try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"s1\"}");
+        if (with_run) {
+            reference_holder.pending_events = &.{.{ .line = started_line, .run_id = "run-1", .sequence = 1 }};
+            try harness.hub.pump(testing.allocator, 0);
+            try harness.frontend.pumpStreams();
+        }
+        const text = try harness.arena().alloc(u8, frame_limit + 32);
+        @memset(text, 'x');
+        const line = try std.fmt.allocPrint(harness.arena(), "{{" ++ event_head ++ ",\"type\":\"session.task.started\",\"id\":\"e\",\"session_id\":\"s1\",\"payload\":{{\"label\":\"{s}\"}}}}", .{text});
+        const pending = [_]contract.Event{.{ .line = line, .run_id = "", .sequence = 0 }};
+        reference_holder.pending_events = &pending;
+        try harness.hub.pump(testing.allocator, 0);
+        try harness.frontend.pumpStreams();
+        const signal = (try harness.lastValue()).object;
+        try testing.expectEqualStrings(if (with_run) "oap-frame-limit" else "oap-stream-failed", signal.get("event").?.string);
+        if (with_run) {
+            try testing.expectEqualStrings("run-1", signal.get("run_id").?.string);
+            try testing.expectEqual(@as(i64, 1), signal.get("sequence").?.integer);
+        } else {
+            try testing.expect(signal.get("run_id") == null);
+            try testing.expectEqual(@as(i64, 0), signal.get("sequence").?.integer);
+        }
+        try testing.expect(std.mem.indexOf(u8, signal.get("message").?.string, "read state") != null);
+    }
 }
 
 const replied_line = "{" ++ event_head ++ ",\"type\":\"run.completed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"final_response\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":\"pong\"}}}";

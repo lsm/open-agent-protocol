@@ -731,7 +731,8 @@ pub const Endpoint = struct {
         });
         self.drainEntry(entry) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => {},
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
         };
     }
 
@@ -1358,6 +1359,7 @@ const Fake = struct {
     offers_tools: bool = false,
     oversized_event: bool = false,
     oversized_session_event_on_switch: bool = false,
+    oversized_session_event_on_cancel: bool = false,
     invalid_session_event_on_switch: bool = false,
 
     fn adapter(self: *Fake) contract.Adapter {
@@ -1481,6 +1483,10 @@ const FakeSession = struct {
         _ = refusal;
         const self = cast(ptr);
         if (!self.active) return error.RunNotFound;
+        if (self.fake.oversized_session_event_on_cancel) {
+            const text: [1024]u8 = @splat('x');
+            try self.queue("{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.ended\",\"session_id\":\"s1\",\"payload\":{{\"summary\":\"{s}\"}}}}", .{&text});
+        }
         self.active = false;
         try self.queue("{{\"type\":\"run.cancelled\",\"run_id\":\"{s}\",\"sequence\":2}}", .{run_id});
         return .{ .session_id = self.id_text, .run_id = run_id, .accepted = true, .status = .cancelling };
@@ -2235,6 +2241,20 @@ test "an invalid session event during a model switch fails the endpoint out loud
     const outbound = try harness.collect();
     try testing.expectEqual(@as(usize, 1), outbound.len);
     try testing.expectEqualStrings("session.model.switch.response", field(outbound[0], &.{"type"}));
+}
+
+test "an oversized session event during cancel fails the endpoint out loud" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{ .frame_limit = 800 });
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    _ = try harness.send(submit_line);
+    harness.fake.oversized_session_event_on_cancel = true;
+    const request = framed("run.cancel.request", "cancel-1", ",\"session_id\":\"s1\",\"run_id\":\"run-1\"", "{\"session_id\":\"s1\",\"run_id\":\"run-1\"}");
+    try testing.expectError(error.FrameTooLarge, harness.endpoint.handleLine(request));
+    const outbound = try harness.collect();
+    try testing.expectEqual(@as(usize, 1), outbound.len);
+    try testing.expectEqualStrings("run.cancel.response", field(outbound[0], &.{"type"}));
 }
 
 test "a run that ends while a model switch waits on its backend settles before the switched state" {
