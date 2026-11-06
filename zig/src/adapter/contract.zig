@@ -219,6 +219,11 @@ pub const Session = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    pub const Ready = struct {
+        ctx: *anyopaque,
+        notify: *const fn (ctx: *anyopaque) void,
+    };
+
     pub const VTable = struct {
         id: *const fn (ptr: *anyopaque) []const u8,
         state: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, refusal: *Refusal) Failure!oap_types.SessionState,
@@ -238,6 +243,7 @@ pub const Session = struct {
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
+        set_ready: ?*const fn (ptr: *anyopaque, ready: ?Ready) void = null,
         native_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
         stream_failure: ?*const fn (ptr: *anyopaque) ?StreamFailure = null,
         live_work: ?*const fn (ptr: *anyopaque) bool = null,
@@ -245,6 +251,12 @@ pub const Session = struct {
 
     pub fn id(self: Session) []const u8 {
         return self.vtable.id(self.ptr);
+    }
+
+    pub fn setReady(self: Session, ready: ?Ready) bool {
+        const set = self.vtable.set_ready orelse return false;
+        set(self.ptr, ready);
+        return true;
     }
 
     pub fn holdsNoLiveWork(self: Session) bool {

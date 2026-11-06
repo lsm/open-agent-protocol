@@ -2022,6 +2022,20 @@ session whose run is still active is cancelled before it is closed, up to three
 attempts, because a harness that refuses `Close` while a run is in flight must
 first be asked to stop.
 
+The Zig adapter session contract offers an optional `set_ready` observer.
+Registering it immediately notifies the observer so existing output is visited.
+The native oapx adapter forwards runtime stream notifications and signals its
+published OAP output. Runtime pushes signal after publishing their event and
+backpressure warning. The session owner registers or detaches the adapter
+observer, and runtime producers may signal from other threads. Detaching waits for an in-flight runtime notification,
+and runtime teardown detaches before stopping its producers. An observer only
+queues readiness or wakes its owner, and must return promptly without entering
+the runtime. The owner detaches before releasing the observer context.
+`runtime readiness signals existing events, streaming output and terminal
+output until detached`, `runtime readiness detach waits for an in-flight
+notification` and `a native readiness observer sees a submitted run and can
+detach before the next` pin this hook.
+
 **One rule here is where the trees differ in kind, not in answer.** Go's
 `CloseSessions` can only wait: it holds a context, so a session it is waiting on
 gives the budget back. The Zig sweep is not waiting on anything — a Zig
