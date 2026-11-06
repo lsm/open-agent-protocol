@@ -10,6 +10,25 @@ pub const ProcessResult = struct {
     stderr: []u8,
 };
 
+pub const Moved = struct {
+    leader: std.posix.pid_t,
+    stdout: std.posix.fd_t,
+    stderr: std.posix.fd_t,
+    stdout_head: []u8,
+    stderr_head: []u8,
+};
+
+pub const Outcome = union(enum) {
+    finished: ProcessResult,
+    moved: Moved,
+};
+
+pub fn runWithBudget(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, budget_ms: ?u64, cancel_token: ?ai_types.CancelToken) !Outcome {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    return outcomeWithIo(allocator, threaded.io(), argv, cwd, timeout_ms, budget_ms, cancel_token);
+}
+
 pub fn run(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, cancel_token: ?ai_types.CancelToken) !ProcessResult {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
@@ -17,6 +36,10 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.proc
 }
 
 fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, cancel_token: ?ai_types.CancelToken) !ProcessResult {
+    return (try outcomeWithIo(allocator, io, argv, cwd, timeout_ms, null, cancel_token)).finished;
+}
+
+fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, budget_ms: ?u64, cancel_token: ?ai_types.CancelToken) !Outcome {
     if (common.isCancelled(cancel_token)) return error.Cancelled;
     const start_ms = common.nowMs();
     var environ_map = try saneChildEnv(allocator);
@@ -32,7 +55,8 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .pgid = if (builtin.os.tag != .windows) 0 else null,
     });
     const process_group = processGroupId(child.id);
-    defer cleanupChild(&child, io, process_group);
+    var handed_over = false;
+    defer if (!handed_over) cleanupChild(&child, io, process_group);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
@@ -49,11 +73,20 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
     while (true) {
         if (common.isCancelled(cancel_token)) return error.Cancelled;
         if (common.durationMs(start_ms) >= timeout_ms) return error.Timeout;
+        if (comptime builtin.os.tag != .windows) {
+            if (budget_ms) |budget| if (term == null and common.durationMs(start_ms) >= budget) {
+                const stdout_head = try allocator.dupe(u8, stdout_reader.buffered());
+                errdefer allocator.free(stdout_head);
+                const stderr_head = try allocator.dupe(u8, stderr_reader.buffered());
+                handed_over = true;
+                return .{ .moved = .{ .leader = child.id.?, .stdout = child.stdout.?.handle, .stderr = child.stderr.?.handle, .stdout_head = stdout_head, .stderr_head = stderr_head } };
+            };
+        }
         if (term == null) term = try pollTerm(&child, io);
         if (!pipes_closed) {
             multi_reader.fill(64, poll_timeout) catch |err| switch (err) {
                 error.Timeout => {
-                    if (term) |t| return finish(allocator, &multi_reader, t, false);
+                    if (term) |t| return .{ .finished = try finish(allocator, &multi_reader, t, false) };
                 },
                 error.EndOfStream => pipes_closed = true,
                 else => |e| return e,
@@ -64,7 +97,7 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
             io.sleep(.fromMilliseconds(@intCast(reap_wait_ms)), .boot) catch {};
             reap_wait_ms = @min(reap_wait_ms * 2, common.process_poll_ms);
         }
-        if (term) |t| if (pipes_closed) return finish(allocator, &multi_reader, t, true);
+        if (term) |t| if (pipes_closed) return .{ .finished = try finish(allocator, &multi_reader, t, true) };
     }
 }
 
@@ -224,25 +257,6 @@ fn statusToTerm(status: u32) std.process.Child.Term {
         .{ .stopped = std.posix.W.STOPSIG(status) }
     else
         .{ .unknown = status };
-}
-
-pub fn spawnGroup(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd) !std.posix.pid_t {
-    if (comptime builtin.os.tag == .windows) return error.Unsupported;
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    var environ_map = try saneChildEnv(allocator);
-    defer environ_map.deinit();
-    const child = try std.process.spawn(threaded.io(), .{
-        .argv = argv,
-        .cwd = cwd,
-        .environ_map = &environ_map,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-        .create_no_window = true,
-        .pgid = 0,
-    });
-    return @intCast(child.id.?);
 }
 
 pub fn waitLeader(leader: std.posix.pid_t) !std.process.Child.Term {

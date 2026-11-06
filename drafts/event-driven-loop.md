@@ -232,9 +232,11 @@ fits the plan.
 
 ### How a command moves
 
-- A command's output goes to its job file from the start, and the file is removed
-  if the call ends within the budget. The move is then bookkeeping: the process
-  keeps its pipes and its group, and no byte can fall between a reader and a file.
+- A foreground command runs on pipes as it always did, so a fast call answers
+  exactly as before. At the budget the job table takes over the pipes it has been
+  reading, writes what it read so far to the job's file, and keeps copying. The
+  process keeps its group and is never restarted. A `run_in_background` job takes
+  the same path with a budget of zero.
 - The budget is an `arm_timer` on the reactor. When it fires and the command is
   still running, `step` emits `move_tool`, and the driver records the job and posts
   `tool_moved`, which `step` treats as that call's result.

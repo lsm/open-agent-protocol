@@ -986,6 +986,7 @@ pub const Session = struct {
         }
         self.gate.cancelled.store(false, .release);
         self.call_gate.cancelled.store(false, .release);
+        self.jobs.beginRun();
         if (run.compaction) {
             const transcripts = self.compactionTranscripts(a) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -1434,6 +1435,7 @@ pub const Session = struct {
         self.gate.cancel();
         self.call_gate.cancel();
         self.runtime.cancel();
+        self.jobs.endMoved();
 
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();

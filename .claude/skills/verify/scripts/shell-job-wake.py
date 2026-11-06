@@ -16,6 +16,7 @@ import uuid
 
 NOTICE = "SYSTEM NOTIFICATION"
 requests = []
+plan = []
 
 
 class Model(http.server.BaseHTTPRequestHandler):
@@ -30,13 +31,10 @@ class Model(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         messages = request.get("messages") or [{}]
-        content = messages[-1].get("content", "")
-        text = content if isinstance(content, str) else " ".join(part.get("text", "") for part in content or [])
-        requests.append({"at": time.monotonic(), "notice": any(NOTICE in json.dumps(m.get("content", "")) for m in messages[-2:])})
-        marker = text.find("@shell ")
-        if marker >= 0 and messages[-1].get("role") == "user":
-            spec, _ = json.JSONDecoder().raw_decode(text[marker + 7:])
-            arguments = dict(spec, description="probe", workspace_root=self.workspace)
+        last_reply = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=-1)
+        requests.append({"at": time.monotonic(), "notice": any(NOTICE in json.dumps(m.get("content", "")) for m in messages[last_reply + 1:])})
+        if plan:
+            arguments = dict(plan.pop(0), description="probe", workspace_root=self.workspace)
             deltas = [{"role": "assistant", "tool_calls": [{"index": 0, "id": "call_" + uuid.uuid4().hex[:12], "type": "function",
                        "function": {"name": "Shell", "arguments": json.dumps(arguments)}}]}]
             finish = "tool_calls"
@@ -95,27 +93,48 @@ class Hub:
                 return at, event
 
 
-def submit(hub, session, spec):
-    text = "@shell " + json.dumps(spec)
-    payload = {"session_id": session, "delivery": "auto", "messages": [{"role": "user", "content": text}]}
+def submit(hub, session, calls):
+    plan.extend(calls)
+    requests.clear()
+    payload = {"session_id": session, "delivery": "auto", "messages": [{"role": "user", "content": "go"}]}
     hub.call("submit", session_id=session, request=envelope("session.message.submit.request", payload, session_id=session))
+    return time.monotonic()
 
 
 def is_type(*kinds):
     return lambda event: event["type"] in kinds
 
 
-def idle_wake(hub, session, seconds):
-    began = time.monotonic()
-    submit(hub, session, {"command": f"sleep {seconds}; echo finished", "run_in_background": True})
+def idle(hub, session):
+    began = submit(hub, session, [{"command": "sleep 7; echo finished"}])
+    hub.until(is_type("action.call.completed"), 30)
+    returned = time.monotonic()
     settled, _ = hub.until(is_type("run.completed"), 30)
-    woke, started = hub.until(is_type("run.started"), seconds + 30)
+    woke, started = hub.until(is_type("run.started"), 30)
     trigger = started["payload"].get("trigger")
     assert trigger and trigger["kind"] == "background_task", started
-    calls = len(requests)
     hub.until(is_type("run.completed"), 30)
-    assert any(r["notice"] for r in requests[calls - 1:]), "the model was not told"
-    print(f"idle: run settled at {settled - began:.2f}s, job's run started at {woke - began:.2f}s, trigger {trigger}")
+    assert 4.5 < returned - began < 6.5, returned - began
+    assert requests[-1]["notice"], "the model was not told"
+    print(f"idle: call returned at {returned - began:.2f}s, run settled at {settled - began:.2f}s, the job's run started at {woke - began:.2f}s, model told: yes")
+
+
+def mid_turn(hub, session):
+    began = submit(hub, session, [{"command": "sleep 7; echo finished"}, {"command": "sleep 4"}])
+    hub.until(is_type("action.call.completed"), 30)
+    returned = time.monotonic()
+    second = requests[1]["at"] - began
+    settled, _ = hub.until(is_type("run.completed"), 30)
+    assert 4.5 < returned - began < 6.5, returned - began
+    assert 4.5 < second < 6.5, second
+    told = [r["at"] - began for r in requests if r["notice"]]
+    assert told, "the model was not told"
+    try:
+        hub.until(is_type("run.started"), 3)
+        raise AssertionError("a run followed a folded notice")
+    except queue.Empty:
+        pass
+    print(f"mid-turn: call returned at {returned - began:.2f}s, model working again at {second:.2f}s, told at {told[0]:.2f}s, run settled at {settled - began:.2f}s, no further run")
 
 
 def main():
@@ -138,7 +157,8 @@ def main():
         metadata = {"oapx": {"permission_mode": "bypass", "workspace_root": str(work)}}
         hub.call("open", adapter="loop", request=envelope("session.open.request", {"session_id": "probe", "metadata": metadata}))
         hub.call("events", session_id="probe")
-        idle_wake(hub, "probe", 2)
+        idle(hub, "probe")
+        mid_turn(hub, "probe")
     finally:
         hub.process.terminate()
         hub.process.wait(timeout=10)

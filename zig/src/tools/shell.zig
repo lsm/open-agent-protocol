@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ai_types = @import("ai_types");
 const agent = @import("agent");
 const compat = @import("compat");
@@ -22,6 +23,11 @@ pub const Jobs = struct {
     mutex: std.atomic.Mutex = .unlocked,
     next: u64 = 0,
     list: std.ArrayList(*Job) = .empty,
+    foreground_budget_ms: u64 = default_foreground_budget_ms,
+    limit_ms: u64 = command_limit_ms,
+    run_generation: u64 = 0,
+    limiter: ?std.Thread = null,
+    limiter_wake: [2]std.posix.fd_t = undefined,
 
     const Job = struct {
         id: []u8,
@@ -32,6 +38,10 @@ pub const Jobs = struct {
         killed: bool = false,
         noticed: bool = false,
         watcher: ?std.Thread = null,
+        moved_in: ?u64 = null,
+        limit_ms: u64 = 0,
+        deadline_ms: i64 = 0,
+        limited: bool = false,
 
         fn owesNotice(self: *const Job) bool {
             return self.term != null and !self.killed and !self.noticed;
@@ -48,12 +58,15 @@ pub const Jobs = struct {
     };
 
     pub const Started = struct { task_id: []const u8, output_path: []const u8 };
+    pub const Adopted = struct { task_id: []const u8, output_path: []const u8, bytes: usize };
+    pub const AdoptOptions = struct { limit_ms: u64, started_ms: i64, ends_with_run: bool };
 
     pub const Report = struct {
         task_id: []const u8,
         status: []const u8,
         exit_code: ?u8 = null,
         signal: ?u32 = null,
+        reason: ?[]const u8 = null,
         bytes: u64,
         output_path: []const u8,
     };
@@ -64,12 +77,12 @@ pub const Jobs = struct {
 
     pub fn deinit(self: *Jobs) void {
         self.endAll();
-        for (self.list.items) |job| {
-            self.allocator.free(job.id);
-            self.allocator.free(job.output);
-            self.allocator.free(job.workspace_root);
-            self.allocator.destroy(job);
-        }
+        if (comptime builtin.os.tag != .windows) if (self.limiter) |thread| {
+            _ = std.posix.system.close(self.limiter_wake[1]);
+            thread.join();
+            _ = std.posix.system.close(self.limiter_wake[0]);
+        };
+        for (self.list.items) |job| self.freeJob(job);
         self.list.deinit(self.allocator);
         self.* = undefined;
     }
@@ -78,14 +91,7 @@ pub const Jobs = struct {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
-    pub fn start(self: *Jobs, scratch: std.mem.Allocator, workspace_root: []const u8, command: []const u8) !Started {
-        var dir = try common.openWorkspace(workspace_root, false);
-        defer dir.close(common.defaultIo());
-        try dir.createDirPath(common.defaultIo(), jobs_dir);
-        self.reap();
-        self.lock();
-        defer self.mutex.unlock();
-        try self.list.ensureUnusedCapacity(self.allocator, 1);
+    fn newJob(self: *Jobs, workspace_root: []const u8) !*Job {
         self.next += 1;
         var entropy: [6]u8 = undefined;
         compat.random.fillSecureBytes(&entropy);
@@ -96,25 +102,175 @@ pub const Jobs = struct {
         const root = try self.allocator.dupe(u8, workspace_root);
         errdefer self.allocator.free(root);
         const job = try self.allocator.create(Job);
-        errdefer self.allocator.destroy(job);
-        const argv = [_][]const u8{ "/bin/sh", "-c", "exec >\"$0\" 2>&1 </dev/null; exec /bin/sh -c \"$1\"", output, command };
-        const leader = try process_runner.spawnGroup(scratch, &argv, .{ .dir = dir });
-        job.* = .{ .id = id, .output = output, .workspace_root = root, .leader = leader };
-        job.watcher = std.Thread.spawn(.{}, watch, .{ self, job }) catch |err| {
-            process_runner.endGroup(leader);
-            _ = process_runner.waitLeader(leader) catch {};
-            return err;
-        };
-        self.list.appendAssumeCapacity(job);
-        return .{ .task_id = id, .output_path = output };
+        job.* = .{ .id = id, .output = output, .workspace_root = root, .leader = 0 };
+        return job;
     }
 
-    fn watch(self: *Jobs, job: *Job) void {
+    fn freeJob(self: *Jobs, job: *Job) void {
+        self.allocator.free(job.id);
+        self.allocator.free(job.output);
+        self.allocator.free(job.workspace_root);
+        self.allocator.destroy(job);
+    }
+
+    fn watch(self: *Jobs, job: *Job, copier: std.Thread, stop: std.posix.fd_t) void {
         const term = process_runner.waitLeader(job.leader) catch std.process.Child.Term{ .unknown = 0 };
+        process_runner.endGroup(job.leader);
+        _ = std.posix.system.close(stop);
+        copier.join();
         self.lock();
         job.term = term;
         self.mutex.unlock();
-        process_runner.endGroup(job.leader);
+    }
+
+    pub fn adopt(self: *Jobs, workspace_root: []const u8, moved: process_runner.Moved, options: AdoptOptions) !Adopted {
+        if (comptime builtin.os.tag == .windows) return error.Unsupported;
+        var taken = false;
+        defer if (!taken) {
+            process_runner.endGroup(moved.leader);
+            _ = process_runner.waitLeader(moved.leader) catch {};
+            _ = std.posix.system.close(moved.stdout);
+            _ = std.posix.system.close(moved.stderr);
+        };
+        var dir = try common.openWorkspace(workspace_root, false);
+        defer dir.close(common.defaultIo());
+        try dir.createDirPath(common.defaultIo(), jobs_dir);
+        self.reap();
+        self.lock();
+        defer self.mutex.unlock();
+        try self.list.ensureUnusedCapacity(self.allocator, 1);
+        const job = try self.newJob(workspace_root);
+        errdefer self.freeJob(job);
+        const file = try dir.createFile(common.defaultIo(), job.output, .{});
+        var file_open = true;
+        defer if (file_open) file.close(common.defaultIo());
+        try file.writeStreamingAll(common.defaultIo(), moved.stdout_head);
+        try file.writeStreamingAll(common.defaultIo(), moved.stderr_head);
+        var stop: [2]std.posix.fd_t = undefined;
+        if (std.posix.errno(std.posix.system.pipe(&stop)) != .SUCCESS) return error.SystemResources;
+        var stop_open = true;
+        defer if (stop_open) {
+            _ = std.posix.system.close(stop[0]);
+            _ = std.posix.system.close(stop[1]);
+        };
+        const copier = try std.Thread.spawn(.{}, copyOutput, .{ moved.stdout, moved.stderr, stop[0], file });
+        job.leader = moved.leader;
+        job.limit_ms = options.limit_ms;
+        job.deadline_ms = options.started_ms + @as(i64, @intCast(options.limit_ms));
+        if (options.ends_with_run) job.moved_in = self.run_generation;
+        file_open = false;
+        taken = true;
+        stop_open = false;
+        job.watcher = std.Thread.spawn(.{}, watch, .{ self, job, copier, stop[1] }) catch |err| {
+            process_runner.endGroup(moved.leader);
+            _ = process_runner.waitLeader(moved.leader) catch {};
+            _ = std.posix.system.close(stop[1]);
+            copier.join();
+            return err;
+        };
+        self.list.appendAssumeCapacity(job);
+        self.wakeLimiter() catch {};
+        return .{ .task_id = job.id, .output_path = job.output, .bytes = moved.stdout_head.len + moved.stderr_head.len };
+    }
+
+    fn wakeLimiter(self: *Jobs) !void {
+        if (self.limiter == null) {
+            if (std.posix.errno(std.posix.system.pipe(&self.limiter_wake)) != .SUCCESS) return error.SystemResources;
+            self.limiter = try std.Thread.spawn(.{}, watchLimits, .{ self, self.limiter_wake[0] });
+        }
+        _ = std.posix.system.write(self.limiter_wake[1], "x", 1);
+    }
+
+    fn watchLimits(self: *Jobs, wake: std.posix.fd_t) void {
+        var watched = [_]std.posix.pollfd{.{ .fd = wake, .events = std.posix.POLL.IN, .revents = 0 }};
+        while (true) {
+            const wait_ms = self.endExpired();
+            _ = std.posix.poll(&watched, wait_ms) catch return;
+            if (watched[0].revents == 0) continue;
+            var drained: [64]u8 = undefined;
+            const count = std.posix.read(wake, &drained) catch return;
+            if (count == 0) return;
+        }
+    }
+
+    fn endExpired(self: *Jobs) i32 {
+        var nearest: ?i64 = null;
+        var index: usize = 0;
+        self.lock();
+        while (index < self.list.items.len) : (index += 1) {
+            const job = self.list.items[index];
+            if (job.term != null or job.limited) continue;
+            const now = common.nowMs();
+            if (job.deadline_ms > now) {
+                nearest = @min(nearest orelse job.deadline_ms, job.deadline_ms);
+                continue;
+            }
+            job.limited = true;
+            self.mutex.unlock();
+            process_runner.endGroup(job.leader);
+            self.lock();
+        }
+        self.mutex.unlock();
+        const until = nearest orelse return -1;
+        return @intCast(@min(@max(until - common.nowMs(), 0), std.math.maxInt(i32)));
+    }
+
+    fn copyOutput(stdout: std.posix.fd_t, stderr: std.posix.fd_t, stop: std.posix.fd_t, file: std.Io.File) void {
+        defer file.close(common.defaultIo());
+        defer _ = std.posix.system.close(stop);
+        var watched = [_]std.posix.pollfd{
+            .{ .fd = stdout, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = stderr, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = stop, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        defer for (watched[0..2]) |entry| {
+            if (entry.fd >= 0) _ = std.posix.system.close(entry.fd);
+        };
+        var buffer: [16 * 1024]u8 = undefined;
+        var stopping = false;
+        while (watched[0].fd >= 0 or watched[1].fd >= 0) {
+            const ready = std.posix.poll(&watched, if (stopping) 0 else -1) catch return;
+            if (stopping and ready == 0) return;
+            if (watched[2].revents != 0) {
+                stopping = true;
+                watched[2].fd = -1;
+            }
+            for (watched[0..2]) |*entry| {
+                if (entry.fd < 0 or entry.revents == 0) continue;
+                const count = std.posix.read(entry.fd, &buffer) catch 0;
+                if (count == 0) {
+                    _ = std.posix.system.close(entry.fd);
+                    entry.fd = -1;
+                    continue;
+                }
+                file.writeStreamingAll(common.defaultIo(), buffer[0..count]) catch return;
+            }
+        }
+    }
+
+    fn limitFor(self: *const Jobs, obj: std.json.ObjectMap) u64 {
+        return @min(common.optionalU64(obj, "timeout_ms", self.limit_ms), self.limit_ms);
+    }
+
+    pub fn beginRun(self: *Jobs) void {
+        self.lock();
+        defer self.mutex.unlock();
+        self.run_generation += 1;
+    }
+
+    pub fn endMoved(self: *Jobs) void {
+        self.lock();
+        const generation = self.run_generation;
+        var index: usize = 0;
+        while (index < self.list.items.len) : (index += 1) {
+            const job = self.list.items[index];
+            if (job.moved_in != generation or job.term != null) continue;
+            job.killed = true;
+            self.mutex.unlock();
+            process_runner.endGroup(job.leader);
+            self.lock();
+        }
+        self.mutex.unlock();
     }
 
     pub fn report(self: *Jobs, output_path: []const u8, kill: bool) !Report {
@@ -131,7 +287,7 @@ pub const Jobs = struct {
         defer self.mutex.unlock();
         return .{
             .task_id = job.id,
-            .status = if (job.term == null) "running" else if (job.killed) "killed" else switch (job.term.?) {
+            .status = if (job.term == null) "running" else if (job.killed or job.limited) "killed" else switch (job.term.?) {
                 .exited => "exited",
                 else => "signalled",
             },
@@ -143,6 +299,7 @@ pub const Jobs = struct {
                 .signal => |sig| @backingInt(sig),
                 else => null,
             } else null,
+            .reason = if (job.limited) "time_limit" else null,
             .bytes = outputBytes(job.*),
             .output_path = job.output,
         };
@@ -224,7 +381,7 @@ pub const Jobs = struct {
 
     fn appendNotice(allocator: std.mem.Allocator, text: *std.ArrayList(u8), job: *const Job) !void {
         if (text.items.len > 0) try text.appendSlice(allocator, "\n\n");
-        const ended = switch (job.term.?) {
+        const ended = if (job.limited) try std.fmt.allocPrint(allocator, limited_format, .{job.limit_ms / std.time.ms_per_s}) else switch (job.term.?) {
             .exited => |code| try std.fmt.allocPrint(allocator, "exited with code {d}", .{code}),
             .signal => |sig| try std.fmt.allocPrint(allocator, "ended by signal {d}", .{@backingInt(sig)}),
             else => try allocator.dupe(u8, "ended"),
@@ -264,6 +421,18 @@ pub const Jobs = struct {
 };
 
 const notice_tail_bytes = 2048;
+const default_foreground_budget_ms: u64 = 5_000;
+const command_limit_ms: u64 = 60 * 60 * 1_000;
+const limited_format = "was ended because it reached its time limit of {d} seconds; no command may run longer than 1 hour";
+const moved_tail_bytes = 4096;
+const moved_format =
+    \\The command is still running in the background as job {s}. It has not failed.
+    \\Output so far, up to byte {d}, is at the end of this message; all of it goes to {s}.
+    \\You will be told when the command ends, so keep working. To be woken earlier, for
+    \\example on an error or a server coming up, call ShellJob with path and wake_on.
+    \\
+    \\{s}
+;
 const notice_format =
     \\[SYSTEM NOTIFICATION - NOT USER INPUT]
     \\Background job {s} {s}. Its output is in {s}; the end of it:
@@ -277,7 +446,7 @@ const end_directory_script =
     \\eval "$__oap_cmd"
     \\__oap_rc=$?
     \\set +x
-    \\pwd > "$__oap_path"
+    \\{ pwd > "$__oap_path"; } 2>/dev/null
     \\exit "$__oap_rc"
 ;
 
@@ -410,10 +579,11 @@ fn executeIn(ctx: ?*anyopaque, tool_call_id: []const u8, args_json: []const u8, 
     var parsed = try common.parseArgs(allocator, args_json);
     defer parsed.deinit();
     const obj = parsed.value.object;
-    if (!common.optionalBool(obj, "run_in_background", false)) return runForeground(tool_call_id, args_json, cancel_token, on_update_ctx, on_update, allocator);
+    const held: ?*Jobs = if (ctx) |given| @ptrCast(@alignCast(given)) else null;
+    if (!common.optionalBool(obj, "run_in_background", false)) return runForeground(held, tool_call_id, args_json, cancel_token, on_update_ctx, on_update, allocator);
     if (common.isCancelled(cancel_token)) return error.Cancelled;
-    const jobs: *Jobs = @ptrCast(@alignCast(ctx orelse return error.BackgroundJobsUnavailable));
-    const started = try jobs.start(allocator, try common.requiredString(obj, "workspace_root"), try common.requiredString(obj, "command"));
+    const jobs = held orelse return error.BackgroundJobsUnavailable;
+    const started = try startBackground(jobs, obj, cancel_token, allocator);
     const details = try common.jsonString(allocator, .{ .ok = true, .task_id = started.task_id, .output_path = started.output_path });
     errdefer allocator.free(details);
     const text = try std.fmt.allocPrint(allocator, "started background job {s}; its stdout and stderr go to {s}. Read that file for output, and pass its path to ShellJob to check or stop the job. It ends when the session closes.", .{ started.task_id, started.output_path });
@@ -442,7 +612,35 @@ pub fn execute(
     return executeIn(null, tool_call_id, args_json, cancel_token, on_update_ctx, on_update, allocator);
 }
 
+fn startBackground(jobs: *Jobs, obj: std.json.ObjectMap, cancel_token: ?ai_types.CancelToken, allocator: std.mem.Allocator) !Jobs.Adopted {
+    const workspace_root = try common.requiredString(obj, "workspace_root");
+    const command = try common.requiredString(obj, "command");
+    var dir = try common.openWorkspace(workspace_root, false);
+    defer dir.close(common.defaultIo());
+    const started_ms = common.nowMs();
+    const limit_ms = jobs.limitFor(obj);
+    const outcome = try process_runner.runWithBudget(allocator, &.{ "/bin/sh", "-c", command }, .{ .dir = dir }, limit_ms, 0, cancel_token);
+    defer allocator.free(outcome.moved.stdout_head);
+    defer allocator.free(outcome.moved.stderr_head);
+    return jobs.adopt(workspace_root, outcome.moved, .{ .limit_ms = limit_ms, .started_ms = started_ms, .ends_with_run = false });
+}
+
+fn movedResult(allocator: std.mem.Allocator, jobs: *Jobs, workspace_root: []const u8, moved: process_runner.Moved, limit_ms: u64, started_ms: i64) !agent.AgentToolResult {
+    defer allocator.free(moved.stdout_head);
+    defer allocator.free(moved.stderr_head);
+    const adopted = try jobs.adopt(workspace_root, moved, .{ .limit_ms = limit_ms, .started_ms = started_ms, .ends_with_run = true });
+    const head = try std.mem.concat(allocator, u8, &.{ moved.stdout_head, moved.stderr_head });
+    defer allocator.free(head);
+    const shown = head[head.len - @min(head.len, moved_tail_bytes) ..];
+    const details = try common.jsonString(allocator, .{ .ok = true, .running = true, .task_id = adopted.task_id, .output_path = adopted.output_path, .bytes = adopted.bytes });
+    errdefer allocator.free(details);
+    const text = try std.fmt.allocPrint(allocator, moved_format, .{ adopted.task_id, adopted.bytes, adopted.output_path, if (std.unicode.utf8ValidateSlice(shown)) shown else "(not text)" });
+    errdefer allocator.free(text);
+    return common.makeTextResultOwned(allocator, text, details);
+}
+
 fn runForeground(
+    jobs: ?*Jobs,
     tool_call_id: []const u8,
     args_json: []const u8,
     cancel_token: ?ai_types.CancelToken,
@@ -460,7 +658,7 @@ fn runForeground(
     const obj = parsed.value.object;
     const workspace_root = try common.requiredString(obj, "workspace_root");
     const command = try common.requiredString(obj, "command");
-    const timeout_ms = @min(common.optionalU64(obj, "timeout_ms", 30_000), @as(u64, std.math.maxInt(i64)));
+    const timeout_ms = if (jobs) |held| held.limitFor(obj) else @min(common.optionalU64(obj, "timeout_ms", 30_000), @as(u64, std.math.maxInt(i64)));
 
     var dir = try common.openWorkspace(workspace_root, false);
     defer dir.close(common.defaultIo());
@@ -481,7 +679,8 @@ fn runForeground(
     else
         &.{ "/bin/sh", "-c", command };
 
-    const result = process_runner.run(allocator, argv, .{ .dir = dir }, timeout_ms, cancel_token) catch |err| {
+    const budget_ms: ?u64 = if (jobs) |held| (if (timeout_ms > held.foreground_budget_ms) held.foreground_budget_ms else null) else null;
+    const outcome = process_runner.runWithBudget(allocator, argv, .{ .dir = dir }, timeout_ms, budget_ms, cancel_token) catch |err| {
         if (err == error.Cancelled) return err;
         const duration_ms = common.durationMs(start_ms);
         const owned_directory = try allocator.dupe(u8, start_directory);
@@ -508,6 +707,10 @@ fn runForeground(
         text_here = false;
         details_here = false;
         return failed;
+    };
+    const result = switch (outcome) {
+        .finished => |finished| finished,
+        .moved => |moved| return movedResult(allocator, jobs.?, workspace_root, moved, timeout_ms, start_ms),
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -586,6 +789,146 @@ const Case = struct {
         return execute(call_id, argv_json, null, null, null, std.testing.allocator);
     }
 };
+
+fn movedCase(jobs: *Jobs, case: *const Case, command: []const u8) !agent.AgentToolResult {
+    const args = try case.args(command);
+    defer std.testing.allocator.free(args);
+    const tools = sessionTools(jobs);
+    return tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-moved", args, null, null, null, std.testing.allocator);
+}
+
+fn waitForNotice(jobs: *Jobs) !void {
+    const by = common.nowMs() + 5_000;
+    while (!jobs.noticeWaiting() and common.nowMs() < by) compat.time.sleepMs(5);
+    try std.testing.expect(jobs.noticeWaiting());
+}
+
+test "a command past its budget returns while it keeps running, and its end is reported" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 200;
+
+    const began = common.nowMs();
+    var result = try movedCase(&jobs, &case, "echo early; sleep 1; echo late");
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(common.nowMs() - began < 900);
+    const text = result.content.slice()[0].text.text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "still running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "early") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "wake_on") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "late") == null);
+    try std.testing.expect(jobs.anyRunning());
+
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "exited with code 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "early\nlate") != null);
+}
+
+test "a command within its budget answers as it always did and leaves no job" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    var result = try movedCase(&jobs, &case, "echo out; echo err 1>&2");
+    defer result.deinit(std.testing.allocator);
+    const text = result.content.slice()[0].text.text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "stdout:\nout") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "stderr:\nerr") != null);
+    try std.testing.expectEqual(@as(usize, 0), jobs.list.items.len);
+}
+
+test "a command that reaches its limit is ended and the model is told why" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 50;
+    jobs.limit_ms = 300;
+
+    var result = try movedCase(&jobs, &case, "sleep 30");
+    defer result.deinit(std.testing.allocator);
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "reached its time limit") != null);
+    const report = try jobs.report(jobs.list.items[0].output, false);
+    try std.testing.expectEqualStrings("time_limit", report.reason.?);
+}
+
+test "a timeout above the limit is held to the limit" {
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    var parsed = try common.parseArgs(std.testing.allocator, "{\"timeout_ms\":7200000}");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u64, 3_600_000), jobs.limitFor(parsed.value.object));
+    var none = try common.parseArgs(std.testing.allocator, "{}");
+    defer none.deinit();
+    try std.testing.expectEqual(@as(u64, 3_600_000), jobs.limitFor(none.value.object));
+}
+
+test "a background job reaches its limit too, and a run's cancel leaves it alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.limit_ms = 300;
+    jobs.beginRun();
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{case.root});
+    defer std.testing.allocator.free(args);
+    const tools = sessionTools(&jobs);
+    var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-bg", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+
+    jobs.endMoved();
+    compat.time.sleepMs(50);
+    try std.testing.expect(jobs.anyRunning());
+    try waitForNotice(&jobs);
+    try std.testing.expect(jobs.list.items[0].limited);
+}
+
+test "cancelling the run ends the command it moved and reports nothing" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 50;
+    jobs.beginRun();
+
+    var result = try movedCase(&jobs, &case, "sleep 30");
+    defer result.deinit(std.testing.allocator);
+    jobs.endMoved();
+    const by = common.nowMs() + 5_000;
+    while (jobs.anyRunning() and common.nowMs() < by) compat.time.sleepMs(5);
+    try std.testing.expect(!jobs.anyRunning());
+    try std.testing.expect(!jobs.noticeWaiting());
+}
+
+test "a later run's cancel leaves a job an earlier run moved alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 50;
+    jobs.beginRun();
+    var result = try movedCase(&jobs, &case, "sleep 30");
+    defer result.deinit(std.testing.allocator);
+
+    jobs.beginRun();
+    jobs.endMoved();
+    compat.time.sleepMs(100);
+    try std.testing.expect(jobs.anyRunning());
+}
 
 test "shell execute reports the directory the command ended in" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
