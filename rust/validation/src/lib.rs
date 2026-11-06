@@ -2,6 +2,7 @@ pub mod codes;
 mod diagnostic;
 mod json;
 mod output_schema;
+pub mod pack;
 mod provider;
 mod schema;
 mod state;
