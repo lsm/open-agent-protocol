@@ -230,6 +230,10 @@ foreground, past that it becomes a session background job, and it has a 1 hour
 limit, the default for `timeout_ms` and its maximum. This section says how the rule
 fits the plan.
 
+Windows does not have this yet. The job table needs process groups and `poll`, so
+there a `Shell` command keeps its 30 second default and stays in the call, an
+explicit `timeout_ms` is not held to 1 hour, and `run_in_background` is refused.
+
 ### How a command moves
 
 - A foreground command runs on pipes as it always did, so a fast call answers
@@ -242,6 +246,8 @@ fits the plan.
   `tool_moved`, which `step` treats as that call's result.
 - A cancel inside the budget kills the command as today. After the move, a cancel
   of the run that moved it ends it too.
+- When the group has ended the copier takes what is left in the pipes and stops,
+  after at most 1 MiB, so a writer that left the group cannot hold the job open.
 - The job's exit watch posts `job_ended`. `step` folds the notice into the run's
   next model request if a run is going, and otherwise the session starts a
   triggered run.

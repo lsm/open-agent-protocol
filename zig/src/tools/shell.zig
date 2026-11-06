@@ -266,6 +266,7 @@ pub const Jobs = struct {
         };
         var buffer: [16 * 1024]u8 = undefined;
         var stopping = false;
+        var drained: usize = 0;
         while (watched[0].fd >= 0 or watched[1].fd >= 0) {
             const ready = std.posix.poll(&watched, if (stopping) 0 else -1) catch return;
             if (stopping and ready == 0) return;
@@ -282,6 +283,8 @@ pub const Jobs = struct {
                     continue;
                 }
                 file.writeStreamingAll(common.defaultIo(), buffer[0..count]) catch return;
+                if (stopping) drained += count;
+                if (drained >= stop_drain_bytes) return;
             }
         }
     }
@@ -528,6 +531,7 @@ pub const Jobs = struct {
 const notice_tail_bytes = 2048;
 const commands_move = builtin.os.tag != .windows;
 const limiter_retry_ms = 1_000;
+const stop_drain_bytes = 1024 * 1024;
 const default_foreground_budget_ms: u64 = 5_000;
 const command_limit_ms: u64 = 60 * 60 * 1_000;
 const limited_format = "was ended because it reached its time limit of {d} seconds; no command may run longer than 1 hour";
