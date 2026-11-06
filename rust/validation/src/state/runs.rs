@@ -37,6 +37,7 @@ pub(super) struct Run {
     pub(super) admitted_model: String,
     pub(super) steers: HashMap<String, SteerTrack>,
     pub(super) open_compaction: String,
+    pub(super) compactions: HashMap<String, CompactionOutcome>,
     pub(super) compaction_run: bool,
     pub(super) compaction_continue: bool,
 }
@@ -377,6 +378,10 @@ impl State {
             self.add(code, at, e, pointer, message);
         }
         if live {
+            if !was_started && e.envelope_type == EnvelopeType::RUN_STARTED {
+                let session = self.runs[&run_id].session.clone();
+                self.settings_before_run(at, e, &session);
+            }
             self.compaction_pair_event(at, e, &run_id);
             if e.envelope_type == EnvelopeType::RUN_STEER_APPLIED
                 || e.envelope_type == EnvelopeType::RUN_STEER_DROPPED

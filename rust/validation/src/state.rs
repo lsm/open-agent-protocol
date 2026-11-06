@@ -6,6 +6,7 @@ mod control_tools;
 mod controls;
 mod default_model;
 mod interactions;
+mod live_settings;
 mod model_catalog;
 mod models;
 mod name_pattern;
@@ -82,6 +83,7 @@ pub(crate) struct State {
     queue_leads: Vec<queue_leads::Group>,
     admission_anchors: Vec<admission_anchors::Claim>,
     pending_open_settings: HashMap<String, controls::PendingOpenSettings>,
+    live_settings: HashMap<String, live_settings::Update>,
     pending_tool_lists: HashMap<String, controls::PendingToolList>,
     pending_attaches: HashMap<String, controls::PendingAttach>,
     pending_subscribes: HashMap<String, controls::PendingSubscribe>,
@@ -364,6 +366,7 @@ impl State {
             queue_leads: Vec::new(),
             admission_anchors: Vec::new(),
             pending_open_settings: HashMap::new(),
+            live_settings: HashMap::new(),
             pending_tool_lists: HashMap::new(),
             pending_attaches: HashMap::new(),
             pending_subscribes: HashMap::new(),
@@ -832,6 +835,7 @@ impl State {
 
     pub fn close(&mut self) {
         self.close_auth_flows();
+        self.close_live_settings();
         self.close_admission_anchors();
         self.close_queue_leads();
         self.close_snapshot_claims();

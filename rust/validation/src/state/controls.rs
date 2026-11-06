@@ -26,7 +26,7 @@ pub(super) struct Expectation {
     rung: u8,
     limit: bool,
     pub(super) key: String,
-    pointer: String,
+    pub(super) pointer: String,
     code: &'static str,
     reason: &'static str,
     detail_name: &'static str,
@@ -79,9 +79,9 @@ impl Expectation {
         let mut expectation = Self::delivery(key, degraded);
         expectation.pointer = pointer.to_owned();
         expectation.message = if degraded {
-            "an open supplies a degraded session setting without the caller's opt-in"
+            "a request supplies a degraded session setting without the caller's opt-in"
         } else {
-            "an open supplies a session setting not advertised for session_open"
+            "a request supplies a session setting not advertised for its mode"
         }
         .to_owned();
         expectation
@@ -236,7 +236,7 @@ impl Controls {
 pub(super) struct PendingOpenSettings {
     level: ReasoningLevel,
     policy: Option<CompactionPolicy>,
-    expectations: Vec<Expectation>,
+    pub(super) expectations: Vec<Expectation>,
 }
 
 pub(super) struct PendingSubscribe {
@@ -596,20 +596,73 @@ impl State {
             let p: SessionOpenRequest = payload(e);
             self.subscribe_gate(at, e, &p);
             self.open_source_gates(at, e, &p);
-            self.open_settings_gate(at, e, &p);
+            self.open_settings_gate(at, e, &p, MODE_SESSION_OPEN);
             if let Some(message) = &p.message {
                 let submission = message.submit(p.session_id.clone().unwrap_or_default());
                 let provided: Vec<String> = p.tools.iter().map(|tool| tool.name.clone()).collect();
                 self.submit_controls(at, e, &submission, &provided);
             }
+        } else if *t == EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST {
+            let request: SessionSettingsUpdateRequest = payload(e);
+            let settings = SessionOpenRequest {
+                reasoning_level: request.reasoning_level.clone(),
+                compaction_policy: request.compaction_policy.clone(),
+                allow_degraded_features: request.allow_degraded_features.clone(),
+                ..SessionOpenRequest::default()
+            };
+            self.open_settings_gate(at, e, &settings, MODE_SESSION_LIVE);
+            self.live_settings.insert(
+                s(&e.id),
+                super::live_settings::Update {
+                    request,
+                    ..Default::default()
+                },
+            );
+        } else if *t == EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE {
+            self.live_settings_response(at, e);
         } else if *t == EnvelopeType::SESSION_PROVIDER_ATTACH_REQUEST {
             self.provider_attach_request(at, e);
         } else if *t == EnvelopeType::SESSION_PROVIDER_ATTACH_RESPONSE {
             self.provider_attach_response(at, e);
         } else if *t == EnvelopeType::SESSION_COMPACT_REQUEST {
             let p: SessionCompactRequest = payload(e);
+            let known = !self.current_capability.is_empty() && !self.capabilities_stale;
+            let mut expectation = None;
+            if !p.delivery.is_empty()
+                && p.delivery != RequestedDeliveryMode::AUTO
+                && p.delivery != RequestedDeliveryMode::QUEUE
+            {
+                let mut refused = Expectation::delivery(&p.delivery.feature_key(), false);
+                refused.message = "a compaction takes auto or queue delivery, so steer and btw are refused with unsupported_feature naming the delivery".to_owned();
+                refused.reason = "";
+                refused.diagnostic = codes::ILLEGAL_RUN_TRANSITION;
+                expectation = Some(refused);
+            } else if p.delivery == RequestedDeliveryMode::QUEUE
+                && known
+                && !self
+                    .features
+                    .get(FEATURE_DELIVERY_QUEUE)
+                    .is_some_and(affirmative)
+            {
+                let mut refused = Expectation::delivery(FEATURE_DELIVERY_QUEUE, false);
+                refused.message =
+                    "a compaction elects a delivery the endpoint has not affirmatively advertised"
+                        .to_owned();
+                expectation = Some(refused);
+            } else if p.focus.is_some()
+                && known
+                && self.features.get(FEATURE_SESSION_COMPACT) == Some(&SupportLevel::DEGRADED)
+                && !p.allows_degraded(FEATURE_SESSION_COMPACT)
+            {
+                let mut refused = Expectation::delivery(FEATURE_SESSION_COMPACT, true);
+                refused.message =
+                    "a compaction focus was admitted without the caller's opt-in".to_owned();
+                refused.pointer = "/payload/focus".to_owned();
+                expectation = Some(refused);
+            }
             let session = s(&p.session_id);
             let pending = PendingSubmit {
+                expectation,
                 queue: Some(self.open_queue_window(&session, &p.delivery, false)),
                 session: session.clone(),
                 ..PendingSubmit::default()
@@ -626,6 +679,9 @@ impl State {
             || *t == EnvelopeType::SESSION_STATE_UPDATED
         {
             self.source_snapshot(at, e, false);
+            if *t == EnvelopeType::SESSION_STATE_UPDATED {
+                self.observe_live_settings(e);
+            }
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.tools_list_refusal(at, e);
             self.attach_refusal(at, e);
@@ -645,7 +701,13 @@ impl State {
         }
     }
 
-    fn open_settings_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+    fn open_settings_gate(
+        &mut self,
+        at: (usize, usize),
+        e: &Envelope,
+        p: &SessionOpenRequest,
+        mode: &str,
+    ) {
         if p.reasoning_level.is_empty() && p.compaction_policy.is_none() {
             return;
         }
@@ -675,7 +737,7 @@ impl State {
             let disclosed = self
                 .feature_supports
                 .get(key)
-                .is_some_and(|support| support.discloses_mode(MODE_SESSION_OPEN));
+                .is_some_and(|support| support.discloses_mode(mode));
             if !affirmative(&level) || !disclosed {
                 pending
                     .expectations
