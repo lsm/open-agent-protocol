@@ -983,7 +983,7 @@ fn serveWindows(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?st
             poll.arm(listening, watched.items) catch {};
             armed = poll.state != .idle;
         }
-        waitCycle(&poll, armed, cycle_ns);
+        waitCycle(&poll, armed, if (daemon.frontend.hub.hasPendingPass()) 0 else cycle_ns);
         poll.cancel();
         if (!daemon.going().yes()) break;
 
@@ -1075,7 +1075,7 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
         for (children) |child| {
             watched.append(daemon.allocator, .{ .fd = child, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
-        _ = std.posix.poll(watched.items, poll_ms) catch 0;
+        _ = std.posix.poll(watched.items, if (daemon.frontend.hub.hasPendingPass()) 0 else poll_ms) catch 0;
         if (!daemon.going().yes()) break;
 
         for (connections.items, watched.items[1 .. 1 + connections.items.len]) |connection, polled| {
