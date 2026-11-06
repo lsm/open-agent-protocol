@@ -1089,8 +1089,10 @@ dependencies = [
 name = "oap-conformance"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "oap-adapter",
  "oap-protocol",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",
