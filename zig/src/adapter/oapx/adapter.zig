@@ -2386,6 +2386,7 @@ const Script = struct {
     last_max_tokens: ?u32 = null,
     reply: []const u8 = "hello",
     tool_first: bool = false,
+    tool_twice: bool = false,
     tool_name: []const u8 = "echo_tool",
     tool_arguments: []const u8 = "{\"say\":\"hi\"}",
     wait_for_cancel: bool = false,
@@ -2478,8 +2479,11 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     }
     if (script.tool_first and script.calls == 1) {
         try stream.push(.{ .start = .{ .partial = bareMessage(model, .tool_use) } });
-        const content = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = script.tool_name, .arguments_json = script.tool_arguments } }};
-        try finish(stream, allocator, model, &content, .tool_use);
+        const content = [_]ai_types.AssistantContent{
+            .{ .tool_call = .{ .id = "call-1", .name = script.tool_name, .arguments_json = script.tool_arguments } },
+            .{ .tool_call = .{ .id = "call-2", .name = script.tool_name, .arguments_json = script.tool_arguments } },
+        };
+        try finish(stream, allocator, model, content[0..if (script.tool_twice) 2 else 1], .tool_use);
         return stream;
     }
     const partial = bareMessage(model, .stop);
@@ -3087,6 +3091,53 @@ test "a job that ends during a turn folds into its next request and starts no ru
     try testing.expect(script.saw_notice.load(.acquire));
     try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
     try testing.expect(!session.jobs.noticeWaiting());
+}
+
+test "a job that ends between two tool calls leaves the second call to run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .tool_first = true, .tool_twice = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+
+    _ = try harness.submit("go");
+    try startJob(session, root, "true");
+    const by = compat.time.nowMillis() + 5_000;
+    while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(session.jobs.noticeWaiting());
+    held_tool.store(false, .release);
+    try harness.untilTerminal();
+
+    try testing.expectEqual(@as(usize, 2), countKind(&harness, "action.call.completed"));
+    try testing.expectEqual(@as(usize, 0), countKind(&harness, "action.call.failed"));
+    try testing.expect(script.saw_notice.load(.acquire));
+}
+
+test "a run a job started leaves no empty id in the session's state" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+
+    try startJob(session, root, "true");
+    try harness.untilTerminal();
+
+    const captured = try session.snapshot(harness.arena.allocator());
+    try testing.expectEqual(@as(usize, 1), captured.as_of.?.settled.len);
+    try testing.expectEqual(@as(usize, 0), captured.as_of.?.admitted_submit_requests.len);
 }
 
 test "a job the model killed tells it nothing and starts no run" {

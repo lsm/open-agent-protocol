@@ -2192,6 +2192,47 @@ test "runtime compaction reports a provider failure and keeps the history" {
     try std.testing.expectEqualStrings("first", runtime.history()[0].user.content.text);
 }
 
+fn oneNotice(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+    const pending: *bool = @ptrCast(@alignCast(ctx.?));
+    if (!pending.*) return null;
+    pending.* = false;
+    return try allocator.dupe(u8, "the job ended");
+}
+
+test "a notice reaches the model unmarked as a steer and counts as none" {
+    var mock = MockProtocolCtx{};
+    const models = [_]ai_types.Model{test_model_a};
+    var pending = true;
+    const runtime_loop = try LoopRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
+    defer runtime_loop.deinit();
+    runtime_loop.loop.notices_ctx = &pending;
+    runtime_loop.loop.notices_fn = oneNotice;
+    const runtime = &runtime_loop.runtime;
+
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+
+    if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
+
+    try std.testing.expectEqual(@as(u64, 0), runtime.steersConsumedCount());
+    var notice_seen = false;
+    var notice_tagged = false;
+    while (handle.popEvent()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .message_end => |payload| if (payload.role == .user and std.mem.eql(u8, payload.text.slice(), "the job ended")) {
+                notice_seen = true;
+                notice_tagged = payload.steering;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(notice_seen);
+    try std.testing.expect(!notice_tagged);
+}
+
 test "runtime tags consumed steer message_end with steering provenance" {
     var mock = MockProtocolCtx{ .wait_before_text_first = true };
     const models = [_]ai_types.Model{test_model_a};

@@ -937,6 +937,28 @@ test "ShellJob reports a finished job's exit code and ends a running one on kill
     try std.testing.expect(std.mem.indexOf(u8, killed.getDetailsJson().?, "\"status\":\"killed\"") != null);
 }
 
+test "a notice whose tail starts inside a character is still text" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    const tools = sessionTools(&jobs);
+    const wide = try backgroundArgs(&case, "i=0; while [ $i -lt 1500 ]; do printf '\\303\\251'; i=$((i+1)); done; printf x");
+    defer std.testing.allocator.free(wide);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-wide", wide, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+
+    const by = common.nowMs() + 5_000;
+    while (!jobs.noticeWaiting() and common.nowMs() < by) {}
+    var notice = (try jobs.takeNotice(std.testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer notice.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "(not text)") == null);
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, notice.text, "\n"), "\u{e9}\u{e9}x"));
+}
+
 test "anyRunning counts a job until it ends" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
