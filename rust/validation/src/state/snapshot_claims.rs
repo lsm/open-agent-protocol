@@ -22,7 +22,7 @@ pub(super) struct Claim {
     pub(super) envelope: Envelope,
 }
 
-fn pending_matches(run: &Run, sequence: Option<u64>, listed: &HashSet<String>) -> bool {
+pub(super) fn pending_matches(run: &Run, sequence: Option<u64>, listed: &HashSet<String>) -> bool {
     let expected: HashSet<_> = run
         .interactions
         .iter()

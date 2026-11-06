@@ -401,6 +401,9 @@ impl State {
         let Some(run) = self.runs.get(&run_id) else {
             return;
         };
+        if !was_started && run.started {
+            self.active.insert(run.session.clone(), run_id.clone());
+        }
         if run.terminal
             && is_terminal(&e.envelope_type)
             && self.active.get(&run.session) == Some(&run_id)
