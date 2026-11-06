@@ -11,7 +11,7 @@ zig build --build-file zig/build.zig test-unit-hub -Doptimize=ReleaseSafe -j4
 The public memory-session regression opens 80 sessions, submits to each, and
 observes subscriptions. A pass must deliver to at most 64 sessions, then later
 passes must reach the last session. This catches a pass that drains every
-session before returning to its host. The elapsed budget is checked between
+session before returning to its host. The 4 ms elapsed budget is checked between
 sessions, so one adapter pump can still exceed it.
 
 Keep a ReleaseSafe main binary before changing source. Run the resource

@@ -18,7 +18,7 @@ pub const close_attempts = 3;
 pub const close_retry_wait_ns = 100 * std.time.ns_per_ms;
 pub const default_participant = "user";
 pub const pass_sessions: usize = 64;
-pub const pass_budget_ns: u64 = std.time.ns_per_ms;
+pub const pass_budget_ns: u64 = 4 * std.time.ns_per_ms;
 
 pub const Failure = error{
     UnknownAdapter,
