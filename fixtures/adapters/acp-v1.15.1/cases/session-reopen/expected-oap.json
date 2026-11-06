@@ -1,0 +1,8 @@
+{
+  "session_id": "session",
+  "status": "idle",
+  "recovery": {
+    "recovered": true,
+    "reason": "ACP restored the bound conversation; configOptions reports the agent's current settings, and omitted settings remain the loader's configuration"
+  }
+}

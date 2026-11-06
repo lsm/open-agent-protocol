@@ -1,0 +1,51 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 2,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 3,
+    "method": "session/update",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 4,
+    "method": "session/update",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 5,
+    "method": "session/request_permission",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 6,
+    "method": "session/update",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 7,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  }
+]
