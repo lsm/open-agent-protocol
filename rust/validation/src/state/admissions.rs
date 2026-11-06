@@ -128,7 +128,6 @@ impl State {
     }
 
     pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
-        self.open_model(e);
         let p: SessionState = payload(e);
         self.redelivery_response(at, e, &p);
         self.reopen_response(at, e, &p);
@@ -222,6 +221,7 @@ impl State {
             }
         }
         self.compound_open(at, e, &p);
+        self.open_model(at, e);
         self.check_snapshot_listing(at, e, &p);
         self.apply_state_document(&session, &p);
     }

@@ -5,7 +5,9 @@
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
-    "open-provide-refused-within-a-case-folding-pattern"
+    "open-provide-refused-within-a-case-folding-pattern",
+    "queue-compound-open-model-anchor",
+    "queue-compound-open-model-genesis"
   ],
   "rust": [
     "call-omits-a-process-source",
@@ -50,8 +52,6 @@
     "open-sources-duplicate-attachment",
     "open-sources-state-disagrees-with-catalog",
     "open-sources-state-omits-attachment",
-    "queue-model-mutation-early",
-    "queue-open-genesis-model-contradicted",
     "queue-state-lead-counts-a-place-its-sibling-never-took",
     "queue-state-lead-executes-a-run-that-never-starts",
     "queue-state-lead-gives-up-a-place-it-never-left",
@@ -61,13 +61,6 @@
     "queue-state-lead-queued-by-a-started-admission",
     "queue-state-leads-claim-one-place-twice",
     "queue-state-leads-listed-out-of-admission-order",
-    "queue-state-model-after-the-mutation-settled",
-    "queue-state-model-anchor-foreign-session",
-    "queue-state-model-anchor-genesis-superseded",
-    "queue-state-model-anchor-never-promoted",
-    "queue-state-model-anchor-superseded",
-    "queue-state-model-anchor-without-mutation",
-    "queue-state-model-anchor-wrong-sequence",
     "queue-state-omission-excused-then-repeated",
     "queue-state-promoted-run-erased",
     "session-list-degraded-admitted-without-optin",

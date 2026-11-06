@@ -11,6 +11,7 @@ mod models;
 mod name_pattern;
 mod provider_attach;
 mod queue;
+mod queue_models;
 mod redelivery;
 mod results;
 mod runs;
