@@ -108,6 +108,10 @@ fn close_releases_the_reader_even_when_a_descendant_keeps_stdout_open() {
     };
     let _descendant = Descendant(frame.id);
     assert!(process.wait_exit(Duration::from_secs(2)).unwrap().success());
+    assert!(matches!(
+        process.next(Duration::from_millis(20)),
+        Err(ProcessError::Timeout)
+    ));
     let start = Instant::now();
     process.close().unwrap();
     assert!(start.elapsed() < Duration::from_secs(2));
