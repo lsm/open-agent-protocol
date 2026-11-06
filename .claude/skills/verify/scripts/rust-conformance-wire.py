@@ -161,11 +161,20 @@ for line in sys.stdin:
         assert!(runner.switch_model(&alternate, &selected));
         assert_eq!(runner.checks().len(), 13);
         assert!(runner.checks().iter().all(|check| check.passed));
-        println!("model changed from {} to {}; checks {}", selected, alternate, serde_json::to_string(&runner.into_checks()).unwrap());
+        println!("model changed from {} to {}; checks {}", selected, alternate, serde_json::to_string(runner.checks()).unwrap());
+        let run = runner.submit_run(&alternate, true).unwrap();
+        assert!(runner.consume_run(&run));
+        assert_eq!(runner.checks().len(), 20);
+        assert!(runner.checks().iter().all(|check| check.passed));
+        println!("admitted run {run} resolved permission and user input, reached its terminal; checks {}", serde_json::to_string(&runner.into_checks()).unwrap());
+        let trace = client.transcript();
+        for kind in [EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST, EnvelopeType::USER_INPUT_RESOLVE_REQUEST, EnvelopeType::RUN_COMPLETED] {
+            assert_eq!(trace.iter().filter(|envelope| envelope.envelope_type == kind).count(), 1);
+        }
         assert!(client.transcript().iter().all(|envelope| !envelope.envelope_type.as_str().starts_with("session.list.")));
         client.close_input();
         assert!(client.wait().unwrap().success());
-        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list checks; malformed-object rejection; trace ordering; exact cursors");
+        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list/run checks; streamed gates and terminal; malformed-object rejection; trace ordering; exact cursors");
 }
 '''
 

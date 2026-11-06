@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-use oap_protocol::{Envelope, EnvelopeId};
+use oap_protocol::{Envelope, EnvelopeId, RunId};
 
 use crate::{ControlFrame, Frame, Process, ProcessError, Transcript};
 
@@ -87,6 +87,21 @@ impl Client {
         self.wait_for(self.deadline, true, "event", |client| {
             client.events.pop_front()
         })
+    }
+
+    pub fn event_for(&mut self, run: &RunId) -> Result<Envelope, ClientError> {
+        self.wait_for(
+            self.deadline,
+            true,
+            &format!("event for run {run}"),
+            |client| {
+                let index = client
+                    .events
+                    .iter()
+                    .position(|event| event.run_id.as_ref() == Some(run))?;
+                client.events.remove(index)
+            },
+        )
     }
 
     pub fn control(&mut self, id: &str) -> Result<ControlFrame, ClientError> {
