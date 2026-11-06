@@ -1,41 +1,9 @@
 #![cfg(unix)]
 
-use std::process::Command;
-use std::time::Duration;
+mod support;
 
-use oap_conformance::{Client, Runner};
-
-const ENDPOINT: &str = r#"
-import json,sys
-mode=sys.argv[1]
-for line in sys.stdin:
- request=json.loads(line)
- kind=request['type']
- if kind=='protocol.initialize.request':
-  payload={'protocol_version':'0.1','profile':'open-agent-protocol.agent-control-core','endpoint':{}}
-  if mode=='malformed-init': payload=[]
-  if mode=='private-array': payload=['synthetic-private-sentinel']
- elif kind=='capabilities.request':
-  level='unavailable' if mode=='model-unavailable' else 'native'
-  payload={'features':{'session.model.switch':{'level':level}}}
-  if mode=='malformed-capabilities': payload=[]
- else:
-  payload={'session_id':request['payload']['session_id']}
-  if mode=='wrong-session': payload['session_id']='other'
-  if mode=='malformed-open': payload=[]
- response={'protocol':'open-agent-protocol','version':'0.1','profile':'open-agent-protocol.agent-control-core','type':kind.replace('.request','.response'),'id':'answer-'+request['id'],'in_reply_to':request['id'],'payload':payload,'capability_revision':'rev'}
- if kind=='capabilities.request' and mode=='missing-revision': response.pop('capability_revision')
- if kind=='session.open.request' and (mode=='refused-open' or request.get('capability_revision')!='rev'):
-  response['type']='error.response'
-  response['payload']={'error':{'code':'fixture_refusal','message':'synthetic refusal'}}
- print(json.dumps(response),flush=True)
-"#;
-
-fn client(mode: &str) -> Client {
-    let mut command = Command::new("python3");
-    command.args(["-u", "-c", ENDPOINT, mode]);
-    Client::spawn(&mut command, Duration::from_secs(2)).unwrap()
-}
+use oap_conformance::Runner;
+use support::client;
 
 #[test]
 fn bootstrap_checks_bind_open_to_the_discovered_revision_and_requested_session() {
