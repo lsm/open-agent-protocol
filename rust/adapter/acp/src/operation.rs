@@ -42,6 +42,7 @@ impl Cancellation {
         if let Some((child, client)) = target {
             child.kill();
             client.close();
+            let _ = child.exited().recv();
         }
     }
 }
@@ -104,6 +105,26 @@ impl<T> Drop for Operation<T> {
 }
 
 impl Process {
+    pub fn call_shared_async(
+        self: Arc<Self>,
+        method: String,
+        params: Option<Box<RawValue>>,
+        deadline: Option<Instant>,
+    ) -> Operation<Box<RawValue>> {
+        Operation::spawn(move |control| {
+            control.arm(&self.child, &self.client);
+            self.client.call(&method, params, deadline)
+        })
+    }
+
+    pub fn close_shared_async(self: Arc<Self>) -> Operation<()> {
+        Operation::spawn(move |control| {
+            control.arm(&self.child, &self.client);
+            self.close()
+                .map_err(|reason| DIALECT.error(Fault::Transport(reason)))
+        })
+    }
+
     pub fn close_async(self) -> Operation<()> {
         Operation::spawn(move |control| {
             control.arm(&self.child, &self.client);

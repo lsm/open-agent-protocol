@@ -27,8 +27,8 @@ The verifier constructs a complete OAP initialize/capabilities/open/models
 exchange from the actual returned descriptor, state and catalog. All three
 validators must accept it. Native wire, public consumer JSON and validator
 outputs remain in the requested evidence directory. This is session-opening
-proof. Prompt streaming, model switching, gates, reopen and full corpus parity
-remain later slices. The staged descriptor revision is `-rust-open` until the
+proof. Prompt streaming, gates, reopen and full corpus parity
+remain later slices. The staged descriptor revision is `-rust-switch` until the
 completed adapter can use the catalog's full revision.
 
 Keep the complete baseline and Rust all-features/format/clippy/comment checks.
