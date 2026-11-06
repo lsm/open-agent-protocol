@@ -687,6 +687,10 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             try w.writeStringField("status", "running");
             if (value.model_id) |model_id| try w.writeStringField("model_id", model_id);
             if (value.started_at_ms) |started| try w.writeIntField("started_at_ms", started);
+            if (value.trigger_json) |trigger| {
+                try w.writeKey("trigger");
+                try w.writeRawJson(trigger);
+            }
         },
         .run_status_updated => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -1830,11 +1834,13 @@ fn deserializePayload(
         const model_id = try optionalOwnedString(obj, "model_id", allocator);
         errdefer if (model_id) |owned| allocator.free(owned);
         const started_at_ms = try optionalInteger(obj, "started_at_ms");
+        const trigger_json = try optionalRawJson(obj, "trigger", allocator);
         return .{ .run_started = .{
             .session_id = session_id,
             .run_id = run_id,
             .model_id = model_id,
             .started_at_ms = started_at_ms,
+            .trigger_json = trigger_json,
         } };
     }
     if (std.mem.eql(u8, type_str, "run.status.updated")) {
@@ -2772,6 +2778,19 @@ test "round trips a capabilities response with features and degradation" {
     try std.testing.expectEqual(oap_types.RequestedDelivery.auto, capabilities.requested_delivery_modes[0]);
     try std.testing.expectEqual(@as(usize, 1), capabilities.effective_delivery_modes.len);
     try std.testing.expectEqual(oap_types.EffectiveDelivery.start, capabilities.effective_delivery_modes[0]);
+}
+
+test "round trips a run started by a trigger" {
+    const allocator = std.testing.allocator;
+    const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+        "\",\"type\":\"run.started\",\"id\":\"e-1\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"status\":\"running\"," ++
+        "\"trigger\":{\"kind\":\"background_task\",\"task_id\":\"job-1\"}}}";
+
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+    const encoded = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"trigger\":{\"kind\":\"background_task\",\"task_id\":\"job-1\"}") != null);
 }
 
 test "rejects an unknown delivery mode in a capabilities response" {

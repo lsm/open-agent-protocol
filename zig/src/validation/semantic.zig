@@ -4689,11 +4689,39 @@ pub const Machine = struct {
         }
     }
 
+    fn admitTriggered(self: *Machine, index: usize, envelope: std.json.Value, run_id: []const u8) !*Run {
+        const session_id = field(envelope, "session_id");
+        const holder = try self.sessionFor(session_id);
+        for (self.runs.values()) |running| {
+            if (!std.mem.eql(u8, running.session, session_id) or !running.started or running.terminal) continue;
+            try self.add(code_illegal_run_transition, index);
+            break;
+        }
+        var position = holder.order.items.len;
+        for (holder.order.items, 0..) |id, at| {
+            const waiting = self.runs.get(id) orelse continue;
+            if (waiting.started or waiting.terminal) continue;
+            position = at;
+            break;
+        }
+        for (holder.order.items[position..]) |id| {
+            if (self.runs.get(id)) |later| later.order += 1;
+        }
+        const run = try self.arena.allocator().create(Run);
+        run.* = .{ .id = run_id, .session = session_id, .admitted = true, .last_index = index, .admitted_at = index, .order = position, .status = "queued" };
+        try self.runs.put(self.allocator, run_id, run);
+        try holder.order.insert(self.allocator, position, run_id);
+        return run;
+    }
+
     fn runEvent(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !void {
         const scoped = member(envelope, "payload") orelse std.json.Value{ .null = {} };
         try self.checkScope(index, envelope, .{ .session = memberString(scoped, "session_id"), .run = memberString(scoped, "run_id") });
         const run_id = field(envelope, "run_id");
         var run = self.runs.get(run_id);
+        const triggered = std.mem.eql(u8, declared, "run.started") and member(scoped, "trigger") != null;
+        if (triggered and run != null) try self.add(code_illegal_run_transition, index);
+        if (triggered and run == null) run = try self.admitTriggered(index, envelope, run_id);
         if (run == null) {
             try self.add(code_illegal_run_transition, index);
             const created = try self.arena.allocator().create(Run);
@@ -4757,6 +4785,7 @@ pub const Machine = struct {
                 try self.reconcileModelClaims(state);
                 try self.reconcileQueueClaims(state);
                 try self.settingsBeforeRun(index, state.session);
+                if (triggered) try self.refreshQueueWindows(state.session);
                 if (state.admitted_model.len != 0) {
                     const reported = memberString(member(envelope, "payload") orelse std.json.Value{ .null = {} }, "model_id");
                     if (reported.len == 0 and state.controls.model_present) {
@@ -6114,6 +6143,42 @@ test "an admitted run that starts and completes raises nothing" {
         \\{"type":"content.delta","id":"e2","run_id":"run","session_id":"s","sequence":2,"payload":{}},
         \\{"type":"run.completed","id":"e3","run_id":"run","session_id":"s","sequence":3,"payload":{}}]
     , &.{});
+}
+
+const triggered_start =
+    \\{"type":"run.started","id":"t1","run_id":"fired","session_id":"s","sequence":1,"payload":{"session_id":"s","run_id":"fired","trigger":{"kind":"background_task"}}}
+;
+
+test "a triggered run on an idle session needs no admission" {
+    try expectCodes(
+        \\[
+    ++ triggered_start ++
+        \\,
+        \\{"type":"run.completed","id":"t2","run_id":"fired","session_id":"s","sequence":2,"payload":{}}]
+    , &.{});
+}
+
+test "a triggered run may not start while a run executes" {
+    try expectCodes(
+        \\[
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+    ++ triggered_start ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":2,"payload":{}},
+        \\{"type":"run.completed","id":"t2","run_id":"fired","session_id":"s","sequence":2,"payload":{}}]
+    , &.{ code_illegal_run_transition, code_queue_order_violation });
+}
+
+test "a trigger may not name a run a submit reserved" {
+    try expectCodes(
+        \\[
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"payload":{"session_id":"s","run_id":"run","trigger":{"kind":"other"}}},
+        \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":2,"payload":{}}]
+    , &.{code_illegal_run_transition});
 }
 
 test "the sequence must be contiguous in both directions" {

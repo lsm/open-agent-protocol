@@ -326,6 +326,7 @@ impl Inner {
             status: RunStatus::RUNNING,
             model_id: model,
             started_at_ms: self.clock.now_ms(),
+            trigger: None,
         };
         self.emit(run_id, EnvelopeType::RUN_STARTED, started, false)?;
         if compaction {

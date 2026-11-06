@@ -273,6 +273,49 @@ impl State {
         }
     }
 
+    fn admit_triggered(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
+        let session = os(&e.session_id);
+        let executing = self
+            .runs
+            .values()
+            .any(|run| run.session == session && run.started && !run.terminal);
+        if executing {
+            self.add(
+                codes::ILLEGAL_RUN_TRANSITION,
+                at,
+                e,
+                "/payload/trigger",
+                "a triggered run starts only on an idle session",
+            );
+        }
+        let order = self.order.entry(session.clone()).or_default();
+        let position = order
+            .iter()
+            .position(|id| {
+                self.runs
+                    .get(id)
+                    .is_some_and(|run| !run.started && !run.terminal)
+            })
+            .unwrap_or(order.len());
+        for id in &order[position..] {
+            if let Some(later) = self.runs.get_mut(id) {
+                later.order += 1;
+            }
+        }
+        order.insert(position, run_id.to_owned());
+        let run = Run {
+            session,
+            next: 1,
+            admitted: true,
+            admitted_at: at.0,
+            order: position,
+            status: RunStatus::QUEUED,
+            last: at,
+            ..Run::default()
+        };
+        self.runs.insert(run_id.to_owned(), run);
+    }
+
     fn run_event(&mut self, at: (usize, usize), e: &Envelope) {
         let scope: RunScope = payload(e);
         self.check_scope(
@@ -282,6 +325,20 @@ impl State {
             &scope.run_id.unwrap_or_default(),
         );
         let run_id = os(&e.run_id);
+        let triggered = e.envelope_type == EnvelopeType::RUN_STARTED
+            && payload::<RunStartedPayload>(e).trigger.is_some();
+        if triggered && self.runs.contains_key(&run_id) {
+            self.add(
+                codes::ILLEGAL_RUN_TRANSITION,
+                at,
+                e,
+                "/payload/trigger",
+                "a run a submit reserved carries no trigger",
+            );
+        }
+        if triggered && !self.runs.contains_key(&run_id) {
+            self.admit_triggered(at, e, &run_id);
+        }
         if !self.runs.contains_key(&run_id) {
             self.add(
                 codes::ILLEGAL_RUN_TRANSITION,
@@ -303,6 +360,9 @@ impl State {
         let live = self.runs.get(&run_id).is_some_and(|run| !run.terminal);
         let was_started = self.runs.get(&run_id).is_some_and(|run| run.started);
         let (found, plain) = self.advance(at, e, &run_id);
+        if triggered {
+            self.refresh_queue_windows(&os(&e.session_id));
+        }
         self.promote_controls(&run_id, was_started);
         for (code, pointer, message, expected, actual) in found {
             let related: &[&str] = if code == codes::SCOPE_MISMATCH {
