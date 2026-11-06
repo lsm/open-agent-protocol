@@ -131,7 +131,7 @@ fn contained_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-pub(super) fn members(descriptor: &Value) -> Vec<PackRefusal> {
+pub(super) fn members(descriptor: &Value, gated: &BTreeSet<String>) -> Vec<PackRefusal> {
     let core = core_members();
     let id = text(descriptor, "id");
     let mut found = Vec::new();
@@ -152,7 +152,7 @@ pub(super) fn members(descriptor: &Value) -> Vec<PackRefusal> {
             Some("pack_restates_core_member")
         } else if let Some(code) = contained(id, name) {
             Some(code)
-        } else if gate.is_none() {
+        } else if !gated.contains(&format!("{target}#{name}")) {
             Some("pack_ungated_type")
         } else {
             None

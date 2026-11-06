@@ -268,6 +268,6 @@ fn declarations(descriptor: &Value) -> Vec<PackRefusal> {
             ));
         }
     }
-    found.extend(resources::members(descriptor));
+    found.extend(resources::members(descriptor, &gated));
     found
 }

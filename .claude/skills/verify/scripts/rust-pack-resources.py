@@ -90,6 +90,25 @@ def main():
         descriptor["gates"] = [gate]
         (directory / "pack.json").write_text(json.dumps(descriptor))
         cases.append((label, [directory], ["pack_ungated_type"]))
+    for label, version_error in [("combined-declaration-refusals", False), ("dependency-version-mismatch", True)]:
+        paths = []
+        for index, namespace in enumerate(["com.example.alpha", "com.other.beta"]):
+            directory = output / f"{label}-{index}"
+            directory.mkdir()
+            (directory / "types.json").write_text("{}")
+            descriptor = dict(base, id=namespace)
+            if version_error and index == 1:
+                descriptor["depends_on"] = [{"id": "com.example.alpha", "version": "2"}]
+            elif not version_error and index == 0:
+                member = {"payload_type": "run.completed", "member": namespace + ".extra", "schema": {}}
+                descriptor["payload_members"] = [member, member]
+                descriptor["gates"] = [{"payload_type": "run.completed", "member": member["member"], "ungated": True}]
+            elif not version_error:
+                descriptor["capability_keys"] = ["storage.objects"]
+            (directory / "pack.json").write_text(json.dumps(descriptor))
+            paths.append(directory)
+        codes = ["pack_dependency_missing"] if version_error else ["pack_member_duplicate", "pack_unprefixed_name"]
+        cases.append((label, paths, codes))
     results = []
     for label, paths, codes in cases:
         rust = run([str(consumer), *map(str, paths)], label + ".rust")
