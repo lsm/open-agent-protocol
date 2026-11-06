@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[4]
 PROMPT = "synthetic first turn 1170"
 REPLY = "synthetic saved reply 1170"
 FOLLOWUP = "synthetic second turn 1170"
+PARTIAL_PROMPT = "synthetic partial storage turn"
+COMPACT_FOCUS = "synthetic compaction offset proof"
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -35,10 +37,17 @@ class Provider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.requests.append(body)
+        current = json.dumps(body["messages"][-1])
+        if COMPACT_FOCUS in current:
+            reply = f"<summary>{PROMPT} {REPLY}</summary>"
+        elif PARTIAL_PROMPT in current:
+            reply = REPLY * 6000
+        else:
+            reply = REPLY
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for delta, finish in [({"role": "assistant", "content": REPLY}, None), ({}, "stop")]:
+        for delta, finish in [({"role": "assistant", "content": reply}, None), ({}, "stop")]:
             data = {"id": "synthetic-completion", "object": "chat.completion.chunk",
                     "model": "synthetic-model", "choices": [{"index": 0, "delta": delta,
                                                               "finish_reason": finish}]}
@@ -48,7 +57,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
 
 class Hub:
-    def __init__(self, command, environment, root, output, label, flags=()):
+    def __init__(self, command, environment, root, output, label, flags=(), file_limit=None):
+        if file_limit:
+            setup = ("import os, resource, signal, sys\n"
+                     "limit = int(sys.argv[1])\n"
+                     "resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))\n"
+                     "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+                     "os.execv(sys.argv[2], sys.argv[2:])\n")
+            command = [sys.executable, "-I", "-c", setup, str(file_limit), *command]
         self.log = (output / (label + ".jsonl")).open("w")
         self.errors = (output / (label + "-stderr.txt")).open("w")
         self.process = subprocess.Popen(command + ["serve", "--stdio", "--config", str(root / "hub.json"), *flags],
@@ -114,6 +130,10 @@ def submit(hub, session_id, text):
     request["session_id"] = session_id
     result = hub.call("submit", session_id=session_id, request=request)
     assert "error" not in result.get("payload", {}), result
+    wait_idle(hub, session_id)
+
+
+def wait_idle(hub, session_id):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         state = hub.call("state", session_id=session_id)
@@ -127,6 +147,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--storage-recovery", action="store_true",
+                        help="temporarily obstruct the transcript, then verify later saves recover metadata")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--partial-write-recovery", action="store_true",
+                        help="limit child file sizes, then recover after an oversized transcript append")
+    mode.add_argument("--compaction-offset", action="store_true",
+                        help="compact a saved conversation and retain its index offset through another turn")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -168,13 +195,53 @@ def main():
             hub.stop()
             hub = None
             assert not any(p.is_file() for p in (data / "sessions").rglob("*")), "opt-out saved transcript"
-            hub = Hub(command, environment, root, output, "before")
+            hub = Hub(command, environment, root, output, "before",
+                      file_limit=128 * 1024 if args.partial_write_recovery else None)
             capabilities = hub.call("capabilities", adapter="loop")
             assert "session.open.reopen" in json.dumps(capabilities), capabilities
             open_session(hub, "restart-proof")
+            transcript_path = data / "sessions" / "restart-proof.jsonl"
+            if args.storage_recovery:
+                transcript_path.mkdir(parents=True)
+                submit(hub, "restart-proof", "synthetic failed storage turn")
+                hub.call("work.read", session_id="restart-proof")
+                transcript_path.rmdir()
+            if args.partial_write_recovery:
+                submit(hub, "restart-proof", PARTIAL_PROMPT)
+                hub.call("work.read", session_id="restart-proof")
+                (output / "partial-before.jsonl").write_bytes(transcript_path.read_bytes())
             submit(hub, "restart-proof", PROMPT)
             before = hub.call("work.read", session_id="restart-proof")
             assert PROMPT in json.dumps(before) and REPLY in json.dumps(before), before
+            if args.storage_recovery:
+                records = transcript_path.read_text()
+                (output / "storage-recovered.jsonl").write_text(records)
+                metadata = [record["metadata"] for line in records.splitlines()
+                            if "metadata" in (record := json.loads(line))]
+                assert any(m.get("model") == "synthetic-model" and m.get("provider") == "synthetic"
+                           for m in metadata), "saving recovered without model/provider metadata"
+            if args.compaction_offset:
+                request = envelope("session.compact.request", {"session_id": "restart-proof",
+                                                              "focus": COMPACT_FOCUS})
+                request["session_id"] = "restart-proof"
+                result = hub.call("submit", session_id="restart-proof", request=request)
+                assert "error" not in result.get("payload", {}), result
+                wait_idle(hub, "restart-proof")
+                hub.call("work.read", session_id="restart-proof")
+                records = [json.loads(line) for line in transcript_path.read_text().splitlines()]
+                assert any(r.get("event", {}).get("type") == "compaction_end" and
+                           r["event"].get("outcome") == "completed" for r in records), records
+                index_path = transcript_path.with_suffix(".meta.json")
+                compacted_index = json.loads(index_path.read_text())
+                (output / "compaction-index.json").write_text(json.dumps(compacted_index, indent=2))
+                assert compacted_index["compaction_offset"] > 0, compacted_index
+                assert compacted_index["compactions"] == 1, compacted_index
+                submit(hub, "restart-proof", "synthetic after compaction")
+                before = hub.call("work.read", session_id="restart-proof")
+                later_index = json.loads(index_path.read_text())
+                (output / "later-index.json").write_text(json.dumps(later_index, indent=2))
+                assert later_index["compaction_offset"] == compacted_index["compaction_offset"], later_index
+                assert later_index["compactions"] == 1, later_index
             hub.stop()
             hub = None
             saved = list((data / "sessions").rglob("*"))
@@ -196,6 +263,12 @@ def main():
             (output / "provider-requests.json").write_text(json.dumps(Provider.requests, indent=2))
             (output / "restored.json").write_text(json.dumps(transcript, indent=2))
             print("PASS: serve saved synthetic user/reply; process exited 0; fresh serve read and reopened history; next provider request contained both old turns and new prompt; no credential file")
+            if args.storage_recovery:
+                print("PASS: failed transcript append recovered with model/provider metadata")
+            if args.partial_write_recovery:
+                print("PASS: file-size-limited partial append allowed the next small turn to persist")
+            if args.compaction_offset:
+                print("PASS: completed compaction kept its nonzero index offset through a later turn and restart")
         finally:
             if hub is not None:
                 hub.stop()

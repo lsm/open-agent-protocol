@@ -532,6 +532,22 @@ after draining it. If the writer cannot start, saving runs inline. The served
 session test above also reads 80 queued user/reply pairs in order and reopens
 the last conversation after shutdown. `queued session metadata and events
 unwind every failed capture allocation` covers failed payload copies.
+
+Within each drain, the writer groups JSONL appends by session and keeps the
+latest index update. It appends each session's bytes together and syncs the
+transcript file when that batch includes a settled run. Read barriers, shutdown
+and compaction-offset reads flush pending bytes. A failed append allows the
+next batch to write metadata again. The served-session test above and the
+storage-recovery restart journey obstruct a transcript, restore storage, and
+observe the next saved reply with its model and provider.
+Failed appends truncate back to their previous length. The partial-write
+restart journey enforces a child file-size limit, exceeds it with a synthetic
+reply, then observes a later small turn surviving a fresh process.
+The served writer applies completed compaction offsets to the index and carries
+them, the compaction count and prior index fields through later saves. Index
+reads within a batch see its latest pending update. The compaction-offset
+restart journey completes a real compaction and a later turn, then checks that
+the saved offset survives both that turn and a fresh process.
 `goap hub` takes the lock on Unix only: on Windows it opens the lock file
 without locking it, a gap recorded here rather than closed, since `goap` is
 never released and CI runs it on Unix. `goap hub` has no
