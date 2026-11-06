@@ -114,7 +114,7 @@ const Kqueue = struct {
                     .read = event.filter == c.EVFILT.READ,
                     .write = event.filter == c.EVFILT.WRITE,
                     .closed = event.flags & c.EV.EOF != 0,
-                    .failed = event.flags & c.EV.ERROR != 0,
+                    .failed = event.flags & c.EV.ERROR != 0 or (event.flags & c.EV.EOF != 0 and event.fflags != 0),
                     .wake = event.filter == c.EVFILT.USER,
                 };
             }

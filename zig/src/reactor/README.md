@@ -21,3 +21,7 @@ interrupted system calls. Neither backend uses a periodic timer.
 Run `zig build --build-file zig/build.zig test-unit-reactor --summary all`.
 The same suite belongs to `test` and CI's `test-unit-core` group. Tests use
 anonymous pipes and an explicit wake to release an idle waiter.
+
+For sockets, `failed` reports kqueue's EOF socket error or epoll's error flag.
+The caller retrieves the socket error and reads buffered data before treating
+EOF as fully consumed. Registration and wait syscall failures return an error.

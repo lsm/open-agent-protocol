@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = std.c;
+const builtin = @import("builtin");
 const poller = @import("poller.zig");
 
 fn pipe() ![2]c.fd_t {
@@ -80,11 +81,13 @@ test "peer closure is delivered even without buffered bytes" {
 const Idle = struct {
     p: *poller.Poller,
     entered: std.atomic.Value(bool) = .init(false),
+    tid: std.Thread.Id = undefined,
     returned: std.atomic.Value(bool) = .init(false),
     failed: bool = false,
 
     fn run(self: *Idle) void {
         var events: [1]poller.Ready = undefined;
+        self.tid = std.Thread.getCurrentId();
         self.entered.store(true, .release);
         const count = self.p.wait(&events) catch {
             self.failed = true;
@@ -107,6 +110,16 @@ test "an idle poller stays blocked until an explicit wake" {
             thread.join();
         }
         while (!idle.entered.load(.acquire)) std.atomic.spinLoopHint();
+        var blocked = false;
+        for (0..1000) |_| {
+            if (try isBlocked(thread, idle.tid)) {
+                blocked = true;
+                break;
+            }
+            const grace: c.timespec = .{ .sec = 0, .nsec = std.time.ns_per_ms };
+            _ = c.nanosleep(&grace, null);
+        }
+        try std.testing.expect(blocked);
         const delay: c.timespec = .{ .sec = 0, .nsec = 150 * std.time.ns_per_ms };
         try std.testing.expectEqual(@as(c_int, 0), c.nanosleep(&delay, null));
         try std.testing.expect(!idle.returned.load(.acquire));
@@ -114,4 +127,53 @@ test "an idle poller stays blocked until an explicit wake" {
     }
     try std.testing.expect(idle.returned.load(.acquire));
     try std.testing.expect(!idle.failed);
+}
+
+extern "c" fn pthread_mach_thread_np(thread: c.pthread_t) c_uint;
+
+fn isBlocked(thread: std.Thread, tid: std.Thread.Id) !bool {
+    if (builtin.os.tag == .macos) {
+        const darwin = std.c;
+        var info: darwin.thread_basic_info = undefined;
+        var count: darwin.mach_msg_type_number_t = darwin.THREAD.BASIC.INFO_COUNT;
+        if (darwin.thread_info(pthread_mach_thread_np(thread.getHandle()), darwin.THREAD.BASIC.INFO, @ptrCast(&info), &count) != 0) return error.ThreadInfoFailed;
+        const th_state_waiting = 3;
+        return info.run_state == th_state_waiting;
+    }
+    var path_buffer: [128]u8 = undefined;
+    const path = try std.mem.printSentinel(&path_buffer, "/proc/self/task/{d}/stat", .{tid}, 0);
+    const fd = c.open(path.ptr, .{});
+    if (fd < 0) return error.ThreadInfoFailed;
+    defer _ = c.close(fd);
+    var buffer: [1024]u8 = undefined;
+    const got = c.read(fd, &buffer, buffer.len);
+    if (got < 0) return error.ThreadInfoFailed;
+    const text = buffer[0..@intCast(got)];
+    const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return error.ThreadInfoFailed;
+    return close + 2 < text.len and text[close + 2] == 'S';
+}
+
+test "a refused nonblocking connection reports socket failure" {
+    const reserved = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
+    if (reserved < 0) return error.SocketFailed;
+    defer _ = c.close(reserved);
+    var address: c.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
+    try std.testing.expectEqual(@as(c_int, 0), c.bind(reserved, @ptrCast(&address), @sizeOf(@TypeOf(address))));
+    var size: c.socklen_t = @sizeOf(@TypeOf(address));
+    try std.testing.expectEqual(@as(c_int, 0), c.getsockname(reserved, @ptrCast(&address), &size));
+    const socket = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
+    if (socket < 0) return error.SocketFailed;
+    defer _ = c.close(socket);
+    const flags = c.fcntl(socket, c.F.GETFL);
+    if (flags < 0) return error.SocketFailed;
+    const nonblock: c_int = @bitCast(c.O{ .NONBLOCK = true });
+    if (c.fcntl(socket, c.F.SETFL, flags | nonblock) < 0) return error.SocketFailed;
+    try std.testing.expect(c.connect(socket, @ptrCast(&address), size) < 0);
+    var p = try poller.Poller.init();
+    defer p.deinit();
+    try p.watch(socket, 77, .write);
+    var events: [1]poller.Ready = undefined;
+    _ = try p.wait(&events);
+    try std.testing.expectEqual(@as(usize, 77), events[0].token);
+    try std.testing.expect(events[0].failed);
 }

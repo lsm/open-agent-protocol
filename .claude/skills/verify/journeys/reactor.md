@@ -11,7 +11,7 @@ zig build --build-file zig/build.zig test-unit-reactor --summary all
 The suite observes real kernel readiness through anonymous pipes. Check read
 and write readiness, registration replacement, removal, peer EOF, coalesced
 wakeups and invalid arguments. The idle test leaves a thread blocked in a
-kernel wait for 150 ms and requires zero returned waits until an explicit wake.
+kernel wait, confirms the OS reports the waiter asleep, then observes it for 150 ms and requires zero returned waits until an explicit wake.
 Every test closes its descriptors and joins the waiter. This is the foundation
 check. Stage 3's final acceptance also requires the complete reactor to remain
 idle with zero wakeups.
