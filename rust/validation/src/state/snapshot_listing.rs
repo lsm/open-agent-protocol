@@ -138,6 +138,7 @@ impl State {
             let mut last_order = None;
             let mut position = 0;
             let mut leads = false;
+            let mut led_entries = Vec::new();
             for (index, entry) in p.active_runs.iter().enumerate() {
                 let pointer = format!("/payload/active_runs/{index}");
                 if !listed.insert(entry.run_id.as_str()) {
@@ -161,6 +162,9 @@ impl State {
                 let Some(run) = run else {
                     if self.entry_leads_admission(p.session_id.as_str(), entry) {
                         leads = true;
+                        if !terminal(&entry.status) {
+                            led_entries.push((index, position));
+                        }
                         if terminal(&entry.status) {
                             found.push((
                                 format!("{pointer}/status"),
@@ -263,6 +267,15 @@ impl State {
                         "a snapshot must list each nonterminal run its capture had to reflect",
                     ));
                 }
+            }
+            if !led_entries.is_empty() {
+                self.queue_leads.push(super::queue_leads::Group {
+                    at,
+                    envelope: e.clone(),
+                    state: p.clone(),
+                    entries: led_entries,
+                    executing: started.cloned(),
+                });
             }
             if let Some(entry) = started {
                 if os(&p.active_run_id) != entry.run_id.as_str() {

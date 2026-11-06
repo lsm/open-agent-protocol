@@ -11,6 +11,7 @@ mod models;
 mod name_pattern;
 mod provider_attach;
 mod queue;
+mod queue_leads;
 mod queue_models;
 mod redelivery;
 mod results;
@@ -76,6 +77,7 @@ pub(crate) struct State {
     session_models: HashMap<String, default_model::SessionModel>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
     snapshot_claims: Vec<snapshot_claims::Claim>,
+    queue_leads: Vec<queue_leads::Group>,
     admission_anchors: Vec<admission_anchors::Claim>,
     pending_open_settings: HashMap<String, controls::PendingOpenSettings>,
     pending_tool_lists: HashMap<String, controls::PendingToolList>,
@@ -354,6 +356,7 @@ impl State {
             session_models: HashMap::new(),
             steer_snapshots: Vec::new(),
             snapshot_claims: Vec::new(),
+            queue_leads: Vec::new(),
             admission_anchors: Vec::new(),
             pending_open_settings: HashMap::new(),
             pending_tool_lists: HashMap::new(),
@@ -822,6 +825,7 @@ impl State {
     pub fn close(&mut self) {
         self.close_auth_flows();
         self.close_admission_anchors();
+        self.close_queue_leads();
         self.close_snapshot_claims();
         self.close_steer_snapshots();
         self.close_recoveries();

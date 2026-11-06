@@ -30,3 +30,10 @@ through the public Rust validator, without the known-gap exemption:
 ```sh
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --test queue_models
 ```
+
+Queue leads are judged together once their admissions are known, including
+reservation classification, queue places, admission order and the session's
+executing run. The `queue_leads` regression pins the shared positive and negative
+traces. A promotion must remain active across a stale read so a later omission
+is diagnosed. Run `cargo test --manifest-path rust/Cargo.toml -p oap-validation
+--test queue_leads` before the shared public-consumer comparison above.
