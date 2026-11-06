@@ -34,6 +34,7 @@ run go test ./go/protocol
 )
 run zig build --build-file zig/build.zig -Doptimize=ReleaseSafe
 run zig build --build-file zig/build.zig test-unit-validation -Doptimize=ReleaseSafe
+run zig build --build-file zig/build.zig test-unit-reactor -Doptimize=ReleaseSafe
 run env OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
 run go run ./go/tools/nocomment --check
 run node scripts/check-no-comments.mjs --check

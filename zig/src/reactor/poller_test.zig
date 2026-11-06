@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = std.c;
-const builtin = @import("builtin");
+const probe = @import("test_support.zig");
 const poller = @import("poller.zig");
 
 fn pipe() ![2]c.fd_t {
@@ -112,7 +112,7 @@ test "an idle poller stays blocked until an explicit wake" {
         while (!idle.entered.load(.acquire)) std.atomic.spinLoopHint();
         var blocked = false;
         for (0..1000) |_| {
-            if (try isBlocked(thread, idle.tid)) {
+            if (try probe.isBlocked(thread, idle.tid)) {
                 blocked = true;
                 break;
             }
@@ -123,34 +123,11 @@ test "an idle poller stays blocked until an explicit wake" {
         const delay: c.timespec = .{ .sec = 0, .nsec = 150 * std.time.ns_per_ms };
         try std.testing.expectEqual(@as(c_int, 0), c.nanosleep(&delay, null));
         try std.testing.expect(!idle.returned.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), p.waitReturns());
         std.debug.print("idle poller: 150 ms, zero wait returns before explicit wake\n", .{});
     }
     try std.testing.expect(idle.returned.load(.acquire));
     try std.testing.expect(!idle.failed);
-}
-
-extern "c" fn pthread_mach_thread_np(thread: c.pthread_t) c_uint;
-
-fn isBlocked(thread: std.Thread, tid: std.Thread.Id) !bool {
-    if (builtin.os.tag == .macos) {
-        const darwin = std.c;
-        var info: darwin.thread_basic_info = undefined;
-        var count: darwin.mach_msg_type_number_t = darwin.THREAD.BASIC.INFO_COUNT;
-        if (darwin.thread_info(pthread_mach_thread_np(thread.getHandle()), darwin.THREAD.BASIC.INFO, @ptrCast(&info), &count) != 0) return error.ThreadInfoFailed;
-        const th_state_waiting = 3;
-        return info.run_state == th_state_waiting;
-    }
-    var path_buffer: [128]u8 = undefined;
-    const path = try std.mem.printSentinel(&path_buffer, "/proc/self/task/{d}/stat", .{tid}, 0);
-    const fd = c.open(path.ptr, .{});
-    if (fd < 0) return error.ThreadInfoFailed;
-    defer _ = c.close(fd);
-    var buffer: [1024]u8 = undefined;
-    const got = c.read(fd, &buffer, buffer.len);
-    if (got < 0) return error.ThreadInfoFailed;
-    const text = buffer[0..@intCast(got)];
-    const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return error.ThreadInfoFailed;
-    return close + 2 < text.len and text[close + 2] == 'S';
 }
 
 test "a refused nonblocking connection reports socket failure" {
@@ -181,4 +158,36 @@ test "a refused nonblocking connection reports socket failure" {
 comptime {
     _ = @import("sources_test.zig");
     _ = @import("pool_test.zig");
+    _ = @import("reactor_test.zig");
+}
+
+test "duplex interest observes reads and writes and switching interest removes the old watch" {
+    var fds: [2]c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), c.socketpair(c.AF.UNIX, c.SOCK.STREAM, 0, &fds));
+    defer _ = c.close(fds[0]);
+    defer _ = c.close(fds[1]);
+    var poll = try poller.Poller.init();
+    defer poll.deinit();
+    try std.testing.expectEqual(@as(isize, 1), c.write(fds[1], "x", 1));
+    try poll.watch(fds[0], 80, .read_write);
+    var events: [2]poller.Ready = undefined;
+    const count = try poll.wait(&events);
+    var read = false;
+    var write = false;
+    for (events[0..count]) |event| {
+        try std.testing.expectEqual(@as(usize, 80), event.token);
+        read = read or event.read;
+        write = write or event.write;
+    }
+    try std.testing.expect(read and write);
+    var byte: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(isize, 1), c.read(fds[0], &byte, 1));
+    try poll.watch(fds[0], 81, .read);
+    try poll.wake();
+    try std.testing.expectEqual(@as(usize, 1), try poll.wait(&events));
+    try std.testing.expect(events[0].wake);
+    try poll.watch(fds[0], 82, .write);
+    _ = try poll.wait(&events);
+    try std.testing.expect(events[0].write);
+    try std.testing.expectEqual(@as(usize, 82), events[0].token);
 }

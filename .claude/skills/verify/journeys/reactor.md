@@ -29,3 +29,17 @@ an immediate full-queue result while workers are busy, FIFO execution with one
 worker, concurrent progress with two workers, draining accepted work on shutdown,
 closed-pool rejection, and allocation-failure cleanup. Every failure path opens
 the gate before joining workers, and every created pool is destroyed.
+
+The complete reactor test confirms the owner is asleep using Mach thread state
+on macOS or its proc thread state on Linux. With two idle pool workers, it then
+holds for 150 ms and requires zero kernel wait returns, including interrupted
+syscalls. An explicit stop must cause exactly one returned wait and join the
+owner. The suite also observes owner-thread command execution, bounded queue
+rejection and draining, I/O and timer progress during a command flood, normalized
+child-exit delivery, and all 32 completions from two pool workers.
+
+The full verification baseline now invokes this suite too. These standalone
+primitives remain outside the product runtime until the later integration stage.
+
+A socketpair probe requires simultaneous read/write readiness and confirms that
+switching to read-only interest removes write readiness on both backends.
