@@ -960,6 +960,38 @@ test "a notice whose tail starts inside a character is still text" {
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, notice.text, "\n"), "\u{e9}\u{e9}x"));
 }
 
+test "a notice that cannot be built stays owed" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    const tools = sessionTools(&jobs);
+    const quick = try backgroundArgs(&case, "echo finished");
+    defer std.testing.allocator.free(quick);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-quick", quick, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+    const by = common.nowMs() + 5_000;
+    while (!jobs.noticeWaiting() and common.nowMs() < by) {}
+    try std.testing.expect(jobs.noticeWaiting());
+
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const taken = jobs.takeNotice(failing.allocator()) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(jobs.noticeWaiting());
+            continue;
+        };
+        var notice = taken orelse return error.TestUnexpectedResult;
+        defer notice.deinit(failing.allocator());
+        try std.testing.expect(fail_index > 1);
+        try std.testing.expect(!jobs.noticeWaiting());
+        break;
+    }
+}
+
 test "anyRunning counts a job until it ends" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
