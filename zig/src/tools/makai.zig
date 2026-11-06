@@ -245,12 +245,44 @@ const ServedSessions = struct {
     allocator: std.mem.Allocator,
     store: session_store.Store,
     recorders: std.StringHashMapUnmanaged(session_store.Recorder) = .empty,
+    recorders_mutex: std.Io.Mutex = .init,
+    writer: ?std.Thread = null,
+    writer_attempted: bool = false,
+    queue_buffer: [256]Queued = undefined,
+    queue: std.Io.Queue(Queued) = undefined,
+
+    const Queued = union(enum) {
+        event: Captured,
+        barrier: *std.Io.Event,
+    };
+
+    const Captured = struct {
+        metadata: session_store.SessionMetadata,
+        event: tui_app.SessionEvent,
+
+        fn init(allocator: std.mem.Allocator, metadata: session_store.SessionMetadata, event: tui_app.SessionEvent) !Captured {
+            var owned_metadata = try metadata.clone(allocator);
+            errdefer owned_metadata.deinit(allocator);
+            const owned_event = try event.clone(allocator);
+            return .{ .metadata = owned_metadata, .event = owned_event };
+        }
+
+        fn deinit(self: *Captured, allocator: std.mem.Allocator) void {
+            self.metadata.deinit(allocator);
+            self.event.deinit(allocator);
+            self.* = undefined;
+        }
+    };
 
     fn init(allocator: std.mem.Allocator, store: session_store.Store) ServedSessions {
         return .{ .allocator = allocator, .store = store };
     }
 
     fn deinit(self: *ServedSessions) void {
+        if (self.writer) |thread| {
+            self.queue.close(hubIo());
+            thread.join();
+        }
         var held = self.recorders.iterator();
         while (held.next()) |entry| {
             entry.value_ptr.deinit(self.allocator);
@@ -262,9 +294,44 @@ const ServedSessions = struct {
     }
 
     fn attach(self: *ServedSessions, adapter: *oapx_adapter.Adapter) void {
+        self.startWriter() catch {};
         adapter.history = .{ .ctx = self, .load = load, .read = read, .entries = entries };
         adapter.transcripts = .{ .ctx = self, .save = saveTranscript };
         adapter.recorder = .{ .ctx = self, .record = record };
+    }
+
+    fn startWriter(self: *ServedSessions) !void {
+        if (self.writer_attempted) return;
+        self.writer_attempted = true;
+        self.queue = .init(&self.queue_buffer);
+        self.writer = try std.Thread.spawn(.{}, writeQueued, .{self});
+    }
+
+    fn writeQueued(self: *ServedSessions) void {
+        var batch: [64]Queued = undefined;
+        while (true) {
+            const count = self.queue.getUncancelable(hubIo(), &batch, 1) catch break;
+            for (batch[0..count]) |*item| switch (item.*) {
+                .event => |*captured| {
+                    self.write(captured.metadata, &captured.event);
+                    captured.deinit(self.allocator);
+                },
+                .barrier => |done| done.set(hubIo()),
+            };
+        }
+    }
+
+    fn enqueue(self: *ServedSessions, metadata: session_store.SessionMetadata, event: tui_app.SessionEvent) !void {
+        var captured = try Captured.init(self.allocator, metadata, event);
+        errdefer captured.deinit(self.allocator);
+        try self.queue.putOneUncancelable(hubIo(), .{ .event = captured });
+    }
+
+    fn flush(self: *ServedSessions) void {
+        if (self.writer == null) return;
+        var done: std.Io.Event = .unset;
+        self.queue.putOneUncancelable(hubIo(), .{ .barrier = &done }) catch return;
+        done.waitUncancelable(hubIo());
     }
 
     fn recorderFor(self: *ServedSessions, session_id: []const u8) !*session_store.Recorder {
@@ -281,6 +348,9 @@ const ServedSessions = struct {
 
     fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
         const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        self.flush();
+        self.recorders_mutex.lockUncancelable(hubIo());
+        defer self.recorders_mutex.unlock(hubIo());
         var loaded = try self.store.load(session_id);
         defer loaded.deinit(self.store.allocator);
         try (try self.recorderFor(session_id)).adopt(self.allocator, loaded.metadata);
@@ -289,6 +359,9 @@ const ServedSessions = struct {
 
     fn read(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
         const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        self.flush();
+        self.recorders_mutex.lockUncancelable(hubIo());
+        defer self.recorders_mutex.unlock(hubIo());
         var loaded = try self.store.load(session_id);
         defer loaded.deinit(self.store.allocator);
         return try cloneMessages(arena, loaded.messages.items);
@@ -296,6 +369,9 @@ const ServedSessions = struct {
 
     fn entries(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]const oapx_adapter.transcript.SavedEntry {
         const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        self.flush();
+        self.recorders_mutex.lockUncancelable(hubIo());
+        defer self.recorders_mutex.unlock(hubIo());
         const stored = try self.store.readEntries(arena, session_id);
         const saved = try arena.alloc(oapx_adapter.transcript.SavedEntry, stored.len);
         for (stored, saved) |entry, *slot| slot.* = switch (entry.item) {
@@ -320,13 +396,26 @@ const ServedSessions = struct {
 
     fn record(ctx: *anyopaque, session_id: []const u8, model: ?ai_types.Model, event: *const tui_app.SessionEvent) void {
         const self: *ServedSessions = @ptrCast(@alignCast(ctx));
-        const recorder = self.recorderFor(session_id) catch return;
         const meta = session_store.SessionMetadata{
             .session_id = @constCast(session_id),
             .model = @constCast(if (model) |held| held.id else ""),
             .provider = @constCast(if (model) |held| held.provider else ""),
             .last_active = compat.time.nowMillis(),
         };
+        if (self.writer != null) {
+            self.enqueue(meta, event.*) catch {
+                self.flush();
+                self.write(meta, event);
+            };
+            return;
+        }
+        self.write(meta, event);
+    }
+
+    fn write(self: *ServedSessions, meta: session_store.SessionMetadata, event: *const tui_app.SessionEvent) void {
+        self.recorders_mutex.lockUncancelable(hubIo());
+        defer self.recorders_mutex.unlock(hubIo());
+        const recorder = self.recorderFor(meta.session_id) catch return;
         const saved = recorder.record(self.allocator, self.store, meta, event.*) orelse return;
         if (saved.metadata or event.* == .agent_end) self.store.saveIndex(meta) catch {};
     }
@@ -8064,6 +8153,7 @@ test "a served oapx session's events are saved, read back without adopting it, a
     {
         var saved = ServedSessions.init(allocator, try session_store.Store.init(allocator, base));
         defer saved.deinit();
+        try saved.startWriter();
         const events = [_]tui_app.SessionEvent{
             .{ .agent_start = .{} },
             .{ .message_start = .{ .role = .user } },
@@ -8075,6 +8165,45 @@ test "a served oapx session's events are saved, read back without adopting it, a
             .{ .agent_end = .{ .reason = .completed } },
         };
         for (&events) |*event| ServedSessions.record(&saved, "session-1", model, event);
+        var live = std.heap.ArenaAllocator.init(allocator);
+        defer live.deinit();
+        const current = (try ServedSessions.read(&saved, live.allocator(), "session-1")).?;
+        try std.testing.expectEqual(@as(usize, 2), current.len);
+        try std.testing.expectEqualStrings("general kenobi", current[1].assistant.content[0].text.text);
+        const Producer = struct {
+            saved: *ServedSessions,
+            events: []const tui_app.SessionEvent,
+            model: ai_types.Model,
+
+            fn run(self: *@This()) void {
+                for (0..80) |index| {
+                    var buffer: [32]u8 = undefined;
+                    const text = std.fmt.bufPrint(&buffer, "queued-{d}", .{index}) catch return;
+                    for (self.events) |original| {
+                        var event = original;
+                        if (event == .message_end and event.message_end.role == .user) event.message_end.text = OwnedText.initBorrowed(text);
+                        ServedSessions.record(self.saved, "queued-session", self.model, &event);
+                    }
+                }
+            }
+        };
+        var producer = Producer{ .saved = &saved, .events = &events, .model = model };
+        saved.recorders_mutex.lockUncancelable(hubIo());
+        const thread = std.Thread.spawn(.{}, Producer.run, .{&producer}) catch |err| {
+            saved.recorders_mutex.unlock(hubIo());
+            return err;
+        };
+        compat.time.sleepMs(20);
+        saved.recorders_mutex.unlock(hubIo());
+        thread.join();
+        const queued = (try ServedSessions.read(&saved, live.allocator(), "queued-session")).?;
+        try std.testing.expectEqual(@as(usize, 160), queued.len);
+        for (0..80) |index| {
+            const text = try std.fmt.allocPrint(live.allocator(), "queued-{d}", .{index});
+            try std.testing.expectEqualStrings(text, queued[index * 2].user.content.text);
+            try std.testing.expectEqualStrings("general kenobi", queued[index * 2 + 1].assistant.content[0].text.text);
+        }
+        for (&events) |*event| ServedSessions.record(&saved, "session-2", model, event);
     }
     var reopened = ServedSessions.init(allocator, try session_store.Store.init(allocator, base));
     defer reopened.deinit();
@@ -8085,6 +8214,9 @@ test "a served oapx session's events are saved, read back without adopting it, a
     try std.testing.expectEqual(@as(i64, 1_700_000_000_001), read[0].user.timestamp);
     try std.testing.expectEqual(@as(i64, 1_700_000_000_002), read[1].assistant.timestamp);
     try std.testing.expect(reopened.recorders.get("session-1") == null);
+    const drained = (try ServedSessions.read(&reopened, arena.allocator(), "session-2")).?;
+    try std.testing.expectEqual(@as(usize, 2), drained.len);
+    try std.testing.expectEqualStrings("general kenobi", drained[1].assistant.content[0].text.text);
     const messages = (try ServedSessions.load(&reopened, arena.allocator(), "session-1")).?;
     try std.testing.expectEqual(@as(usize, 2), messages.len);
     try std.testing.expect(messages[0] == .user);
@@ -8094,4 +8226,26 @@ test "a served oapx session's events are saved, read back without adopting it, a
     defer index.deinit(allocator);
     try std.testing.expectEqualStrings("served-model", index.model);
     try std.testing.expectEqualStrings("served-provider", index.provider);
+}
+
+fn captureServedEventProbe(allocator: std.mem.Allocator) !void {
+    const metadata = session_store.SessionMetadata{
+        .session_id = @constCast("captured"),
+        .model = @constCast("model"),
+        .provider = @constCast("provider"),
+        .title = @constCast("title"),
+        .last_active = 123,
+    };
+    const OwnedText = @FieldType(@FieldType(tui_app.SessionEvent, "text_delta"), "delta");
+    var captured = try ServedSessions.Captured.init(allocator, metadata, .{
+        .text_delta = .{ .content_index = 0, .delta = OwnedText.initBorrowed("é漢😀") },
+    });
+    defer captured.deinit(allocator);
+    try std.testing.expectEqualStrings("captured", captured.metadata.session_id);
+    try std.testing.expectEqualStrings("title", captured.metadata.title);
+    try std.testing.expectEqualStrings("é漢😀", captured.event.text_delta.delta.slice());
+}
+
+test "queued session metadata and events unwind every failed capture allocation" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, captureServedEventProbe, .{});
 }

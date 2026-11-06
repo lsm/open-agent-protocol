@@ -23,3 +23,16 @@ sandbox if it fails. Children are stopped and temporary state removed on exit.
 Require exit 0 and `PASS`; inspect `opt-out.jsonl`, `before.jsonl`, `after.jsonl`, `restored.json`
 and `provider-requests.json`. No credential file may be written. Live providers
 and recovery of an interrupted active run are not exercised by this journey.
+
+After changing the served-session writer, also run:
+
+```sh
+zig build --build-file zig/build.zig test-unit-makai-cli -Doptimize=ReleaseSafe -j4
+```
+
+The storage test holds the writer while another thread enqueues more events
+than its bounded queue can hold. It then reads all 80 user/reply pairs in
+order, checks a live read barrier, and reopens the store after shutdown to
+observe the last queued conversation. Capture allocation failures must release
+every owned metadata field and event payload. The real-process journey above
+remains the product proof for read-back, shutdown and reopening.

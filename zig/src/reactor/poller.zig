@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const c = std.c;
 const linux = std.os.linux;
 
-pub const Interest = enum { read, write };
+pub const Interest = enum { read, write, read_write };
 pub const Ready = struct {
     token: usize,
     read: bool = false,
@@ -37,6 +37,10 @@ pub const Poller = struct {
         try self.backend.watch(fd, token, interest);
     }
 
+    pub fn waitReturns(self: *const Poller) usize {
+        return self.backend.returns.load(.acquire);
+    }
+
     pub fn nativeHandle(self: *const Poller) c.fd_t {
         return self.backend.fd;
     }
@@ -57,6 +61,7 @@ pub const Poller = struct {
 
 const Kqueue = struct {
     fd: c.fd_t,
+    returns: std.atomic.Value(usize) = .init(0),
 
     fn init() Error!Kqueue {
         const fd = c.kqueue();
@@ -87,10 +92,9 @@ const Kqueue = struct {
 
     fn watch(self: *Kqueue, fd: c.fd_t, token: usize, interest: Interest) Error!void {
         if (fd < 0) return error.KernelFailure;
-        const filter: i16 = if (interest == .read) c.EVFILT.READ else c.EVFILT.WRITE;
-        const opposite: i16 = if (interest == .read) c.EVFILT.WRITE else c.EVFILT.READ;
-        try self.change(@intCast(fd), opposite, c.EV.DELETE, 0, 0);
-        try self.change(@intCast(fd), filter, c.EV.ADD, 0, token);
+        errdefer self.remove(fd) catch {};
+        try self.change(@intCast(fd), c.EVFILT.READ, if (interest == .write) c.EV.DELETE else c.EV.ADD, 0, token);
+        try self.change(@intCast(fd), c.EVFILT.WRITE, if (interest == .read) c.EV.DELETE else c.EV.ADD, 0, token);
     }
 
     fn remove(self: *Kqueue, fd: c.fd_t) Error!void {
@@ -107,6 +111,7 @@ const Kqueue = struct {
         var events: [64]c.Kevent = undefined;
         while (true) {
             const count = c.kevent(self.fd, undefined, 0, &events, @intCast(@min(events.len, out.len)), null);
+            _ = self.returns.fetchAdd(1, .release);
             switch (std.posix.errno(count)) {
                 .SUCCESS => {},
                 .INTR => continue,
@@ -129,6 +134,7 @@ const Kqueue = struct {
 
 const Epoll = struct {
     fd: c.fd_t,
+    returns: std.atomic.Value(usize) = .init(0),
     wake_fd: c.fd_t,
 
     fn descriptor(result: usize) Error!c.fd_t {
@@ -153,7 +159,11 @@ const Epoll = struct {
 
     fn watch(self: *Epoll, fd: c.fd_t, token: usize, interest: Interest) Error!void {
         var event: linux.epoll_event = .{
-            .events = (if (interest == .read) @as(u32, linux.EPOLL.IN) else linux.EPOLL.OUT) | linux.EPOLL.RDHUP,
+            .events = (switch (interest) {
+                .read => @as(u32, linux.EPOLL.IN),
+                .write => linux.EPOLL.OUT,
+                .read_write => linux.EPOLL.IN | linux.EPOLL.OUT,
+            }) | linux.EPOLL.RDHUP,
             .data = .{ .u64 = token },
         };
         switch (linux.errno(linux.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, fd, &event))) {
@@ -187,6 +197,7 @@ const Epoll = struct {
         var events: [64]linux.epoll_event = undefined;
         while (true) {
             const count = linux.epoll_wait(self.fd, &events, @intCast(@min(events.len, out.len)), -1);
+            _ = self.returns.fetchAdd(1, .release);
             switch (linux.errno(count)) {
                 .SUCCESS => {},
                 .INTR => continue,
