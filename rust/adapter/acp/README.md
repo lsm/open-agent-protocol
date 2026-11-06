@@ -67,3 +67,23 @@ and model switching are the next approved slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
+
+## Cancellable process operations
+
+`Process::start_async(config, deadline)` returns an owning `Operation<Process>`
+future. `process.call_async(method, params, deadline)` transfers process
+ownership to one opening RPC and returns an `Operation<(Process, RawValue)>`.
+On success, the caller gets the process back. An RPC error closes it.
+
+Operations start a worker at construction and wake their consumer through a
+oneshot response. Polling a quiet operation returns pending. Dropping an
+unfinished operation kills its owned native child, closes the RPC client and
+joins the worker. Cancellation also covers the race before startup registers
+its process. Completed operations join before handing their process to the
+caller. Cleanup runs during drop, with the shared process helper's documented
+grandchild-held pipe limitations.
+
+This is the process/open-operation bridge for the next session slice. The
+adapter's session capabilities remain unavailable. Run the public consumer in
+`.claude/skills/verify/journeys/rust-acp-operation.md` for captured quiet-agent
+cancellation, early-drop races, successful handoff and deadline evidence.

@@ -999,6 +999,7 @@ name = "oap-adapter-acp"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "futures-channel",
  "oap-adapter",
  "oap-harness",
  "oap-protocol",
