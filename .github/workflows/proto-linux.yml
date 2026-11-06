@@ -1,0 +1,61 @@
+name: proto-linux
+
+on:
+  push:
+    branches:
+      - 'proto/**'
+
+permissions:
+  contents: read
+
+jobs:
+  hold-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build the prototype
+        run: zig build-exe zig/proto/async_loop.zig -O ReleaseSafe -lc -femit-bin=/tmp/proto
+      - name: Self-test
+        run: PROTO_SELFTEST=1 /tmp/proto
+      - name: TLS against real hosts
+        run: |
+          zig build-exe zig/proto/tls_spike.zig -O ReleaseSafe -lc -femit-bin=/tmp/tls-spike
+          for target in api.anthropic.com:/v1/models api.openai.com:/v1/models api.deepseek.com:/models \
+            api.z.ai:/api/paas/v4/models openrouter.ai:/api/v1/models generativelanguage.googleapis.com:/v1beta/models \
+            tls-v1-2.badssl.com:/ expired.badssl.com:/ wrong.host.badssl.com:/ self-signed.badssl.com:/ untrusted-root.badssl.com:/; do
+            SPIKE_HOST=${target%%:*} SPIKE_PATH=${target#*:} /tmp/tls-spike
+          done
+      - name: hold-gate parked
+        env:
+          BENCH_TOOL_BOUND: 1024
+        run: |
+          ulimit -n 65536
+          df -h /tmp
+          printf '#!/bin/sh\nPROTO_PARK=1 PROTO_STATS=/tmp/parked/stats.json exec /tmp/proto "$@"\n' > /tmp/proto-parked
+          chmod +x /tmp/proto-parked
+          mkdir -p /tmp/parked
+          python3 scripts/bench-resources.py --targets zig-loop --loop-binary /tmp/proto-parked --no-build \
+            --scenarios hold-gate --n 10000 --poll 5 --rss-cap-mib 12288 --timeout 1500 --out /tmp/parked
+          cat /tmp/parked/stats.json
+      - name: hold-gate parked with real sizes
+        env:
+          BENCH_TOOL_BOUND: 1024
+        run: |
+          ulimit -n 65536
+          printf '#!/bin/sh\nPROTO_PARK=1 PROTO_PARK_QUEUED=1 PROTO_HISTORY_KIB=800 PROTO_MODEL_LIMIT=64 PROTO_STATS=/tmp/real/stats.json exec /tmp/proto "$@"\n' > /tmp/proto-real
+          chmod +x /tmp/proto-real
+          mkdir -p /tmp/real
+          python3 scripts/bench-resources.py --targets zig-loop --loop-binary /tmp/proto-real --no-build \
+            --scenarios hold-gate --n 10000 --hold 120 --poll 5 --rss-cap-mib 12288 --timeout 2400 --out /tmp/real
+          cat /tmp/real/stats.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proto-linux
+          path: |
+            /tmp/parked
+            /tmp/real

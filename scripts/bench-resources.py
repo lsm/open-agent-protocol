@@ -88,10 +88,17 @@ class Probe:
         io = dict(line.split(": ") for line in (base / "io").read_text().splitlines())
         resident = int(status["VmRSS"].split()[0]) + int(status.get("VmSwap", "0 kB").split()[0])
         ticks = (base / "stat").read_text().rsplit(")", 1)[1].split()[11:13]
+        switches = 0
+        for task in (base / "task").iterdir():
+            try:
+                rows = dict(line.split(":", 1) for line in (task / "status").read_text().splitlines() if ":" in line)
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            switches += int(rows["voluntary_ctxt_switches"]) + int(rows["nonvoluntary_ctxt_switches"])
         return {"rss": resident * 1024, "threads": int(status["Threads"]),
                 "fds": len(os.listdir(base / "fd")), "written": int(io["write_bytes"]),
                 "cpu": sum(map(int, ticks)) / os.sysconf("SC_CLK_TCK"),
-                "switches": int(status["voluntary_ctxt_switches"]) + int(status["nonvoluntary_ctxt_switches"])}
+                "switches": switches}
 
 
 class Sampler(threading.Thread):
@@ -621,7 +628,9 @@ def flight_summary(rows, trace, steps, n, shape, stats, phases, scenario, work):
         if len(parked) >= 3:
             summary.update(hold_samples=len(parked), hold_threads=statistics.median(r["threads"] for r in parked),
                            hold_cores=rate(parked, "hub_cpu"), hold_switches_s=rate(parked, "switches"),
-                           hold_rss=statistics.median(r["rss"] for r in parked))
+                           hold_rss=statistics.median(r["rss"] for r in parked),
+                           hold_quiet_gaps=sum(b["switches"] == a["switches"] for a, b in zip(parked, parked[1:])),
+                           hold_gaps=len(parked) - 1)
     turns, by_agent = [], {}
     for agent, turn, received, finished, tool in sorted(trace, key=lambda t: t[2]):
         last = by_agent.get(agent)
