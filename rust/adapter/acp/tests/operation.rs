@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Context;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -9,14 +10,19 @@ use oap_adapter_acp::process::{Process, ProcessConfig};
 
 struct Fixture(PathBuf);
 
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
 impl Fixture {
     fn new() -> Self {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("oap-acp-operation-{}-{suffix}", std::process::id()));
+        let serial = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "oap-acp-operation-{}-{suffix}-{serial}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
