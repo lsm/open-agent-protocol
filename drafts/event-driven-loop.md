@@ -240,9 +240,9 @@ fits the plan.
   `tool_moved`, which `step` treats as that call's result.
 - A cancel inside the budget kills the command as today. After the move, a cancel
   of the run that moved it ends it too.
-- The job's exit watch posts `job_ended`. `step` folds the notice if the run has
-  another model request to make, holds it during a final request, and otherwise
-  the session starts a triggered run.
+- The job's exit watch posts `job_ended`. `step` folds the notice into the run's
+  next model request if a run is going, and otherwise the session starts a
+  triggered run.
 - At the limit the job gets `SIGTERM`, then `SIGKILL`, for its process group. The
   exit watch then posts `job_ended` as for any end, with a reason that tells the
   model it hit the 1 hour limit. The limit is a deadline on the job, so it needs no

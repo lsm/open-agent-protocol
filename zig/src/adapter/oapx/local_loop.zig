@@ -35,6 +35,8 @@ pub const Options = struct {
     tool_approval_ctx: ?*anyopaque = null,
     tool_approval_callback: ?ToolApprovalCallback = null,
     run_async: bool = true,
+    notices_ctx: ?*anyopaque = null,
+    notices_fn: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 = null,
 };
 
 const ApprovalDecisionState = struct {
@@ -74,6 +76,8 @@ pub const LocalLoop = struct {
     run_transcripts: std.ArrayList([]u8) = .empty,
     run_transcript_saved: []const u8 = "",
     run_async: bool,
+    notices_ctx: ?*anyopaque = null,
+    notices_fn: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) LocalLoop {
         if (options.permission_engine) |engine| engine.setBypassAll(options.permission_mode == .bypass);
@@ -84,6 +88,8 @@ pub const LocalLoop = struct {
             .tool_approval_callback = options.tool_approval_callback,
             .permission_engine = options.permission_engine,
             .run_async = options.run_async,
+            .notices_ctx = options.notices_ctx,
+            .notices_fn = options.notices_fn,
         };
     }
 
@@ -178,6 +184,8 @@ pub const LocalLoop = struct {
             .execute_tool_via_protocol_ctx = self,
             .rewrite_tool_args_fn = rewriteToolArgs,
             .rewrite_tool_args_ctx = self,
+            .notices_fn = if (self.notices_fn != null) takeNotices else null,
+            .notices_ctx = self,
         });
         self.local_agent.?.subscribeWithContext(self, onAgentEvent);
         self.local_agent.?.setCompactToolOutput(runtime.compact_output);
@@ -303,6 +311,13 @@ pub const LocalLoop = struct {
         try local.steer(msg);
         queued = true;
         try self.resumeQueuedMessagesIfIdle();
+    }
+
+    fn takeNotices(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?ai_types.Message {
+        const self = cast(ctx.?);
+        const text = (try self.notices_fn.?(self.notices_ctx, allocator)) orelse return null;
+        defer allocator.free(text);
+        return try self.makeUserMessage(text);
     }
 
     fn queueSteer(ctx: *anyopaque, text: []const u8) anyerror!void {

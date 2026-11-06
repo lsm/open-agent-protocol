@@ -72,11 +72,11 @@ or reaches its limit. The result is a notice carrying the `task_id`, the `output
 status from Decision 0059 rule 4, a bounded tail of the output and, for a job that
 reached its limit, the reason.
 
-- If a turn is running and has another model request to make, the notice is
-  folded into that request. No further run follows.
+- If a turn is running, the notice is folded into its next model request. A notice
+  that arrives during what would have been the run's final request gets one more
+  request, so the run goes on. No further run follows.
 - Otherwise a triggered run starts at once, with trigger kind `background_task`
-  and the job's `task_id`. A notice that arrives during a run's final model
-  request is held, and starts that triggered run when the run ends.
+  and the job's `task_id`.
 - Notices waiting when a request is built all go into that request.
 
 Admission, ordering and racing submits follow *One run executes at a time* in
