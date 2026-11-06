@@ -12,14 +12,9 @@ fn session_tool_catalogs_draw_the_declared_public_diagnostics() {
     let mut failures = Vec::new();
     for fixture in manifest["fixtures"].as_array().unwrap() {
         let id = fixture["id"].as_str().unwrap();
-        if !(id.starts_with("tools-catalog-")
-            || id.starts_with("tools-refresh-")
-            || id == "descriptor-leaks-attachment-fields")
-            || matches!(
-                id,
-                "tools-catalog-follows-contradicting-open"
-                    | "tools-catalog-ignores-refused-open-sources"
-            )
+        if !(id.starts_with("tools-catalog-") || id.starts_with("tools-refresh-"))
+            || fixture["mode"] == "tolerant"
+            || id == "tools-catalog-follows-contradicting-open"
         {
             continue;
         }

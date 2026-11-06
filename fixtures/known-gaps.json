@@ -66,17 +66,8 @@
     "session-settings-live-unadvertised-admitted",
     "state-redescribes-declared-source",
     "tools-call-source-mismatch",
-    "tools-catalog-alters-provided-schema",
     "tools-catalog-follows-contradicting-open",
-    "tools-catalog-ignores-refused-open-sources",
-    "tools-catalog-keeps-superseded-provided",
     "tools-catalog-leaks-attachment-env",
-    "tools-catalog-omits-attachment",
-    "tools-catalog-omits-provided",
-    "tools-catalog-redirects-source",
-    "tools-refresh-collides-with-attachment",
-    "tools-refresh-collides-with-provided",
-    "tools-refresh-removes-provided-source",
     "transcript-load-degraded-admitted-without-optin"
   ]
 }

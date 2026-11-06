@@ -554,6 +554,7 @@ impl State {
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.record_catalog(at, e);
             self.check_descriptor_catalog(at, e);
+            self.source_catalog_rules(at, e);
             self.record_limits(at, e);
             self.check_provide_pattern(at, e);
             self.check_attach_modes(at, e);
@@ -565,6 +566,7 @@ impl State {
         } else if *t == EnvelopeType::ACTION_TOOLS_LIST_RESPONSE {
             self.tools_list_admission(at, e);
             self.check_tools_list_shape(at, e);
+            self.source_catalog_rules(at, e);
             let p: ToolsListResponse = payload(e);
             if let Some(session) = p.session_id {
                 self.catalog_owners.insert(
@@ -816,11 +818,23 @@ impl State {
         if request.envelope_type != EnvelopeType::SESSION_OPEN_REQUEST {
             return;
         }
-        let tools = payload::<SessionOpenRequest>(&request.envelope).tools;
-        let session = s(&payload::<SessionState>(e).session_id);
+        let opening: SessionOpenRequest = payload(&request.envelope);
+        if self
+            .source_expectations(&os(&e.in_reply_to))
+            .iter()
+            .any(|expectation| !expectation.limit)
+        {
+            return;
+        }
+        let published: SessionState = payload(e);
+        let session = s(&published.session_id);
+        self.record_attached_sources(&session, &opening, &published);
+        let tools = opening.tools;
         let order = self.provided.entry(session).or_default();
         for tool in tools {
-            if !order.iter().any(|existing| existing.name == tool.name) {
+            if let Some(existing) = order.iter_mut().find(|existing| existing.name == tool.name) {
+                *existing = tool;
+            } else {
                 order.push(tool);
             }
         }
