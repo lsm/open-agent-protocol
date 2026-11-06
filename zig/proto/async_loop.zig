@@ -610,7 +610,6 @@ const Pending = union(enum) {
     gate: struct { id: i64, granted: bool },
     submit: struct { id: i64, text: []u8 },
     cancel: i64,
-    admit: Event,
 };
 
 const Session = struct {
@@ -625,6 +624,7 @@ const Session = struct {
     load_started_ns: u64 = 0,
     parked_size: usize = 0,
     pending: Pending = .none,
+    admission: ?Event = null,
     conn: ?*Conn = null,
     child: ?*Child = null,
     next_wait: ?*Session = null,
@@ -855,7 +855,7 @@ const Reactor = struct {
 
     fn admit(self: *Reactor, s: *Session, event: Event) anyerror!void {
         if (s.run != null) return self.feed(s, event);
-        s.pending = .{ .admit = event };
+        s.admission = event;
         self.load(s);
     }
 
@@ -1098,7 +1098,7 @@ const Reactor = struct {
         if (!config.park or s.saving or s.loading) return;
         const queued = config.park_queued and (s.phase == .model_queued or s.phase == .tool_queued);
         if (s.phase != .gate and s.phase != .idle and !queued) return;
-        if (s.pending != .none) return;
+        if (s.pending != .none or s.admission != null) return;
         const run = s.run orelse return;
         const bytes = run.encode(gpa) catch @panic("oom");
         run.destroy();
@@ -1139,7 +1139,6 @@ const Reactor = struct {
                 try self.feed(s, .cancel);
                 reply(id, "{}");
             },
-            .admit => |event| try self.feed(s, event),
         }
     }
 
@@ -1207,7 +1206,7 @@ const Reactor = struct {
             },
             .saved => |s| {
                 s.saving = false;
-                if (s.pending != .none) self.load(s);
+                if (s.pending != .none or s.admission != null) self.load(s);
             },
             .loaded => |l| {
                 defer gpa.free(l.bytes);
@@ -1215,6 +1214,10 @@ const Reactor = struct {
                 s.loading = false;
                 s.run = try Run.decode(l.bytes);
                 try self.resumes_ns.append(gpa, nowNs() - s.load_started_ns);
+                if (s.admission) |event| {
+                    s.admission = null;
+                    try self.feed(s, event);
+                }
                 try self.deliver(s);
             },
         }
