@@ -12,6 +12,9 @@ const Step = union(enum) {
     tool: struct { name: []const u8, args: []const u8 },
     drop: []const u8,
     drop_after_text: []const u8,
+    overflow,
+    cancel_then_text: []const u8,
+    cancel_then_drop: []const u8,
 };
 
 const Scenario = struct {
@@ -22,6 +25,10 @@ const Scenario = struct {
     follow_up: ?[]const u8 = null,
     cancel_in_tool: bool = false,
     max_iterations: ?u32 = null,
+    notice: ?[]const u8 = null,
+    approval: ?types.ToolApprovalDecision = null,
+    compact: bool = false,
+    seeded_result_bytes: ?usize = null,
 };
 
 const Line = struct {
@@ -39,6 +46,7 @@ const Line = struct {
     is_error: ?bool = null,
     returned_bytes: ?u64 = null,
     termination: ?[]const u8 = null,
+    outcome: ?[]const u8 = null,
     total_bytes: ?u64 = null,
     estimated_tokens: ?u64 = null,
     message_count: ?u32 = null,
@@ -58,6 +66,8 @@ const Recorder = struct {
     cancelled: std.atomic.Value(bool) = .init(false),
     steered: bool = false,
     followed: bool = false,
+    noticed: bool = false,
+    compacted: bool = false,
 
     fn add(list: *std.ArrayList(u8), a: std.mem.Allocator, line: Line) !void {
         const text = try std.json.Stringify.valueAlloc(a, line, .{ .emit_null_optional_fields = false });
@@ -87,7 +97,9 @@ fn describe(a: std.mem.Allocator, message: ai_types.Message) ![]const u8 {
         },
         .tool_result => |result| {
             try text.print(a, "tool_result:{s}:{}:", .{ result.tool_name, result.is_error });
-            for (result.content) |part| if (part == .text) try text.appendSlice(a, part.text.text);
+            for (result.content) |part| if (part == .text) {
+                if (part.text.text.len > 200) try text.print(a, "<{d} bytes>", .{part.text.text.len}) else try text.appendSlice(a, part.text.text);
+            };
         },
     }
     return text.items;
@@ -129,6 +141,7 @@ fn record(recorder: *Recorder, event: types.AgentEvent) !void {
             .stop_reason = if (payload.final_message) |final| @tagName(final.stop_reason) else null,
         },
         .run_failed => |payload| .{ .event = name, .error_message = payload.reason.slice() },
+        .compaction_end => |payload| .{ .event = name, .outcome = @tagName(payload.outcome) },
         else => .{ .event = name },
     };
     try Recorder.add(&recorder.trace, a, line);
@@ -181,6 +194,15 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     recorder.next_step += 1;
     switch (step) {
         .drop => |failure| stream.completeWithError(failure),
+        .overflow => stream.completeWithError("anthropic request failed: HTTP 400 (invalid_request_error: prompt is too long)"),
+        .cancel_then_text => |text| {
+            recorder.cancelled.store(true, .release);
+            try reply(model, a, stream, .{ .text = text });
+        },
+        .cancel_then_drop => |failure| {
+            recorder.cancelled.store(true, .release);
+            stream.completeWithError(failure);
+        },
         .drop_after_text => |failure| {
             const partial = ai_types.AssistantMessage{ .content = &.{}, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .stop, .timestamp = 0 };
             try stream.push(.{ .start = .{ .partial = partial } });
@@ -223,6 +245,37 @@ fn followUpOnce(ctx: ?*anyopaque, a: std.mem.Allocator) anyerror!?[]const ai_typ
     return try oneMessage(a, recorder.scenario.follow_up.?);
 }
 
+fn noticeOnce(ctx: ?*anyopaque, a: std.mem.Allocator) anyerror!?ai_types.Message {
+    const recorder: *Recorder = @ptrCast(@alignCast(ctx.?));
+    if (recorder.noticed or recorder.next_step == 0) return null;
+    recorder.noticed = true;
+    return .{ .user = .{ .content = .{ .text = try owned(a, recorder.scenario.notice.?) }, .timestamp = 0 } };
+}
+
+fn scriptedApproval(ctx: ?*anyopaque, request: types.ToolApprovalRequest) types.ToolApprovalDecision {
+    _ = request;
+    const recorder: *Recorder = @ptrCast(@alignCast(ctx.?));
+    return recorder.scenario.approval.?;
+}
+
+fn compactOnce(ctx: ?*anyopaque, context: *types.AgentContext, stream: *types.AgentEventStream) anyerror!bool {
+    _ = context;
+    const recorder: *Recorder = @ptrCast(@alignCast(ctx.?));
+    if (recorder.compacted or recorder.next_step == 0) return false;
+    recorder.compacted = true;
+    _ = stream.pushBlocking(.compaction_start);
+    _ = stream.pushBlocking(.{ .compaction_end = .{ .outcome = .completed } });
+    return true;
+}
+
+fn seedResult(context: *types.AgentContext, bytes: usize) !void {
+    const text = try allocator.alloc(u8, bytes);
+    defer allocator.free(text);
+    @memset(text, 'x');
+    const content = [_]ai_types.UserContentPart{.{ .text = .{ .text = text } }};
+    try context.appendMessage(try ai_types.cloneMessage(allocator, .{ .tool_result = .{ .tool_call_id = "seeded", .tool_name = "echo", .content = &content, .is_error = false, .timestamp = 0 } }));
+}
+
 fn traceModel() ai_types.Model {
     return .{ .id = "trace-model", .name = "Trace", .api = "trace-api", .provider = "trace-provider", .base_url = "", .reasoning = false, .input = &.{"text"}, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 100_000, .max_tokens = 4096 };
 }
@@ -240,10 +293,12 @@ fn runScenario(scenario: *const Scenario) !void {
     defer recorder.arena.deinit();
     defer recorder.request_arena.deinit();
 
-    const tools = [_]types.AgentTool{.{ .label = "Echo", .name = "echo", .description = "Echoes.", .parameters_schema_json = "{\"type\":\"object\"}", .execute = undefined }};
+    const approving = scenario.approval != null;
+    const tools = [_]types.AgentTool{.{ .approval_ctx = if (approving) &recorder else null, .approval_fn = if (approving) scriptedApproval else null, .label = "Echo", .name = "echo", .description = "Echoes.", .parameters_schema_json = "{\"type\":\"object\"}", .execute = undefined }};
     var context = types.AgentContext.init(allocator);
     defer context.deinit();
     context.tools = &tools;
+    if (scenario.seeded_result_bytes) |bytes| try seedResult(&context, bytes);
     const prompts = [_]ai_types.Message{try ai_types.cloneMessage(allocator, .{ .user = .{ .content = .{ .text = "start" }, .timestamp = 0 } })};
     const stream = try agent_loop.agentLoop(allocator, &prompts, &context, .{
         .model = traceModel(),
@@ -258,6 +313,10 @@ fn runScenario(scenario: *const Scenario) !void {
         .get_steering_messages_ctx = &recorder,
         .get_follow_up_messages_fn = if (scenario.follow_up != null) followUpOnce else null,
         .get_follow_up_messages_ctx = &recorder,
+        .get_notice_fn = if (scenario.notice != null) noticeOnce else null,
+        .get_notice_ctx = &recorder,
+        .compact_between_turns_fn = if (scenario.compact) compactOnce else null,
+        .compact_between_turns_ctx = &recorder,
     });
     defer _ = stream.deinitAndDestroy();
     while (stream.wait()) |event| {
@@ -310,4 +369,36 @@ test "a cancel during a tool traces as recorded" {
 
 test "a turn limit traces as recorded" {
     try runScenario(&.{ .name = "turn_limit", .expected = @embedFile("loop_traces/turn_limit.jsonl"), .steps = &tool_then_text, .max_iterations = 1 });
+}
+
+test "an overflow that withholds a result traces as recorded" {
+    try runScenario(&.{ .name = "overflow_withheld", .expected = @embedFile("loop_traces/overflow_withheld.jsonl"), .seeded_result_bytes = 6000, .steps = &.{ .overflow, .{ .text = "recovered" } } });
+}
+
+test "an overflow with nothing to withhold traces as recorded" {
+    try runScenario(&.{ .name = "overflow_nothing", .expected = @embedFile("loop_traces/overflow_nothing.jsonl"), .steps = &.{.overflow} });
+}
+
+test "a cancel during a model reply traces as recorded" {
+    try runScenario(&.{ .name = "cancel_in_model", .expected = @embedFile("loop_traces/cancel_in_model.jsonl"), .steps = &.{.{ .cancel_then_text = "cut short" }} });
+}
+
+test "a cancel during the retry wait traces as recorded" {
+    try runScenario(&.{ .name = "cancel_in_retry", .expected = @embedFile("loop_traces/cancel_in_retry.jsonl"), .steps = &.{.{ .cancel_then_drop = "read error" }} });
+}
+
+test "a notice traces as recorded" {
+    try runScenario(&.{ .name = "notice", .expected = @embedFile("loop_traces/notice.jsonl"), .notice = "a job ended", .steps = &.{ .{ .tool = .{ .name = "echo", .args = "{\"say\":\"hi\"}" } }, .{ .text = "done" } } });
+}
+
+test "an approved gate traces as recorded" {
+    try runScenario(&.{ .name = "gate_approved", .expected = @embedFile("loop_traces/gate_approved.jsonl"), .approval = .approve, .steps = &.{ .{ .tool = .{ .name = "echo", .args = "{\"say\":\"hi\"}" } }, .{ .text = "done" } } });
+}
+
+test "a rejected gate traces as recorded" {
+    try runScenario(&.{ .name = "gate_rejected", .expected = @embedFile("loop_traces/gate_rejected.jsonl"), .approval = .reject, .steps = &.{ .{ .tool = .{ .name = "echo", .args = "{\"say\":\"hi\"}" } }, .{ .text = "done" } } });
+}
+
+test "a compaction between turns traces as recorded" {
+    try runScenario(&.{ .name = "compaction", .expected = @embedFile("loop_traces/compaction.jsonl"), .compact = true, .steps = &.{ .{ .tool = .{ .name = "echo", .args = "{\"say\":\"hi\"}" } }, .{ .text = "done" } } });
 }
