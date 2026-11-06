@@ -49,6 +49,7 @@ const Harness = corpus.Harness(Driver);
 test "the synthetic Copilot cases replay through the native decoder and reducer" {
     try Harness.expectEveryCase(std.testing.allocator, &.{
         .{ .id = "completed-text", .path = "completed-text" },
+        .{ .id = "metadata-107", .path = "metadata-107" },
         .{ .id = "reasoning-usage", .path = "reasoning-usage" },
         .{ .id = "queued-busy-period", .path = "queued-busy-period" },
         .{ .id = "tool-success", .path = "tool-success" },
