@@ -20,6 +20,15 @@ fn refusal(detail: impl Into<String>) -> Error {
     }))
 }
 
+pub(crate) fn missing_model(feature: &str) -> Error {
+    Error::UnsupportedControl(Box::new(UnsupportedControl {
+        feature: feature.into(),
+        reason: CONTROL_UNSATISFIABLE,
+        detail: "the ACP agent reports no configOption whose category is model".into(),
+        ..UnsupportedControl::default()
+    }))
+}
+
 fn level(value: &str) -> ReasoningLevel {
     let lower = value.replace('\u{0130}', "i").to_lowercase();
     match lower.as_str() {
@@ -69,9 +78,10 @@ impl ModelSwitcher for Session {
                 if request.session_id != inner.state.session_id {
                     return Err(Error::InvalidSubmission);
                 }
-                let option = self.model_option.as_ref().ok_or_else(|| {
-                    refusal("the ACP agent reports no configOption whose category is model")
-                })?;
+                let option = self
+                    .model_option
+                    .as_ref()
+                    .ok_or_else(|| missing_model(FEATURE_SESSION_MODEL_SWITCH))?;
                 if !option
                     .values()
                     .iter()

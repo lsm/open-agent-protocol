@@ -84,7 +84,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-open", pin().capability_revision)
+        format!("{}-rust-switch", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
@@ -93,7 +93,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
         let expected = match key.as_str() {
             "protocol.initialize" | "capabilities" | "session.state" => SupportLevel::EMULATED,
             "session.open" => SupportLevel::NATIVE,
-            "models.list" => SupportLevel::DEGRADED,
+            "models.list" | "session.model.switch" => SupportLevel::DEGRADED,
             _ => SupportLevel::UNAVAILABLE,
         };
         assert_eq!(support.level, expected, "{key}");

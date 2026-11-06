@@ -60,9 +60,9 @@ and configured source descriptors.
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
 the same checks before opening the native session. Reopen, prompt streaming,
-model switching and interactive controls remain unavailable. The staged capability revision
-appends `-rust-open` to the catalog revision because this descriptor has
-fewer capabilities than the completed adapter. Model switching and prompt/event mapping are the next slices of #1439.
+interactive controls remain unavailable. The staged capability revision
+appends `-rust-switch` to the catalog revision because this descriptor has
+fewer capabilities than the completed adapter. Prompt/event mapping and live configuration updates are later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
@@ -100,7 +100,7 @@ opt-in. It reports the opening response's model config-option snapshot, flatteni
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-open`
+slice. The descriptor discloses the opening snapshot and uses a `-rust-switch`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -111,3 +111,28 @@ bridge. The session's remaining control methods return unavailable errors.
 
 Run `.claude/skills/verify/journeys/rust-acp-session.md` for real synthetic
 stdio, public state/catalog output, cleanup and three-validator wire proof.
+
+
+## Confirmed model switches
+
+`model_switcher().switch_model(request)` requires explicit
+`session.model.switch` degradation opt-in, the matching OAP session id and a
+model id in the opening catalog. It writes `session/set_config_option` using
+the native session/option ids. The returned list must contain exactly one
+matching option with an allowed kind and the requested current value before
+recorded state changes. Refused or unconfirmed switches preserve the previous
+state. Successful results include both the response and updated state for a
+host to publish as `session.state.updated`.
+
+Switches serialize with each other. Concurrent close releases a pending switch;
+dropping its shared RPC future cancels and reaps the process for all holders.
+The shared operation helpers retain their process in an `Arc`, and join their
+workers. Returned reasoning metadata follows the agent's confirmed thought-level
+value or label, including Go's simple lowercase handling of dotted capital I.
+Missing or unrecognized reasoning clears the previous level. Catalog values stay
+the opening snapshot while their current/default flags follow recorded state.
+
+The feature remains degraded because model identity is the agent's word.
+Unsolicited config-option updates and prompt/event mapping are later slices.
+Run `.claude/skills/verify/journeys/rust-acp-model-switch.md` for public Go/Rust
+consumer comparisons, captured native frames and wire validation.

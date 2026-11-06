@@ -6,7 +6,6 @@ use futures_util::lock::Mutex as AsyncMutex;
 use oap_adapter::{
     BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution, ModelLister,
     ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
-    UnsupportedControl,
 };
 use oap_protocol::{
     MessageSubmitResponse, ModelDescriptor, ModelsRequest, ModelsResponse, RunCancelResponse,
@@ -194,14 +193,10 @@ impl ModelLister for Session {
             {
                 return Err(Error::RunNotFound);
             }
-            let option = self.model_option.as_ref().ok_or_else(|| {
-                Error::UnsupportedControl(Box::new(UnsupportedControl {
-                    feature: FEATURE_MODELS_LIST.into(),
-                    reason: oap_adapter::CONTROL_UNSATISFIABLE,
-                    detail: "the ACP agent reports no configOption whose category is model".into(),
-                    ..UnsupportedControl::default()
-                }))
-            })?;
+            let option = self
+                .model_option
+                .as_ref()
+                .ok_or_else(|| crate::models::missing_model(FEATURE_MODELS_LIST))?;
             Ok(Catalog {
                 revision: self.revision.clone(),
                 models: ModelsResponse {
