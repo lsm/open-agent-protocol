@@ -998,7 +998,10 @@ dependencies = [
 name = "oap-adapter-acp"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "oap-adapter",
+ "oap-harness",
+ "oap-protocol",
  "serde",
  "serde_json",
 ]

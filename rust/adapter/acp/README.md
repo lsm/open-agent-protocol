@@ -48,3 +48,22 @@ Session operations and corpus replay remain subsequent slices of #1439.
 
 Run the synthetic public-consumer journey in
 `.claude/skills/verify/journeys/rust-acp-process.md` for captured wire evidence.
+
+## Adapter foundation
+
+`Adapter::new(Config)` checks an executable path, absolute process working
+directory and uniquely named configured MCP servers. `pin()` reads the current
+ACP version, capability revision and corpus from the embedded harness catalog.
+`Adapter::describe()` and the shared `Adapter::probe()` trait return its endpoint
+and configured source descriptors.
+
+This foundation advertises session capabilities as `unavailable`. Both the
+shared `Admitter::admit()` and `Adapter::open()` validate participant identity
+and reject unadvertised controls before returning a typed `session.open`
+refusal. Neither starts the configured process. The staged capability revision
+appends `-rust-foundation` to the catalog revision because this descriptor has
+fewer capabilities than the completed adapter. Session creation, model catalog
+and model switching are the next approved slices of #1439.
+
+Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
+consumer, no-spawn proof and three-validator capability exchange.
