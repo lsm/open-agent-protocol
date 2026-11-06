@@ -158,7 +158,7 @@ adapter. Five things are not:
    and events must carry copies or indexes. This is the riskiest refactor here,
    because a mistake is a use-after-free.
 3. **In-flight I/O.** A socket or a child process cannot be saved, which is why
-   only cold runs park.
+   only cold runs park: those holding neither.
 4. **Session-lifetime processes.** Background jobs and MCP servers outlive a run.
 5. **Implicit state.** The permission engine, the credential refresh lock and the
    title thread.
@@ -219,8 +219,8 @@ the lightweight task the goal asks for, and its stack is a plain struct.
 | Cancel | An event: `step` emits `abort_io`, which closes the socket or kills the child |
 
 The TLS approach was tried against a loopback LibreSSL server on TLS 1.2 and 1.3,
-feeding one byte at a time. That test used `no_verification`, so real certificate
-validation, partial writes and post-handshake messages are unverified.
+feeding one byte at a time. Stage 1 then validated real chains against real hosts.
+Partial writes and post-handshake messages are still unverified.
 
 ## Slow commands
 
@@ -395,10 +395,11 @@ Parking saves a cold run and frees it. A resident session keeps a small summary,
 and an event for a parked run loads it first. A parked run needs no thread or
 socket.
 
-**Only cold runs park:** `idle`, `gate` and `backoff`. These resume exactly. A run
-in `model` or `tool` is active and stays resident, so nothing restarts a model
-call and no tool outcome is ever unknown. This needs no wire change. A run waiting
-in `model_queued` or `tool_queued` also stays resident at first.
+**Only cold runs park:** `idle`, `gate`, `backoff`, `model_queued` and
+`tool_queued`. These resume exactly. A run in `model` or `tool` is active and stays
+resident, so nothing restarts a model call and no tool outcome is ever unknown. This
+needs no wire change. A queued run holds no socket or child, and it loads when it
+is admitted.
 
 `idle` wakes on a submit and `gate` on a resolution, but `backoff` wakes only on
 time. A parked `backoff` run therefore leaves one entry in its reactor's deadline
@@ -664,8 +665,8 @@ Linux runner, against a scripted model:
 
 Four things these runs showed carry into later stages:
 
-- The TLS handshake blocks, so it runs on a pool thread. Only records after it move
-  on the reactor.
+- The TLS handshake blocks, so it stays on the pool as designed. Only records after
+  it move on the reactor.
 - Runs queued for a model must park too. With only `idle` and `gate` parked, a
   burst held every queued run in memory, peaking at 5.8 GiB, against 752 MiB with
   queued runs parked.
