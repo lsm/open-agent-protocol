@@ -1018,6 +1018,31 @@ test "ShellJob reports a finished job's exit code and ends a running one on kill
     try std.testing.expect(std.mem.indexOf(u8, killed.getDetailsJson().?, "\"status\":\"killed\"") != null);
 }
 
+const TaskSnapshotAllocationCase = struct {
+    fn run(allocator: std.mem.Allocator, jobs: *Jobs) !void {
+        const tasks = try jobs.tasks(allocator);
+        defer {
+            for (tasks) |task| {
+                allocator.free(task.task_id);
+                allocator.free(task.tool_call_id);
+            }
+            allocator.free(tasks);
+        }
+        try std.testing.expectEqual(@as(usize, 2), tasks.len);
+        try std.testing.expectEqualStrings("call-2", tasks[1].tool_call_id);
+    }
+};
+
+test "task snapshot allocation failures release every copied field" {
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.list.deinit(std.testing.allocator);
+    var first = Jobs.Job{ .id = @constCast("task-1"), .output = @constCast("one"), .workspace_root = @constCast("/"), .tool_call_id = @constCast("call-1"), .leader = 0 };
+    var second = Jobs.Job{ .id = @constCast("task-2"), .output = @constCast("two"), .workspace_root = @constCast("/"), .tool_call_id = @constCast("call-2"), .leader = 0 };
+    try jobs.list.append(std.testing.allocator, &first);
+    try jobs.list.append(std.testing.allocator, &second);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, TaskSnapshotAllocationCase.run, .{&jobs});
+}
+
 test "background task snapshots retain call identity and host cancellation cause" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
