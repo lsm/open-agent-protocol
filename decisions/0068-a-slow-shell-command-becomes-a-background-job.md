@@ -1,7 +1,7 @@
 # Decision 0068: A Slow Shell Command Becomes a Background Job
 
 Status: accepted 2026-11-05 (the owner chose this, relayed through Neo;
-implementation follows separately)
+implementation follows separately); rule 4 amended 2026-11-06 by #1618
 Date: 2026-11-05
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
