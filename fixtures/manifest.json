@@ -13587,6 +13587,16 @@
       ]
     },
     {
+      "id": "session-task-ended-running",
+      "path": "schema-invalid/session-task-ended-running.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": ["schema_invalid"],
+      "units": ["core"],
+      "provenance": ["decisions/0068-a-slow-shell-command-becomes-a-background-job.md"]
+    },
+    {
       "id": "session-list-entry-native-id",
       "path": "schema-invalid/session-list-entry-native-id.json",
       "kind": "schema-invalid",
