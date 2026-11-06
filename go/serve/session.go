@@ -843,6 +843,13 @@ type subscriber struct {
 	ackSerial  uint64
 }
 
+func (sub *subscriber) stopRun(state *terminalState) {
+	if sub.sessionOnly {
+		state = nil
+	}
+	sub.stop(state)
+}
+
 func (sub *subscriber) acknowledge(run protocol.RunID) {
 	sub.pendMu.Lock()
 	if sub.pending[run] > 0 {
@@ -1046,7 +1053,7 @@ func (s *Session) supersedeLocked() (cohort []*subscriber, failed *terminalState
 
 func (s *Session) deliverDeferredError(cohort []*subscriber, failed *terminalState) {
 	for _, sub := range cohort {
-		sub.stop(failed)
+		sub.stopRun(failed)
 	}
 }
 
@@ -1077,7 +1084,7 @@ func (s *Session) releaseReservation() {
 	}
 	s.mu.Unlock()
 	for _, sub := range cohort {
-		sub.stop(state)
+		sub.stopRun(state)
 	}
 }
 
@@ -1216,7 +1223,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 		}
 		s.mu.Unlock()
 		for _, sub := range cohort {
-			sub.stop(state)
+			sub.stopRun(state)
 		}
 		s.releaseReservation()
 		return
@@ -1252,7 +1259,7 @@ func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 	affected := s.detachExposedLocked(runID)
 	s.mu.Unlock()
 	for _, sub := range affected {
-		sub.stop(state)
+		sub.stopRun(state)
 	}
 }
 
@@ -1291,7 +1298,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	if s.readers > 0 {
 		s.mu.Unlock()
 		for _, sub := range exposed {
-			sub.stop(end)
+			sub.stopRun(end)
 		}
 		return
 	}
@@ -1302,7 +1309,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 		}
 		s.mu.Unlock()
 		for _, sub := range exposed {
-			sub.stop(end)
+			sub.stopRun(end)
 		}
 		return
 	}
@@ -1319,10 +1326,10 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 		}
 		s.mu.Unlock()
 		for _, sub := range exposed {
-			sub.stop(end)
+			sub.stopRun(end)
 		}
 		for _, sub := range cohort {
-			sub.stop(state)
+			sub.stopRun(state)
 		}
 		return
 	}
@@ -1330,7 +1337,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	subs := s.detachRunSubsLocked()
 	s.mu.Unlock()
 	for _, sub := range subs {
-		sub.stop(end)
+		sub.stopRun(end)
 	}
 }
 

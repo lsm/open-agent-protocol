@@ -293,3 +293,23 @@ func TestSessionOnlySubscriptionSurvivesRunStreamFailure(t *testing.T) {
 		t.Fatalf("session event: %+v, %v", event, err)
 	}
 }
+
+func TestClosedSessionOnlySubscriptionDoesNotInheritRunFailure(t *testing.T) {
+	source := &eventSourceSession{events: make(chan base.Result, 1)}
+	session := newSession("s", "test", source, nil)
+	session.mu.Lock()
+	session.runID, session.nextSerial, session.readers = "r", 1, 1
+	session.serials["r"] = 1
+	session.mu.Unlock()
+	sub, _, _, ok := session.subscribe(1, true)
+	if !ok {
+		t.Fatal("subscribe")
+	}
+	stream := &Subscription{session: session, ctx: context.Background(), sub: sub, positions: make(map[protocol.RunID]uint64)}
+	defer stream.Close()
+	session.markClosed()
+	session.exitReader("r", &terminalState{err: errors.New("run failed after close")})
+	if _, err := stream.NextWithin(time.Second); !errors.Is(err, io.EOF) {
+		t.Fatalf("closed session stream: %v, want EOF", err)
+	}
+}
