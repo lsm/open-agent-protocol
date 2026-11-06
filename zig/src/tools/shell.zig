@@ -874,6 +874,24 @@ test "a moved result shows text whose last bytes cut a character at either end" 
     try std.testing.expect(std.mem.indexOf(u8, text, "tail") != null);
 }
 
+test "a command started while a job runs inherits none of the job's pipes" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 50;
+
+    var before = try movedCase(&jobs, &case, "ls /dev/fd | wc -l");
+    defer before.deinit(std.testing.allocator);
+    var moved = try movedCase(&jobs, &case, "sleep 30");
+    defer moved.deinit(std.testing.allocator);
+    var after = try movedCase(&jobs, &case, "ls /dev/fd | wc -l");
+    defer after.deinit(std.testing.allocator);
+    jobs.endAll();
+    try std.testing.expectEqualStrings(before.content.slice()[0].text.text, after.content.slice()[0].text.text);
+}
+
 test "a command within its budget answers as it always did and leaves no job" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
