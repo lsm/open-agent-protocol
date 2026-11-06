@@ -7539,6 +7539,38 @@
       ]
     },
     {
+      "id": "queue-compound-open-model-anchor",
+      "path": "valid/queue-compound-open-model-anchor.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "queue",
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0007-queue-delivery.md",
+        "decisions/0009-compound-open.md"
+      ]
+    },
+    {
+      "id": "queue-compound-open-model-genesis",
+      "path": "valid/queue-compound-open-model-genesis.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "queue",
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0007-queue-delivery.md",
+        "decisions/0009-compound-open.md"
+      ]
+    },
+    {
       "id": "queue-open-fixes-the-genesis-model",
       "path": "valid/queue-open-fixes-the-genesis-model.json",
       "kind": "positive",
