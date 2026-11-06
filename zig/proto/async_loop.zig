@@ -316,7 +316,7 @@ const Run = struct {
 
     fn create(session_id: []const u8, workspace: []const u8, ask: bool) !*Run {
         const run = try gpa.create(Run);
-        run.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .session_id = "", .workspace = "", .ask = ask };
+        run.* = .{ .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator), .session_id = "", .workspace = "", .ask = ask };
         const a = run.arena.allocator();
         run.session_id = try a.dupe(u8, session_id);
         run.workspace = try a.dupe(u8, workspace);
@@ -351,7 +351,7 @@ const Run = struct {
     }
 
     fn decode(bytes: []const u8) !*Run {
-        var parsed = try std.json.parseFromSlice(Snapshot, gpa, bytes, .{});
+        var parsed = try std.json.parseFromSlice(Snapshot, std.heap.page_allocator, bytes, .{});
         defer parsed.deinit();
         const s = parsed.value;
         const run = try Run.create(s.session_id, s.workspace, s.ask);
@@ -610,6 +610,7 @@ const Pending = union(enum) {
     gate: struct { id: i64, granted: bool },
     submit: struct { id: i64, text: []u8 },
     cancel: i64,
+    admit: Event,
 };
 
 const Session = struct {
@@ -687,6 +688,7 @@ const Config = struct {
     park: bool = false,
     park_dir: []const u8 = "",
     history_kib: usize = 0,
+    park_queued: bool = false,
     host_port: u16 = 0,
 };
 
@@ -839,7 +841,7 @@ const Reactor = struct {
         while (self.model_running < config.model_limit / config.reactors) {
             const s = self.model_wait.pop() orelse return;
             self.model_running += 1;
-            try self.feed(s, .model_admitted);
+            try self.admit(s, .model_admitted);
         }
     }
 
@@ -847,8 +849,14 @@ const Reactor = struct {
         while (self.tool_running < config.tool_limit / config.reactors) {
             const s = self.tool_wait.pop() orelse return;
             self.tool_running += 1;
-            try self.feed(s, .tool_admitted);
+            try self.admit(s, .tool_admitted);
         }
+    }
+
+    fn admit(self: *Reactor, s: *Session, event: Event) anyerror!void {
+        if (s.run != null) return self.feed(s, event);
+        s.pending = .{ .admit = event };
+        self.load(s);
     }
 
     fn firstByteTimer(self: *Reactor, s: *Session, ms: u32) void {
@@ -1088,7 +1096,8 @@ const Reactor = struct {
 
     fn maybePark(self: *Reactor, s: *Session) void {
         if (!config.park or s.saving or s.loading) return;
-        if (s.phase != .gate and s.phase != .idle) return;
+        const queued = config.park_queued and (s.phase == .model_queued or s.phase == .tool_queued);
+        if (s.phase != .gate and s.phase != .idle and !queued) return;
         if (s.pending != .none) return;
         const run = s.run orelse return;
         const bytes = run.encode(gpa) catch @panic("oom");
@@ -1130,6 +1139,7 @@ const Reactor = struct {
                 try self.feed(s, .cancel);
                 reply(id, "{}");
             },
+            .admit => |event| try self.feed(s, event),
         }
     }
 
@@ -1547,6 +1557,7 @@ pub fn main() !void {
     config.tool_limit = envNumber("PROTO_TOOL_LIMIT", default_tool_limit);
     config.park = default_park or c.getenv("PROTO_PARK") != null;
     config.history_kib = envNumber("PROTO_HISTORY_KIB", 0);
+    config.park_queued = c.getenv("PROTO_PARK_QUEUED") != null;
     if (config.park) {
         const dir = std.mem.span(c.getenv("TMPDIR") orelse return error.NoTmp);
         const path = try std.fmt.allocPrintSentinel(gpa, "{s}/park", .{dir}, 0);
