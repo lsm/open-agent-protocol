@@ -73,7 +73,8 @@ fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const
     while (true) {
         if (common.isCancelled(cancel_token)) return error.Cancelled;
         if (comptime builtin.os.tag != .windows) {
-            if (budget_ms) |budget| if (term == null and common.durationMs(start_ms) >= budget) {
+            if (budget_ms) |budget| if (common.durationMs(start_ms) >= budget) {
+                if (term) |t| return .{ .finished = try finish(allocator, &multi_reader, t, false) };
                 const stdout_head = try allocator.dupe(u8, stdout_reader.buffered());
                 errdefer allocator.free(stdout_head);
                 const stderr_head = try allocator.dupe(u8, stderr_reader.buffered());
