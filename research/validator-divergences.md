@@ -649,3 +649,12 @@ reported once where Go reports it twice, and pack-member schema errors that
 Rust reports at `/payload`. `.claude/skills/verify/scripts/rust-go-parity.py`
 keeps the list exact. None changes a verdict, so none is an open item; each is
 Rust port work.
+
+## Compound-open model capture ordering (0007, 0009)
+
+The two `queue-compound-open-model-*` fixtures are valid in Go and Rust. Zig
+checks the capture before the same response admits its message's run and records
+an opening model before that admission installs a session mutation. It rejects
+the anchor with `session_state_mismatch` and genesis with
+`premature_session_mutation`. Both observed Zig gaps are listed in
+`fixtures/known-gaps.json`; repairing Zig is outside the Rust validator lane.

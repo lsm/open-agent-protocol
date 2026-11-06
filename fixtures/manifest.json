@@ -7549,6 +7549,9 @@
         "queue",
         "compound-open"
       ],
+      "rules": [
+        "0007#a-reservations-model-control-applies-at-promotion/9"
+      ],
       "provenance": [
         "decisions/0007-queue-delivery.md",
         "decisions/0009-compound-open.md"
@@ -7564,6 +7567,9 @@
       "units": [
         "queue",
         "compound-open"
+      ],
+      "rules": [
+        "0007#a-reservations-model-control-applies-at-promotion/3"
       ],
       "provenance": [
         "decisions/0007-queue-delivery.md",
