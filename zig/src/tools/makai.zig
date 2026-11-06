@@ -6161,6 +6161,7 @@ fn serveFatalMessage(err: anyerror) ?[]const u8 {
         error.MalformedLine => SERVE_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => SERVE_FRAME_TOO_LARGE_MESSAGE,
+        error.EventStreamFailed => "oapx serve agent: the adapter event stream failed; the endpoint is closing\n",
         else => null,
     };
 }
@@ -6171,6 +6172,7 @@ fn backendFatalMessage(err: anyerror) ?[]const u8 {
         error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
+        error.EventStreamFailed => "oapx serve agent --backend: the adapter event stream failed; the endpoint is closing\n",
         else => null,
     };
 }

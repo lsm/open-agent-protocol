@@ -332,12 +332,27 @@ subscriptions on one session stay attributable.
 | subscription line | meaning |
 | --- | --- |
 | `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence of that run it missed |
-| `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
+| `"event":"envelope"` | one event; a run event repeats `sequence` outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes, and `run_id` and `session_id` say which — `TestEventsSignalAnOverflowWithItsRunAndCursor` |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available` and `latest_available` bound what is |
 | `"event":"oap-session-closed"` | the session closed under the subscription, named by `session_id` — `TestEventsSignalAClosedSessionByName` |
 | `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
+
+In the Zig hub an adapter may also deliver session-scoped events on the same
+ordered channel. These have `session_id` without `run_id` and carry their own
+session-domain `sequence` inside the envelope. They go live to subscribers,
+do not advance a run cursor, and are not replayed. After an overflow the host
+reads session state to recover tasks, as well as resuming any run cursor. The
+stdio wrapper leaves out its outer `sequence` for session events. If one is
+unframeable, stdio reports the last delivered run cursor through
+`oap-frame-limit`; when there is no run cursor it uses `oap-stream-failed`
+without a run id. In either case the host reads session state. Go's
+session-event channel follows separately. The sequence belongs to the hosted
+session for its lifetime, not to a subscription or a transport connection;
+independent endpoints host distinct sessions and do not share counters. The
+Zig hub does not yet publish `session.state.updated`; when it does, those events
+share this counter.
 
 The stdio overflow regression drives one producer run, then drains its queued
 lines. It checks that the overflow names that run and that its cursor is not
@@ -714,7 +729,8 @@ text/event-stream` and `Cache-Control: no-cache`, flushed before the first
 frame. An envelope is written `id: <run_id>:<sequence>\ndata: <envelope>\n\n`, so a
 client may reconnect with `Last-Event-ID` and land on the same cursor; the id
 splits at its last colon, and a bare sequence is still read as the current run's.
-A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
+A session-scoped envelope has no SSE `id`: it does not change the last run
+cursor and is not replayed. A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
 with no `id`: a reconnect then resumes from the last id it saw, which can repeat
 events but never lands on another run. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 `id`, because a signal is not a position in the stream.
@@ -741,7 +757,7 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | SSE rule | pinned by |
 | --- | --- |
 | An envelope arrives in emission order with its sequences | `TestSSEEnvelopeOrderAndSequences`, `TestClientRejectsFrameIDDisagreement` |
-| The `id:` field and the envelope's own `sequence` agree; a frame whose `id` disagrees is refused | `TestClientRejectsFrameIDDisagreement` |
+| A run envelope's `id:` field and its own `sequence` agree; a frame whose `id` disagrees is refused | `TestClientRejectsFrameIDDisagreement` |
 | An `after` cursor replays the journal's retained suffix | `TestSSEReplayAfterCursor` |
 | `Last-Event-ID` reconnects | `TestSSELastEventIDReconnect` |
 | An explicit `?after=` wins over the header | `TestSSEQueryCursorWinsOverHeader` |
