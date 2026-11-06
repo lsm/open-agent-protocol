@@ -16,7 +16,7 @@ python3 .claude/skills/verify/scripts/rust-pack-declarations.py --output-dir /tm
 
 The journey builds a separate consumer of the public Rust crate, reads positive
 pack descriptors and checks each shared declaration refusal against Go's public
-CLI and the manifest, plus ten synthetic shape/gate/namespace refusals. Inspect `results.json` and the retained raw outputs. The
+CLI and the manifest, plus twelve synthetic shape/gate/namespace refusals, including two-label core roots. Inspect `results.json` and the retained raw outputs. The
 consumer labels every result `declarations`; success makes only that staged claim.
 All inputs are synthetic, with no endpoints or provider calls.
 

@@ -114,10 +114,9 @@ fn contained(id: &str, name: &str) -> Option<&'static str> {
     if name.starts_with(&format!("{id}.")) {
         return None;
     }
-    let root = name.split('.').take(2).collect::<Vec<_>>().join(".");
     let core = crate::validator::envelope_branches()
         .keys()
-        .any(|name| name.starts_with(&format!("{root}.")));
+        .any(|core| core.split('.').take(2).eq(name.split('.').take(2)));
     Some(if name.split('.').count() < 3 || core {
         "pack_unprefixed_name"
     } else {
