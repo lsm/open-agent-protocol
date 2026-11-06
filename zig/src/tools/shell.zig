@@ -1035,6 +1035,35 @@ test "a command that reaches its limit is ended and the model is told why" {
     try expectTask(&jobs, .failed, .expired);
 }
 
+const EndlessCopy = struct {
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn run(self: *EndlessCopy, stdout: std.posix.fd_t, stderr: std.posix.fd_t, stop: std.posix.fd_t, file: std.Io.File) void {
+        Jobs.copyOutput(stdout, stderr, stop, file);
+        self.done.store(true, .release);
+    }
+};
+
+test "the copier stops once the job has ended, however much a surviving writer still sends" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = common.defaultIo();
+    const stdout = try std.Io.Dir.openFileAbsolute(io, "/dev/zero", .{});
+    const stderr = try std.Io.Dir.openFileAbsolute(io, "/dev/zero", .{});
+    const sink = try std.Io.Dir.openFileAbsolute(io, "/dev/null", .{ .mode = .write_only });
+    var stop: [2]std.posix.fd_t = undefined;
+    try closedOnExecPipe(&stop);
+    var copy = EndlessCopy{};
+    const thread = try std.Thread.spawn(.{}, EndlessCopy.run, .{ &copy, stdout.handle, stderr.handle, stop[0], sink });
+    _ = std.posix.system.close(stop[1]);
+    const by = common.nowMs() + 3_000;
+    while (!copy.done.load(.acquire) and common.nowMs() < by) compat.time.sleepMs(5);
+    if (!copy.done.load(.acquire)) {
+        thread.detach();
+        return error.CopierNeverStopped;
+    }
+    thread.join();
+}
+
 test "a moved command's task names the tool call that started it" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
