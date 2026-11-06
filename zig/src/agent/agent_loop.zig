@@ -1440,11 +1440,9 @@ fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_type
 
 fn appendNotice(allocator: std.mem.Allocator, config: AgentLoopConfig, context: *AgentContext, event_stream: *AgentEventStream) !bool {
     const get_notice = config.get_notice_fn orelse return false;
-    var notice = (try get_notice(config.get_notice_ctx, allocator)) orelse return false;
-    context.appendMessage(notice) catch |err| {
-        notice.deinit(allocator);
-        return err;
-    };
+    try context.messages.ensureUnusedCapacity(context.allocator, 1);
+    const notice = (try get_notice(config.get_notice_ctx, allocator)) orelse return false;
+    context.messages.appendAssumeCapacity(notice);
     try pushAgentEvent(event_stream, .{ .message_start = .{ .message = notice } });
     try pushAgentEvent(event_stream, .{ .message_end = .{ .message = notice } });
     return true;

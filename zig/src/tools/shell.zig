@@ -39,11 +39,10 @@ pub const Jobs = struct {
     };
 
     pub const Notice = struct {
-        task_id: []u8,
+        task_id: []const u8,
         text: []u8,
 
         pub fn deinit(self: Notice, allocator: std.mem.Allocator) void {
-            allocator.free(self.task_id);
             allocator.free(self.text);
         }
     };
@@ -167,13 +166,14 @@ pub const Jobs = struct {
         for (self.list.items) |job| {
             if (!job.owesNotice()) continue;
             try appendNotice(allocator, &text, job);
-            job.noticed = true;
             first = first orelse job.id;
         }
         const task_id = first orelse return null;
-        const owned = try allocator.dupe(u8, task_id);
-        errdefer allocator.free(owned);
-        return .{ .task_id = owned, .text = try text.toOwnedSlice(allocator) };
+        const owned = try text.toOwnedSlice(allocator);
+        for (self.list.items) |job| {
+            if (job.owesNotice()) job.noticed = true;
+        }
+        return .{ .task_id = task_id, .text = owned };
     }
 
     pub fn anyRunning(self: *Jobs) bool {

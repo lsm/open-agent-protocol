@@ -504,7 +504,6 @@ pub const Session = struct {
     fn takeJobNotices(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
         const jobs: *local_tools.shell.Jobs = @ptrCast(@alignCast(ctx.?));
         const notice = (try jobs.takeNotice(allocator)) orelse return null;
-        allocator.free(notice.task_id);
         return notice.text;
     }
 
@@ -1036,17 +1035,18 @@ pub const Session = struct {
     }
 
     fn admitNotices(self: *Session) contract.Failure!void {
+        if (!self.jobs.noticeWaiting()) return;
         try self.runs.ensureUnusedCapacity(self.gpa, 1);
-        const notice = (self.jobs.takeNotice(self.gpa) catch return error.OutOfMemory) orelse return;
-        errdefer self.gpa.free(notice.text);
-        defer self.gpa.free(notice.task_id);
         const keep = self.keep.allocator();
         const run = try keep.create(Run);
+        const id = try self.owner.nextID(keep, "run");
+        const model_id = (try self.currentModelRef(keep)) orelse "";
+        const notice = (self.jobs.takeNotice(self.gpa) catch return error.OutOfMemory) orelse return;
         run.* = .{
-            .id = try self.owner.nextID(keep, "run"),
+            .id = id,
             .input_text = notice.text,
-            .model_id = (try self.currentModelRef(keep)) orelse "",
-            .trigger_task = try keep.dupe(u8, notice.task_id),
+            .model_id = model_id,
+            .trigger_task = notice.task_id,
             .status = .queued,
         };
         self.runs.insertAssumeCapacity(self.firstWaiting(), run);

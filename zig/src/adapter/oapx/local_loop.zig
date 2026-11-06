@@ -316,8 +316,7 @@ pub const LocalLoop = struct {
     fn takeNotices(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?ai_types.Message {
         const self = cast(ctx.?);
         const text = (try self.notices_fn.?(self.notices_ctx, allocator)) orelse return null;
-        defer allocator.free(text);
-        return try self.makeUserMessage(text);
+        return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
     }
 
     fn queueSteer(ctx: *anyopaque, text: []const u8) anyerror!void {
