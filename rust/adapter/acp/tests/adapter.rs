@@ -25,7 +25,7 @@ fn request() -> OpenRequest {
 }
 
 #[test]
-fn invalid_configuration_is_refused_without_starting_an_agent() {
+fn invalid_configuration_is_refused() {
     for (configured, text) in [
         (Config::default(), "executable is required"),
         (
@@ -99,7 +99,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
 }
 
 #[test]
-fn public_open_and_admission_refuse_each_unavailable_control_before_spawning() {
+fn public_open_and_admission_return_typed_control_refusals() {
     let adapter = Adapter::new(config()).unwrap();
     for (request, feature) in [
         (request(), "session.open"),
