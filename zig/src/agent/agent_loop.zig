@@ -1438,6 +1438,18 @@ fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_type
     state.final_message = cloned;
 }
 
+fn appendNotice(allocator: std.mem.Allocator, config: AgentLoopConfig, context: *AgentContext, event_stream: *AgentEventStream) !bool {
+    const get_notice = config.get_notice_fn orelse return false;
+    var notice = (try get_notice(config.get_notice_ctx, allocator)) orelse return false;
+    context.appendMessage(notice) catch |err| {
+        notice.deinit(allocator);
+        return err;
+    };
+    try pushAgentEvent(event_stream, .{ .message_start = .{ .message = notice } });
+    try pushAgentEvent(event_stream, .{ .message_end = .{ .message = notice } });
+    return true;
+}
+
 fn runCancelled(config: AgentLoopConfig) bool {
     const token = config.cancel_token orelse return false;
     return token.isCancelled();
@@ -2332,6 +2344,7 @@ fn runLoop(
                     allocator.free(msgs);
                 }
             }
+            _ = try appendNotice(allocator, config, context, event_stream);
 
             try pushAgentEvent(event_stream, .turn_start);
 
@@ -2427,6 +2440,8 @@ fn runLoop(
                             allocator.free(queued_steering);
                         }
                     }
+
+                    if (try appendNotice(allocator, config, context, event_stream)) continue;
 
                     if (config.get_follow_up_messages_fn) |get_follow_up| {
                         if (try get_follow_up(config.get_follow_up_messages_ctx, allocator)) |follow_ups| {

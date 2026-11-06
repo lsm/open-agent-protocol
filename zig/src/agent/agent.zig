@@ -34,7 +34,7 @@ pub const GetApiKeyFn = types.GetApiKeyFn;
 pub const GetSteeringMessagesFn = types.GetSteeringMessagesFn;
 pub const GetFollowUpMessagesFn = types.GetFollowUpMessagesFn;
 
-pub const NoticesFn = *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?ai_types.Message;
+pub const NoticesFn = types.GetNoticeFn;
 
 pub const AgentOptions = struct {
     initial_state: ?AgentState = null,
@@ -1297,6 +1297,8 @@ pub const Agent = struct {
             .transform_context_ctx = self._transform_context_ctx,
             .get_steering_messages_fn = getSteeringMessages,
             .get_steering_messages_ctx = self,
+            .get_notice_fn = self._notices_fn,
+            .get_notice_ctx = self._notices_ctx,
             .prompts_are_steering = options.prompts_are_steering,
             .get_follow_up_messages_fn = getFollowUpMessages,
             .get_follow_up_messages_ctx = self,
@@ -1487,16 +1489,7 @@ pub const Agent = struct {
             return null;
         }
 
-        const steering = try self.dequeueSteeringMessages();
-        const take = self._notices_fn orelse return steering;
-        var notice = (try take(self._notices_ctx, self._allocator)) orelse return steering;
-        errdefer notice.deinit(self._allocator);
-        const held: []const ai_types.Message = steering orelse &.{};
-        const merged = try self._allocator.alloc(ai_types.Message, held.len + 1);
-        @memcpy(merged[0..held.len], held);
-        merged[held.len] = notice;
-        if (steering) |owned| self._allocator.free(owned);
-        return merged;
+        return self.dequeueSteeringMessages();
     }
 
     fn getFollowUpMessages(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]ai_types.Message {

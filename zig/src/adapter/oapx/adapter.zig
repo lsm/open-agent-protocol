@@ -773,7 +773,7 @@ pub const Session = struct {
         var settled: std.ArrayList(oap_types.RunPosition) = .empty;
         var position: u64 = 0;
         for (self.runs.items) |run| {
-            if (!listsId(admitted.items, run.submit_id)) try admitted.append(arena, run.submit_id);
+            if (run.submit_id.len > 0 and !listsId(admitted.items, run.submit_id)) try admitted.append(arena, run.submit_id);
             if (run.terminal) {
                 try settled.append(arena, .{ .run_id = run.id, .sequence = run.next_sequence - 1 });
                 continue;

@@ -245,11 +245,12 @@ pub const Jobs = struct {
         const size = (file.stat(common.defaultIo()) catch return allocator.dupe(u8, "")).size;
         const length: usize = @intCast(@min(size, notice_tail_bytes));
         const tail = try allocator.alloc(u8, length);
-        errdefer allocator.free(tail);
+        defer allocator.free(tail);
         const read = file.readPositionalAll(common.defaultIo(), tail, size - length) catch 0;
-        if (std.unicode.utf8ValidateSlice(tail[0..read])) return allocator.realloc(tail, read);
-        allocator.free(tail);
-        return allocator.dupe(u8, "(not text)");
+        var first: usize = 0;
+        while (first < read and tail[first] & 0xC0 == 0x80) first += 1;
+        const text = tail[first..read];
+        return allocator.dupe(u8, if (std.unicode.utf8ValidateSlice(text)) text else "(not text)");
     }
 
     fn outputBytes(job: Job) u64 {
@@ -945,7 +946,7 @@ test "a notice whose tail starts inside a character is still text" {
     defer jobs.deinit();
 
     const tools = sessionTools(&jobs);
-    const wide = try backgroundArgs(&case, "i=0; while [ $i -lt 1500 ]; do printf '\\303\\251'; i=$((i+1)); done; printf x");
+    const wide = try backgroundArgs(&case, "i=0; while [ $i -lt 1500 ]; do printf '\u{e9}'; i=$((i+1)); done; printf x");
     defer std.testing.allocator.free(wide);
     var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-wide", wide, null, null, null, std.testing.allocator);
     defer started.deinit(std.testing.allocator);
