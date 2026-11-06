@@ -23,17 +23,11 @@ impl State {
             }
         }
         for descriptor in attached {
-            if let Some(source) = published.sources.iter().find(|source| {
-                source.id == descriptor.id
-                    && source.kind == descriptor.kind
-                    && [
-                        (&descriptor.display_name, &source.display_name),
-                        (&descriptor.protocol, &source.protocol),
-                        (&descriptor.endpoint, &source.endpoint),
-                    ]
-                    .iter()
-                    .all(|(asked, got)| asked.is_empty() || asked == got)
-            }) {
+            if let Some(source) = published
+                .sources
+                .iter()
+                .find(|source| super::source_state::compatible(descriptor, source))
+            {
                 *descriptor = source.clone();
             }
         }

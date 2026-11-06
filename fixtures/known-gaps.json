@@ -10,8 +10,6 @@
     "queue-compound-open-model-genesis"
   ],
   "rust": [
-    "call-omits-a-process-source",
-    "call-omits-published-source",
     "compaction-focus-degraded-without-optin",
     "compaction-requested-in-a-submitted-run",
     "compaction-run-not-compacted",
@@ -21,7 +19,6 @@
     "control-call-recovered-ack-omitted",
     "control-state-acknowledges-unpending",
     "control-state-omits-acknowledged",
-    "descriptor-call-source-mismatch",
     "descriptor-leaks-attachment-fields",
     "ext-advertised-key-gated",
     "ext-descriptor-member-advertised",
@@ -48,10 +45,6 @@
     "models-position-in-another-session",
     "models-position-in-another-session-no-current",
     "models-unadvertised-wrong-reason",
-    "open-attach-contradicts-stated-member",
-    "open-sources-duplicate-attachment",
-    "open-sources-state-disagrees-with-catalog",
-    "open-sources-state-omits-attachment",
     "session-list-degraded-admitted-without-optin",
     "session-list-unadvertised-wrong-refusal",
     "session-reopen-degraded-admitted-without-optin",
@@ -64,9 +57,6 @@
     "session-settings-live-policy-unadvertised-admitted",
     "session-settings-live-run-before-state",
     "session-settings-live-unadvertised-admitted",
-    "state-redescribes-declared-source",
-    "tools-call-source-mismatch",
-    "tools-catalog-follows-contradicting-open",
     "tools-catalog-leaks-attachment-env",
     "transcript-load-degraded-admitted-without-optin"
   ]
