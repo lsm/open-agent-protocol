@@ -33,7 +33,17 @@ deadline and ten seconds, and its timeout leaves the endpoint usable.
 The client records sent requests and received envelopes for `transcript()`.
 `probe` omits the request and its answers. `close_input` followed by `wait`
 drains stdout and observes the exit status, with an exit grace capped at thirty
-seconds. Conformance checks follow in subsequent slices.
+seconds.
+
+`Runner` borrows a client to drive the initialization, capabilities and open
+phases. Each phase records named `Check` results. Discovery binds subsequent
+requests to the capability revision, checks the core model-switch claim, and
+checks that open returns the requested session. An empty session name selects
+`conformance`. `checks` exposes the current results and `into_checks` releases
+the client borrow. Object payload decoding uses the shared Go-compatible
+decoder, and malformed payload diagnostics retain type/category information.
+
+The full-suite entry point follows the remaining check ports.
 
 The public consumer journey is
 `.claude/skills/verify/journeys/rust-conformance-wire.md`.
@@ -41,3 +51,5 @@ Process lifecycle coverage is in
 `.claude/skills/verify/journeys/rust-conformance-process.md`.
 Correlated-wait coverage is in
 `.claude/skills/verify/journeys/rust-conformance-client.md`.
+Bootstrap coverage is in
+`.claude/skills/verify/journeys/rust-conformance-bootstrap.md`.

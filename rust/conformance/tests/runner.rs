@@ -111,7 +111,10 @@ fn a_fault_is_reported_under_the_obligation_that_failed() {
             "{mode}: {:?}",
             runner.checks()
         );
-        assert!(runner.checks().iter().all(|check| !check.detail.contains("synthetic-private-sentinel")));
+        assert!(runner
+            .checks()
+            .iter()
+            .all(|check| !check.detail.contains("synthetic-private-sentinel")));
     }
 }
 
