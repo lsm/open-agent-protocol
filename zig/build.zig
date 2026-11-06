@@ -5,6 +5,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const repeat_mod = b.createModule(.{ .root_source_file = b.path("src/compat/repeat.zig"), .target = target, .optimize = optimize });
     const repeat_test = b.addTest(.{ .root_module = repeat_mod });
+    const reactor_mod = b.createModule(.{ .root_source_file = b.path("src/reactor/poller_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    const reactor_test = b.addTest(.{ .root_module = reactor_mod });
+    const test_unit_reactor_step = b.step("test-unit-reactor", "Run the reactor poller tests");
+    test_unit_reactor_step.dependOn(&b.addRunArtifact(reactor_test).step);
     const manifest: struct {
         name: @TypeOf(.makai),
         version: []const u8,
@@ -2897,6 +2901,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(repeat_test).step);
+    test_step.dependOn(test_unit_reactor_step);
     test_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_session_test).step);
@@ -3159,6 +3164,7 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_core_step = b.step("test-unit-core", "Run core types unit tests");
     test_unit_core_step.dependOn(&b.addRunArtifact(repeat_test).step);
+    test_unit_core_step.dependOn(test_unit_reactor_step);
     test_unit_core_step.dependOn(&b.addRunArtifact(event_stream_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(streaming_json_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(ai_types_test).step);
