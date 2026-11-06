@@ -1,7 +1,8 @@
 use oap_protocol::{
     CapabilityDescriptor, EnvelopeType, ErrorResponse, ModelsRequest, ModelsResponse,
     SessionListRequest, SessionListResponse, SessionListState, SessionModelSwitchRequest,
-    SessionModelSwitchResponse, SessionState, SessionStateRequest,
+    SessionModelSwitchResponse, SessionState, SessionStateRequest, FEATURE_MODELS_LIST,
+    FEATURE_SESSION_LIST,
 };
 
 use super::{decode_payload, supports, Check, Runner};
@@ -16,7 +17,7 @@ impl Runner<'_> {
         if !preferred.is_empty() {
             return preferred.to_owned();
         }
-        if !supports(descriptor, "models.list") {
+        if !supports(descriptor, FEATURE_MODELS_LIST) {
             return current.to_owned();
         }
         let payload = ModelsRequest {
@@ -59,7 +60,7 @@ impl Runner<'_> {
         let Some(answer) = self.result(NAME, result) else {
             return;
         };
-        let passed = if supports(descriptor, "session.list") {
+        let passed = if supports(descriptor, FEATURE_SESSION_LIST) {
             if answer.envelope_type != EnvelopeType::SESSION_LIST_RESPONSE {
                 false
             } else {

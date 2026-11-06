@@ -1,7 +1,7 @@
 use oap_protocol::{
     CapabilitiesRequest, CapabilityDescriptor, Envelope, EnvelopeId, EnvelopeType, ErrorResponse,
     InitializeRequest, InitializeResponse, Participant, SessionId, SessionOpenRequest,
-    SessionState, SupportLevel, PROFILE, VERSION,
+    SessionState, SupportLevel, FEATURE_SESSION_MODEL_SWITCH, PROFILE, VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -108,7 +108,7 @@ impl<'a> Runner<'a> {
             Check::passed(REVISION)
         });
         const SWITCH: &str = "core session.model.switch is advertised";
-        let supported = supports(&descriptor, "session.model.switch");
+        let supported = supports(&descriptor, FEATURE_SESSION_MODEL_SWITCH);
         self.checks.push(if supported {
             Check::passed(SWITCH)
         } else {
