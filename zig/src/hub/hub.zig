@@ -6108,3 +6108,22 @@ test "a large batch leaves time between slices and eventually delivers every ses
     }
     try testing.expect(last_seen);
 }
+
+test "a subscription after its hold deadline starts after the expired backlog" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .hold_ns = 5 * std.time.ns_per_ms });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "memory", .{ .session_id = "deadline" });
+    _ = try hub.hold(arena, "deadline");
+    const request = try submitFor(arena, "deadline");
+    _ = try hub.submit(arena, "deadline", &request, "");
+    try hub.pump(testing.allocator, 0);
+    tick(6 * std.time.ns_per_ms);
+    const adopted = try hub.subscribe(arena, "deadline", .{});
+    try testing.expect(adopted.next() == null);
+}
