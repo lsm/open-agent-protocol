@@ -139,7 +139,7 @@ pub const Jobs = struct {
             self.mutex.unlock();
             return error.UnknownJob;
         };
-        if (kill and job.term == null) {
+        if (kill and job.term == null and job.cause == null) {
             job.killed = true;
             job.cause = .cancelled_by_model;
         }
