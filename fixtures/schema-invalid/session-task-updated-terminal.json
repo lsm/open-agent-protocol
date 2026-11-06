@@ -1,0 +1,3 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.task.updated","id":"event-1","session_id":"s-1","sequence":1,"payload":{"task_id":"t-1","status":"completed"}}
+]

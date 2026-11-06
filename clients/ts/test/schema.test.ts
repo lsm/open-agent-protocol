@@ -63,6 +63,15 @@ function sample<T extends object>(
 }
 
 const samples: PayloadSample[] = [
+  sample<protocol.SessionTaskSchedule>('SessionTaskSchedule', 'session.schema.json', 'taskSchedule', { expression: '* * * * *', time_zone: 'UTC', next_fire_at_ms: 1, recurring: true, durable: false, expires_at_ms: 2 }),
+  sample<protocol.SessionTask>('SessionTask', 'session.schema.json', 'task', { task_id: 't', kind: 'command', label: 'build', status: 'running', run_id: 'r', tool_call_id: 'c', ambient: false, summary: 'done', cause: 'finished', extensions: {}, cancellable: true, schedule: {} }),
+  sample<protocol.SessionTaskStarted>('SessionTaskStarted', 'session.schema.json', 'taskStarted', { task: { task_id: 't', kind: 'command', status: 'running', cancellable: true } }),
+  sample<protocol.SessionTaskUpdated>('SessionTaskUpdated', 'session.schema.json', 'taskUpdated', { task_id: 't', status: 'paused', label: 'build', next_fire_at_ms: 1 }),
+  sample<protocol.SessionTaskEnded>('SessionTaskEnded', 'session.schema.json', 'taskEnded', { task_id: 't', status: 'completed', summary: 'done', cause: 'finished' }),
+  sample<protocol.SessionTaskCancelRequest>('SessionTaskCancelRequest', 'session.schema.json', 'taskCancelRequest', { session_id: 's', task_id: 't' }),
+  sample<protocol.SessionTaskCancelResponse>('SessionTaskCancelResponse', 'session.schema.json', 'taskCancelResponse', { outcome: 'requested' }),
+  sample<protocol.SessionTaskOutputRequest>('SessionTaskOutputRequest', 'session.schema.json', 'taskOutputRequest', { session_id: 's', task_id: 't', from: 0 }),
+  sample<protocol.SessionTaskOutputResponse>('SessionTaskOutputResponse', 'session.schema.json', 'taskOutputResponse', { output: 'ok', next: 2, truncated: false, ended: true }),
   sample<protocol.SessionModelSwitchRequest>('SessionModelSwitchRequest', 'session.schema.json', 'modelSwitchRequest', {
     session_id: 's1', model_id: 'm2', allow_degraded_features: ['session.model.switch'],
   }),
@@ -272,6 +281,8 @@ const samples: PayloadSample[] = [
       { run_id: 'r-1', status: 'running', relationship: 'primary', as_of_sequence: 4n, pending_interactions: ['i-1'], acknowledged_interactions: ['i-1'] },
       { run_id: 'r-2', status: 'queued', relationship: 'primary', queue_position: 1, admitted_submit_requests: ['e-9'] },
     ],
+    tasks: [{ task_id: 't-1', kind: 'command', status: 'running', cancellable: true }],
+    tasks_truncated: false,
     current_model_id: 'model-a',
     transcript_cursor: '12',
     updated_at_ms: 1700000000000,
@@ -749,6 +760,9 @@ test('every envelope type maps to the payload def its schema declares', () => {
 });
 
 test('the schema exclusivity rules are compile-time errors', () => {
+  // @ts-expect-error a terminal status is reported by session.task.ended
+  const terminalTaskUpdate: protocol.SessionTaskUpdated = { task_id: 't-1', status: 'completed' };
+  void terminalTaskUpdate;
   // @ts-expect-error url and inline data are mutually exclusive image forms
   const badImage: ImageContent = { url: 'https://example.test/i.png', data: 'aGk=', media_type: 'text/plain' };
   // @ts-expect-error an image with data requires its media type
