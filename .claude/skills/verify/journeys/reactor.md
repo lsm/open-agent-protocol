@@ -17,3 +17,9 @@ check. Stage 3's final acceptance also requires the complete reactor to remain
 idle with zero wakeups.
 
 The tests are part of `test-unit-core` and the complete Zig `test` step.
+
+The same suite also exercises one-shot timers, cancellation and token reuse,
+child exit through an anonymous-pipe gate, an already-reaped child, duplicate
+registrations and allocation failures. The child test releases and reaps its
+child, with kill-and-reap cleanup on every parent failure path. It verifies that
+a child-exit notice is distinct from an I/O error.

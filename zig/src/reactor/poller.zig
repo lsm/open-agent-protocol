@@ -37,6 +37,10 @@ pub const Poller = struct {
         try self.backend.watch(fd, token, interest);
     }
 
+    pub fn nativeHandle(self: *const Poller) c.fd_t {
+        return self.backend.fd;
+    }
+
     pub fn remove(self: *Poller, fd: c.fd_t) Error!void {
         try self.backend.remove(fd);
     }
@@ -114,7 +118,7 @@ const Kqueue = struct {
                     .read = event.filter == c.EVFILT.READ,
                     .write = event.filter == c.EVFILT.WRITE,
                     .closed = event.flags & c.EV.EOF != 0,
-                    .failed = event.flags & c.EV.ERROR != 0 or (event.flags & c.EV.EOF != 0 and event.fflags != 0),
+                    .failed = event.flags & c.EV.ERROR != 0 or ((event.filter == c.EVFILT.READ or event.filter == c.EVFILT.WRITE) and event.flags & c.EV.EOF != 0 and event.fflags != 0),
                     .wake = event.filter == c.EVFILT.USER,
                 };
             }

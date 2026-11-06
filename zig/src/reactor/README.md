@@ -25,3 +25,20 @@ anonymous pipes and an explicit wake to release an idle waiter.
 For sockets, `failed` reports kqueue's EOF socket error or epoll's error flag.
 The caller retrieves the socket error and reads buffered data before treating
 EOF as fully consumed. Registration and wait syscall failures return an error.
+
+`Sources` owns one-shot timer and child-exit registrations on a borrowed
+poller. It uses kqueue timers and process filters on macOS, and monotonic
+`timerfd` and `pidfd` descriptors on Linux. Its operations run on the poller
+owner thread. Each active source needs a unique token, distinct from descriptor
+watch tokens. Process already-returned readiness before reusing a token.
+
+Call `take(token)` when a source becomes ready. This returns its kind and
+releases its registration. `cancel(token)` is idempotent, and destruction
+cancels all remaining watches. A zero timer delay schedules one millisecond.
+Timers fire once. Rearm explicitly after consumption or cancellation.
+
+A child that has disappeared before registration returns `exited` immediately.
+A registered child produces readiness even if it exits immediately after the
+watch is installed. The caller owns the child and reaps it separately. A process
+can have only one active child watch in a `Sources` instance. Destroy sources
+before their poller. Platforms must provide the named kernel facilities.
