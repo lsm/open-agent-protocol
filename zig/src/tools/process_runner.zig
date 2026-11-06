@@ -478,6 +478,19 @@ test "a budget of zero hands over a command whose timeout has already passed" {
     _ = std.posix.system.close(moved.stderr);
 }
 
+test "a budget ends the wait on a command whose leader left a writer behind" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const began = common.nowMs();
+    const outcome = try runWithBudget(std.testing.allocator, &.{ "/bin/sh", "-c", "(while true; do echo x; sleep 0.01; done) & sleep 0.1" }, .inherit, 10_000, 500, null);
+    defer {
+        std.testing.allocator.free(outcome.finished.stdout);
+        std.testing.allocator.free(outcome.finished.stderr);
+    }
+    try std.testing.expect(common.durationMs(began) < 8_000);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, outcome.finished.term);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.finished.stdout, "x") != null);
+}
+
 test "process runner honors cancellation" {
     var cancelled = std.atomic.Value(bool).init(true);
     const token = ai_types.CancelToken{ .cancelled = &cancelled };
