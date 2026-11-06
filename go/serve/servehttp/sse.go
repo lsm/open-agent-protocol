@@ -108,7 +108,7 @@ func writeSSE(w io.Writer, envelope protocol.Envelope) error {
 	if err != nil {
 		return err
 	}
-	if envelope.Sequence != nil {
+	if envelope.RunID != "" && envelope.Sequence != nil {
 		if id, writable := eventID(envelope.RunID, *envelope.Sequence); writable {
 			if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
 				return err

@@ -1104,11 +1104,19 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 			}
 			if sendErr := s.send(ctx, lines, envelopeLine{
 				Event: signalEnvelope, ID: id, SessionID: string(entry.ID()),
-				Sequence: envelope.Sequence, Envelope: data,
+				Sequence: runEventSequence(envelope), Envelope: data,
 			}); sendErr != nil {
 				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
 				if !errors.Is(sendErr, ErrLineTooLarge) {
 
+					return
+				}
+				if envelope.RunID == "" {
+					if deliveredRun == "" {
+						s.endSubscription(ctx, lines, id, streamFailedLine{Event: signalStreamFailed, ID: id, SessionID: string(entry.ID()), Sequence: 0, Message: "session event too large; read state, then resume the run if present"}, streamFailedLine{Event: signalStreamFailed, ID: id})
+					} else {
+						s.endSubscription(ctx, lines, id, frameLimitLine{Event: signalFrameLimit, ID: id, SessionID: string(entry.ID()), RunID: string(deliveredRun), Sequence: deliveredSequence, Message: "session event too large; read state, then resume the run if present"}, frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: deliveredSequence})
+					}
 					return
 				}
 				sequence := deliveredSequence
@@ -1162,7 +1170,17 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 	}
 }
 
+func runEventSequence(envelope protocol.Envelope) *uint64 {
+	if envelope.RunID == "" {
+		return nil
+	}
+	return envelope.Sequence
+}
+
 func advanceCursor(run protocol.RunID, sequence uint64, envelope protocol.Envelope) (protocol.RunID, uint64) {
+	if envelope.RunID == "" {
+		return run, sequence
+	}
 	next := uint64(0)
 	if envelope.Sequence != nil {
 		next = *envelope.Sequence

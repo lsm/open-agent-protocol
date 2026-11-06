@@ -339,16 +339,17 @@ subscriptions on one session stay attributable.
 | `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
 
-In the Zig hub an adapter may also deliver session-scoped events on the same
-ordered channel. These have `session_id` without `run_id` and carry their own
+In the Zig hub an adapter may deliver session-scoped events on the same
+ordered channel as runs; in the Go hub an optional session event source feeds
+them into the session's live stream. These have `session_id` without `run_id` and carry their own
 session-domain `sequence` inside the envelope. They go live to subscribers,
 do not advance a run cursor, and are not replayed. After an overflow the host
 reads session state to recover tasks, as well as resuming any run cursor. The
 stdio wrapper leaves out its outer `sequence` for session events. If one is
 unframeable, stdio reports the last delivered run cursor through
 `oap-frame-limit`; when there is no run cursor it uses `oap-stream-failed`
-without a run id. In either case the host reads session state. Go's
-session-event channel follows separately. The sequence belongs to the hosted
+without a run id. In either case the host reads session state. The Go raw
+endpoint's session-event forwarding follows separately. The sequence belongs to the hosted
 session for its lifetime, not to a subscription or a transport connection;
 independent endpoints host distinct sessions and do not share counters. The
 Zig hub does not yet publish `session.state.updated`; when it does, those events

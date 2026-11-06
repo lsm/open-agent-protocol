@@ -385,6 +385,10 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 			return &MalformedFrameError{Detail: fmt.Sprintf("frame id names run %q, envelope %q", run, envelope.RunID)}
 		}
 	}
+	if envelope.RunID == "" && strings.HasPrefix(string(envelope.Type), "session.") {
+		es.connEvents++
+		return nil
+	}
 	resumed := es.resumed
 	if resumed {
 		es.resumed = false

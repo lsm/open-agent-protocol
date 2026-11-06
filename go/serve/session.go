@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"io"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -132,21 +134,25 @@ type Session struct {
 	runID protocol.RunID
 
 	closed  bool
+	closing bool
 	release func(*Session)
 
 	binding binding.Record
 
 	work workLog
 
-	readers      int
-	reservations int
-	finishDue    bool
-	pendingEnd   *terminalState
-	deferred     []*subscriber
-	subs         map[*subscriber]struct{}
-	nextSerial   uint64
-	serials      map[protocol.RunID]uint64
-	sequences    map[protocol.RunID]uint64
+	readers           int
+	reservations      int
+	finishDue         bool
+	pendingEnd        *terminalState
+	deferred          []*subscriber
+	subs              map[*subscriber]struct{}
+	nextSerial        uint64
+	serials           map[protocol.RunID]uint64
+	sequences         map[protocol.RunID]uint64
+	stateSequence     uint64
+	sessionEventsStop chan struct{}
+	sessionEventErr   error
 
 	finished map[protocol.RunID]bool
 
@@ -286,11 +292,87 @@ func newSession(id protocol.SessionID, adapterName string, session base.Session,
 	entry := &Session{
 		id: id, adapterName: adapterName, session: session, release: release,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
-		sequences: make(map[protocol.RunID]uint64),
-		finished:  make(map[protocol.RunID]bool),
+		sequences: make(map[protocol.RunID]uint64), sessionEventsStop: make(chan struct{}),
+		finished: make(map[protocol.RunID]bool),
 	}
 	entry.gateCond = sync.NewCond(&entry.mu)
 	return entry
+}
+
+func (s *Session) startSessionEvents() {
+	source, ok := s.session.(base.SessionEventSource)
+	if !ok {
+		return
+	}
+	stream := source.SessionEvents()
+	if stream == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case <-s.sessionEventsStop:
+				return
+			case result, open := <-stream:
+				if !open {
+					s.failSessionEvents(io.ErrUnexpectedEOF)
+					return
+				}
+				if result.Error != nil {
+					s.failSessionEvents(result.Error)
+					s.discardSessionEvents(stream)
+					return
+				}
+				event := result.Envelope
+				if event.SessionID != s.id || event.RunID != "" || event.ID == "" || !strings.HasPrefix(string(event.Type), "session.") || strings.HasSuffix(string(event.Type), ".request") || strings.HasSuffix(string(event.Type), ".response") {
+					s.failSessionEvents(errors.New("serve: invalid session-scoped event"))
+					s.discardSessionEvents(stream)
+					return
+				}
+				s.mu.Lock()
+				if s.closed {
+					s.mu.Unlock()
+					return
+				}
+				s.stateSequence++
+				sequence := s.stateSequence
+				event.Sequence = &sequence
+				s.deliverLocked(event)
+				s.mu.Unlock()
+			}
+		}
+	}()
+}
+
+func (s *Session) discardSessionEvents(stream base.EventStream) {
+	for {
+		select {
+		case <-s.sessionEventsStop:
+			return
+		case _, open := <-stream:
+			if !open {
+				return
+			}
+		}
+	}
+}
+
+func (s *Session) failSessionEvents(err error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.sessionEventErr = err
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	subs := s.detachSubsLocked()
+	s.mu.Unlock()
+	for _, sub := range subs {
+		sub.stop(&terminalState{err: err})
+	}
 }
 
 func (s *Session) ID() protocol.SessionID { return s.id }
@@ -701,7 +783,17 @@ func (s *Session) CancelAndHold(ctx context.Context, runID protocol.RunID, reque
 }
 
 func (s *Session) Close(ctx context.Context) error {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
 	if err := s.session.Close(ctx); err != nil {
+		s.mu.Lock()
+		s.closing = false
+		streamErr := s.sessionEventErr
+		s.mu.Unlock()
+		if streamErr != nil {
+			s.failSessionEvents(streamErr)
+		}
 		return err
 	}
 	s.markClosed()
@@ -814,6 +906,10 @@ func (s *Session) subscribe(queue int) (*subscriber, protocol.RunID, uint64, boo
 		return nil, "", 0, false
 	}
 	sub := newSubscriber(queue, s.runID, s.serials[s.runID])
+	if s.sessionEventErr != nil {
+		sub.stop(&terminalState{err: s.sessionEventErr})
+		return sub, s.runID, s.sequences[s.runID], true
+	}
 	s.subs[sub] = struct{}{}
 	return sub, s.runID, s.sequences[s.runID], true
 }
@@ -1224,17 +1320,23 @@ func (s *Session) publish(envelope protocol.Envelope) {
 
 func (s *Session) deliverLocked(envelope protocol.Envelope) {
 	s.observeWorkLocked(envelope, time.Now().UnixMilli())
-	if envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
+	if envelope.RunID != "" && envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
 		s.sequences[envelope.RunID] = *envelope.Sequence
 	}
 	for sub := range s.subs {
 
-		sub.track(envelope.RunID, s.serials[envelope.RunID])
+		if envelope.RunID != "" {
+			sub.track(envelope.RunID, s.serials[envelope.RunID])
+		}
 		select {
 		case sub.ch <- envelope:
-			sub.lastRun = envelope.RunID
+			if envelope.RunID != "" {
+				sub.lastRun = envelope.RunID
+			}
 		default:
-			sub.untrack(envelope.RunID)
+			if envelope.RunID != "" {
+				sub.untrack(envelope.RunID)
+			}
 
 			delete(s.subs, sub)
 			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID], s.finished)})
@@ -1296,6 +1398,9 @@ func (s *Session) detachSubsLocked() []*subscriber {
 func (s *Session) markClosed() {
 	s.mu.Lock()
 	releasing := !s.closed && s.release != nil
+	if !s.closed {
+		close(s.sessionEventsStop)
+	}
 	s.closed = true
 	if s.runs != nil {
 		s.runs.release(s.id)
