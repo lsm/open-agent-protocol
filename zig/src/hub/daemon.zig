@@ -1075,8 +1075,10 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
         for (children) |child| {
             watched.append(daemon.allocator, .{ .fd = child, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
-        const wait_ns = daemon.frontend.hub.waitBudget(@as(u64, @intCast(@max(poll_ms, 0))) * std.time.ns_per_ms);
-        _ = std.posix.poll(watched.items, hubmod.pollMillis(wait_ns)) catch 0;
+        const limit_ns = if (poll_ms < 0) std.math.maxInt(u64) else @as(u64, @intCast(poll_ms)) * std.time.ns_per_ms;
+        const wait_ns = daemon.frontend.hub.waitBudget(limit_ns);
+        const wait_ms = if (wait_ns == std.math.maxInt(u64)) -1 else hubmod.pollMillis(wait_ns);
+        _ = std.posix.poll(watched.items, wait_ms) catch 0;
         if (!daemon.going().yes()) break;
 
         for (connections.items, watched.items[1 .. 1 + connections.items.len]) |connection, polled| {
