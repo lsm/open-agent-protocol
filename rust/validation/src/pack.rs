@@ -29,7 +29,7 @@ impl PackLoadError {
     }
 }
 
-#[doc = "Staged pack-loader construction. This stage checks descriptor shape, capability/error/type namespaces, roles and type gates. It does not load schemas or create a validator."]
+#[doc = include_str!("../PACKS.md")]
 pub struct PackLoader {
     packs: Vec<(PathBuf, Value)>,
 }

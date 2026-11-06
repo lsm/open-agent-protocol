@@ -11,6 +11,7 @@ Run from the repository root:
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_declarations
+cargo doc --manifest-path rust/Cargo.toml -p oap-validation --no-deps
 python3 .claude/skills/verify/scripts/rust-pack-declarations.py --output-dir /tmp/oap-pack-declarations-<unique>
 ```
 
@@ -24,3 +25,7 @@ Run the full Verify baseline and the shared Rust/Go trace parity journey to prov
 that ordinary validation still works through the public consumers, including the
 sandboxed PTY fixture reply and `/quit`. Keep stage coverage explicit as the
 remaining loader phases land.
+
+Inspect the generated `rust/target/doc/oap_validation/pack/struct.PackLoader.html`.
+Its staged API contract is included from `rust/validation/PACKS.md`, keeping prose
+in an external document while exposing coverage to Rust documentation consumers.

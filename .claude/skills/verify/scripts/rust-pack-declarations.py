@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the explicitly staged Rust descriptor API from an external consumer."""
 import argparse
+import html
 import json
 from pathlib import Path
 import re
@@ -53,6 +54,12 @@ def main():
     build = run(["cargo", "build", "--offline", "--manifest-path", str(project / "Cargo.toml"),
                  "--target-dir", str(ROOT / "rust/target")], output, "consumer-build")
     assert build.returncode == 0, build.stderr
+    documentation = run(["cargo", "doc", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--no-deps"], output, "docs-build")
+    assert documentation.returncode == 0, documentation.stderr
+    page = (ROOT / "rust/target/doc/oap_validation/pack/struct.PackLoader.html").read_text()
+    (output / "pack-loader.html").write_text(page)
+    words = html.unescape(re.sub(r"<[^>]+>", "", page))
+    assert "Staged pack-loader construction" in words and "first of three" in words, words
     goap = output / "goap"
     build = run(["go", "build", "-o", str(goap), "./go/cmd/goap"], output, "go-build")
     assert build.returncode == 0, build.stderr
@@ -105,6 +112,7 @@ def main():
     assert control.returncode == 0 and len(data["ids"]) == 2, data
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} declaration refusals (12 shared, 12 synthetic) agree with Go; two descriptors read by an external Rust consumer")
+    print("PASS: generated public API documentation exposes the staged contract")
     print("STAGED: schema documents, members, dependencies, references, branches and corpora are not loaded by this API")
 
 
