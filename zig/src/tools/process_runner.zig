@@ -466,6 +466,18 @@ test "a command that exits early still takes its children with it" {
     }
 }
 
+test "a budget of zero hands over a command whose timeout has already passed" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const outcome = try runWithBudget(std.testing.allocator, &.{ "/bin/sh", "-c", "sleep 30" }, .inherit, 0, 0, null);
+    const moved = outcome.moved;
+    defer std.testing.allocator.free(moved.stdout_head);
+    defer std.testing.allocator.free(moved.stderr_head);
+    endGroup(moved.leader);
+    _ = try waitLeader(moved.leader);
+    _ = std.posix.system.close(moved.stdout);
+    _ = std.posix.system.close(moved.stderr);
+}
+
 test "process runner honors cancellation" {
     var cancelled = std.atomic.Value(bool).init(true);
     const token = ai_types.CancelToken{ .cancelled = &cancelled };

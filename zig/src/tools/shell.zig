@@ -913,6 +913,60 @@ test "cancelling the run ends the command it moved and reports nothing" {
     try std.testing.expect(!jobs.noticeWaiting());
 }
 
+test "a command that moves just after its run's cancel is ended too" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 50;
+    jobs.beginRun();
+    jobs.endMoved();
+
+    var result = try movedCase(&jobs, &case, "sleep 30");
+    defer result.deinit(std.testing.allocator);
+    const by = common.nowMs() + 5_000;
+    while (jobs.anyRunning() and common.nowMs() < by) compat.time.sleepMs(5);
+    try std.testing.expect(!jobs.anyRunning());
+    try std.testing.expect(!jobs.noticeWaiting());
+}
+
+test "the next run's commands survive the last run's cancel" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 50;
+    jobs.beginRun();
+    jobs.endMoved();
+    jobs.beginRun();
+
+    var result = try movedCase(&jobs, &case, "sleep 30");
+    defer result.deinit(std.testing.allocator);
+    compat.time.sleepMs(100);
+    try std.testing.expect(jobs.anyRunning());
+    jobs.endAll();
+}
+
+test "a background command given a timeout shorter than its start is still a job, and the limit ends it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true,\"timeout_ms\":1}}", .{case.root});
+    defer std.testing.allocator.free(args);
+    const tools = sessionTools(&jobs);
+    var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-tiny", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "time limit of 1 seconds") != null);
+}
+
 test "a later run's cancel leaves a job an earlier run moved alone" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
