@@ -1,0 +1,5 @@
+[
+    {"index": 2, "type": "session.step.started", "reason": "step accounting only; no core OAP event"},
+    {"index": 3, "type": "session.tool.input.started", "reason": "names the tool the following session.tool.called runs; no OAP event of its own"},
+    {"index": 6, "type": "session.step.started", "reason": "step accounting only; no core OAP event"}
+]
