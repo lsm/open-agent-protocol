@@ -563,6 +563,10 @@ fn onToolUpdate(ctx: ?*anyopaque, tool_call_id: []const u8, tool_name: []const u
 
     const stream = context.event_stream;
     var payload = types.ToolExecutionUpdatePayload.initOwned(stream.allocator, tool_call_id, tool_name, context.args_json, partial_result_json) catch return;
+    if (stream.inline_sink != null) {
+        _ = stream.pushBlocking(.{ .tool_execution_update = payload });
+        return;
+    }
     stream.push(.{ .tool_execution_update = payload }) catch {
         payload.backing.deinit(stream.allocator);
         return;
