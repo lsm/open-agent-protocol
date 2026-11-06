@@ -1,9 +1,232 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = std.c;
+const linux = std.os.linux;
 
 const gpa = std.heap.smp_allocator;
 const default_park = false;
 const default_tool_limit = 1024;
+
+const nonblock: c_int = @bitCast(c.O{ .NONBLOCK = true });
+
+const Filter = enum { user, read, write, timer, proc };
+
+const Ready = struct {
+    filter: Filter,
+    ident: usize,
+    udata: usize,
+};
+
+const KqueuePoller = struct {
+    kq: c.fd_t,
+
+    fn init() KqueuePoller {
+        const self: KqueuePoller = .{ .kq = c.kqueue() };
+        self.change(1, c.EVFILT.USER, c.EV.ADD | c.EV.CLEAR, 0, 0, 0);
+        return self;
+    }
+
+    fn change(self: *const KqueuePoller, ident: usize, filter: i16, flags: u16, fflags: u32, data: isize, udata: usize) void {
+        var one = [_]c.Kevent{.{ .ident = ident, .filter = filter, .flags = flags, .fflags = fflags, .data = data, .udata = udata }};
+        _ = c.kevent(self.kq, &one, 1, undefined, 0, null);
+    }
+
+    fn wake(self: *KqueuePoller) void {
+        self.change(1, c.EVFILT.USER, 0, c.NOTE.TRIGGER, 0, 0);
+    }
+
+    fn watchRead(self: *KqueuePoller, fd: c.fd_t, udata: usize) void {
+        self.change(@intCast(fd), c.EVFILT.READ, c.EV.ADD, 0, 0, udata);
+    }
+
+    fn watchWrite(self: *KqueuePoller, fd: c.fd_t, udata: usize) void {
+        self.change(@intCast(fd), c.EVFILT.WRITE, c.EV.ADD, 0, 0, udata);
+    }
+
+    fn stopWrite(self: *KqueuePoller, fd: c.fd_t) void {
+        self.change(@intCast(fd), c.EVFILT.WRITE, c.EV.DELETE, 0, 0, 0);
+    }
+
+    fn forget(_: *KqueuePoller, _: c.fd_t) void {}
+
+    fn arm(self: *KqueuePoller, ident: usize, ms: u32, udata: usize) void {
+        self.change(ident, c.EVFILT.TIMER, c.EV.ADD | c.EV.ONESHOT, 0, ms, udata);
+    }
+
+    fn disarm(self: *KqueuePoller, ident: usize) void {
+        self.change(ident, c.EVFILT.TIMER, c.EV.DELETE, 0, 0, 0);
+    }
+
+    fn watchExit(self: *KqueuePoller, pid: c.pid_t, udata: usize) bool {
+        var watch = [_]c.Kevent{.{ .ident = @intCast(pid), .filter = c.EVFILT.PROC, .flags = c.EV.ADD | c.EV.ONESHOT, .fflags = c.NOTE.EXIT, .data = 0, .udata = udata }};
+        return c.kevent(self.kq, &watch, 1, undefined, 0, null) == 0;
+    }
+
+    fn wait(self: *KqueuePoller, out: []Ready) usize {
+        var events: [256]c.Kevent = undefined;
+        const got = c.kevent(self.kq, undefined, 0, &events, @min(events.len, out.len), null);
+        if (got < 0) return 0;
+        for (events[0..@intCast(got)], 0..) |ev, index| {
+            const filter: Filter = if (ev.filter == c.EVFILT.USER) .user else if (ev.filter == c.EVFILT.TIMER) .timer else if (ev.filter == c.EVFILT.PROC) .proc else if (ev.filter == c.EVFILT.WRITE) .write else .read;
+            out[index] = .{ .filter = filter, .ident = ev.ident, .udata = ev.udata };
+        }
+        return @intCast(got);
+    }
+};
+
+const EpollPoller = struct {
+    const Entry = struct {
+        fd: i32,
+        filter: Filter,
+        ident: usize,
+        udata: usize,
+        mask: u32 = 0,
+    };
+
+    ep: i32,
+    wake_fd: i32,
+    wake_entry: *Entry,
+    streams: std.AutoHashMapUnmanaged(i32, *Entry) = .empty,
+    timers: std.AutoHashMapUnmanaged(usize, *Entry) = .empty,
+
+    fn descriptor(result: usize) i32 {
+        if (linux.errno(result) != .SUCCESS) @panic("epoll setup");
+        return @intCast(result);
+    }
+
+    fn init() EpollPoller {
+        const ep = descriptor(linux.epoll_create1(linux.EPOLL.CLOEXEC));
+        const wake_fd = descriptor(linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK));
+        const entry = gpa.create(Entry) catch @panic("oom");
+        entry.* = .{ .fd = wake_fd, .filter = .user, .ident = 1, .udata = 0, .mask = linux.EPOLL.IN };
+        var self: EpollPoller = .{ .ep = ep, .wake_fd = wake_fd, .wake_entry = entry };
+        self.control(linux.EPOLL.CTL_ADD, entry);
+        return self;
+    }
+
+    fn control(self: *EpollPoller, op: u32, entry: *Entry) void {
+        var event: linux.epoll_event = .{ .events = entry.mask, .data = .{ .ptr = @intFromPtr(entry) } };
+        if (linux.errno(linux.epoll_ctl(self.ep, op, entry.fd, &event)) != .SUCCESS) @panic("epoll_ctl");
+    }
+
+    fn wake(self: *EpollPoller) void {
+        const one: u64 = 1;
+        _ = c.write(self.wake_fd, std.mem.asBytes(&one), @sizeOf(u64));
+    }
+
+    fn watchStream(self: *EpollPoller, fd: c.fd_t, udata: usize, bit: u32) void {
+        const slot = self.streams.getOrPut(gpa, fd) catch @panic("oom");
+        if (slot.found_existing) {
+            slot.value_ptr.*.mask |= bit;
+            slot.value_ptr.*.udata = udata;
+            return self.control(linux.EPOLL.CTL_MOD, slot.value_ptr.*);
+        }
+        const entry = gpa.create(Entry) catch @panic("oom");
+        entry.* = .{ .fd = fd, .filter = .read, .ident = @intCast(fd), .udata = udata, .mask = bit };
+        slot.value_ptr.* = entry;
+        self.control(linux.EPOLL.CTL_ADD, entry);
+    }
+
+    fn watchRead(self: *EpollPoller, fd: c.fd_t, udata: usize) void {
+        self.watchStream(fd, udata, linux.EPOLL.IN);
+    }
+
+    fn watchWrite(self: *EpollPoller, fd: c.fd_t, udata: usize) void {
+        self.watchStream(fd, udata, linux.EPOLL.OUT);
+    }
+
+    fn stopWrite(self: *EpollPoller, fd: c.fd_t) void {
+        const entry = self.streams.get(fd) orelse return;
+        entry.mask &= ~@as(u32, linux.EPOLL.OUT);
+        self.control(linux.EPOLL.CTL_MOD, entry);
+    }
+
+    fn forget(self: *EpollPoller, fd: c.fd_t) void {
+        const removed = self.streams.fetchRemove(fd) orelse return;
+        _ = linux.epoll_ctl(self.ep, linux.EPOLL.CTL_DEL, fd, null);
+        gpa.destroy(removed.value);
+    }
+
+    fn arm(self: *EpollPoller, ident: usize, ms: u32, udata: usize) void {
+        const slot = self.timers.getOrPut(gpa, ident) catch @panic("oom");
+        if (!slot.found_existing) {
+            const fd = descriptor(linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true, .NONBLOCK = true }));
+            const entry = gpa.create(Entry) catch @panic("oom");
+            entry.* = .{ .fd = fd, .filter = .timer, .ident = ident, .udata = udata, .mask = linux.EPOLL.IN };
+            slot.value_ptr.* = entry;
+            self.control(linux.EPOLL.CTL_ADD, entry);
+        }
+        const after = @max(ms, 1);
+        const spec: linux.itimerspec = .{
+            .it_interval = .{ .sec = 0, .nsec = 0 },
+            .it_value = .{ .sec = @intCast(after / 1000), .nsec = @intCast(@as(u64, after % 1000) * std.time.ns_per_ms) },
+        };
+        if (linux.errno(linux.timerfd_settime(slot.value_ptr.*.fd, .{}, &spec, null)) != .SUCCESS) @panic("timerfd_settime");
+    }
+
+    fn dropEntry(self: *EpollPoller, entry: *Entry) void {
+        _ = linux.epoll_ctl(self.ep, linux.EPOLL.CTL_DEL, entry.fd, null);
+        _ = c.close(entry.fd);
+        gpa.destroy(entry);
+    }
+
+    fn disarm(self: *EpollPoller, ident: usize) void {
+        const removed = self.timers.fetchRemove(ident) orelse return;
+        self.dropEntry(removed.value);
+    }
+
+    fn watchExit(self: *EpollPoller, pid: c.pid_t, udata: usize) bool {
+        const result = linux.pidfd_open(pid, 0);
+        if (linux.errno(result) != .SUCCESS) return false;
+        const entry = gpa.create(Entry) catch @panic("oom");
+        entry.* = .{ .fd = @intCast(result), .filter = .proc, .ident = @intCast(pid), .udata = udata, .mask = linux.EPOLL.IN };
+        self.control(linux.EPOLL.CTL_ADD, entry);
+        return true;
+    }
+
+    fn wait(self: *EpollPoller, out: []Ready) usize {
+        var events: [128]linux.epoll_event = undefined;
+        const result = linux.epoll_wait(self.ep, &events, @intCast(@min(events.len, out.len / 2)), -1);
+        if (linux.errno(result) != .SUCCESS) return 0;
+        var count: usize = 0;
+        for (events[0..result]) |event| {
+            const entry: *Entry = @ptrFromInt(event.data.ptr);
+            switch (entry.filter) {
+                .user => {
+                    var drained: u64 = 0;
+                    _ = c.read(self.wake_fd, std.mem.asBytes(&drained), @sizeOf(u64));
+                    out[count] = .{ .filter = .user, .ident = 1, .udata = 0 };
+                    count += 1;
+                },
+                .timer => {
+                    out[count] = .{ .filter = .timer, .ident = entry.ident, .udata = entry.udata };
+                    count += 1;
+                    _ = self.timers.remove(entry.ident);
+                    self.dropEntry(entry);
+                },
+                .proc => {
+                    out[count] = .{ .filter = .proc, .ident = entry.ident, .udata = entry.udata };
+                    count += 1;
+                    self.dropEntry(entry);
+                },
+                .read, .write => {
+                    const failed = event.events & (linux.EPOLL.ERR | linux.EPOLL.HUP) != 0;
+                    if (entry.mask & linux.EPOLL.OUT != 0 and (failed or event.events & linux.EPOLL.OUT != 0)) {
+                        out[count] = .{ .filter = .write, .ident = entry.ident, .udata = entry.udata };
+                        count += 1;
+                    }
+                    if (entry.mask & linux.EPOLL.IN != 0 and (failed or event.events & linux.EPOLL.IN != 0)) {
+                        out[count] = .{ .filter = .read, .ident = entry.ident, .udata = entry.udata };
+                        count += 1;
+                    }
+                },
+            }
+        }
+        return count;
+    }
+};
+
+const Poller = if (builtin.os.tag == .linux) EpollPoller else KqueuePoller;
 
 const Role = enum { user, assistant, tool };
 
@@ -468,7 +691,7 @@ var config: Config = .{};
 var system_prompt: []u8 = "";
 
 const Reactor = struct {
-    kq: c.fd_t,
+    events: Poller,
     lock: Lock = .{},
     inbox: std.ArrayList(Cmd) = .empty,
     sessions: std.StringHashMapUnmanaged(*Session) = .empty,
@@ -489,23 +712,16 @@ const Reactor = struct {
         self.inbox.append(gpa, cmd) catch @panic("oom");
         self.lock.release();
         if (!was_empty) return;
-        self.change(1, c.EVFILT.USER, 0, c.NOTE.TRIGGER, 0, 0);
-    }
-
-    fn change(self: *Reactor, ident: usize, filter: i16, flags: u16, fflags: u32, data: isize, udata: usize) void {
-        var one = [_]c.Kevent{.{ .ident = ident, .filter = filter, .flags = flags, .fflags = fflags, .data = data, .udata = udata }};
-        _ = c.kevent(self.kq, &one, 1, undefined, 0, null);
+        self.events.wake();
     }
 
     fn loop(self: *Reactor) void {
-        self.change(1, c.EVFILT.USER, c.EV.ADD | c.EV.CLEAR, 0, 0, 0);
-        var events: [256]c.Kevent = undefined;
+        var ready: [256]Ready = undefined;
         var scratch: [65536]u8 = undefined;
         while (true) {
-            const got = c.kevent(self.kq, undefined, 0, &events, events.len, null);
-            if (got < 0) continue;
-            for (events[0..@intCast(got)]) |ev| {
-                if (ev.filter == c.EVFILT.USER) {
+            const got = self.events.wait(&ready);
+            for (ready[0..got]) |ev| {
+                if (ev.filter == .user) {
                     self.drain();
                     continue;
                 }
@@ -603,7 +819,7 @@ const Reactor = struct {
             },
             .open_gate => {},
             .settled => self.journal_sync = true,
-            .arm_timer => |ms| self.change(@intFromPtr(s), c.EVFILT.TIMER, c.EV.ADD | c.EV.ONESHOT, 0, ms, @intFromPtr(s)),
+            .arm_timer => |ms| self.events.arm(@intFromPtr(s), ms, @intFromPtr(s)),
             .abort_io => {
                 self.model_wait.remove(s);
                 self.tool_wait.remove(s);
@@ -631,13 +847,13 @@ const Reactor = struct {
         }
     }
 
-    fn firstByteTimer(self: *Reactor, s: *Session, flags: u16, ms: u32) void {
-        self.change(@intFromPtr(s) | 1, c.EVFILT.TIMER, flags, 0, ms, @intFromPtr(s));
+    fn firstByteTimer(self: *Reactor, s: *Session, ms: u32) void {
+        self.events.arm(@intFromPtr(s) | 1, ms, @intFromPtr(s));
     }
 
     fn detachConn(self: *Reactor, s: *Session) void {
         const conn = s.conn orelse return;
-        self.firstByteTimer(s, c.EV.DELETE, 0);
+        self.events.disarm(@intFromPtr(s) | 1);
         conn.owner = null;
         s.conn = null;
     }
@@ -652,6 +868,7 @@ const Reactor = struct {
                 }
             }
         }
+        self.events.forget(conn.fd);
         _ = c.close(conn.fd);
         conn.fd = -1;
         self.dead_conns.append(gpa, conn) catch @panic("oom");
@@ -668,7 +885,7 @@ const Reactor = struct {
         const conn = if (self.idle_conns.pop()) |held| held else fresh: {
             const fd = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
             if (fd < 0) return self.feed(s, .{ .failed = .{ .transient = true, .text = "socket failed" } });
-            _ = c.fcntl(fd, c.F.SETFL, @as(c_int, 0x0004));
+            _ = c.fcntl(fd, c.F.SETFL, nonblock);
             var address = std.mem.zeroes(c.sockaddr.in);
             address.family = c.AF.INET;
             address.port = std.mem.nativeToBig(u16, config.host_port);
@@ -677,7 +894,7 @@ const Reactor = struct {
             const made = try gpa.create(Conn);
             made.* = .{ .fd = fd };
             self.conns_opened += 1;
-            self.change(@intCast(fd), c.EVFILT.READ, c.EV.ADD, 0, 0, @intFromPtr(made) | 1);
+            self.events.watchRead(fd, @intFromPtr(made) | 1);
             break :fresh made;
         };
         conn.idle = false;
@@ -685,19 +902,19 @@ const Reactor = struct {
         conn.send = try requestBytes(run);
         conn.owner = s;
         s.conn = conn;
-        self.change(@intCast(conn.fd), c.EVFILT.WRITE, c.EV.ADD, 0, 0, @intFromPtr(conn) | 1);
-        self.firstByteTimer(s, c.EV.ADD | c.EV.ONESHOT, config.first_byte_ms);
+        self.events.watchWrite(conn.fd, @intFromPtr(conn) | 1);
+        self.firstByteTimer(s, config.first_byte_ms);
     }
 
-    fn dispatch(self: *Reactor, s: *Session, ev: c.Kevent, scratch: []u8) anyerror!void {
-        if (ev.filter == c.EVFILT.TIMER) {
+    fn dispatch(self: *Reactor, s: *Session, ev: Ready, scratch: []u8) anyerror!void {
+        if (ev.filter == .timer) {
             if (ev.ident & 1 == 1) {
                 if (s.conn) |conn| if (!conn.first_byte) try self.failConn(conn, "timed out before the first byte", true);
                 return;
             }
             return self.feed(s, .timer);
         }
-        if (ev.filter == c.EVFILT.PROC) {
+        if (ev.filter == .proc) {
             if (s.child) |child| if (child.pid == @as(c.pid_t, @intCast(ev.ident))) {
                 child.exited = true;
                 try self.finishChild(s);
@@ -707,9 +924,9 @@ const Reactor = struct {
         if (s.child) |child| if (child.fd == @as(c.fd_t, @intCast(ev.ident))) return self.readChild(s, child, scratch);
     }
 
-    fn dispatchConn(self: *Reactor, conn: *Conn, ev: c.Kevent, scratch: []u8) anyerror!void {
+    fn dispatchConn(self: *Reactor, conn: *Conn, ev: Ready, scratch: []u8) anyerror!void {
         if (conn.fd < 0) return;
-        if (ev.filter == c.EVFILT.WRITE) return self.writeConn(conn);
+        if (ev.filter == .write) return self.writeConn(conn);
         return self.readConn(conn, scratch);
     }
 
@@ -723,7 +940,7 @@ const Reactor = struct {
             }
             conn.sent += @intCast(n);
         }
-        self.change(@intCast(conn.fd), c.EVFILT.WRITE, c.EV.DELETE, 0, 0, 0);
+        self.events.stopWrite(conn.fd);
     }
 
     fn readConn(self: *Reactor, conn: *Conn, scratch: []u8) anyerror!void {
@@ -847,6 +1064,7 @@ const Reactor = struct {
             try child.output.appendSlice(gpa, scratch[0..@intCast(n)]);
         }
         child.eof = true;
+        self.events.forget(child.fd);
         _ = c.close(child.fd);
         child.fd = -1;
         try self.finishChild(s);
@@ -961,10 +1179,9 @@ const Reactor = struct {
                 child.pid = p.pid;
                 child.fd = p.fd;
                 if (s.phase != .tool) _ = c.kill(p.pid, .KILL);
-                _ = c.fcntl(p.fd, c.F.SETFL, @as(c_int, 0x0004));
-                self.change(@intCast(p.fd), c.EVFILT.READ, c.EV.ADD, 0, 0, @intFromPtr(s));
-                var watch = [_]c.Kevent{.{ .ident = @intCast(p.pid), .filter = c.EVFILT.PROC, .flags = c.EV.ADD | c.EV.ONESHOT, .fflags = c.NOTE.EXIT, .data = 0, .udata = @intFromPtr(s) }};
-                if (c.kevent(self.kq, &watch, 1, undefined, 0, null) != 0) {
+                _ = c.fcntl(p.fd, c.F.SETFL, nonblock);
+                self.events.watchRead(p.fd, @intFromPtr(s));
+                if (!self.events.watchExit(p.pid, @intFromPtr(s))) {
                     child.exited = true;
                     try self.finishChild(s);
                 }
@@ -1077,19 +1294,25 @@ fn writeFile(path: [:0]const u8, bytes: []const u8) bool {
     return true;
 }
 
+extern "c" fn posix_spawn_file_actions_init(actions: *anyopaque) c_int;
+extern "c" fn posix_spawn_file_actions_destroy(actions: *anyopaque) c_int;
+extern "c" fn posix_spawn_file_actions_adddup2(actions: *anyopaque, fd: c_int, to: c_int) c_int;
+extern "c" fn posix_spawn_file_actions_addclose(actions: *anyopaque, fd: c_int) c_int;
+extern "c" fn posix_spawn(pid: *c.pid_t, path: [*:0]const u8, actions: ?*const anyopaque, attributes: ?*const anyopaque, argv: [*:null]const ?[*:0]const u8, environ: [*:null]const ?[*:0]const u8) c_int;
+
 fn spawnShell(job: Job) void {
     var fds: [2]c.fd_t = undefined;
     if (c.pipe(&fds) != 0) @panic("pipe");
-    var actions: c.posix_spawn_file_actions_t = undefined;
-    _ = c.posix_spawn_file_actions_init(&actions);
-    defer _ = c.posix_spawn_file_actions_destroy(&actions);
-    _ = c.posix_spawn_file_actions_adddup2(&actions, fds[1], 1);
-    _ = c.posix_spawn_file_actions_adddup2(&actions, fds[1], 2);
-    _ = c.posix_spawn_file_actions_addclose(&actions, fds[0]);
-    _ = c.posix_spawn_file_actions_addclose(&actions, fds[1]);
+    var actions: [128]u8 align(16) = undefined;
+    _ = posix_spawn_file_actions_init(&actions);
+    defer _ = posix_spawn_file_actions_destroy(&actions);
+    _ = posix_spawn_file_actions_adddup2(&actions, fds[1], 1);
+    _ = posix_spawn_file_actions_adddup2(&actions, fds[1], 2);
+    _ = posix_spawn_file_actions_addclose(&actions, fds[0]);
+    _ = posix_spawn_file_actions_addclose(&actions, fds[1]);
     const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", job.command.ptr };
     var pid: c.pid_t = 0;
-    const failed = c.posix_spawn(&pid, "/bin/sh", &actions, null, &argv, @ptrCast(c.environ));
+    const failed = posix_spawn(&pid, "/bin/sh", &actions, null, &argv, @ptrCast(c.environ));
     _ = c.close(fds[1]);
     gpa.free(job.command);
     if (failed != 0) @panic("spawn");
@@ -1290,7 +1513,7 @@ pub fn main() !void {
     @memset(system_prompt, 'x');
     reactors = try gpa.alloc(Reactor, config.reactors);
     for (reactors) |*reactor| {
-        reactor.* = .{ .kq = c.kqueue() };
+        reactor.* = .{ .events = Poller.init() };
         const dir = std.mem.span(c.getenv("TMPDIR") orelse return error.NoTmp);
         const path = try std.fmt.allocPrintSentinel(gpa, "{s}/journal-{d}.jsonl", .{ dir, @intFromPtr(reactor) }, 0);
         reactor.journal_fd = c.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, @as(c.mode_t, 0o644));

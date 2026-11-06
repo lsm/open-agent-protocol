@@ -1,0 +1,37 @@
+name: proto-linux
+
+on:
+  push:
+    branches:
+      - 'proto/**'
+
+permissions:
+  contents: read
+
+jobs:
+  hold-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build the prototype
+        run: zig build-exe zig/proto/async_loop.zig -O ReleaseSafe -lc -femit-bin=/tmp/proto
+      - name: Self-test
+        run: PROTO_SELFTEST=1 /tmp/proto
+      - name: hold-gate, then working
+        run: |
+          ulimit -n 65536
+          python3 scripts/bench-resources.py --targets zig-loop --loop-binary /tmp/proto --no-build \
+            --scenarios hold-gate --n 1000,10000 --poll 5 --rss-cap-mib 12288 --timeout 1500 --out /tmp/hold-gate
+          python3 scripts/bench-resources.py --targets zig-loop --loop-binary /tmp/proto --no-build \
+            --scenarios working --n 1000 --rss-cap-mib 12288 --timeout 300 --out /tmp/working
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proto-linux
+          path: |
+            /tmp/hold-gate
+            /tmp/working
