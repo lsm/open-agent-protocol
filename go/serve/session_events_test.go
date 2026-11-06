@@ -265,3 +265,31 @@ func TestFailedShutdownReportsSessionEventEOF(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 }
+
+func TestSessionOnlySubscriptionSurvivesRunStreamFailure(t *testing.T) {
+	source := &eventSourceSession{events: make(chan base.Result, 1)}
+	session := newSession("s", "test", source, nil)
+	session.startSessionEvents()
+	defer session.markClosed()
+	session.mu.Lock()
+	session.runID, session.nextSerial, session.readers = "r", 1, 1
+	session.serials["r"] = 1
+	session.mu.Unlock()
+	sub, _, _, ok := session.subscribe(1, true)
+	if !ok {
+		t.Fatal("subscribe")
+	}
+	stream := &Subscription{session: session, ctx: context.Background(), sub: sub, positions: make(map[protocol.RunID]uint64)}
+	defer stream.Close()
+	run := eventEnvelope(t, protocol.TypeRunStarted, "run")
+	run.RunID = "r"
+	for i := 0; i < 3; i++ {
+		session.publish(run)
+	}
+	session.exitReader("r", &terminalState{err: errors.New("run failed")})
+	source.events <- base.Result{Envelope: eventEnvelope(t, protocol.TypeSessionTaskEnded, "task")}
+	event, err := stream.NextWithin(time.Second)
+	if err != nil || event.ID != "task" {
+		t.Fatalf("session event: %+v, %v", event, err)
+	}
+}

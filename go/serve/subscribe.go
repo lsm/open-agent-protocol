@@ -44,7 +44,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		option(&config)
 	}
 	if config.after == nil {
-		sub, joinedRun, joinedAt, open := h.attach(entry)
+		sub, joinedRun, joinedAt, open := h.attach(entry, false)
 		if !open {
 			return nil, &SessionClosedError{ID: id}
 		}
@@ -64,7 +64,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	sub := newSubscriber(h.queue, runID, 0)
 	if !config.oneRun {
 		var open bool
-		if sub, _, _, open = h.attach(entry); !open {
+		if sub, _, _, open = h.attach(entry, false); !open {
 			return nil, &SessionClosedError{ID: id}
 		}
 	}
@@ -88,8 +88,8 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	return &Subscription{session: entry, ctx: ctx, sub: sub, replay: replays[0].stream, replaying: runID, later: replays[1:], oneRun: config.oneRun, run: runID, last: *config.after, positions: positions, firstRun: entry.serial(runID)}, nil
 }
 
-func (h *Hub) attach(entry *Session) (*subscriber, protocol.RunID, uint64, bool) {
-	sub, joinedRun, joinedAt, open := entry.subscribe(h.queue)
+func (h *Hub) attach(entry *Session, sessionOnly bool) (*subscriber, protocol.RunID, uint64, bool) {
+	sub, joinedRun, joinedAt, open := entry.subscribe(h.queue, sessionOnly)
 	if open && h.ended.Load() {
 		entry.unsubscribe(sub)
 		sub.stop(nil)

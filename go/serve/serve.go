@@ -74,6 +74,23 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 }
 
 func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
+	return h.openIn(ctx, adapterName, directory, request, nil)
+}
+
+func (h *Hub) OpenWithSessionEvents(ctx, streams context.Context, adapterName string, request base.OpenRequest) (*Session, protocol.SessionState, *Subscription, error) {
+	var subscription *Subscription
+	entry, state, err := h.openIn(ctx, adapterName, "", request, func(entry *Session) error {
+		sub, joinedRun, joinedAt, open := h.attach(entry, true)
+		if !open {
+			return &SessionClosedError{ID: entry.ID()}
+		}
+		subscription = &Subscription{session: entry, ctx: streams, sub: sub, joinedRun: joinedRun, joinedAt: joinedAt, positions: make(map[protocol.RunID]uint64)}
+		return nil
+	})
+	return entry, state, subscription, err
+}
+
+func (h *Hub) openIn(ctx context.Context, adapterName, directory string, request base.OpenRequest, beforeEvents func(*Session) error) (*Session, protocol.SessionState, error) {
 	registered, ok := h.registry.Lookup(adapterName)
 	if !ok {
 		return nil, protocol.SessionState{}, &UnknownAdapterError{Name: adapterName}
@@ -162,6 +179,12 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 	if added != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
+	}
+	if beforeEvents != nil {
+		if err := beforeEvents(entry); err != nil {
+			_ = entry.Close(context.WithoutCancel(ctx))
+			return nil, protocol.SessionState{}, err
+		}
 	}
 	entry.startSessionEvents()
 	return entry, state, nil
