@@ -22,6 +22,8 @@ Queue model captures are included in this check. A queued session mutation must
 leave the default unchanged until `run.started`. Capture anchors must name that
 start on the same session, and must remain valid across delayed delivery and
 settlement. Genesis cannot contradict the opening model or supersede a mutation.
+Compound opens must admit their message before checking a capture or recording
+the opening model; the two `queue-compound-open-model-*` fixtures pin that order.
 The `queue_models` regression replays the shared positive and negative fixtures
 through the public Rust validator, without the known-gap exemption:
 
