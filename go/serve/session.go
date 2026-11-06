@@ -782,19 +782,27 @@ func (s *Session) CancelAndHold(ctx context.Context, runID protocol.RunID, reque
 	return ack, err
 }
 
-func (s *Session) Close(ctx context.Context) error {
+func (s *Session) beginClose() {
 	s.mu.Lock()
 	s.closing = true
 	s.mu.Unlock()
+}
+
+func (s *Session) failedClose(err error) error {
+	s.mu.Lock()
+	s.closing = false
+	streamErr := s.sessionEventErr
+	s.mu.Unlock()
+	if streamErr != nil {
+		s.failSessionEvents(streamErr)
+	}
+	return err
+}
+
+func (s *Session) Close(ctx context.Context) error {
+	s.beginClose()
 	if err := s.session.Close(ctx); err != nil {
-		s.mu.Lock()
-		s.closing = false
-		streamErr := s.sessionEventErr
-		s.mu.Unlock()
-		if streamErr != nil {
-			s.failSessionEvents(streamErr)
-		}
-		return err
+		return s.failedClose(err)
 	}
 	s.markClosed()
 	return nil
@@ -1456,6 +1464,7 @@ func (s *Session) markClosed() {
 }
 
 func (s *Session) closeForShutdown(ctx context.Context) error {
+	s.beginClose()
 	err := s.session.Close(ctx)
 	for attempt := 0; errors.Is(err, base.ErrRunActive) && attempt < 3; attempt++ {
 		if ctx.Err() != nil {
@@ -1473,10 +1482,11 @@ func (s *Session) closeForShutdown(ctx context.Context) error {
 		}
 		err = s.session.Close(ctx)
 	}
-	if err == nil {
-		s.markClosed()
+	if err != nil {
+		return s.failedClose(err)
 	}
-	return err
+	s.markClosed()
+	return nil
 }
 
 func liveRuns(state protocol.SessionState) []protocol.RunID {

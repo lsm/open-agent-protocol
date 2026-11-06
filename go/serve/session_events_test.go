@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -13,8 +14,9 @@ import (
 
 type eventSourceSession struct {
 	base.Session
-	events  chan base.Result
-	onClose func()
+	events   chan base.Result
+	onClose  func()
+	closeErr error
 }
 
 func (s *eventSourceSession) SessionEvents() base.EventStream { return s.events }
@@ -123,7 +125,7 @@ func (s *eventSourceSession) Close(context.Context) error {
 	if s.onClose != nil {
 		s.onClose()
 	}
-	return nil
+	return s.closeErr
 }
 
 func TestOpenStartsSessionEventSourceAndCloseStopsIt(t *testing.T) {
@@ -197,9 +199,49 @@ func TestFailedSessionEventStreamContinuesDrainingUntilClose(t *testing.T) {
 }
 
 func TestSessionEventEOFWhileClosingIsClean(t *testing.T) {
-	source := &eventSourceSession{events: make(chan base.Result)}
+	for _, shutdown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shutdown=%t", shutdown), func(t *testing.T) {
+			source := &eventSourceSession{events: make(chan base.Result)}
+			session := newSession("s", "test", source, nil)
+			session.startSessionEvents()
+			sub, _, _, _ := session.subscribe(8)
+			stream := &Subscription{session: session, ctx: context.Background(), sub: sub}
+			source.onClose = func() {
+				close(source.events)
+				deadline := time.Now().Add(time.Second)
+				for time.Now().Before(deadline) {
+					session.mu.Lock()
+					observed := session.sessionEventErr != nil
+					session.mu.Unlock()
+					if observed {
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+				t.Error("event reader did not see the closed stream")
+			}
+			var err error
+			if shutdown {
+				err = session.closeForShutdown(context.Background())
+			} else {
+				err = session.Close(context.Background())
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stream.NextWithin(time.Second); !errors.Is(err, io.EOF) {
+				t.Fatalf("close: %v", err)
+			}
+		})
+	}
+}
+
+func TestFailedShutdownReportsSessionEventEOF(t *testing.T) {
+	failure := errors.New("close failed")
+	source := &eventSourceSession{events: make(chan base.Result), closeErr: failure}
 	session := newSession("s", "test", source, nil)
 	session.startSessionEvents()
+	defer session.markClosed()
 	sub, _, _, _ := session.subscribe(8)
 	stream := &Subscription{session: session, ctx: context.Background(), sub: sub}
 	source.onClose = func() {
@@ -216,10 +258,10 @@ func TestSessionEventEOFWhileClosingIsClean(t *testing.T) {
 		}
 		t.Error("event reader did not see the closed stream")
 	}
-	if err := session.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stream.NextWithin(time.Second); !errors.Is(err, io.EOF) {
+	if err := session.closeForShutdown(context.Background()); !errors.Is(err, failure) {
 		t.Fatalf("close: %v", err)
+	}
+	if _, err := stream.NextWithin(time.Second); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("stream: %v", err)
 	}
 }
