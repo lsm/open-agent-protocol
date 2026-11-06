@@ -419,10 +419,7 @@ pub const Jobs = struct {
         const tail = try allocator.alloc(u8, length);
         defer allocator.free(tail);
         const read = file.readPositionalAll(common.defaultIo(), tail, size - length) catch 0;
-        var first: usize = 0;
-        while (first < read and tail[first] & 0xC0 == 0x80) first += 1;
-        const text = tail[first..read];
-        return allocator.dupe(u8, if (std.unicode.utf8ValidateSlice(text)) text else "(not text)");
+        return allocator.dupe(u8, wholeCharacters(tail[0..read]));
     }
 
     fn outputBytes(job: Job) u64 {
@@ -642,16 +639,32 @@ fn startBackground(jobs: *Jobs, obj: std.json.ObjectMap, cancel_token: ?ai_types
     return jobs.adopt(workspace_root, outcome.moved, .{ .limit_ms = limit_ms, .started_ms = started_ms, .ends_with_run = false });
 }
 
+fn wholeCharacters(bytes: []const u8) []const u8 {
+    var first: usize = 0;
+    while (first < @min(bytes.len, 3) and bytes[first] & 0xC0 == 0x80) first += 1;
+    var end = bytes.len;
+    var last = end;
+    while (last > first and end - last < 4) {
+        last -= 1;
+        if (bytes[last] & 0xC0 == 0x80) continue;
+        const length = std.unicode.utf8ByteSequenceLength(bytes[last]) catch break;
+        if (length > end - last) end = last;
+        break;
+    }
+    const text = bytes[first..end];
+    return if (std.unicode.utf8ValidateSlice(text)) text else "(not text)";
+}
+
 fn movedResult(allocator: std.mem.Allocator, jobs: *Jobs, workspace_root: []const u8, moved: process_runner.Moved, limit_ms: u64, started_ms: i64) !agent.AgentToolResult {
     defer allocator.free(moved.stdout_head);
     defer allocator.free(moved.stderr_head);
     const adopted = try jobs.adopt(workspace_root, moved, .{ .limit_ms = limit_ms, .started_ms = started_ms, .ends_with_run = true });
     const head = try std.mem.concat(allocator, u8, &.{ moved.stdout_head, moved.stderr_head });
     defer allocator.free(head);
-    const shown = head[head.len - @min(head.len, moved_tail_bytes) ..];
+    const shown = wholeCharacters(head[head.len - @min(head.len, moved_tail_bytes) ..]);
     const details = try common.jsonString(allocator, .{ .ok = true, .running = true, .task_id = adopted.task_id, .output_path = adopted.output_path, .bytes = adopted.bytes });
     errdefer allocator.free(details);
-    const text = try std.fmt.allocPrint(allocator, moved_format, .{ adopted.task_id, adopted.bytes, adopted.output_path, if (std.unicode.utf8ValidateSlice(shown)) shown else "(not text)" });
+    const text = try std.fmt.allocPrint(allocator, moved_format, .{ adopted.task_id, adopted.bytes, adopted.output_path, shown });
     errdefer allocator.free(text);
     return common.makeTextResultOwned(allocator, text, details);
 }
