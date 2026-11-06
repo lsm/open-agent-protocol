@@ -113,7 +113,7 @@ def main():
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} declaration refusals (12 shared, 12 synthetic) agree with Go; two descriptors read by an external Rust consumer")
     print("PASS: generated public API documentation exposes the staged contract")
-    print("STAGED: schema documents, members, dependencies, references, branches and corpora are not loaded by this API")
+    print("STAGED: schema documents, dependencies, references, branches and corpora are not loaded by this API")
 
 
 if __name__ == "__main__":
