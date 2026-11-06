@@ -633,6 +633,7 @@ impl State {
                 && p.delivery != RequestedDeliveryMode::QUEUE
             {
                 let mut refused = Expectation::delivery(&p.delivery.feature_key(), false);
+                refused.message = "a compaction takes auto or queue delivery, so steer and btw are refused with unsupported_feature naming the delivery".to_owned();
                 refused.reason = "";
                 refused.diagnostic = codes::ILLEGAL_RUN_TRANSITION;
                 expectation = Some(refused);
@@ -643,13 +644,19 @@ impl State {
                     .get(FEATURE_DELIVERY_QUEUE)
                     .is_some_and(affirmative)
             {
-                expectation = Some(Expectation::delivery(FEATURE_DELIVERY_QUEUE, false));
+                let mut refused = Expectation::delivery(FEATURE_DELIVERY_QUEUE, false);
+                refused.message =
+                    "a compaction elects a delivery the endpoint has not affirmatively advertised"
+                        .to_owned();
+                expectation = Some(refused);
             } else if p.focus.is_some()
                 && known
                 && self.features.get(FEATURE_SESSION_COMPACT) == Some(&SupportLevel::DEGRADED)
                 && !p.allows_degraded(FEATURE_SESSION_COMPACT)
             {
                 let mut refused = Expectation::delivery(FEATURE_SESSION_COMPACT, true);
+                refused.message =
+                    "a compaction focus was admitted without the caller's opt-in".to_owned();
                 refused.pointer = "/payload/focus".to_owned();
                 expectation = Some(refused);
             }

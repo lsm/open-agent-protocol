@@ -59,3 +59,13 @@ Compaction requests retain ranked refusal expectations, and their runs must open
 with exactly one requested compaction and finish `compacted` when not continuing.
 Credentials, authentication, live data, provider calls and real GUI tests are
 not exercised.
+
+For live updates and compaction diagnostics, compare the public expected/actual
+values and related request/run identities too:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-compaction-live-settings.py --output-dir /tmp/oap-live-settings-details-<unique>
+```
+
+Inspect `results.json` and raw outputs. Every declared verdict and structured
+diagnostic must agree between Rust and Go.

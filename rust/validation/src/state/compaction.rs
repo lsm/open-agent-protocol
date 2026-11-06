@@ -6,6 +6,7 @@ use crate::codes;
 impl State {
     pub(super) fn compaction_pair_event(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
         let mut found = Vec::new();
+        let mut wrong_stop = None;
         let run = self.runs.get_mut(run_id).unwrap();
         match e.envelope_type.as_str() {
             "run.compaction.started" => {
@@ -81,11 +82,7 @@ impl State {
                     .all(|outcome| *outcome == CompactionOutcome::COMPLETED)
                 && payload::<RunCompletedPayload>(e).stop_reason != "compacted"
             {
-                found.push((
-                    codes::COMPACTION_STOP_REASON_MISMATCH,
-                    "/payload/stop_reason",
-                    "a compaction run that does not continue stops compacted",
-                ));
+                wrong_stop = Some(payload::<RunCompletedPayload>(e).stop_reason);
             } else if !terminal
                 && run.compactions.is_empty()
                 && !matches!(
@@ -99,6 +96,18 @@ impl State {
                     "a compaction run opens with its compaction",
                 ));
             }
+        }
+        if let Some(reason) = wrong_stop {
+            self.add_expected(
+                codes::COMPACTION_STOP_REASON_MISMATCH,
+                at,
+                e,
+                "/payload/stop_reason",
+                "a compaction run that did not continue settles on its compaction",
+                "compacted",
+                &reason,
+                &[run_id],
+            );
         }
         for (code, pointer, message) in found {
             self.add(code, at, e, pointer, message);
