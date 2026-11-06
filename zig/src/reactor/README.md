@@ -32,8 +32,12 @@ poller. It uses kqueue timers and process filters on macOS, and monotonic
 owner thread. Each active source needs a unique token, distinct from descriptor
 watch tokens. Process already-returned readiness before reusing a token.
 
-Call `take(token)` when a source becomes ready. This returns its kind and
-releases its registration. `cancel(token)` is idempotent, and destruction
+Call `take(token)` for each returned token before interpreting descriptor flags.
+A non-null result identifies a source and releases its registration. Source
+consumers branch on that returned kind. Raw source flags vary by backend:
+kqueue timers have no interest flags and child exits may carry EOF, while
+Linux timerfd and pidfd readiness carries the read flag. Descriptor flags apply
+when `take` returns null. `cancel(token)` is idempotent, and destruction
 cancels all remaining watches. A zero timer delay schedules one millisecond.
 Timers fire once. Rearm explicitly after consumption or cancellation.
 
