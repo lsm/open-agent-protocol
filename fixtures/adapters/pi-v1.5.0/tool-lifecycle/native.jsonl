@@ -1,0 +1,8 @@
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"observe","raw":{"type":"turn_start"}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"tool_execution_start","toolCallId":"a","toolName":"read","args":{"path":"a"}}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"tool_execution_start","toolCallId":"b","toolName":"read","args":{"path":"b"}}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"tool_execution_update","toolCallId":"a","toolName":"read","args":{"path":"a"},"partialResult":{"text":"half"}}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"tool_execution_end","toolCallId":"b","toolName":"read","result":{"text":"b"},"isError":false}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"tool_execution_end","toolCallId":"a","toolName":"read","result":{"message":"denied"},"isError":true}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"messages","provider":"fixture","model":"model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1}],"willRetry":false}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"agent_settled"}}

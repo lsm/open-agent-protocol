@@ -1,0 +1,2 @@
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"observe","raw":{"type":"turn_start"}}
+{"direction":"harness-control","classification":"mapped","fidelity":"synthesized","action":"process-exit","raw":{"type":"process_exit","error":"fixture process exit"}}

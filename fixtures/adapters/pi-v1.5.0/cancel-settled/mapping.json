@@ -1,0 +1,25 @@
+[
+  {
+    "index": 1,
+    "type": "queue_update",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 2,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 3,
+    "type": "agent_settled",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  }
+]

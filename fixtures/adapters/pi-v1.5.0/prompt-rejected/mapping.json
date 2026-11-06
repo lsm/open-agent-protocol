@@ -1,0 +1,9 @@
+[
+  {
+    "index": 1,
+    "type": "prompt",
+    "direction": "host-to-pi",
+    "classification": "observed-only",
+    "fidelity": "native"
+  }
+]

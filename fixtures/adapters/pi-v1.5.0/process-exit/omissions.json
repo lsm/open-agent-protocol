@@ -1,0 +1,7 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "reason": "Turn boundary has no OAP core projection"
+  }
+]

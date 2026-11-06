@@ -1,0 +1,4 @@
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe-extension","raw":{"type":"extension_ui_request","id":"ui-1","method":"confirm","title":"Proceed?","message":"Continue"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"resolve-extension","raw":{"type":"turn_start"}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"confirmed"}],"api":"messages","provider":"fixture","model":"model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1}],"willRetry":false}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"agent_settled"}}

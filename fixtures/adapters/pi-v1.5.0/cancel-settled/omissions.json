@@ -1,0 +1,7 @@
+[
+  {
+    "index": 1,
+    "type": "queue_update",
+    "reason": "Production adapter does not advertise Pi queue delivery under OAP v0.1"
+  }
+]

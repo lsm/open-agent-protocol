@@ -1,0 +1,17 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 2,
+    "type": "process_exit",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "transport failure projection"
+  }
+]
