@@ -383,6 +383,7 @@ pub const Session = struct {
     outbox: std.ArrayList(Journaled) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
     policy_json: ?[]const u8 = null,
+    ready: ?contract.Session.Ready = null,
 
     fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
@@ -457,6 +458,7 @@ pub const Session = struct {
         .resolve = resolve,
         .cancel = cancel,
         .pump = pump,
+        .set_ready = setReady,
         .drain = drain,
         .activity = activity,
         .live_work = liveWork,
@@ -672,6 +674,12 @@ pub const Session = struct {
 
     fn idOf(ptr: *anyopaque) []const u8 {
         return cast(ptr).id;
+    }
+
+    fn setReady(ptr: *anyopaque, ready: ?contract.Session.Ready) void {
+        const self = cast(ptr);
+        self.ready = ready;
+        self.runtime.setReady(if (ready) |held| .{ .ctx = held.ctx, .notify = held.notify } else null);
     }
 
     fn nativeIdOf(ptr: *anyopaque) []const u8 {
@@ -1684,6 +1692,7 @@ pub const Session = struct {
     }
 
     fn publishEvent(self: *Session, run: *Run, event: PreparedEvent, kind: []const u8, terminal: bool) void {
+        defer if (self.ready) |ready| ready.notify(ready.ctx);
         const sequence = run.next_sequence;
         self.outbox.appendAssumeCapacity(.{ .line = event.line, .run_id = run.id, .sequence = sequence });
         if (self.journal.items.len == journal_capacity) self.evictOldestHalf();
@@ -4108,6 +4117,34 @@ test "a live update changes the loop's thinking level between runs and is refuse
     try harness.untilTerminal();
     const after = try harness.session.state(a, &refusal);
     try testing.expectEqualStrings("max", after.reasoning_level.?);
+}
+
+test "a native readiness observer sees a submitted run and can detach before the next" {
+    var script = Script{ .reply = "readiness reply" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const Observer = struct {
+        fn notify(ctx: *anyopaque) void {
+            const ready: *std.Io.Event = @ptrCast(@alignCast(ctx));
+            ready.set(testing.io);
+        }
+    };
+    var ready: std.Io.Event = .unset;
+    try testing.expect(harness.session.setReady(.{ .ctx = &ready, .notify = Observer.notify }));
+    try testing.expect(ready.isSet());
+    ready.reset();
+    _ = try harness.submit("first observed turn");
+    try testing.expect(ready.isSet());
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("run.completed"));
+    try testing.expect(harness.session.setReady(null));
+    ready.reset();
+    harness.reset();
+    _ = try harness.submit("second turn");
+    try harness.untilTerminal();
+    try testing.expect(!ready.isSet());
+    try testing.expectEqual(@as(usize, 1), harness.count("run.completed"));
 }
 
 fn compactRequest(harness: *Harness, focus: ?[]const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
