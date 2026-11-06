@@ -19,6 +19,7 @@ mod runs;
 mod session_list;
 mod snapshot_claims;
 mod snapshot_listing;
+mod source_catalog;
 mod steer;
 mod tool_sources;
 mod transcript;
@@ -86,6 +87,7 @@ pub(crate) struct State {
     pending_provides: HashMap<String, controls::PendingProvide>,
     descriptor_owners: HashMap<String, String>,
     declared_sources: HashSet<String>,
+    attached_sources: HashMap<String, Vec<ToolSourceDescriptor>>,
     catalog_owners: HashMap<String, (String, HashMap<String, String>)>,
     order: HashMap<String, Vec<String>>,
     open_submits: HashMap<String, Vec<String>>,
@@ -365,6 +367,7 @@ impl State {
             pending_provides: HashMap::new(),
             descriptor_owners: HashMap::new(),
             declared_sources: HashSet::new(),
+            attached_sources: HashMap::new(),
             catalog_owners: HashMap::new(),
             order: HashMap::new(),
             open_submits: HashMap::new(),

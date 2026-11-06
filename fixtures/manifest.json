@@ -3288,6 +3288,24 @@
       ]
     },
     {
+      "id": "tools-catalog-plain-reopen-adopts-filled-source",
+      "path": "valid/tools-catalog-plain-reopen-adopts-filled-source.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-for-the-sessions-lifetime/4",
+        "0008#attachment-is-for-the-sessions-lifetime/7"
+      ]
+    },
+    {
       "id": "open-attach-fills-unstated-members",
       "path": "valid/open-attach-fills-unstated-members.json",
       "kind": "positive",
