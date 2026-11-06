@@ -163,6 +163,7 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
+	entry.startSessionEvents()
 	return entry, state, nil
 }
 

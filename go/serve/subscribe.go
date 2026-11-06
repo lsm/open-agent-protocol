@@ -287,6 +287,9 @@ func (s *Subscription) replayed(result base.Result, ok bool) (protocol.Envelope,
 }
 
 func (s *Subscription) observe(envelope protocol.Envelope) bool {
+	if envelope.RunID == "" {
+		return true
+	}
 	if s.firstRun > 0 && s.session.serial(envelope.RunID) < s.firstRun {
 		s.sub.untrack(envelope.RunID)
 		return false
