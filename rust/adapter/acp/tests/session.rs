@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::executor::block_on;
@@ -7,6 +8,8 @@ use oap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
 use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
 use oap_protocol::{ModelsRequest, Participant, SessionStatus, FEATURE_MODELS_LIST};
 use serde_json::{json, Value};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
 
@@ -20,8 +23,11 @@ impl Fixture {
     }
 
     fn with_timestamp(suffix: u128) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("oap-acp-session-{}-{suffix}", std::process::id()));
+        let unique = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "oap-acp-session-{}-{suffix}-{unique}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
