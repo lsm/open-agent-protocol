@@ -1,0 +1,2 @@
+{"direction":"host-to-dsh","classification":"mapped","fidelity":"normalized","action":"open","raw":{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"cwd":"WORKSPACE_PATH","provider":"fixture-provider","model":"fixture-model"}}}
+{"direction":"dsh-to-host","classification":"observed-only","fidelity":"native","action":"auto","raw":{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":"session","status":"running"}}}
