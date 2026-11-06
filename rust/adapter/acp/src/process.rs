@@ -74,7 +74,7 @@ pub struct ProcessConfig {
 pub struct Process {
     pub client: RpcClient,
     pub initialize: InitializeResponse,
-    child: Child,
+    pub(crate) child: Child,
     timeout: Duration,
     closed: Mutex<Option<Result<(), String>>>,
 }
@@ -87,6 +87,14 @@ fn handshake(detail: impl std::fmt::Display) -> Error {
 
 impl Process {
     pub fn start(config: &ProcessConfig, deadline: Option<Instant>) -> Result<Self, Error> {
+        Self::start_controlled(config, deadline, None)
+    }
+
+    pub(crate) fn start_controlled(
+        config: &ProcessConfig,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::operation::Cancellation>,
+    ) -> Result<Self, Error> {
         if config.path.is_empty() {
             return Err(handshake("executable path is required"));
         }
@@ -141,6 +149,9 @@ impl Process {
             timeout,
             closed: Mutex::new(None),
         };
+        if let Some(control) = cancellation {
+            control.arm(&process.child, &process.client);
+        }
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Params<'a> {
