@@ -46,3 +46,16 @@ A registered child produces readiness even if it exits immediately after the
 watch is installed. The caller owns the child and reaps it separately. A process
 can have only one active child watch in a `Sources` instance. Destroy sources
 before their poller. Platforms must provide the named kernel facilities.
+
+`Pool.create(allocator, workers, capacity)` starts a fixed number of workers
+with a FIFO queue bounded by `capacity`. `post` returns `Full` immediately when
+the queue is full and `Closed` after shutdown starts. A successful post transfers
+execution of the borrowed job context to a worker exactly once. Its context
+must remain valid until execution completes. Callbacks run outside the queue lock.
+
+Idle workers sleep on a condition variable. `shutdown` rejects new jobs, drains
+accepted jobs and joins all workers. It may race with `post`. One external owner
+calls `shutdown` and `destroy`, after stopping other submitters. A callback must
+return and must never join or destroy its own pool. The supplied allocator is
+used by the owner to allocate and free pool storage. Worker argument storage
+uses the standard thread allocator.
