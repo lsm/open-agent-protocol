@@ -3,6 +3,7 @@
 import argparse
 import concurrent.futures
 import importlib.util
+import http.client
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,8 @@ spec.loader.exec_module(bench)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--hold-expiry", action="store_true")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -32,7 +35,7 @@ def main():
         home = root / "home"
         home.mkdir()
         binary = root / "oapx"
-        shutil.copy2(ROOT / "zig/zig-out/bin/oapx", binary)
+        shutil.copy2(args.binary, binary)
         config = root / "hub.json"
         config.write_text(json.dumps({"adapters": {"memory": {"type": "memory"}}}))
         with socket.socket() as reservation:
@@ -72,7 +75,7 @@ def main():
                 sessions = [f"passes-{index}" for index in range(80)]
                 for session in sessions:
                     opened = request("/adapters/memory/sessions", bench.envelope(
-                        "session.open.request", {"session_id": session}))
+                        "session.open.request", {"session_id": session, "subscribe": args.hold_expiry}))
                     assert opened["payload"]["session_id"] == session
 
                 def submit(session):
@@ -97,6 +100,31 @@ def main():
                             states[session] = state
                     assert time.monotonic() < deadline, sorted(set(sessions) - set(states))
                 (output / "states.json").write_text(json.dumps(states, indent=2))
+                if args.hold_expiry:
+                    with socket.create_connection(("127.0.0.1", port), timeout=10) as pending:
+                        pending.sendall(f"GET /sessions/{sessions[0]}/events HTTP/1.1\r\nHost: 127.0.0.1\r\n".encode())
+                        request("/adapters")
+                        os.kill(process.pid, signal.SIGSTOP)
+                        try:
+                            pending.sendall(b"\r\n")
+                            time.sleep(31)
+                        finally:
+                            os.kill(process.pid, signal.SIGCONT)
+                        with http.client.HTTPResponse(pending) as response:
+                            response.begin()
+                            assert response.status == 200
+                            event = []
+                            for _ in range(64):
+                                line = response.readline().decode()
+                                event.append(line)
+                                if line.startswith("data:"):
+                                    break
+                            observed = "".join(event)
+                            (output / "expired-stream.txt").write_text(observed)
+                            assert "event: oap-subscribed" in observed, observed
+                            joined = json.loads(line.removeprefix("data:"))
+                            assert joined["joined_after"] > 0, joined
+                    print("PASS an events request accepted after the stopped Hub's 30-second hold deadline starts after the expired backlog")
                 for session, state in states.items():
                     run = state["active_runs"][0]["run_id"]
                     request(f"/sessions/{session}/cancel", bench.envelope(
