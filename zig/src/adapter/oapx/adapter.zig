@@ -2390,6 +2390,8 @@ const Script = struct {
     tool_name: []const u8 = "echo_tool",
     tool_arguments: []const u8 = "{\"say\":\"hi\"}",
     wait_for_cancel: bool = false,
+    hold_first_reply: bool = false,
+    replying: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     received_answers: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_steer: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_notice: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -2485,6 +2487,13 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
         };
         try finish(stream, allocator, model, content[0..if (script.tool_twice) 2 else 1], .tool_use);
         return stream;
+    }
+    if (script.hold_first_reply and script.calls == 1) {
+        script.replying.store(true, .release);
+        var waits: usize = 0;
+        while (held_tool.load(.acquire) and waits < 5000) : (waits += 1) {
+            std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+        }
     }
     const partial = bareMessage(model, .stop);
     try stream.push(.{ .start = .{ .partial = partial } });
@@ -3057,6 +3066,7 @@ test "a job that ends on an idle session starts a run that tells the model" {
     try harness.untilTerminal();
 
     try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 1), script.calls);
     try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
     const started = harness.seen.items[0].value.object.get("payload").?.object;
     const trigger = started.get("trigger").?.object;
@@ -3089,6 +3099,37 @@ test "a job that ends during a turn folds into its next request and starts no ru
     try harness.untilTerminal();
 
     try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
+    try testing.expect(!session.jobs.noticeWaiting());
+}
+
+test "a job that ends during the last request gets one more request and starts no run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .hold_first_reply = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+
+    _ = try harness.submit("go");
+    const by = compat.time.nowMillis() + 5_000;
+    while (!script.replying.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(script.replying.load(.acquire));
+    try startJob(session, root, "true");
+    while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(session.jobs.noticeWaiting());
+    held_tool.store(false, .release);
+    try harness.untilTerminal();
+
+    try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 2), script.calls);
     try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
     try testing.expect(!session.jobs.noticeWaiting());
 }
