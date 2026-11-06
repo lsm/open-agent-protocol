@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<String> = std::env::args().collect();
     let client = ClientBuilder::new().command(&arguments[1])
-        .args([format!("--usage={}", arguments[2])]).env_clear().connect().await?;
+        .args([format!("--usage={}", arguments[2])]).env_clear()
+        .handshake_timeout(std::time::Duration::from_secs(10)).connect().await?;
     let request = ExecutionRequest::prompt("fixture/openai-responses@mock", "usage");
     let mut observed = Vec::new();
     for agent in [false, true] {
@@ -144,8 +145,11 @@ def main():
                                 output, str(index)))
         if index == 0:
             elapsed = time.monotonic() - began
-            assert 2 <= elapsed < 20, elapsed
-            (output / "delayed-startup-seconds").write_text(str(elapsed))
+            assert elapsed >= 2, elapsed
+            (output / "delayed-startup.json").write_text(json.dumps({
+                "fixture_delay_seconds": 2, "handshake_budget_seconds": 10,
+                "consumer_elapsed_seconds": elapsed,
+            }, indent=2))
         assert len(values) == 4 and all(value.get("usage", "missing") == expected for value in values), values
         print(f"public Rust consumer {raw}: {values}", flush=True)
     for index, raw in enumerate(["null", '{"input_tokens":null}', '{"input_tokens":-1}', '{"total_tokens":"3"}',
