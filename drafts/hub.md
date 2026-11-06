@@ -508,6 +508,15 @@ hub's memory as before. Pinned by `a served oapx session's events are saved,
 read back without adopting it, and load back as its conversation once the store
 is opened again` and `a native read is offered only with a history reader, and
 reads each saved user message and the last reply before the next`.
+
+The served-session recorder copies event payloads and metadata into a bounded
+256-item queue. One writer consumes up to 64 queued items at a time. A full
+queue applies backpressure, and reading saved history waits for preceding
+events before opening the file. Shutdown closes the queue and joins the writer
+after draining it. If the writer cannot start, saving runs inline. The served
+session test above also reads 80 queued user/reply pairs in order and reopens
+the last conversation after shutdown. `queued session metadata and events
+unwind every failed capture allocation` covers failed payload copies.
 `goap hub` takes the lock on Unix only: on Windows it opens the lock file
 without locking it, a gap recorded here rather than closed, since `goap` is
 never released and CI runs it on Unix. `goap hub` has no
