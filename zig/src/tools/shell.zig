@@ -7,7 +7,7 @@ const common = @import("tools/common");
 const process_runner = @import("tools/process_runner");
 
 pub const schema_execute =
-    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"run_in_background":{"type":"boolean","description":"Start the command as a background job that outlives this call and ends when the session closes. Returns task_id and output_path at once; read output_path with Read and check or stop the job with ShellJob."}},"required":["description","workspace_root","command"],"additionalProperties":false}
+    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"run_in_background":{"type":"boolean","description":"Start the command as a background job that outlives this call. It ends when the session closes or at its time limit of at most 1 hour or at its time limit: timeout_ms, at most 1 hour. Returns task_id and output_path at once; read output_path with Read and check or stop the job with ShellJob."}},"required":["description","workspace_root","command"],"additionalProperties":false}
 ;
 
 pub const schema_job =
@@ -193,10 +193,16 @@ pub const Jobs = struct {
         var watched = [_]std.posix.pollfd{.{ .fd = wake, .events = std.posix.POLL.IN, .revents = 0 }};
         while (true) {
             const wait_ms = self.endExpired();
-            _ = std.posix.poll(&watched, wait_ms) catch return;
+            _ = std.posix.poll(&watched, wait_ms) catch {
+                compat.time.sleepMs(limiter_retry_ms);
+                continue;
+            };
             if (watched[0].revents == 0) continue;
             var drained: [64]u8 = undefined;
-            const count = std.posix.read(wake, &drained) catch return;
+            const count = std.posix.read(wake, &drained) catch {
+                compat.time.sleepMs(limiter_retry_ms);
+                continue;
+            };
             if (count == 0) return;
         }
     }
@@ -431,6 +437,7 @@ pub const Jobs = struct {
 
 const notice_tail_bytes = 2048;
 const commands_move = builtin.os.tag != .windows;
+const limiter_retry_ms = 1_000;
 const default_foreground_budget_ms: u64 = 5_000;
 const command_limit_ms: u64 = 60 * 60 * 1_000;
 const limited_format = "was ended because it reached its time limit of {d} seconds; no command may run longer than 1 hour";
@@ -595,7 +602,7 @@ fn executeIn(ctx: ?*anyopaque, tool_call_id: []const u8, args_json: []const u8, 
     const started = try startBackground(jobs, obj, cancel_token, allocator);
     const details = try common.jsonString(allocator, .{ .ok = true, .task_id = started.task_id, .output_path = started.output_path });
     errdefer allocator.free(details);
-    const text = try std.fmt.allocPrint(allocator, "started background job {s}; its stdout and stderr go to {s}. Read that file for output, and pass its path to ShellJob to check or stop the job. It ends when the session closes.", .{ started.task_id, started.output_path });
+    const text = try std.fmt.allocPrint(allocator, "started background job {s}; its stdout and stderr go to {s}. Read that file for output, and pass its path to ShellJob to check or stop the job. It ends when the session closes or at its time limit of at most 1 hour.", .{ started.task_id, started.output_path });
     errdefer allocator.free(text);
     return common.makeTextResultOwned(allocator, text, details);
 }
