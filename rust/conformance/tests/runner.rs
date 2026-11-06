@@ -14,6 +14,7 @@ for line in sys.stdin:
  if kind=='protocol.initialize.request':
   payload={'protocol_version':'0.1','profile':'open-agent-protocol.agent-control-core','endpoint':{}}
   if mode=='malformed-init': payload=[]
+  if mode=='private-array': payload=['synthetic-private-sentinel']
  elif kind=='capabilities.request':
   level='unavailable' if mode=='model-unavailable' else 'native'
   payload={'features':{'session.model.switch':{'level':level}}}
@@ -21,6 +22,7 @@ for line in sys.stdin:
  else:
   payload={'session_id':request['payload']['session_id']}
   if mode=='wrong-session': payload['session_id']='other'
+  if mode=='malformed-open': payload=[]
  response={'protocol':'open-agent-protocol','version':'0.1','profile':'open-agent-protocol.agent-control-core','type':kind.replace('.request','.response'),'id':'answer-'+request['id'],'in_reply_to':request['id'],'payload':payload,'capability_revision':'rev'}
  if kind=='capabilities.request' and mode=='missing-revision': response.pop('capability_revision')
  if kind=='session.open.request' and (mode=='refused-open' or request.get('capability_revision')!='rev'):
@@ -63,11 +65,37 @@ fn bootstrap_checks_bind_open_to_the_discovered_revision_and_requested_session()
 fn a_fault_is_reported_under_the_obligation_that_failed() {
     for (mode, name, detail) in [
         ("malformed-init", "protocol.initialize.response decodes", ""),
-        ("malformed-capabilities", "capabilities.response decodes as a descriptor", ""),
-        ("missing-revision", "capabilities.response carries a capability revision", "no capability_revision"),
-        ("model-unavailable", "core session.model.switch is advertised", "did not advertise"),
-        ("wrong-session", "the open names the session it was asked for", "other"),
-        ("refused-open", "session.open.request is answered", "fixture_refusal"),
+        ("private-array", "protocol.initialize.response decodes", ""),
+        (
+            "malformed-capabilities",
+            "capabilities.response decodes as a descriptor",
+            "",
+        ),
+        (
+            "missing-revision",
+            "capabilities.response carries a capability revision",
+            "no capability_revision",
+        ),
+        (
+            "model-unavailable",
+            "core session.model.switch is advertised",
+            "did not advertise",
+        ),
+        (
+            "wrong-session",
+            "the open names the session it was asked for",
+            "other",
+        ),
+        (
+            "refused-open",
+            "session.open.request is answered",
+            "fixture_refusal",
+        ),
+        (
+            "malformed-open",
+            "session.open.response decodes as a session state",
+            "",
+        ),
     ] {
         let mut client = client(mode);
         let mut runner = Runner::new(&mut client, "s");
@@ -75,7 +103,15 @@ fn a_fault_is_reported_under_the_obligation_that_failed() {
         if runner.capabilities().is_some() {
             runner.open();
         }
-        assert!(runner.checks().iter().any(|check| !check.passed && check.name == name && check.detail.contains(detail)), "{mode}: {:?}", runner.checks());
+        assert!(
+            runner
+                .checks()
+                .iter()
+                .any(|check| !check.passed && check.name == name && check.detail.contains(detail)),
+            "{mode}: {:?}",
+            runner.checks()
+        );
+        assert!(runner.checks().iter().all(|check| !check.detail.contains("synthetic-private-sentinel")));
     }
 }
 
