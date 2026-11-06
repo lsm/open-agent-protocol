@@ -6040,3 +6040,37 @@ test "a seeded interleaving of hub calls keeps every run's sequence contiguous a
         try testing.expect(ends > 0);
     }
 }
+
+
+test "a large batch leaves time between slices and eventually delivers every session" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    var subscriptions: [80]*Subscription = undefined;
+    for (&subscriptions, 0..) |*subscription, index| {
+        const name = try std.fmt.allocPrint(arena, "slice-{d}", .{index});
+        const opened = try hub.open(arena, "memory", .{ .session_id = name, .subscribe = true });
+        subscription.* = opened.subscription.?;
+        const request = try submitFor(arena, name);
+        _ = try hub.submit(arena, name, &request, "");
+        while (subscription.*.next()) |_| {}
+    }
+    try hub.pump(testing.allocator, 0);
+    var first: usize = 0;
+    for (subscriptions) |subscription| {
+        if (subscription.next() != null) first += 1;
+    }
+    try testing.expect(first > 0);
+    try testing.expect(first <= 64);
+    var last_seen = subscriptions[79].next() != null;
+    for (0..8) |_| {
+        try hub.pump(testing.allocator, 0);
+        while (subscriptions[79].next()) |_| last_seen = true;
+    }
+    try testing.expect(last_seen);
+}
