@@ -318,6 +318,10 @@ could not be framed, or `stream_failed` for anything else. `after` is a cursor:
 the host replays from it to continue. A clean end needs no such frame, because
 the run's terminal envelope is already the marker.
 
+Session-scoped events have no run cursor and are not replayed. If one cannot be
+framed, or its adapter stream fails while an update is being published, the
+endpoint fails the stdio connection rather than silently discarding the event.
+
 A replay here is one run's and ends at that run's terminal, as does the stream a
 submit starts. [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 is about hub subscriptions and does not reach this binding: each run already has

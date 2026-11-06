@@ -61,7 +61,7 @@ pub const Options = struct {
     tool_sources: []const contract.ConfiguredSource = &.{},
 };
 
-const Served = (contract.Failure || error{ Denied, FrameTooLarge });
+const Served = (contract.Failure || error{ Denied, FrameTooLarge, EventStreamFailed });
 
 pub const ShutdownMode = enum { graceful, force };
 
@@ -211,7 +211,7 @@ pub const Endpoint = struct {
     fn serve(self: *Endpoint, arena: std.mem.Allocator, root: std.json.ObjectMap, line: []const u8) Served!void {
         var refusal = contract.Refusal{};
         self.dispatch(arena, root, line, &refusal) catch |err| switch (err) {
-            error.Denied, error.OutOfMemory, error.FrameTooLarge => |passed| return passed,
+            error.Denied, error.OutOfMemory, error.FrameTooLarge, error.EventStreamFailed => |passed| return passed,
             else => |failure| return self.refuse(arena, failure, refusal),
         };
     }
@@ -635,7 +635,8 @@ pub const Endpoint = struct {
         });
         self.drainEntry(entry) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => {},
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
         };
         const previous = switched.response.previous_model_id orelse "";
         if (std.mem.eql(u8, previous, switched.response.model_id)) return;
@@ -670,6 +671,11 @@ pub const Endpoint = struct {
             .capability_revision = request.capability_revision,
             .payload = .{ .session_settings_update_response = updated.response },
         });
+        self.drainEntry(entry) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
+        };
         entry.state_sequence += 1;
         const published = oap_types.Envelope{
             .id = try self.nextId(arena, "event"),
@@ -1351,6 +1357,8 @@ const Fake = struct {
     offers_switch: bool = false,
     offers_tools: bool = false,
     oversized_event: bool = false,
+    oversized_session_event_on_switch: bool = false,
+    invalid_session_event_on_switch: bool = false,
 
     fn adapter(self: *Fake) contract.Adapter {
         return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
@@ -1534,6 +1542,13 @@ const FakeSession = struct {
         _ = arena;
         _ = refusal;
         const self = cast(ptr);
+        if (self.fake.invalid_session_event_on_switch) {
+            try self.queue("{{\"type\":\"session.task.started\",\"session_id\":\"s1\",\"payload\":{{}}}}", .{});
+        }
+        if (self.fake.oversized_session_event_on_switch) {
+            const text: [1024]u8 = @splat('x');
+            try self.queue("{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s1\",\"payload\":{{\"label\":\"{s}\"}}}}", .{&text});
+        }
         if (self.active) {
             self.active = false;
             try self.queue("{{\"type\":\"run.completed\",\"run_id\":\"run-{d}\",\"sequence\":2}}", .{self.runs});
@@ -2192,6 +2207,34 @@ test "session events and state updates share a sequence without entering the run
     try testing.expectEqual(@as(i64, 2), state[0].object.get("sequence").?.integer);
     try testing.expectEqual(@as(usize, 0), entry.cursors.items.len);
     try testing.expectEqual(@as(usize, 0), entry.journal.items.len);
+}
+
+test "an oversized session event during a model switch fails the endpoint out loud" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{ .frame_limit = 800 });
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    harness.fake.oversized_session_event_on_switch = true;
+    const request = framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}");
+    try testing.expectError(error.FrameTooLarge, harness.endpoint.handleLine(request));
+    const outbound = try harness.collect();
+    try testing.expectEqual(@as(usize, 1), outbound.len);
+    try testing.expectEqualStrings("session.model.switch.response", field(outbound[0], &.{"type"}));
+}
+
+test "an invalid session event during a model switch fails the endpoint out loud" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    harness.fake.invalid_session_event_on_switch = true;
+    const request = framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}");
+    try testing.expectError(error.EventStreamFailed, harness.endpoint.handleLine(request));
+    const outbound = try harness.collect();
+    try testing.expectEqual(@as(usize, 1), outbound.len);
+    try testing.expectEqualStrings("session.model.switch.response", field(outbound[0], &.{"type"}));
 }
 
 test "a run that ends while a model switch waits on its backend settles before the switched state" {
