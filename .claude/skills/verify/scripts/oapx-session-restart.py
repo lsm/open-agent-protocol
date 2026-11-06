@@ -127,6 +127,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--storage-recovery", action="store_true",
+                        help="temporarily obstruct the transcript, then verify later saves recover metadata")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -172,9 +174,21 @@ def main():
             capabilities = hub.call("capabilities", adapter="loop")
             assert "session.open.reopen" in json.dumps(capabilities), capabilities
             open_session(hub, "restart-proof")
+            transcript_path = data / "sessions" / "restart-proof.jsonl"
+            if args.storage_recovery:
+                transcript_path.mkdir(parents=True)
+                submit(hub, "restart-proof", "synthetic failed storage turn")
+                transcript_path.rmdir()
             submit(hub, "restart-proof", PROMPT)
             before = hub.call("work.read", session_id="restart-proof")
             assert PROMPT in json.dumps(before) and REPLY in json.dumps(before), before
+            if args.storage_recovery:
+                records = transcript_path.read_text()
+                (output / "storage-recovered.jsonl").write_text(records)
+                metadata = [record["metadata"] for line in records.splitlines()
+                            if "metadata" in (record := json.loads(line))]
+                assert any(m.get("model") == "synthetic-model" and m.get("provider") == "synthetic"
+                           for m in metadata), "saving recovered without model/provider metadata"
             hub.stop()
             hub = None
             saved = list((data / "sessions").rglob("*"))
@@ -196,6 +210,8 @@ def main():
             (output / "provider-requests.json").write_text(json.dumps(Provider.requests, indent=2))
             (output / "restored.json").write_text(json.dumps(transcript, indent=2))
             print("PASS: serve saved synthetic user/reply; process exited 0; fresh serve read and reopened history; next provider request contained both old turns and new prompt; no credential file")
+            if args.storage_recovery:
+                print("PASS: failed transcript append recovered with model/provider metadata")
         finally:
             if hub is not None:
                 hub.stop()
