@@ -78,6 +78,10 @@ impl Process {
         }
     }
 
+    pub(crate) fn buffered(&self) -> usize {
+        self.frames.len()
+    }
+
     pub fn close_input(&mut self) {
         self.input.take();
     }

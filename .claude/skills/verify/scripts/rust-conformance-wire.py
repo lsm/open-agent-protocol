@@ -10,7 +10,7 @@ SOURCE = r'''
 use std::io::Cursor;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use oap_conformance::{read_frame, Frame, Process, ProcessError, Transcript};
+use oap_conformance::{read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Transcript};
 use oap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
@@ -68,7 +68,53 @@ fn main() {
             assert!(start.elapsed() < Duration::from_secs(3));
             println!("bounded cleanup of synthetic peer, stdout closed = {closes_stdout}");
         }
-        println!("PASS: real endpoint answers and EOF exit; bounded silent/closed-stdout peers; early admission ordered; duplicates/probes excluded; exact cursors; malformed JSON refused");
+        let mut endpoint = Command::new(std::env::args().nth(1).unwrap());
+        endpoint.args(["serve", "agent"]).stderr(Stdio::null());
+        let mut client = Client::spawn(&mut endpoint, Duration::from_secs(2)).unwrap();
+        client.send(Envelope::new(EnvelopeType::CAPABILITIES_REQUEST, "client-caps", &json!({})).unwrap()).unwrap();
+        assert_eq!(client.response(&"client-caps".into()).unwrap().envelope_type, EnvelopeType::CAPABILITIES_RESPONSE);
+        assert_eq!(client.transcript().len(), 2);
+        client.close_input();
+        assert!(client.wait().unwrap().success());
+        println!("public Client matched capabilities response, retained trace and observed EOF exit 0");
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", r#"import json,sys,time
+sys.stdin.readline()
+end=time.monotonic()+3
+i=0
+while time.monotonic()<end:
+ print(json.dumps({'protocol':'open-agent-protocol','type':'run.started','id':str(i),'payload':{}}),flush=True)
+ i+=1
+ time.sleep(.005)
+"#]);
+        let mut client = Client::spawn(&mut command, Duration::from_millis(500)).unwrap();
+        client.send(Envelope::new(EnvelopeType::CAPABILITIES_REQUEST, "missing", &json!({})).unwrap()).unwrap();
+        client.event().unwrap();
+        let start = Instant::now();
+        assert!(matches!(client.response(&"missing".into()), Err(ClientError::Timeout { .. })));
+        assert!(start.elapsed() >= Duration::from_millis(500) && start.elapsed() < Duration::from_secs(1));
+        assert!(client.transcript().len() > 3);
+        println!("chatty response wait stopped after {:?}: {}", start.elapsed(), client.closed_by_runner().unwrap());
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", r#"import json,sys,time
+sys.stdin.readline()
+end=time.monotonic()+.7
+while time.monotonic()<end:
+ print(json.dumps({'control':'replay.accepted','id':'unrelated'}),flush=True)
+ time.sleep(.005)
+sys.stdin.readline()
+print(json.dumps({'protocol':'open-agent-protocol','type':'capabilities.response','id':'answer','in_reply_to':'resume','payload':{}}),flush=True)
+"#]);
+        let mut client = Client::spawn(&mut command, Duration::from_millis(500)).unwrap();
+        client.send_control(ControlFrame { control: "replay".into(), id: "missing".into(), ..ControlFrame::default() }).unwrap();
+        let start = Instant::now();
+        assert!(matches!(client.control("missing"), Err(ClientError::ControlUnanswered)));
+        assert!(start.elapsed() >= Duration::from_millis(500) && start.elapsed() < Duration::from_secs(1));
+        assert!(client.closed_by_runner().is_none());
+        client.send(Envelope::new(EnvelopeType::CAPABILITIES_REQUEST, "resume", &json!({})).unwrap()).unwrap();
+        assert_eq!(client.response(&"resume".into()).unwrap().id.as_str(), "answer");
+        println!("unanswered control used one budget; endpoint then answered resume");
+        println!("PASS: real endpoint/process/Client exchange and EOF; shared wait budgets; soft control timeout; trace ordering; exact cursors; malformed JSON refused");
 }
 '''
 
