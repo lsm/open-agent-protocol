@@ -36,11 +36,20 @@ fn controls_envelopes_blank_lines_and_a_final_unterminated_line_round_trip() {
 
 #[test]
 fn malformed_output_is_an_error_and_protocol_wins_over_a_control_member() {
-    for input in ["{", "[]", "1", "{\"control\":7}", "{\"control\":\"replay\",\"after\":-1}"] {
+    for input in [
+        "{",
+        "[]",
+        "1",
+        "{\"control\":7}",
+        "{\"control\":\"replay\",\"after\":-1}",
+    ] {
         assert!(read_frame(&mut Cursor::new(input)).is_err(), "{input}");
     }
     let text = "{\"protocol\":\"open-agent-protocol\",\"control\":\"replay\",\"id\":\"e\"}";
-    assert!(matches!(read_frame(&mut Cursor::new(text)).unwrap(), Some(Frame::Envelope(_))));
+    assert!(matches!(
+        read_frame(&mut Cursor::new(text)).unwrap(),
+        Some(Frame::Envelope(_))
+    ));
     let text = "{\"control\":\"replay\",\"id\":null,\"latest_available\":null}";
     let Some(Frame::Control(frame)) = read_frame(&mut Cursor::new(text)).unwrap() else {
         panic!("expected a nullable control answer");
@@ -61,9 +70,20 @@ fn a_trace_places_early_events_after_admission_and_keeps_unadmitted_events() {
     orphan.run_id = Some("orphan-run".into());
     orphan.sequence = Some(0);
     trace.push(orphan);
-    trace.push(envelope("session.message.submit.response", "admission", json!({"run_id":"r"})));
+    trace.push(envelope(
+        "session.message.submit.response",
+        "admission",
+        json!({"run_id":"r"}),
+    ));
     trace.push(envelope("run.completed", "tail", json!({})));
-    assert_eq!(trace.envelopes().iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["admission", "early", "tail", "orphan"]);
+    assert_eq!(
+        trace
+            .envelopes()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect::<Vec<_>>(),
+        ["admission", "early", "tail", "orphan"]
+    );
 }
 
 #[test]
@@ -77,7 +97,18 @@ fn a_trace_excludes_probe_answers_and_recognizes_open_message_admission() {
     early.run_id = Some("r".into());
     early.sequence = Some(0);
     trace.push(early);
-    trace.push(envelope("session.open.response", "opened", json!({"active_run_id":"r"})));
-    assert_eq!(trace.envelopes().iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["opened", "early"]);
+    trace.push(envelope(
+        "session.open.response",
+        "opened",
+        json!({"active_run_id":"r"}),
+    ));
+    assert_eq!(
+        trace
+            .envelopes()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect::<Vec<_>>(),
+        ["opened", "early"]
+    );
     assert_eq!(trace.envelopes().len(), 2);
 }
