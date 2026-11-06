@@ -1013,8 +1013,18 @@ pub const Endpoint = struct {
         var events = std.ArrayList(contract.Event).empty;
         try entry.session.drain(scratch.allocator(), &events);
         for (events.items) |event| {
-            try self.remember(entry, event);
-            try self.pushEvent(entry, event);
+            if (event.run_id.len == 0) {
+                if (entry.session.vtable.drain_mixed == null) return error.BackendFailed;
+                const sequence = entry.state_sequence + 1;
+                const line = try contract.sequenceSessionEvent(self.allocator, event.line, entry.session.id(), sequence);
+                errdefer self.allocator.free(line);
+                if (line.len + 1 > self.frame_limit) return error.FrameTooLarge;
+                try self.outbound.append(self.allocator, @constCast(line));
+                entry.state_sequence = sequence;
+            } else {
+                try self.remember(entry, event);
+                try self.pushEvent(entry, event);
+            }
         }
     }
 
@@ -1549,6 +1559,7 @@ const FakeSession = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .drain_mixed = drain,
         .activity = activityOf,
         .close = close,
     };
@@ -1561,6 +1572,7 @@ const FakeSession = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .drain_mixed = drain,
         .activity = activityOf,
         .close = close,
         .models = models,
@@ -2161,6 +2173,25 @@ test "a backend that offers models, switching and tools is answered through them
     const listed_tools = try harness.send(framed("action.tools.list.request", "tools-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"allow_degraded_features\":[\"action.tools.list\"]}"));
     try testing.expectEqualStrings("action.tools.list.response", field(listed_tools[0], &.{"type"}));
     try testing.expectEqualStrings("fake-lister-v2", field(listed_tools[0], &.{"capability_revision"}));
+}
+
+test "session events and state updates share a sequence without entering the run journal" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    const switched = try harness.send(framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}"));
+    try testing.expectEqual(@as(i64, 1), switched[1].object.get("sequence").?.integer);
+    const entry = &harness.endpoint.entries.items[0];
+    const fake = FakeSession.cast(entry.session.ptr);
+    try fake.queue("{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s1\",\"payload\":{{}}}}", .{});
+    const state = try harness.send(framed("session.state.request", "state-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
+    try testing.expectEqual(@as(usize, 2), state.len);
+    try testing.expectEqualStrings("session.task.started", field(state[0], &.{"type"}));
+    try testing.expectEqual(@as(i64, 2), state[0].object.get("sequence").?.integer);
+    try testing.expectEqual(@as(usize, 0), entry.cursors.items.len);
+    try testing.expectEqual(@as(usize, 0), entry.journal.items.len);
 }
 
 test "a run that ends while a model switch waits on its backend settles before the switched state" {

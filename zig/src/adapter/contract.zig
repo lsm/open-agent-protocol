@@ -160,6 +160,33 @@ pub const Event = struct {
     sequence: u64,
 };
 
+pub fn sequenceSessionEvent(allocator: std.mem.Allocator, line: []const u8, session_id: []const u8, sequence: u64) Failure![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{ .parse_numbers = false }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BackendFailed,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object or parsed.value.object.contains("run_id")) return error.BackendFailed;
+    const scope = parsed.value.object.get("session_id") orelse return error.BackendFailed;
+    if (scope != .string or !std.mem.eql(u8, scope.string, session_id)) return error.BackendFailed;
+    for ([_][]const u8{ "protocol", "version", "profile", "type", "id" }) |key| {
+        const value = parsed.value.object.get(key) orelse return error.BackendFailed;
+        if (value != .string or value.string.len == 0) return error.BackendFailed;
+    }
+    for ([_]struct { key: []const u8, value: []const u8 }{
+        .{ .key = "protocol", .value = oap_types.PROTOCOL },
+        .{ .key = "version", .value = oap_types.VERSION },
+        .{ .key = "profile", .value = oap_types.PROFILE },
+    }) |field| {
+        if (!std.mem.eql(u8, parsed.value.object.get(field.key).?.string, field.value)) return error.BackendFailed;
+    }
+    const payload = parsed.value.object.get("payload") orelse return error.BackendFailed;
+    if (payload != .object) return error.BackendFailed;
+    const sequence_text = try std.fmt.allocPrint(parsed.arena.allocator(), "{d}", .{sequence});
+    try parsed.value.object.put(parsed.arena.allocator(), "sequence", .{ .number_string = sequence_text });
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{}) catch return error.OutOfMemory;
+}
+
 pub const Activity = enum { idle, running, waiting };
 
 pub const Replay = union(enum) {
@@ -200,6 +227,7 @@ pub const Session = struct {
         cancel: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *Refusal) Failure!oap_types.RunCancelResponse,
         pump: *const fn (ptr: *anyopaque, wait_ns: u64) Failure!bool,
         drain: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void,
+        drain_mixed: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void = null,
         activity: *const fn (ptr: *anyopaque) Activity,
         close: *const fn (ptr: *anyopaque, force: bool) Failure!void,
         tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!ToolSet = null,
@@ -255,7 +283,8 @@ pub const Session = struct {
     }
 
     pub fn drain(self: Session, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void {
-        return self.vtable.drain(self.ptr, allocator, out);
+        const drain_fn = self.vtable.drain_mixed orelse self.vtable.drain;
+        return drain_fn(self.ptr, allocator, out);
     }
 
     pub fn activity(self: Session) Activity {
@@ -901,4 +930,23 @@ test "a malformed tool_choice is worded as goap's decoder words it, first defect
     for (cases) |case| try testing.expectEqualStrings(case.want, try toolChoiceDefect(arena.allocator(), case.text));
     const nulled = try parseToolChoice(arena.allocator(), "{\"allowed\":[null]}");
     try testing.expectEqualStrings("", nulled.allowed.?[0]);
+}
+
+fn checkSessionEventAllocation(allocator: std.mem.Allocator) !void {
+    const line = try sequenceSessionEvent(allocator, "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s\",\"payload\":{}}", "s", 3);
+    defer allocator.free(line);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"sequence\":3") != null);
+}
+
+test "session event sequencing checks scope and releases failed allocations" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkSessionEventAllocation, .{});
+    const exact = try sequenceSessionEvent(std.testing.allocator, "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s\",\"payload\":{\"number\":18446744073709551615,\"fraction\":1.234567890123456789}}", "s", 1);
+    defer std.testing.allocator.free(exact);
+    try std.testing.expect(std.mem.indexOf(u8, exact, "18446744073709551615") != null);
+    try std.testing.expect(std.mem.indexOf(u8, exact, "1.234567890123456789") != null);
+    const maxed = try sequenceSessionEvent(std.testing.allocator, "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s\",\"payload\":{}}", "s", std.math.maxInt(u64));
+    defer std.testing.allocator.free(maxed);
+    try std.testing.expect(std.mem.indexOf(u8, maxed, "\"sequence\":18446744073709551615") != null);
+    try std.testing.expectError(error.BackendFailed, sequenceSessionEvent(std.testing.allocator, "{\"session_id\":\"other\"}", "s", 1));
+    try std.testing.expectError(error.BackendFailed, sequenceSessionEvent(std.testing.allocator, "{\"session_id\":\"s\",\"run_id\":\"r\"}", "s", 1));
 }

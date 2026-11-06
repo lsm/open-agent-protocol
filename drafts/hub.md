@@ -332,12 +332,18 @@ subscriptions on one session stay attributable.
 | subscription line | meaning |
 | --- | --- |
 | `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence of that run it missed |
-| `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
+| `"event":"envelope"` | one event; a run event repeats `sequence` outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes, and `run_id` and `session_id` say which — `TestEventsSignalAnOverflowWithItsRunAndCursor` |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available` and `latest_available` bound what is |
 | `"event":"oap-session-closed"` | the session closed under the subscription, named by `session_id` — `TestEventsSignalAClosedSessionByName` |
 | `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
+
+In the Zig hub an adapter may also deliver session-scoped events on the same
+ordered channel. These have `session_id` without `run_id` and carry their own
+session-domain `sequence` inside the envelope. They go live to subscribers,
+do not advance a run cursor, and are not replayed. The stdio wrapper leaves out
+its outer `sequence` for them. Go's session-event channel follows separately.
 
 The stdio overflow regression drives one producer run, then drains its queued
 lines. It checks that the overflow names that run and that its cursor is not

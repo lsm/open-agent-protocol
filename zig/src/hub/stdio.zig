@@ -853,6 +853,7 @@ pub const Frontend = struct {
                 return true;
             }
             try self.write(line);
+            if (delivered.run_id.len == 0) continue;
             if (!std.mem.eql(u8, watched.run.items, delivered.run_id)) {
                 watched.run.clearRetainingCapacity();
                 try watched.run.appendSlice(self.allocator, delivered.run_id);

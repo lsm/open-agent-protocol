@@ -385,6 +385,7 @@ pub const Subscription = struct {
     }
 
     fn advance(self: *Subscription, event: Pending) void {
+        if (event.run_id.len == 0) return;
         if (!std.mem.eql(u8, self.run_id, event.run_id)) {
             const owned = self.hub.allocator.dupe(u8, event.run_id) catch {
                 self.ending = .stream_failed;
@@ -516,6 +517,7 @@ fn keepState(allocator: std.mem.Allocator, state: oap_types.SessionState) !oap_t
     kept.session_id = try allocator.dupe(u8, state.session_id);
     kept.active_run_id = null;
     kept.active_runs = &.{};
+    kept.tasks_json = try keepOptional(allocator, state.tasks_json);
     kept.current_model_id = try keepOptional(allocator, state.current_model_id);
     kept.transcript_cursor = try keepOptional(allocator, state.transcript_cursor);
     kept.metadata_json = try keepOptional(allocator, state.metadata_json);
@@ -541,6 +543,7 @@ const Entry = struct {
     session_id: []u8,
     session: contract.Session,
     session_closed: bool = false,
+    state_sequence: u64 = 0,
     parked: bool = false,
     reopenable: bool = false,
     opened: ?OpenedWith = null,
@@ -1688,6 +1691,41 @@ pub const Hub = struct {
         };
         if (events.items.len > 0) entry.active_ns = self.clock();
         for (events.items) |event| {
+            if (event.run_id.len == 0) {
+                if (entry.session.vtable.drain_mixed == null) {
+                    self.failStream(entry, entry.session.streamFailure());
+                    return false;
+                }
+                const sequence = entry.state_sequence + 1;
+                const line = contract.sequenceSessionEvent(arena, event.line, entry.session_id, sequence) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => {
+                        self.failStream(entry, entry.session.streamFailure());
+                        return false;
+                    },
+                };
+                entry.state_sequence = sequence;
+                var index: usize = 0;
+                while (index < entry.subscribers.items.len) {
+                    const subscription = entry.subscribers.items[index];
+                    if (subscription.ending != .open) {
+                        _ = entry.subscribers.orderedRemove(index);
+                        continue;
+                    }
+                    if (subscription.queue.items.len >= self.stream_queue) {
+                        try self.markOverflow(entry, subscription, subscription.run_id, subscription.highest);
+                        _ = entry.subscribers.orderedRemove(index);
+                        continue;
+                    }
+                    const copy = try self.allocator.dupe(u8, line);
+                    errdefer self.allocator.free(copy);
+                    const run = try self.allocator.dupe(u8, "");
+                    errdefer self.allocator.free(run);
+                    try subscription.queue.append(self.allocator, .{ .line = copy, .run_id = run, .sequence = 0, .terminal = false });
+                    index += 1;
+                }
+                continue;
+            }
             const settled = terminal(self.allocator, event.line) catch |err| {
                 if (err != error.OutOfMemory) return err;
                 self.endSubscriptions(entry, .stream_failed);
@@ -2576,6 +2614,36 @@ fn twoRunFixture(flaky: *Flaky, hub: *Hub, arena: std.mem.Allocator) !struct { r
     try testing.expectEqualStrings("run-b", reading_newer.run_id);
     flaky.fail_drain = true;
     return .{ .reading_newer = reading_newer, .behind = behind };
+}
+
+test "session events follow a subscription without changing or replaying its run cursor" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "flaky", .{ .session_id = "s" });
+    const subscription = try hub.subscribe(arena, "s", .{});
+    flaky.script[0] = .{ .run = "r", .sequence = 1, .line = "{\"type\":\"run.started\",\"run_id\":\"r\"}" };
+    flaky.script[1] = .{ .run = "", .sequence = 0, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s\",\"payload\":{}}" };
+    flaky.script[2] = .{ .run = "r", .sequence = 2, .line = "{\"type\":\"content.delta\",\"run_id\":\"r\"}" };
+    flaky.script_len = 3;
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(u64, 1), subscription.next().?.sequence);
+    const session_event = subscription.next().?;
+    try testing.expectEqual(@as(u64, 0), session_event.sequence);
+    try testing.expect(std.mem.indexOf(u8, session_event.line, "\"sequence\":1") != null);
+    try testing.expectEqualStrings("r", subscription.run_id);
+    try testing.expectEqual(@as(u64, 1), subscription.highest);
+    try testing.expectEqual(@as(u64, 2), subscription.next().?.sequence);
+    const replay = try hub.subscribe(arena, "s", .{ .run_id = "r", .after = 0 });
+    try testing.expectEqual(@as(u64, 1), replay.next().?.sequence);
+    try testing.expectEqual(@as(u64, 2), replay.next().?.sequence);
+    try testing.expect(replay.next() == null);
 }
 
 test "an adapter's stream overflow on one run ends only the subscriptions exposed to that run" {
@@ -4703,6 +4771,7 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
         .cancel = flakyCancel,
         .pump = flakyPump,
         .drain = flakyDrain,
+        .drain_mixed = flakyDrain,
         .activity = flakyActivity,
         .close = flakyClose,
         .readable = flakyReadable,
