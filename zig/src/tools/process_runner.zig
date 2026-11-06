@@ -72,7 +72,6 @@ fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const
     var reap_wait_ms: u64 = 1;
     while (true) {
         if (common.isCancelled(cancel_token)) return error.Cancelled;
-        if (common.durationMs(start_ms) >= timeout_ms) return error.Timeout;
         if (comptime builtin.os.tag != .windows) {
             if (budget_ms) |budget| if (term == null and common.durationMs(start_ms) >= budget) {
                 const stdout_head = try allocator.dupe(u8, stdout_reader.buffered());
@@ -82,6 +81,7 @@ fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const
                 return .{ .moved = .{ .leader = child.id.?, .stdout = child.stdout.?.handle, .stderr = child.stderr.?.handle, .stdout_head = stdout_head, .stderr_head = stderr_head } };
             };
         }
+        if (common.durationMs(start_ms) >= timeout_ms) return error.Timeout;
         if (term == null) term = try pollTerm(&child, io);
         if (!pipes_closed) {
             multi_reader.fill(64, poll_timeout) catch |err| switch (err) {

@@ -26,6 +26,7 @@ pub const Jobs = struct {
     foreground_budget_ms: u64 = default_foreground_budget_ms,
     limit_ms: u64 = command_limit_ms,
     run_generation: u64 = 0,
+    cancelled_run: ?u64 = null,
     limiter: ?std.Thread = null,
     limiter_wake: [2]std.posix.fd_t = undefined,
 
@@ -158,6 +159,7 @@ pub const Jobs = struct {
         job.limit_ms = options.limit_ms;
         job.deadline_ms = options.started_ms + @as(i64, @intCast(options.limit_ms));
         if (options.ends_with_run) job.moved_in = self.run_generation;
+        job.killed = options.ends_with_run and self.cancelled_run == self.run_generation;
         file_open = false;
         taken = true;
         stop_open = false;
@@ -169,6 +171,7 @@ pub const Jobs = struct {
             return err;
         };
         self.list.appendAssumeCapacity(job);
+        if (job.killed) process_runner.endGroup(job.leader);
         self.wakeLimiter() catch {};
         return .{ .task_id = job.id, .output_path = job.output, .bytes = moved.stdout_head.len + moved.stderr_head.len };
     }
@@ -261,6 +264,7 @@ pub const Jobs = struct {
     pub fn endMoved(self: *Jobs) void {
         self.lock();
         const generation = self.run_generation;
+        self.cancelled_run = generation;
         var index: usize = 0;
         while (index < self.list.items.len) : (index += 1) {
             const job = self.list.items[index];
@@ -381,7 +385,7 @@ pub const Jobs = struct {
 
     fn appendNotice(allocator: std.mem.Allocator, text: *std.ArrayList(u8), job: *const Job) !void {
         if (text.items.len > 0) try text.appendSlice(allocator, "\n\n");
-        const ended = if (job.limited) try std.fmt.allocPrint(allocator, limited_format, .{job.limit_ms / std.time.ms_per_s}) else switch (job.term.?) {
+        const ended = if (job.limited) try std.fmt.allocPrint(allocator, limited_format, .{(job.limit_ms + std.time.ms_per_s - 1) / std.time.ms_per_s}) else switch (job.term.?) {
             .exited => |code| try std.fmt.allocPrint(allocator, "exited with code {d}", .{code}),
             .signal => |sig| try std.fmt.allocPrint(allocator, "ended by signal {d}", .{@backingInt(sig)}),
             else => try allocator.dupe(u8, "ended"),
@@ -421,6 +425,7 @@ pub const Jobs = struct {
 };
 
 const notice_tail_bytes = 2048;
+const commands_move = builtin.os.tag != .windows;
 const default_foreground_budget_ms: u64 = 5_000;
 const command_limit_ms: u64 = 60 * 60 * 1_000;
 const limited_format = "was ended because it reached its time limit of {d} seconds; no command may run longer than 1 hour";
@@ -613,6 +618,7 @@ pub fn execute(
 }
 
 fn startBackground(jobs: *Jobs, obj: std.json.ObjectMap, cancel_token: ?ai_types.CancelToken, allocator: std.mem.Allocator) !Jobs.Adopted {
+    if (comptime !commands_move) return error.Unsupported;
     const workspace_root = try common.requiredString(obj, "workspace_root");
     const command = try common.requiredString(obj, "command");
     var dir = try common.openWorkspace(workspace_root, false);
@@ -658,7 +664,7 @@ fn runForeground(
     const obj = parsed.value.object;
     const workspace_root = try common.requiredString(obj, "workspace_root");
     const command = try common.requiredString(obj, "command");
-    const timeout_ms = if (jobs) |held| held.limitFor(obj) else @min(common.optionalU64(obj, "timeout_ms", 30_000), @as(u64, std.math.maxInt(i64)));
+    const timeout_ms = if (commands_move and jobs != null) jobs.?.limitFor(obj) else @min(common.optionalU64(obj, "timeout_ms", 30_000), @as(u64, std.math.maxInt(i64)));
 
     var dir = try common.openWorkspace(workspace_root, false);
     defer dir.close(common.defaultIo());
@@ -809,12 +815,12 @@ test "a command past its budget returns while it keeps running, and its end is r
     defer case.deinit();
     var jobs = Jobs.init(std.testing.allocator);
     defer jobs.deinit();
-    jobs.foreground_budget_ms = 200;
+    jobs.foreground_budget_ms = 1_000;
 
     const began = common.nowMs();
-    var result = try movedCase(&jobs, &case, "echo early; sleep 1; echo late");
+    var result = try movedCase(&jobs, &case, "echo early; sleep 4; echo late");
     defer result.deinit(std.testing.allocator);
-    try std.testing.expect(common.nowMs() - began < 900);
+    try std.testing.expect(common.nowMs() - began < 3_500);
     const text = result.content.slice()[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "still running") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "early") != null);
