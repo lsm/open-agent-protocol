@@ -344,6 +344,22 @@ pub const SessionMetadata = struct {
     title_renamed: bool = false,
     thinking_level: ?ai_types.ThinkingLevel = null,
 
+    pub fn clone(self: SessionMetadata, allocator: std.mem.Allocator) !SessionMetadata {
+        const session_id = try allocator.dupe(u8, self.session_id);
+        errdefer allocator.free(session_id);
+        const model = try allocator.dupe(u8, self.model);
+        errdefer allocator.free(model);
+        const provider = try allocator.dupe(u8, self.provider);
+        errdefer allocator.free(provider);
+        const title = try allocator.dupe(u8, self.title);
+        var copy = self;
+        copy.session_id = session_id;
+        copy.model = model;
+        copy.provider = provider;
+        copy.title = title;
+        return copy;
+    }
+
     pub fn deinit(self: *SessionMetadata, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.model);
