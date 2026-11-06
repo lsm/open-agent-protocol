@@ -6142,6 +6142,42 @@ test "an admitted run that starts and completes raises nothing" {
     , &.{});
 }
 
+const triggered_start =
+    \\{"type":"run.started","id":"t1","run_id":"fired","session_id":"s","sequence":1,"payload":{"session_id":"s","run_id":"fired","trigger":{"kind":"background_task"}}}
+;
+
+test "a triggered run on an idle session needs no admission" {
+    try expectCodes(
+        \\[
+    ++ triggered_start ++
+        \\,
+        \\{"type":"run.completed","id":"t2","run_id":"fired","session_id":"s","sequence":2,"payload":{}}]
+    , &.{});
+}
+
+test "a triggered run may not start while a run executes" {
+    try expectCodes(
+        \\[
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+    ++ triggered_start ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":2,"payload":{}},
+        \\{"type":"run.completed","id":"t2","run_id":"fired","session_id":"s","sequence":2,"payload":{}}]
+    , &.{ code_illegal_run_transition, code_queue_order_violation });
+}
+
+test "a trigger may not name a run a submit reserved" {
+    try expectCodes(
+        \\[
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"payload":{"session_id":"s","run_id":"run","trigger":{"kind":"other"}}},
+        \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":2,"payload":{}}]
+    , &.{code_illegal_run_transition});
+}
+
 test "the sequence must be contiguous in both directions" {
     try expectCodes(
         \\[
