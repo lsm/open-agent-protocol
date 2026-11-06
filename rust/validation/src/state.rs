@@ -20,6 +20,7 @@ mod session_list;
 mod snapshot_claims;
 mod snapshot_listing;
 mod source_catalog;
+mod source_state;
 mod steer;
 mod tool_sources;
 mod transcript;
@@ -87,8 +88,10 @@ pub(crate) struct State {
     pending_provides: HashMap<String, controls::PendingProvide>,
     descriptor_owners: HashMap<String, String>,
     declared_sources: HashSet<String>,
+    declared_descriptors: Vec<ToolSourceDescriptor>,
+    descriptor_attribution: HashMap<String, String>,
     attached_sources: HashMap<String, Vec<ToolSourceDescriptor>>,
-    catalog_owners: HashMap<String, (String, HashMap<String, String>)>,
+    tool_catalogs: HashMap<String, source_state::Catalog>,
     order: HashMap<String, Vec<String>>,
     open_submits: HashMap<String, Vec<String>>,
     limits: Option<CapabilityLimits>,
@@ -367,8 +370,10 @@ impl State {
             pending_provides: HashMap::new(),
             descriptor_owners: HashMap::new(),
             declared_sources: HashSet::new(),
+            declared_descriptors: Vec::new(),
+            descriptor_attribution: HashMap::new(),
             attached_sources: HashMap::new(),
-            catalog_owners: HashMap::new(),
+            tool_catalogs: HashMap::new(),
             order: HashMap::new(),
             open_submits: HashMap::new(),
             limits: None,

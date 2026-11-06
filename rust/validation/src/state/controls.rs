@@ -560,6 +560,8 @@ impl State {
             self.check_attach_modes(at, e);
         } else if *t == EnvelopeType::CAPABILITIES_UPDATED {
             self.declared_sources.clear();
+            self.declared_descriptors.clear();
+            self.descriptor_attribution.clear();
             self.descriptor_owners.clear();
         } else if *t == EnvelopeType::ACTION_TOOLS_LIST_REQUEST {
             self.tools_list_gate(at, e);
@@ -569,15 +571,22 @@ impl State {
             self.source_catalog_rules(at, e);
             let p: ToolsListResponse = payload(e);
             if let Some(session) = p.session_id {
-                self.catalog_owners.insert(
+                self.tool_catalogs.insert(
                     s(&session),
-                    (
-                        e.capability_revision.clone().unwrap_or_default(),
-                        p.tools
+                    super::source_state::Catalog {
+                        revision: e.capability_revision.clone().unwrap_or_default(),
+                        owners: p
+                            .tools
                             .iter()
                             .map(|tool| (tool.name.clone(), s(&tool.execution_owner)))
                             .collect(),
-                    ),
+                        tools: p
+                            .tools
+                            .iter()
+                            .map(|tool| (tool.name.clone(), tool.source.clone()))
+                            .collect(),
+                        sources: p.sources.iter().map(|source| source.id.clone()).collect(),
+                    },
                 );
             }
         } else if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
@@ -612,6 +621,11 @@ impl State {
             self.settle_source_admission(at, e);
             self.open_settings_response(at, e);
             self.record_provided_tools(e);
+            self.source_snapshot(at, e, true);
+        } else if *t == EnvelopeType::SESSION_STATE_RESPONSE
+            || *t == EnvelopeType::SESSION_STATE_UPDATED
+        {
+            self.source_snapshot(at, e, false);
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.tools_list_refusal(at, e);
             self.attach_refusal(at, e);
@@ -765,6 +779,17 @@ impl State {
         self.catalog = collect_catalog(&p);
         self.catalog_known = publishes_catalog(e);
         self.catalog_ambiguous = duplicate_tool_name(&self.catalog).is_some();
+        self.declared_descriptors = p.effective_sources();
+        self.descriptor_attribution = if self.catalog_ambiguous {
+            HashMap::new()
+        } else {
+            p.tools
+                .iter()
+                .chain(p.layers.values().flat_map(|layer| &layer.tools))
+                .filter(|tool| !tool.source.is_empty())
+                .map(|tool| (tool.name.clone(), tool.source.clone()))
+                .collect()
+        };
         self.check_selection_modes(at, e, &p);
         self.provider_attach_modes(at, e, &p);
     }
@@ -811,6 +836,12 @@ impl State {
         }
     }
 
+    pub(super) fn invalid_source_admission(&self, reply: &str) -> bool {
+        self.source_expectations(reply)
+            .iter()
+            .any(|expectation| !expectation.limit)
+    }
+
     pub(super) fn record_provided_tools(&mut self, e: &Envelope) {
         let Some(request) = self.requests.get(&os(&e.in_reply_to)) else {
             return;
@@ -819,11 +850,7 @@ impl State {
             return;
         }
         let opening: SessionOpenRequest = payload(&request.envelope);
-        if self
-            .source_expectations(&os(&e.in_reply_to))
-            .iter()
-            .any(|expectation| !expectation.limit)
-        {
+        if self.invalid_source_admission(&os(&e.in_reply_to)) {
             return;
         }
         let published: SessionState = payload(e);
