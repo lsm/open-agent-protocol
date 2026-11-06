@@ -116,6 +116,7 @@ impl Adapter {
             ("session.open", SupportLevel::NATIVE, "session/new opens an ACP session"),
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
             (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the session/new model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
+            (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
         ] {
             features.insert(key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() });
         }
@@ -143,7 +144,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-open", pin().capability_revision),
+            capability_revision: format!("{}-rust-switch", pin().capability_revision),
             journal: JournalDescriptor {
                 replay: SupportLevel::UNAVAILABLE,
                 ..JournalDescriptor::default()
