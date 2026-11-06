@@ -58,7 +58,9 @@ fn worker_error() -> Error {
 }
 
 impl<T: Send + 'static> Operation<T> {
-    fn spawn(work: impl FnOnce(&Cancellation) -> Result<T, Error> + Send + 'static) -> Self {
+    pub(crate) fn spawn(
+        work: impl FnOnce(&Cancellation) -> Result<T, Error> + Send + 'static,
+    ) -> Self {
         let (reply, response) = oneshot::channel();
         let cancellation = Arc::new(Cancellation::default());
         let control = cancellation.clone();

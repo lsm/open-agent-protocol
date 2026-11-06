@@ -103,3 +103,13 @@ reader ends, so every frame is read first. When a grandchild holds stdout
 open, Go's kill closes the pipe and the read ends. Rust's `kill` cannot close
 it, so it releases the watch instead: the child is reaped and `exited` fires,
 while the blocked reader thread lives until the grandchild exits.
+
+## RPC admission observers
+
+`RpcClient::call_reported(method, params, deadline, report)` uses the same
+serialized writer and response routing as `call`. The one-shot observer receives
+`None` after the frame write succeeds, or a diagnostic string when admission
+fails. The call then returns its native result or error. Observers finish
+promptly. `call_started` and `call_id` retain their channel-based admission
+contracts. The callback form lets asynchronous owners wake a oneshot future
+without adding a channel-forwarding worker.
