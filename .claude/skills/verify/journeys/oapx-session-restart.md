@@ -4,6 +4,7 @@ Build ReleaseSafe with the shared setup in `SKILL.md`, then run:
 
 ```sh
 python3 .claude/skills/verify/scripts/oapx-session-restart.py --output-dir /tmp/oap-session-restart-<unique-name>
+python3 .claude/skills/verify/scripts/oapx-session-restart.py --storage-recovery --output-dir /tmp/oap-session-storage-recovery-<unique-name>
 ```
 
 First it checks that `--no-save-oapx-sessions` omits reopen support and writes
@@ -24,10 +25,18 @@ Require exit 0 and `PASS`; inspect `opt-out.jsonl`, `before.jsonl`, `after.jsonl
 and `provider-requests.json`. No credential file may be written. Live providers
 and recovery of an interrupted active run are not exercised by this journey.
 
+The storage-recovery invocation first obstructs the synthetic session's
+transcript with a directory, completes a turn, removes the obstruction, and
+submits another turn. Require the recovered transcript to include the selected
+model and provider metadata in `storage-recovered.jsonl`, then require the same
+restart and restored-request checks. A failed batch must allow later saves to
+write their metadata again.
+
 After changing the served-session writer, also run:
 
 ```sh
 zig build --build-file zig/build.zig test-unit-makai-cli -Doptimize=ReleaseSafe -j4
+zig build --build-file zig/build.zig test-unit-tui -Doptimize=ReleaseSafe -j4
 ```
 
 The storage test holds the writer while another thread enqueues more events
@@ -36,3 +45,5 @@ order, checks a live read barrier, and reopens the store after shutdown to
 observe the last queued conversation. Capture allocation failures must release
 every owned metadata field and event payload. The real-process journey above
 remains the product proof for read-back, shutdown and reopening.
+The store tests also reopen a batched conversation after compaction, check its
+offset and latest index, and exercise batch allocation failures.

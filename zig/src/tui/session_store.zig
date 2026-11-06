@@ -404,6 +404,7 @@ pub const LoadedSession = struct {
 pub const Batch = struct {
     allocator: std.mem.Allocator,
     pending: std.StringHashMapUnmanaged(Pending) = .empty,
+    failed: bool = false,
 
     const Pending = struct {
         bytes: std.ArrayList(u8) = .empty,
@@ -464,9 +465,15 @@ pub const Batch = struct {
         while (entries.next()) |entry| {
             const pending = entry.value_ptr;
             if (pending.bytes.items.len > 0) {
-                const path = sessionFilePath(self.allocator, store.base_dir, entry.key_ptr.*, ".jsonl") catch continue;
+                const path = sessionFilePath(self.allocator, store.base_dir, entry.key_ptr.*, ".jsonl") catch {
+                    self.failed = true;
+                    continue;
+                };
                 defer self.allocator.free(path);
-                appendFile(path, pending.bytes.items, pending.settled) catch continue;
+                appendFile(path, pending.bytes.items, pending.settled) catch {
+                    self.failed = true;
+                    continue;
+                };
             }
             if (pending.metadata) |metadata| direct.saveIndex(metadata) catch {};
         }
@@ -2739,6 +2746,63 @@ fn saveText(store: Store, meta: SessionMetadata, role: session_events.SessionEve
     var event = session_events.SessionEvent{ .message_end = .{ .role = role, .text = try owned(std.testing.allocator, text) } };
     defer event.deinit(std.testing.allocator);
     try store.save(meta, event);
+}
+
+test "batched conversations keep compaction offsets and the latest index when reopened" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const base = try tmpBase(allocator, &tmp);
+    defer allocator.free(base);
+    var store = try Store.init(allocator, base);
+    defer store.deinit();
+    var batch = Batch{ .allocator = allocator };
+    defer batch.deinit();
+    store.batch = &batch;
+    var meta = try testMeta("batched");
+    defer meta.deinit(allocator);
+    try saveText(store, meta, .user, "old question");
+    try saveText(store, meta, .assistant, "old answer");
+    meta.compaction_offset = try store.conversationBytes(meta.session_id);
+    try std.testing.expect(meta.compaction_offset > 0);
+    var summary = session_events.SessionEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = try owned(allocator, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+    } };
+    defer summary.deinit(allocator);
+    try store.save(meta, summary);
+    try store.saveIndex(meta);
+    try saveText(store, meta, .user, "new question");
+    try saveText(store, meta, .assistant, "new answer");
+    try store.saveEvent(meta.session_id, .{ .agent_end = .{ .reason = .completed } });
+    meta.last_active = 321;
+    try store.saveIndex(meta);
+    batch.flush(store);
+    var reopened = try Store.init(allocator, base);
+    defer reopened.deinit();
+    var loaded = try reopened.load(meta.session_id);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqual(meta.compaction_offset, loaded.metadata.compaction_offset);
+    var index = try reopened.loadIndex(meta.session_id);
+    defer index.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 321), index.last_active);
+    try std.testing.expectEqual(@as(usize, 4), loaded.messages.items.len);
+    try std.testing.expectEqualStrings("new question", loaded.messages.items[2].user.content.text);
+    try std.testing.expectEqualStrings("new answer", loaded.messages.items[3].assistant.content[0].text.text);
+}
+
+fn batchCaptureProbe(allocator: std.mem.Allocator) !void {
+    var batch = Batch{ .allocator = allocator };
+    defer batch.deinit();
+    const meta = SessionMetadata{ .session_id = @constCast("batch"), .model = @constCast("model"), .provider = @constCast("provider"), .last_active = 1 };
+    try batch.append(meta.session_id, "owned first record\n", false);
+    try batch.index(meta);
+    try batch.append(meta.session_id, "owned settled record\n", true);
+    try batch.index(meta);
+}
+
+test "batched records and index replacements unwind every failed allocation" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, batchCaptureProbe, .{});
 }
 
 test "load replays a completed compaction as its summary turn and acknowledgement" {

@@ -328,6 +328,11 @@ const ServedSessions = struct {
                 },
             };
             batch.flush(self.store);
+            if (batch.failed) {
+                var recorders = self.recorders.valueIterator();
+                while (recorders.next()) |recorder| recorder.written = false;
+                batch.failed = false;
+            }
         }
     }
 
