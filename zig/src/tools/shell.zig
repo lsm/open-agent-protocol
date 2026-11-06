@@ -139,6 +139,7 @@ pub const Jobs = struct {
         self.reap();
         self.lock();
         defer self.mutex.unlock();
+        try self.startLimiter();
         try self.list.ensureUnusedCapacity(self.allocator, 1);
         const job = try self.newJob(workspace_root);
         errdefer self.freeJob(job);
@@ -172,16 +173,20 @@ pub const Jobs = struct {
         };
         self.list.appendAssumeCapacity(job);
         if (job.killed) process_runner.endGroup(job.leader);
-        self.wakeLimiter() catch {};
+        _ = std.posix.system.write(self.limiter_wake[1], "x", 1);
         return .{ .task_id = job.id, .output_path = job.output, .bytes = moved.stdout_head.len + moved.stderr_head.len };
     }
 
-    fn wakeLimiter(self: *Jobs) !void {
-        if (self.limiter == null) {
-            if (std.posix.errno(std.posix.system.pipe(&self.limiter_wake)) != .SUCCESS) return error.SystemResources;
-            self.limiter = try std.Thread.spawn(.{}, watchLimits, .{ self, self.limiter_wake[0] });
+    fn startLimiter(self: *Jobs) !void {
+        if (self.limiter != null) return;
+        var wake: [2]std.posix.fd_t = undefined;
+        if (std.posix.errno(std.posix.system.pipe(&wake)) != .SUCCESS) return error.SystemResources;
+        errdefer {
+            _ = std.posix.system.close(wake[0]);
+            _ = std.posix.system.close(wake[1]);
         }
-        _ = std.posix.system.write(self.limiter_wake[1], "x", 1);
+        self.limiter = try std.Thread.spawn(.{}, watchLimits, .{ self, wake[0] });
+        self.limiter_wake = wake;
     }
 
     fn watchLimits(self: *Jobs, wake: std.posix.fd_t) void {
@@ -433,8 +438,7 @@ const moved_tail_bytes = 4096;
 const moved_format =
     \\The command is still running in the background as job {s}. It has not failed.
     \\Output so far, up to byte {d}, is at the end of this message; all of it goes to {s}.
-    \\You will be told when the command ends, so keep working. To be woken earlier, for
-    \\example on an error or a server coming up, call ShellJob with path and wake_on.
+    \\You will be told when the command ends, so keep working.
     \\
     \\{s}
 ;
@@ -824,7 +828,6 @@ test "a command past its budget returns while it keeps running, and its end is r
     const text = result.content.slice()[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "still running") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "early") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "wake_on") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "late") == null);
     try std.testing.expect(jobs.anyRunning());
 
