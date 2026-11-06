@@ -529,6 +529,7 @@ impl State {
         if !self.queue_overlap(at, e, &submitted) {
             self.queue_admission(at, e, &submitted);
         }
+        self.settle_submit_admission(at, e, &submitted);
         let session = s(&p.session_id);
         let run = Run {
             session: session.clone(),

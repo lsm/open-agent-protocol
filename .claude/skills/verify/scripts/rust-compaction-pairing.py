@@ -118,10 +118,10 @@ def replay(language, output, label, case):
 
 def mutation_check(output, corpus):
     runs = ROOT / "rust/validation/src/state/runs.rs"
-    start_guard = 'let p: RunCompactionStartedPayload = payload(e);\n                if !run.open_compaction.is_empty() {'
+    start_guard = 'if !run.open_compaction.is_empty()\n                    || run.compactions.contains_key(p.compaction_id.as_str())\n                {'
     terminal_guard = 'if !run.open_compaction.is_empty() =>'
     changes = [
-        ("double-start", SOURCE, start_guard, start_guard.replace("!run.open_compaction.is_empty()", "false"), "compaction-unpaired", [], None),
+        ("double-start", SOURCE, start_guard, 'if false {', "compaction-unpaired", [], None),
         ("preserve-first-start", SOURCE, start_guard, start_guard + '\n                    run.open_compaction = p.compaction_id.as_str().to_owned();', "compaction-pair-second-start-preserves-first", ["compaction_unpaired", "compaction_ended_without_start", "compaction_open_at_terminal"], None),
         ("matching-end", SOURCE, "if run.open_compaction != p.compaction_id.as_str() {", "if false {", "compaction-ended-without-start", [], None),
         ("wrong-end-preserves-first", SOURCE, "if run.open_compaction != p.compaction_id.as_str() {", "if run.open_compaction.is_empty() {", "compaction-pair-wrong-failed-end-preserves-first", ["compaction_ended_without_start", "compaction_failed_without_error"], [["compaction_ended_without_start", 7], ["compaction_failed_without_error", 6]]),
@@ -130,7 +130,7 @@ def mutation_check(output, corpus):
         ("completed-needs-no-error", SOURCE, "p.outcome == CompactionOutcome::FAILED && p.error.is_none()", "p.error.is_none()", "compaction-threshold-inside-run", ["compaction_failed_without_error"], None),
         ("completed-terminal", SOURCE, terminal_guard, terminal_guard.replace("!run.open_compaction.is_empty()", "false"), "compaction-open-at-terminal", [], None),
         ("failed-terminal", SOURCE, terminal_guard, terminal_guard.replace("!run.open_compaction.is_empty()", "false"), "compaction-open-when-the-run-fails", [], None),
-        ("cancelled-terminal", SOURCE, '\"run.completed\" | \"run.failed\" | \"run.cancelled\"', '\"run.completed\" | \"run.failed\"', "compaction-pair-open-at-cancelled", [], None),
+        ("cancelled-terminal", SOURCE, '\"run.completed\" | \"run.failed\" | \"run.cancelled\" if !run.open_compaction.is_empty() =>', '\"run.completed\" | \"run.failed\" if !run.open_compaction.is_empty() =>', "compaction-pair-open-at-cancelled", [], None),
         ("per-run-state", SOURCE, ".get_mut(run_id)", '.get_mut("r1")', "compaction-pair-interleaved-runs", ["compaction_unpaired", "compaction_ended_without_start"], None),
         ("error-does-not-skip-pairing", SOURCE, 'let p: RunCompactionEndedPayload = payload(e);', 'let p: RunCompactionEndedPayload = payload(e);\n                if p.outcome == CompactionOutcome::FAILED && p.error.is_none() { self.add(codes::COMPACTION_FAILED_WITHOUT_ERROR, at, e, \"/payload/error\", \"missing error\"); return; }', "compaction-pair-wrong-failed-end-preserves-first", ["compaction_failed_without_error"], [["compaction_failed_without_error", 6]]),
     ]

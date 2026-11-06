@@ -48,8 +48,8 @@ disagreements. Run the shared Verify baseline and observe the isolated PTY
 fixture reply and `/quit` exit 0, with owned children reaped and temporary
 state removed.
 
-Only register `0044#the-barrier/4,6–7` and
-`0044#what-a-compaction-looks-like-on-the-wire/1` are ported here. Request and
-capability gates, requested-run opening/settlement, compaction ID reuse after
-an ended pair (row 5), session-wide uniqueness, deferred claims and
-admission/lead/active/model anchors remain outside this slice.
+The compaction/live-settings slice also retains ranked request/refusal gates,
+requested-run reasons and opening/settlement, and compaction ID reuse after an
+ended pair. Run the `compaction_live_settings` regression and shared Rust/Go
+parity journey too. Session-wide identity and other explicitly listed gaps
+remain separate from this per-run check.
