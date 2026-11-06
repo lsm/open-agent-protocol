@@ -25,8 +25,7 @@ opening-operation bridge, and closes the process on an RPC error. These futures 
 nonblocking, while drop joins cleanup before returning. The shared process
 helper's documented grandchild-held pipe limitations still apply.
 
-The adapter descriptor still reports session capabilities unavailable. The next
-slice connects session/new, idle state, close and the model catalog through this
-bridge. No live native harness, provider, credentials or network are used.
+The session-opening path uses this bridge for session/new and asynchronous
+close; its integration proof is in rust-acp-session.md. No live native harness, provider, credentials or network are used.
 Run the complete SKILL.md baseline, Rust all-features tests and guardrails too,
 and inspect the retained credential-isolated PTY reply and quit proof.

@@ -104,6 +104,14 @@ impl<T> Drop for Operation<T> {
 }
 
 impl Process {
+    pub fn close_async(self) -> Operation<()> {
+        Operation::spawn(move |control| {
+            control.arm(&self.child, &self.client);
+            self.close()
+                .map_err(|reason| DIALECT.error(Fault::Transport(reason)))
+        })
+    }
+
     pub fn start_async(config: ProcessConfig, deadline: Option<Instant>) -> Operation<Self> {
         Operation::spawn(move |control| Self::start_controlled(&config, deadline, Some(control)))
     }

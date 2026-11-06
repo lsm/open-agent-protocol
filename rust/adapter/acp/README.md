@@ -57,13 +57,12 @@ ACP version, capability revision and corpus from the embedded harness catalog.
 `Adapter::describe()` and the shared `Adapter::probe()` trait return its endpoint
 and configured source descriptors.
 
-This foundation advertises session capabilities as `unavailable`. Both the
-shared `Admitter::admit()` and `Adapter::open()` validate participant identity
-and reject unadvertised controls before returning a typed `session.open`
-refusal. Neither starts the configured process. The staged capability revision
-appends `-rust-foundation` to the catalog revision because this descriptor has
-fewer capabilities than the completed adapter. Session creation, model catalog
-and model switching are the next approved slices of #1439.
+The shared `Admitter::admit()` validates participant identity and refuses
+unadvertised controls without starting a process. `Adapter::open()` applies
+the same checks before opening the native session. Reopen, prompt streaming,
+model switching and interactive controls remain unavailable. The staged capability revision
+appends `-rust-open` to the catalog revision because this descriptor has
+fewer capabilities than the completed adapter. Model switching and prompt/event mapping are the next slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
@@ -84,6 +83,31 @@ caller. Cleanup runs during drop, with the shared process helper's documented
 grandchild-held pipe limitations.
 
 This is the process/open-operation bridge for the next session slice. The
-adapter's session capabilities remain unavailable. Run the public consumer in
+session-opening path uses this bridge. Run the public consumer in
 `.claude/skills/verify/journeys/rust-acp-operation.md` for captured quiet-agent
 cancellation, early-drop races, successful handoff and deadline evidence.
+
+
+## Session opening and model catalog
+
+A valid open initializes the configured process, sends `session/new` with the
+absolute working directory and configured MCP servers, and returns idle OAP
+state plus the opaque native session id. An omitted OAP session id is generated
+per adapter. Missing or malformed native session ids fail and close the process.
+
+`model_lister().models(request)` requires explicit `models.list` degradation
+opt-in. It reports the opening response's model config-option snapshot, flattening
+native option groups in order. `default` and `current` placeholders stay absent
+from the current model. An absent model option returns an unsatisfiable control
+error. Native configuration-update handling belongs to the later event/config
+slice. The descriptor discloses the opening snapshot and uses a `-rust-open`
+revision to distinguish the staged capabilities.
+
+`close().await` closes asynchronously, serializes concurrent closes, and makes
+state/catalog access report closed. Repeated close succeeds. Native children
+that remain alive after EOF are killed and reaped at the configured shutdown
+timeout. Dropping an opening or closing future uses the owning cancellation
+bridge. The session's remaining control methods return unavailable errors.
+
+Run `.claude/skills/verify/journeys/rust-acp-session.md` for real synthetic
+stdio, public state/catalog output, cleanup and three-validator wire proof.
