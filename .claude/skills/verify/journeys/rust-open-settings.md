@@ -51,8 +51,11 @@ Integrate current main before final Go validation, Rust manifest and Zig
 disagreements. Run the complete Verify baseline and observe its isolated PTY
 fixture reply and `/quit` exit 0, temporary state removal and child cleanup.
 
-This ports only `0045#where-the-settings-go/1–2`'s `session.open` arm and
-`0045#what-the-state-reports/1–2`. Live-update rows and all deferred
-snapshot/admission/lead/active/model-capture lanes stay outside this slice.
+The shared settings gate also covers `session_live`. Run
+`cargo test --manifest-path rust/Cargo.toml -p oap-validation --test compaction_live_settings`
+and the shared Rust/Go parity journey. Live replies must retain requested values;
+accepted updates require a matching state update before the next run or trace end.
+Compaction requests retain ranked refusal expectations, and their runs must open
+with exactly one requested compaction and finish `compacted` when not continuing.
 Credentials, authentication, live data, provider calls and real GUI tests are
 not exercised.

@@ -1,0 +1,124 @@
+use oap_protocol::*;
+
+use super::{os, payload, State};
+use crate::codes;
+
+#[derive(Default)]
+pub(super) struct Update {
+    pub(super) request: SessionSettingsUpdateRequest,
+    pub(super) response: Option<((usize, usize), Envelope)>,
+    pub(super) seen: bool,
+}
+
+impl State {
+    pub(super) fn live_settings_response(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(requested) = self
+            .live_settings
+            .get(&reply)
+            .map(|update| update.request.clone())
+        else {
+            return;
+        };
+        let p: SessionSettingsUpdateResponse = payload(e);
+        if requested.session_id != p.session_id {
+            self.add(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/payload/session_id",
+                "settings response changed the requested session",
+            );
+            return;
+        }
+        if let Some(pending) = self.pending_open_settings.remove(&reply) {
+            if !pending.expectations.is_empty() {
+                for expectation in pending.expectations {
+                    self.add(
+                        expectation.diagnostic,
+                        at,
+                        e,
+                        &expectation.pointer,
+                        &expectation.message,
+                    );
+                }
+                return;
+            }
+        }
+        if !requested.reasoning_level.is_empty() && requested.reasoning_level != p.reasoning_level {
+            self.add(
+                codes::UNAPPLIED_CONTROL,
+                at,
+                e,
+                "/payload/reasoning_level",
+                "an admitted update must apply the requested reasoning level",
+            );
+        }
+        if requested.compaction_policy.is_some()
+            && requested.compaction_policy != p.compaction_policy
+        {
+            self.add(
+                codes::UNAPPLIED_CONTROL,
+                at,
+                e,
+                "/payload/compaction_policy",
+                "an admitted update must apply the requested compaction policy",
+            );
+        }
+        self.live_settings.get_mut(&reply).unwrap().response = Some((at, e.clone()));
+    }
+
+    pub(super) fn observe_live_settings(&mut self, e: &Envelope) {
+        let p: SessionState = payload(e);
+        for update in self
+            .live_settings
+            .values_mut()
+            .filter(|update| update.request.session_id == p.session_id)
+        {
+            let asked = &update.request;
+            update.seen |= (asked.reasoning_level.is_empty()
+                || p.reasoning_level.is_empty()
+                || asked.reasoning_level == p.reasoning_level)
+                && (asked.compaction_policy.is_none()
+                    || p.compaction_policy.is_none()
+                    || asked.compaction_policy == p.compaction_policy);
+        }
+    }
+
+    pub(super) fn settings_before_run(&mut self, at: (usize, usize), e: &Envelope, session: &str) {
+        let pending: Vec<_> = self
+            .live_settings
+            .iter()
+            .filter(|(_, update)| {
+                update.request.session_id.as_str() == session
+                    && update.response.is_some()
+                    && !update.seen
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in pending {
+            self.live_settings.remove(&id);
+            self.add(
+                codes::SESSION_STATE_MISMATCH,
+                at,
+                e,
+                "/type",
+                "an accepted settings update must be reported before the next run starts",
+            );
+        }
+    }
+
+    pub(super) fn close_live_settings(&mut self) {
+        for update in std::mem::take(&mut self.live_settings).into_values() {
+            if let Some((at, e)) = update.response.filter(|_| !update.seen) {
+                self.add(
+                    codes::SESSION_STATE_MISMATCH,
+                    at,
+                    &e,
+                    "/type",
+                    "accepted settings were never reflected in session.state.updated",
+                );
+            }
+        }
+    }
+}

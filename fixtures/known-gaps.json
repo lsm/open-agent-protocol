@@ -10,12 +10,6 @@
     "queue-compound-open-model-genesis"
   ],
   "rust": [
-    "compaction-focus-degraded-without-optin",
-    "compaction-requested-in-a-submitted-run",
-    "compaction-run-not-compacted",
-    "compaction-run-stops-for-another-reason",
-    "compaction-steer-wrong-refusal",
-    "compaction-threshold-in-a-requested-run",
     "control-call-recovered-ack-omitted",
     "control-state-acknowledges-unpending",
     "control-state-omits-acknowledged",
@@ -50,13 +44,6 @@
     "session-reopen-degraded-admitted-without-optin",
     "session-reopen-unadvertised",
     "session-reopen-unadvertised-wrong-refusal",
-    "session-settings-live-degraded-admitted-without-optin",
-    "session-settings-live-level-rounded",
-    "session-settings-live-never-reflected",
-    "session-settings-live-policy-rounded",
-    "session-settings-live-policy-unadvertised-admitted",
-    "session-settings-live-run-before-state",
-    "session-settings-live-unadvertised-admitted",
     "tools-catalog-leaks-attachment-env",
     "transcript-load-degraded-admitted-without-optin"
   ]

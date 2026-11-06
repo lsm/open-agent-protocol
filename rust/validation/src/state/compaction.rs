@@ -10,14 +10,25 @@ impl State {
         match e.envelope_type.as_str() {
             "run.compaction.started" => {
                 let p: RunCompactionStartedPayload = payload(e);
-                if !run.open_compaction.is_empty() {
+                if run.compaction_run != (p.reason == CompactionReason::REQUESTED) {
+                    found.push((
+                        codes::COMPACTION_RUN_MISMATCH,
+                        "/payload/reason",
+                        "requested compaction must belong to a session.compact run",
+                    ));
+                }
+                if !run.open_compaction.is_empty()
+                    || run.compactions.contains_key(p.compaction_id.as_str())
+                {
                     found.push((
                         codes::COMPACTION_UNPAIRED,
                         "/payload/compaction_id",
-                        "a compaction started before the previous one ended",
+                        "a compaction overlaps or reuses an earlier identity",
                     ));
                 } else {
                     run.open_compaction = p.compaction_id.as_str().to_owned();
+                    run.compactions
+                        .insert(run.open_compaction.clone(), CompactionOutcome::default());
                 }
             }
             "run.compaction.ended" => {
@@ -36,6 +47,8 @@ impl State {
                         "compaction ended without its started event",
                     ));
                 } else {
+                    run.compactions
+                        .insert(p.compaction_id.as_str().to_owned(), p.outcome);
                     run.open_compaction.clear();
                 }
             }
@@ -47,6 +60,45 @@ impl State {
                 ));
             }
             _ => {}
+        }
+        if run.compaction_run && run.started {
+            let terminal = matches!(
+                e.envelope_type.as_str(),
+                "run.completed" | "run.failed" | "run.cancelled"
+            );
+            if terminal && run.compactions.len() != 1 {
+                found.push((
+                    codes::COMPACTION_RUN_MISMATCH,
+                    "/type",
+                    "a compaction run carries exactly one compaction",
+                ));
+            } else if terminal
+                && !run.compaction_continue
+                && e.envelope_type == EnvelopeType::RUN_COMPLETED
+                && run
+                    .compactions
+                    .values()
+                    .all(|outcome| *outcome == CompactionOutcome::COMPLETED)
+                && payload::<RunCompletedPayload>(e).stop_reason != "compacted"
+            {
+                found.push((
+                    codes::COMPACTION_STOP_REASON_MISMATCH,
+                    "/payload/stop_reason",
+                    "a compaction run that does not continue stops compacted",
+                ));
+            } else if !terminal
+                && run.compactions.is_empty()
+                && !matches!(
+                    e.envelope_type.as_str(),
+                    "run.started" | "run.compaction.started"
+                )
+            {
+                found.push((
+                    codes::COMPACTION_RUN_MISMATCH,
+                    "/type",
+                    "a compaction run opens with its compaction",
+                ));
+            }
         }
         for (code, pointer, message) in found {
             self.add(code, at, e, pointer, message);
