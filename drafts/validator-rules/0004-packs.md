@@ -2,6 +2,8 @@
 
 Decision 0004, which makes good 0003's extension seam: the load refusals a pack set can draw, and the gate diagnostics packed content draws on the wire. A load refusal is not a diagnostic (0004 L174–182): it comes from the loader before any trace is read, and `load-invalid` fixtures judge it. Format: [README](README.md).
 
+Rust entries marked staged describe the `PackLoader` constructor. They cover descriptor and type declarations before schema resources, payload members and corpus checks are loaded by later stages.
+
 ## Load refusals
 
 ### [0004] The unprefixed namespace is the spec's, in its entirety
@@ -10,8 +12,8 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#the-unprefixed-namespace-is-the-specs-in-its-entirety/1` | Every name a pack declares MUST carry a reverse-DNS prefix. | L59–69 | `pack_unprefixed_name` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#the-unprefixed-namespace-is-the-specs-in-its-entirety/2` | Every name a pack declares MUST begin with that pack's own `id` followed by a dot. | L67–69 | `pack_foreign_prefix` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#the-unprefixed-namespace-is-the-specs-in-its-entirety/1` | Every name a pack declares MUST carry a reverse-DNS prefix. | L59–69 | `pack_unprefixed_name` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:contained (capability/error/type names, staged)` |
+| `0004#the-unprefixed-namespace-is-the-specs-in-its-entirety/2` | Every name a pack declares MUST begin with that pack's own `id` followed by a dot. | L67–69 | `pack_foreign_prefix` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:contained (capability/error/type names, staged)` |
 
 ### [0004] The loaded set is prefix-free
 
@@ -19,7 +21,7 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#the-loaded-set-is-prefix-free/1` | No loaded pack's `id` MAY equal, or be a dot-prefix of, another loaded pack's. | L77–84 | `pack_id_collision` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#the-loaded-set-is-prefix-free/1` | No loaded pack's `id` MAY equal, or be a dot-prefix of, another loaded pack's. | L77–84 | `pack_id_collision` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:PackLoader::read (staged)` |
 
 ### [0004] A pack declares what it defines
 
@@ -27,13 +29,13 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#a-pack-declares-what-it-defines/1` | A pack MUST declare each envelope type once. | L88–95, as amended by Decision 0058 | `pack_type_duplicate` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/2` | Every declared request, event and core-payload member MUST appear in `gates` or be declared ungated. | L99–102 | `pack_ungated_type` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/3` | A declared `response` MUST NOT have a gate of its own. | L102–105 | `pack_response_gated` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/4` | Every declared envelope type MUST declare its `role`: `request`, `response` or `event`. | L106–109 | `pack_role_undeclared` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/5` | A declared `response` MUST name in `replies_to` a request the same pack declares. | L102–105, L112–115, as amended by Decision 0058 | `pack_reply_target_unknown` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/6` | A declared request MUST be named by at most one declared `response`. | L112–115, as amended by Decision 0058 | `pack_reply_target_ambiguous` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/7` | `refusals` MUST be keyed by requests the pack declares and list error codes it declares. | L116–124, as amended by Decision 0058 | `pack_refusal_undeclared` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#a-pack-declares-what-it-defines/1` | A pack MUST declare each envelope type once. | L88–95, as amended by Decision 0058 | `pack_type_duplicate` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (staged)` |
+| `0004#a-pack-declares-what-it-defines/2` | Every declared request, event and core-payload member MUST appear in `gates` or be declared ungated. | L99–102 | `pack_ungated_type` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (types, staged)` |
+| `0004#a-pack-declares-what-it-defines/3` | A declared `response` MUST NOT have a gate of its own. | L102–105 | `pack_response_gated` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (staged)` |
+| `0004#a-pack-declares-what-it-defines/4` | Every declared envelope type MUST declare its `role`: `request`, `response` or `event`. | L106–109 | `pack_role_undeclared` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (staged)` |
+| `0004#a-pack-declares-what-it-defines/5` | A declared `response` MUST name in `replies_to` a request the same pack declares. | L102–105, L112–115, as amended by Decision 0058 | `pack_reply_target_unknown` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (staged)` |
+| `0004#a-pack-declares-what-it-defines/6` | A declared request MUST be named by at most one declared `response`. | L112–115, as amended by Decision 0058 | `pack_reply_target_ambiguous` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (staged)` |
+| `0004#a-pack-declares-what-it-defines/7` | `refusals` MUST be keyed by requests the pack declares and list error codes it declares. | L116–124, as amended by Decision 0058 | `pack_refusal_undeclared` | `pack.go:LoadPacks` | `packs.zig` | `pack.rs:declarations (staged)` |
 
 ### [0004] A pack adds vocabulary; it does not amend the protocol
 

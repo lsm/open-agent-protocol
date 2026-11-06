@@ -249,7 +249,7 @@ fn branches() -> &'static Branches {
     })
 }
 
-fn envelope_branches() -> &'static BTreeMap<String, String> {
+pub(crate) fn envelope_branches() -> &'static BTreeMap<String, String> {
     &branches().by_type
 }
 
