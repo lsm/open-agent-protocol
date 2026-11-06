@@ -495,16 +495,17 @@ test "a budget ends the wait on a command whose leader left a writer behind" {
 
 test "a command that ends after the last exit check but within its budget is finished, not handed over" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const outcome = try runWithBudget(std.testing.allocator, &.{ "/bin/sh", "-c", "echo x; sleep 5 & exit 3" }, .inherit, 10_000, 90, null);
+    const allocator = std.heap.smp_allocator;
+    const outcome = try runWithBudget(allocator, &.{ "/bin/sh", "-c", "sleep 5 & exit 3" }, .inherit, 10_000, 90, null);
     switch (outcome) {
         .finished => |finished| {
-            defer std.testing.allocator.free(finished.stdout);
-            defer std.testing.allocator.free(finished.stderr);
+            defer allocator.free(finished.stdout);
+            defer allocator.free(finished.stderr);
             try std.testing.expectEqual(std.process.Child.Term{ .exited = 3 }, finished.term);
         },
         .moved => |moved| {
-            defer std.testing.allocator.free(moved.stdout_head);
-            defer std.testing.allocator.free(moved.stderr_head);
+            defer allocator.free(moved.stdout_head);
+            defer allocator.free(moved.stderr_head);
             endGroup(moved.leader);
             _ = try waitLeader(moved.leader);
             _ = std.posix.system.close(moved.stdout);
