@@ -132,7 +132,7 @@ def main():
     assert data["documents"][storage]["$defs"]["objectsRead"]["properties"]["type"]["const"] == "com.example.storage.objects.read", data
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public Rust/Go cases agree, with shared positive resources retained")
-    print("STAGED: reference ownership, branch compilation and corpus checks follow in loader stage three")
+    print("STAGED: branch compilation and corpus checks follow in later loader slices")
 
 
 if __name__ == "__main__":
