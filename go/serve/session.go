@@ -512,6 +512,14 @@ func (s *Session) UpdateSettings(ctx context.Context, request protocol.SessionSe
 }
 
 func (s *Session) armGate(ctx context.Context, run protocol.RunID, request protocol.EnvelopeID) (*publicationGate, error) {
+	return s.armGateFor(ctx, run, "", request)
+}
+
+func (s *Session) armTaskGate(ctx context.Context, task protocol.TaskID, request protocol.EnvelopeID) (*publicationGate, error) {
+	return s.armGateFor(ctx, "", task, request)
+}
+
+func (s *Session) armGateFor(ctx context.Context, run protocol.RunID, task protocol.TaskID, request protocol.EnvelopeID) (*publicationGate, error) {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -534,7 +542,7 @@ func (s *Session) armGate(ctx context.Context, run protocol.RunID, request proto
 	if s.closed {
 		return nil, base.ErrSessionClosed
 	}
-	gate := &publicationGate{request: request, boundary: s.sequences[run], drainedCh: make(chan struct{})}
+	gate := &publicationGate{request: request, task: task, boundary: s.sequences[run], drainedCh: make(chan struct{})}
 	gate.cover(run)
 	s.gate = gate
 	gate.deadline = time.AfterFunc(gateDeadline, func() { s.liftGate(gate) })
@@ -809,13 +817,10 @@ func (s *Session) CancelTask(ctx context.Context, taskID protocol.TaskID) (proto
 }
 
 func (s *Session) CancelTaskAndHold(ctx context.Context, taskID protocol.TaskID, request protocol.EnvelopeID) (protocol.SessionTaskCancelResponse, error) {
-	gate, err := s.armGate(ctx, "", request)
+	gate, err := s.armTaskGate(ctx, taskID, request)
 	if err != nil {
 		return protocol.SessionTaskCancelResponse{}, err
 	}
-	s.mu.Lock()
-	gate.task = taskID
-	s.mu.Unlock()
 	ack, err := s.CancelTask(ctx, taskID)
 	if err != nil {
 		s.liftGate(gate)
