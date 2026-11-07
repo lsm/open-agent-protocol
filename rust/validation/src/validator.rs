@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::diagnostic::sort_diagnostics;
 use crate::pack::{CompiledPacks, PackLoadError, PackLoader};
-use crate::schema::{compile, SchemaError, SCHEMAS};
+use crate::schema::{compile, compile_mode, SchemaError, SCHEMAS};
 use crate::state::State;
 use crate::trace::{duplicate_key, parse_trace};
 use crate::{codes, Diagnostic, Phase, ValidationResult};
@@ -22,18 +22,35 @@ enum Schemas {
 
 pub struct Validator {
     core: Schemas,
+    tolerant: bool,
 }
 
 impl Validator {
     pub fn new() -> Result<Self, SchemaError> {
         Ok(Self {
             core: Schemas::Core(compile("envelope.schema.json")?),
+            tolerant: false,
         })
     }
 
     pub fn with_packs(directories: &[PathBuf]) -> Result<Self, PackLoadError> {
         Ok(Self {
             core: Schemas::Packed(Arc::new(PackLoader::load(directories)?)),
+            tolerant: false,
+        })
+    }
+
+    pub fn tolerant() -> Result<Self, SchemaError> {
+        Ok(Self {
+            core: Schemas::Core(compile_mode("envelope.schema.json", true)?),
+            tolerant: true,
+        })
+    }
+
+    pub fn tolerant_with_packs(directories: &[PathBuf]) -> Result<Self, PackLoadError> {
+        Ok(Self {
+            core: Schemas::Packed(Arc::new(PackLoader::load(directories)?.into_tolerant()?)),
+            tolerant: true,
         })
     }
 
@@ -118,6 +135,7 @@ impl Validator {
         }
         if diagnostics.is_empty() {
             let mut state = State::new(fixture);
+            state.tolerant = self.tolerant;
             if let Schemas::Packed(packs) = &self.core {
                 state.packs = Some(Arc::clone(packs));
             }

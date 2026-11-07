@@ -52,6 +52,11 @@ pub(super) fn scope(e: &Envelope) -> (String, String) {
 }
 
 impl State {
+    pub(super) fn extension_scoped(&self, kind: &EnvelopeType) -> bool {
+        !crate::validator::envelope_branches().contains_key(kind.as_str())
+            && (self.tolerant || declared(self.packs.as_deref(), kind.as_str()).is_some())
+    }
+
     pub(super) fn packed_role(&self, kind: &EnvelopeType, role: &str) -> bool {
         declared(self.packs.as_deref(), kind.as_str()).map_or_else(
             || {
@@ -65,10 +70,8 @@ impl State {
         )
     }
 
-    pub(super) fn packed_run_event(&self, e: &Envelope) -> bool {
-        declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some()
-            && e.run_id.is_some()
-            && e.sequence.is_some()
+    pub(super) fn extension_run_event(&self, e: &Envelope) -> bool {
+        self.extension_scoped(&e.envelope_type) && e.run_id.is_some() && e.sequence.is_some()
     }
 
     fn pack_gates(&self, e: &Envelope, typed: bool) -> Vec<Gate> {

@@ -807,7 +807,9 @@ impl State {
             "user_input"
         } else if *t == *EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST.as_str() {
             let delivery = payload::<MessageSubmitRequest>(e).delivery;
-            if ["auto", "queue", "steer"].contains(&delivery.as_str()) {
+            if ["auto", "queue", "steer"].contains(&delivery.as_str())
+                || (self.tolerant && crate::tolerant::foreign_delivery(delivery.as_str()))
+            {
                 return;
             }
             let key = format!("delivery.{}", delivery.as_str());
