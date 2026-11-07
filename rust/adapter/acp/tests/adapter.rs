@@ -84,7 +84,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-submit", pin().capability_revision)
+        format!("{}-rust-result", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);

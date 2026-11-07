@@ -18,7 +18,7 @@ use crate::adapter::{unavailable, Config};
 use crate::native::{decode, ConfigOption, SessionNewParams, SessionNewResult, METHOD_SESSION_NEW};
 use crate::process::{Implementation, Process};
 use crate::submit::Run;
-use crate::PromptBridge;
+use crate::{PromptBridge, UsageScope};
 
 type Shutdown = (Arc<PromptBridge>, Vec<JoinHandle<()>>);
 
@@ -27,6 +27,7 @@ pub(crate) struct Inner {
     pub(crate) state: SessionState,
     pub(crate) active: Option<Arc<Run>>,
     pub(crate) workers: Vec<JoinHandle<()>>,
+    pub(crate) usage: Arc<Mutex<UsageScope>>,
 }
 
 pub(crate) struct Session {
@@ -112,6 +113,7 @@ impl Session {
             process: None,
             active: None,
             workers: Vec::new(),
+            usage: Arc::default(),
             state: SessionState {
                 session_id,
                 status: SessionStatus::IDLE,
@@ -123,6 +125,7 @@ impl Session {
         }));
         let weak = Arc::downgrade(&inner);
         let done = process.client.done();
+        let native_id = opened.session_id.clone();
         let bridge = PromptBridge::new(process, move |message| match message {
             Inbound::Request(request) => {
                 let _ = request.respond_error(-32601, "method not supported");
@@ -131,11 +134,18 @@ impl Session {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let run = inner
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .active
-                    .clone();
+                let run = {
+                    let inner = inner.lock().unwrap_or_else(|p| p.into_inner());
+                    if inner
+                        .usage
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .observe(&notification, &native_id)
+                    {
+                        return;
+                    }
+                    inner.active.clone()
+                };
                 if let Some(run) = run {
                     crossbeam_channel::select! {
                         recv(done) -> _ => return,

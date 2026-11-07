@@ -1,17 +1,23 @@
+use std::sync::{Arc, Mutex};
+
 use futures::{executor::block_on, StreamExt};
 use oap_adapter::jsonrpc::NotificationMessage;
 use oap_adapter::Error;
-use oap_adapter_acp::{native::PromptResult, TextRun, TextRunContext};
+use oap_adapter_acp::{native::PromptResult, TextRun, TextRunContext, UsageScope};
 use oap_protocol::{EnvelopeType, RunStatus};
 use serde_json::{json, Value};
 
 fn engine() -> TextRun {
+    scoped_engine(Arc::default(), "run")
+}
+
+fn scoped_engine(scope: Arc<Mutex<UsageScope>>, id: &str) -> TextRun {
     let mut next = 0;
-    TextRun::new(
+    TextRun::new_in_scope(
         TextRunContext {
             session_id: "session".into(),
             native_id: "native".into(),
-            run_id: "run".into(),
+            run_id: id.into(),
             message_id: "session/message".into(),
             capability_revision: Some("text-engine".into()),
         },
@@ -19,6 +25,7 @@ fn engine() -> TextRun {
             next += 1;
             format!("{kind}-{next}")
         },
+        scope,
     )
 }
 
@@ -239,37 +246,28 @@ fn known_stop_reasons_and_failures_keep_their_observed_payloads() {
 }
 
 #[test]
-fn future_tool_and_multi_message_mapping_is_explicitly_unavailable() {
-    for (first, second, code) in [
-        (
-            chunk("one", "first"),
-            chunk("two", "second"),
-            "acp_unavailable_message_identity",
-        ),
-        (
-            chunk("one", ""),
-            update(json!({"sessionUpdate":"tool_call", "toolCallId":"tool"})),
-            "acp_unavailable_update",
-        ),
-    ] {
-        let mut run = engine();
-        let stream = run.start(10).unwrap();
-        run.observe(first, 20).unwrap();
-        run.observe(second, 30).unwrap();
-        run.complete(completed(), 40).unwrap();
-        let events = block_on(stream.collect::<Vec<_>>());
-        assert_eq!(events.len(), 3);
-        assert_eq!(
-            events[2]
-                .as_ref()
-                .unwrap()
-                .decode_payload::<oap_protocol::RunFailedPayload>()
-                .unwrap()
-                .error
-                .code,
-            code
-        );
-    }
+fn future_tool_mapping_is_explicitly_unavailable() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    run.observe(chunk("one", ""), 20).unwrap();
+    run.observe(
+        update(json!({"sessionUpdate":"tool_call", "toolCallId":"tool"})),
+        30,
+    )
+    .unwrap();
+    run.complete(completed(), 40).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>());
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events[2]
+            .as_ref()
+            .unwrap()
+            .decode_payload::<oap_protocol::RunFailedPayload>()
+            .unwrap()
+            .error
+            .code,
+        "acp_unavailable_update"
+    );
 }
 
 #[test]
@@ -296,4 +294,290 @@ fn run_start_and_ignored_native_updates_preserve_the_admission_boundary() {
     }
     run.complete(completed(), 40).unwrap();
     assert_eq!(block_on(stream.collect::<Vec<_>>()).len(), 2);
+}
+
+#[test]
+fn prompt_usage_preserves_reported_counts_and_optional_fields() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    run.complete(PromptResult {
+        stop_reason: "end_turn".into(),
+        usage: Some(serde_json::value::RawValue::from_string(r#"{"totalTokens":10,"inputTokens":8,"outputTokens":2,"thoughtTokens":1,"cachedReadTokens":4,"cachedWriteTokens":0}"#.into()).unwrap()),
+    }, 20).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>());
+    let terminal = serde_json::to_value(events.last().unwrap().as_ref().unwrap()).unwrap();
+    assert_eq!(
+        terminal["payload"]["usage"],
+        json!({"input_tokens":8,"output_tokens":2,"total_tokens":10})
+    );
+    assert_eq!(
+        terminal["extensions"]["com.agentclientprotocol.turn_usage"],
+        json!({"total_tokens":10,"input_tokens":8,"output_tokens":2,"thought_tokens":1,"cached_read_tokens":4,"cached_write_tokens":0})
+    );
+}
+
+#[test]
+fn native_message_identities_keep_separate_text_and_reuse_their_oap_ids() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    for (text, id) in [
+        ("prefix", ""),
+        ("one", "native-one"),
+        ("two", "native-two"),
+        ("again", "native-one"),
+        ("tail", ""),
+    ] {
+        run.observe(chunk(text, id), 20).unwrap();
+    }
+    run.complete(completed(), 30).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(events.len(), 7);
+    let values = events
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap())
+        .collect::<Vec<_>>();
+    let first = &values[1]["payload"]["message_id"];
+    assert_eq!(first, "session/message");
+    assert_eq!(values[2]["payload"]["message_id"], *first);
+    assert_ne!(values[3]["payload"]["message_id"], *first);
+    assert_eq!(values[4]["payload"]["message_id"], *first);
+    assert_eq!(values[5]["payload"]["message_id"], *first);
+    assert_eq!(values[6]["payload"]["final_response"]["id"], *first);
+    assert_eq!(
+        values[6]["payload"]["final_response"]["content"],
+        "prefixoneagaintail"
+    );
+}
+
+fn raw_update(raw: &str) -> NotificationMessage {
+    NotificationMessage {
+        method: "session/update".into(),
+        params: Some(
+            serde_json::value::RawValue::from_string(format!(
+                r#"{{"sessionId":"native","update":{raw}}}"#
+            ))
+            .unwrap(),
+        ),
+    }
+}
+
+fn reported(raw: &str) -> PromptResult {
+    PromptResult {
+        usage: Some(serde_json::value::RawValue::from_string(raw.into()).unwrap()),
+        ..completed()
+    }
+}
+
+#[test]
+fn raw_usage_counts_keep_zero_and_uint64_precision_and_drop_only_bad_fields() {
+    for (raw, expected) in [
+        (r#"null"#, None),
+        (r#"[]"#, None),
+        (r#"{"totalTokens":10,"inputTokens":8}"#, None),
+        (
+            r#"{"totalTokens":10,"inputTokens":-0,"outputTokens":10}"#,
+            None,
+        ),
+        (
+            r#"{"totalTokens":10,"inputTokens":1.0,"outputTokens":9}"#,
+            None,
+        ),
+        (
+            r#"{"totalTokens":10,"inputTokens":1e0,"outputTokens":9}"#,
+            None,
+        ),
+        (
+            r#"{"totalTokens":0,"inputTokens":0,"outputTokens":0}"#,
+            Some(json!({"total_tokens":0,"input_tokens":0,"output_tokens":0})),
+        ),
+        (
+            r#"{"totalTokens":18446744073709551615,"inputTokens":18446744073709551615,"outputTokens":0,"cachedReadTokens":0}"#,
+            Some(
+                json!({"total_tokens":u64::MAX,"input_tokens":u64::MAX,"output_tokens":0,"cached_read_tokens":0}),
+            ),
+        ),
+        (
+            r#"{"totalTokens":12,"inputTokens":10,"outputTokens":2,"thoughtTokens":-4,"cachedWriteTokens":3}"#,
+            Some(
+                json!({"total_tokens":12,"input_tokens":10,"output_tokens":2,"cached_write_tokens":3}),
+            ),
+        ),
+        (
+            r#"{"totalTokens":10,"TOTALTOKENS":12,"inputTokens":10,"outputTokens":2,"thoughtTo\u212aens":1}"#,
+            Some(json!({"total_tokens":12,"input_tokens":10,"output_tokens":2,"thought_tokens":1})),
+        ),
+        (
+            r#"{"totalTokens":10,"TOTALTOKENS":null,"inputTokens":8,"outputTokens":2}"#,
+            None,
+        ),
+    ] {
+        let mut run = engine();
+        let stream = run.start(10).unwrap();
+        run.complete(reported(raw), 20).unwrap();
+        let events = block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let terminal = events.last().unwrap();
+        let value = serde_json::to_value(terminal).unwrap();
+        assert_eq!(value["type"], "run.completed", "{raw}");
+        let observed = terminal
+            .extensions
+            .get("com.agentclientprotocol.turn_usage")
+            .map(|value| serde_json::from_str::<Value>(value.get()).unwrap());
+        assert_eq!(observed, expected, "{raw}");
+        assert_eq!(
+            value["payload"].get("usage").is_some(),
+            expected.is_some(),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn usage_context_replaces_valid_snapshots_preserves_bad_counts_and_drops_bad_cost() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    run.observe(raw_update(r#"{"sessionUpdate":"usage_update","used":100,"size":1000,"cost":{"amount":0.25,"currency":"USD"}}"#), 20).unwrap();
+    run.observe(
+        raw_update(r#"{"sessionUpdate":"usage_update","used":-1,"size":1000}"#),
+        20,
+    )
+    .unwrap();
+    run.observe(raw_update(r#"{"sessionUpdate":"usage_update","used":200,"size":1000,"cost":{"amount":"lots","currency":"USD"}}"#), 20).unwrap();
+    run.observe(
+        raw_update(r#"{"sessionUpdate":"usage_update","used":null,"size":1000}"#),
+        20,
+    )
+    .unwrap();
+    run.complete(completed(), 30).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let value = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        value["extensions"]["com.agentclientprotocol.context"],
+        json!({"used_tokens":200,"size_tokens":1000})
+    );
+    assert!(value["payload"].get("usage").is_none());
+}
+
+#[test]
+fn usage_cost_keeps_go_float_spelling_and_case_folded_members() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    run.observe(raw_update(r#"{"sessionUpdate":"usage_update","used":3,"USED":0,"\u017fize":1000,"COST":{"Amount":-0.0,"CURRENCY":"<\u0026\u2028"}}"#), 20).unwrap();
+    run.complete(completed(), 30).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        events.last().unwrap().extensions["com.agentclientprotocol.context"].get(),
+        r#"{"cost":{"amount":-0,"currency":"\u003c\u0026\u2028"},"size_tokens":1000,"used_tokens":0}"#
+    );
+}
+
+#[test]
+fn late_answers_and_prompt_errors_consume_the_first_turn_scope() {
+    for early in [true, false] {
+        let scope = Arc::default();
+        let mut first = scoped_engine(Arc::clone(&scope), "first");
+        let stream = first.start(10).unwrap();
+        if early {
+            first
+                .observe(
+                    update(
+                        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"image"}}),
+                    ),
+                    20,
+                )
+                .unwrap();
+            first
+                .complete(
+                    reported(r#"{"totalTokens":10,"inputTokens":8,"outputTokens":2}"#),
+                    30,
+                )
+                .unwrap();
+        } else {
+            first.prompt_error("agent failed", false, 20).unwrap();
+        }
+        let events = block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            events.last().unwrap().envelope_type,
+            EnvelopeType::RUN_FAILED
+        );
+        let mut next = scoped_engine(scope, "next");
+        let stream = next.start(40).unwrap();
+        next.complete(
+            reported(r#"{"totalTokens":10,"inputTokens":8,"outputTokens":2}"#),
+            50,
+        )
+        .unwrap();
+        let events = block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let value = serde_json::to_value(events.last().unwrap()).unwrap();
+        assert!(value["payload"].get("usage").is_none());
+        assert_eq!(
+            value["extensions"]["com.agentclientprotocol.turn_usage"]["total_tokens"],
+            10
+        );
+    }
+}
+
+#[test]
+fn shared_usage_scope_accepts_idle_observations_without_a_run() {
+    let scope = Arc::default();
+    let mut run = scoped_engine(Arc::clone(&scope), "run");
+    let notification = raw_update(r#"{"sessionUpdate":"usage_update","used":0,"size":1000}"#);
+    assert!(!scope.lock().unwrap().observe(&notification, "foreign"));
+    assert!(scope.lock().unwrap().observe(&notification, "native"));
+    let stream = run.start(10).unwrap();
+    run.complete(completed(), 20).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let value = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert_eq!(
+        value["extensions"]["com.agentclientprotocol.context"],
+        json!({"used_tokens":0,"size_tokens":1000})
+    );
+}
+
+#[test]
+fn failed_admission_consumes_scope_before_any_run_started() {
+    let scope = Arc::default();
+    let mut first = scoped_engine(Arc::clone(&scope), "unadmitted");
+    let _ = first.prompt_error("native write failed", true, 10);
+    assert_eq!(first.state().sequence, 0);
+    let mut next = scoped_engine(scope, "next");
+    let stream = next.start(20).unwrap();
+    next.complete(
+        reported(r#"{"totalTokens":10,"inputTokens":8,"outputTokens":2}"#),
+        30,
+    )
+    .unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let terminal = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert!(terminal["payload"].get("usage").is_none(), "{terminal}");
+    assert_eq!(
+        terminal["extensions"]["com.agentclientprotocol.turn_usage"]["total_tokens"],
+        10
+    );
+    assert!(first.state().closed);
+    assert!(matches!(first.start(40), Err(Error::SessionClosed)));
 }

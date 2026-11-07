@@ -61,7 +61,7 @@ The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
 the same checks before opening the native session. Reopen and interactive controls remain unavailable. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-submit` to the catalog revision because this descriptor has
+appends `-rust-result` to the catalog revision because this descriptor has
 fewer capabilities than the completed adapter. Remaining event mappings and live configuration updates are later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
@@ -100,7 +100,7 @@ opt-in. It reports the opening response's model config-option snapshot, flatteni
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-submit`
+slice. The descriptor discloses the opening snapshot and uses a `-rust-result`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -199,13 +199,13 @@ terminal. A slow consumer receives its bounded prefix and an explicit overflow.
 the native projection can still settle. `close()` or dropping the engine
 finishes the retained prefix when the owner abandons a run.
 
-This slice handles one native message identity. Multiple identities, tool
-updates and cancellation requiring host evidence produce explicit unavailable
-failures. OAP `run.cancelled` needs accepted host cancellation evidence.
-Configuration-update bodies are decoded structurally and malformed bodies fail
-the run. Usage and live configuration projection belong to their later mapping
-layers. The public consumer covers these staged limits. Normal sessions integrate this
-engine as described below.
+Native message identities map to separate OAP message ids and accumulated text.
+Repeated native ids reuse their OAP ids, and an omitted id continues the current
+message. The terminal response contains the last message's own text. Tool updates
+and cancellation requiring host evidence produce explicit staged failures. OAP
+`run.cancelled` requires accepted host cancellation evidence. Configuration-update
+bodies are decoded structurally and malformed bodies fail the run. Live config
+projection retains its approved later slice.
 
 Run `.claude/skills/verify/journeys/rust-acp-text.md` for native wire, Go/Rust
 event comparison, bounded overflow, cleanup and three-validator event proof.
@@ -215,7 +215,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-submit`
+opt-in. The staged descriptor records these limits under its `-rust-result`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -230,3 +230,37 @@ subscriber's retained prefix. Later mapping slices extend the staged engine.
 
 Run `.claude/skills/verify/journeys/rust-acp-submit.md` for public API traces,
 bounded overflow, child/thread ownership and three-validator proof.
+
+
+## Reported usage and context
+
+Each fresh native session owns one `UsageScope`. `TextRun::new_in_scope` lets
+native bridge consumers share an `Arc<Mutex<UsageScope>>` across their runs.
+`UsageScope::observe` consumes usage observations during idle periods too. Forward
+unconsumed notifications to the active run. `TextRun::new` creates a fresh scope.
+Use `prompt_error` for native RPC errors, including failed write admission.
+Before start, it closes that attempt at sequence zero.
+A late answer after an observation already failed the run still consumes that
+session's first-call scope while preserving the published terminal.
+
+The first completed native prompt call of a new session can report core input,
+output and total counts. A failed native write consumes that scope even though
+its run never starts, matching Go's accounting transition. Later prompts retain
+the agent's turn counts in
+`com.agentclientprotocol.turn_usage`. Thought and cache counts stay in that
+extension. The ACP v1.12.0 mapping ledger records their unresolved accounting
+semantics, and core input/output meanings remain lossy and unverified against
+Decision 0063. Counts are preserved as reported. Required malformed counts omit
+the turn report, while bad optional counts omit only themselves. Zeros and the
+full unsigned 64-bit range stay exact. Fields use Go's case folding and last
+matching duplicate value.
+
+Valid `usage_update` observations replace the session's context snapshot, including
+between runs. Bad required counts preserve the preceding snapshot, and bad cost
+drops only the cost. Terminal envelopes carry the latest applicable context in
+`com.agentclientprotocol.context`. Cost is retained as the agent's reported
+session cost, with Go-compatible floating-point JSON spelling. No price is derived
+from token counts. Native RPC errors carry context without invented turn counts.
+
+Run `.claude/skills/verify/journeys/rust-acp-results.md` for the public multi-turn
+Go/Rust replay, captured native frames and three-validator traces.
