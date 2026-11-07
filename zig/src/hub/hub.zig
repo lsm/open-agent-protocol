@@ -9,6 +9,7 @@ const compat = @import("compat");
 const process = @import("process");
 pub const binding = @import("binding.zig");
 pub const run_store = @import("run_store.zig");
+const ready = @import("ready.zig");
 
 pub const default_stream_queue = 64;
 pub const default_journal_capacity = 256;
@@ -561,8 +562,24 @@ const Entry = struct {
     turns_dropped: u64 = 0,
     title: []u8 = &.{},
     directory: []u8 = &.{},
+    ready_token: ?*ready.Token = null,
+    polling: bool = true,
+
+    fn observe(self: *Entry, enabled: bool) void {
+        const token = self.ready_token orelse return;
+        _ = self.session.setReady(if (enabled) .{ .ctx = token, .notify = ready.Token.notify } else null);
+    }
+
+    fn releaseReady(self: *Entry, allocator: std.mem.Allocator) void {
+        const token = self.ready_token orelse return;
+        if (!self.session_closed) self.observe(false);
+        token.queue.remove(token);
+        allocator.destroy(token);
+        self.ready_token = null;
+    }
 
     fn deinit(self: *Entry, allocator: std.mem.Allocator) void {
+        self.releaseReady(allocator);
         if (self.opened) |*kept| kept.arena.deinit();
         if (self.parked_state) |*kept| kept.arena.deinit();
         if (self.last_outcome) |*kept| kept.arena.deinit();
@@ -607,6 +624,7 @@ pub const Hub = struct {
     shutting_down: bool = false,
     next_entry: usize = 0,
     pass_remaining: usize = 0,
+    ready_queue: ?*ready.Queue = null,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -634,6 +652,10 @@ pub const Hub = struct {
         self.subscriptions.deinit(self.allocator);
         for (self.entries.items) |*entry| entry.deinit(self.allocator);
         self.entries.deinit(self.allocator);
+        if (self.ready_queue) |queue| {
+            queue.deinit();
+            self.allocator.destroy(queue);
+        }
         for (self.adapters.items) |*registered| {
             self.allocator.free(registered.name);
             if (registered.directory.len > 0) self.allocator.free(registered.directory);
@@ -994,6 +1016,7 @@ pub const Hub = struct {
         errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms), registered.journal_capacity orelse self.journal_capacity);
         adopted = true;
+        errdefer self.removeSession(entry);
         if (placed.directory.len > 0) entry.directory = try self.allocator.dupe(u8, placed.directory);
         entry.reopenable = reopenable(descriptor, request);
         if (entry.reopenable) entry.opened = try OpenedWith.init(self.allocator, request);
@@ -1004,7 +1027,6 @@ pub const Hub = struct {
         if (request.subscribe) {
             opened.subscription = self.subscribe(arena, opened.session_id, .{}) catch |err| {
                 self.recordBinding(.closed, entry.session_id, @intCast(self.clock() / std.time.ns_per_ms));
-                self.removeSession(entry);
                 return err;
             };
         }
@@ -1027,14 +1049,20 @@ pub const Hub = struct {
             else => return false,
         };
         if (reported.status != .idle or reported.active_run_id != null or reported.active_runs.len > 0) return false;
+        _ = try self.deliver(entry, arena);
         var holding = std.heap.ArenaAllocator.init(self.allocator);
         errdefer holding.deinit();
         const stored = try keepState(holding.allocator(), reported);
         var outcome = try self.keepOutcome(arena, entry);
         errdefer if (outcome) |*kept| kept.arena.deinit();
+        entry.observe(false);
         entry.session.close() catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+            error.OutOfMemory => {
+                entry.observe(true);
+                return error.OutOfMemory;
+            },
             else => {
+                entry.observe(true);
                 if (outcome) |*kept| kept.arena.deinit();
                 holding.deinit();
                 return false;
@@ -1046,6 +1074,7 @@ pub const Hub = struct {
         entry.parked_runs = entry.cursors.items.len;
         entry.session_closed = true;
         entry.parked = true;
+        entry.releaseReady(self.allocator);
         for (entry.journal.items) |kept| self.allocator.free(kept.line);
         entry.journal.clearRetainingCapacity();
         return true;
@@ -1054,7 +1083,10 @@ pub const Hub = struct {
     fn awake(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!*Entry {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         entry.active_ns = self.clock();
-        if (!entry.parked) return entry;
+        if (!entry.parked) {
+            if (entry.ready_token) |token| token.queue.push(token);
+            return entry;
+        }
         const record = self.findBound(session_id) orelse return error.UnknownSession;
         const registered = self.find(entry.adapter_name) orelse return error.UnknownAdapter;
         const placed = try self.placedIn(registered, record.directory);
@@ -1079,6 +1111,8 @@ pub const Hub = struct {
             .reasoning_level = reasoning_level orelse if (record.reasoning_level.len > 0) record.reasoning_level else null,
             .compaction_policy_json = compaction_policy orelse if (record.compaction_policy.len > 0) record.compaction_policy else null,
         }, &refusal);
+        errdefer entry.session.teardown();
+        try self.watch(entry);
         entry.session_closed = false;
         entry.parked = false;
         if (entry.parked_state) |*kept| kept.arena.deinit();
@@ -1553,10 +1587,14 @@ pub const Hub = struct {
             else => |failure| return failure,
         };
         if (reported.active_run_id != null or reported.active_runs.len > 0) return error.RunActive;
+        entry.observe(false);
         if (entry.session.close()) |_| {
             entry.session_closed = true;
         } else |err| {
-            if (err == error.OutOfMemory) return error.OutOfMemory;
+            if (err == error.OutOfMemory) {
+                entry.observe(true);
+                return error.OutOfMemory;
+            }
         }
         self.releaseSession(entry);
     }
@@ -1649,6 +1687,9 @@ pub const Hub = struct {
 
     pub fn readableHandles(self: *Hub, arena: std.mem.Allocator) std.mem.Allocator.Error![]std.Io.File.Handle {
         var handles: std.ArrayList(std.Io.File.Handle) = .empty;
+        if (self.ready_queue) |queue| {
+            if (queue.handle()) |handle| try handles.append(arena, handle);
+        }
         for (self.entries.items) |*entry| {
             const handle = handleOf(entry) orelse continue;
             try handles.append(arena, handle);
@@ -1659,8 +1700,7 @@ pub const Hub = struct {
     fn awaitAny(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
         if (comptime !pollable) return self.awaitCompletion(wait_ns);
         var watched = std.ArrayList(std.posix.pollfd).empty;
-        for (self.entries.items) |*entry| {
-            const handle = handleOf(entry) orelse continue;
+        for (try self.readableHandles(arena)) |handle| {
             try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
         }
         if (watched.items.len == 0) return false;
@@ -1677,7 +1717,8 @@ pub const Hub = struct {
     }
 
     pub fn hasPendingPass(self: *const Hub) bool {
-        return self.pass_remaining > 0;
+        if (self.pass_remaining > 0) return true;
+        return if (self.ready_queue) |queue| queue.pending() else false;
     }
 
     fn deliver(self: *Hub, entry: *Entry, arena: std.mem.Allocator) !bool {
@@ -1751,17 +1792,32 @@ pub const Hub = struct {
             return false;
         }
         if (self.pass_remaining == 0) self.pass_remaining = count;
-        const visits = @min(pass_sessions, self.pass_remaining);
         const started = self.clock();
         const share = wait_ns / @max(count, 1);
         var moved = false;
-        for (0..visits) |_| {
-            self.next_entry %= count;
-            const entry = &self.entries.items[self.next_entry];
-            self.next_entry = (self.next_entry + 1) % count;
-            self.pass_remaining -= 1;
-            if (!entry.parked) {
-                const wait = if (handleOf(entry) != null) 0 else share;
+        var prefer_ready = true;
+        var visits: usize = 0;
+        while (visits < pass_sessions) : (visits += 1) {
+            var notified: ?*ready.Token = null;
+            if (prefer_ready) {
+                if (self.ready_queue) |queue| notified = queue.pop();
+            }
+            var selected: ?*Entry = if (notified) |token| &self.entries.items[token.index] else null;
+            if (selected == null and self.pass_remaining > 0) {
+                self.next_entry %= count;
+                selected = &self.entries.items[self.next_entry];
+                self.next_entry = (self.next_entry + 1) % count;
+                self.pass_remaining -= 1;
+            }
+            if (selected == null and !prefer_ready) {
+                if (self.ready_queue) |queue| notified = queue.pop();
+                if (notified) |token| selected = &self.entries.items[token.index];
+            }
+            const entry = selected orelse break;
+            prefer_ready = !prefer_ready;
+            if (!entry.parked and (notified != null or entry.polling)) {
+                errdefer if (entry.ready_token) |token| token.queue.push(token);
+                const wait = if (notified != null or handleOf(entry) != null) 0 else share;
                 const pumped = entry.session.pump(wait) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => failed: {
@@ -1771,6 +1827,10 @@ pub const Hub = struct {
                 };
                 const delivered = try self.deliver(entry, arena);
                 moved = moved or pumped or delivered;
+                if (entry.ready_token) |token| {
+                    entry.polling = entry.session.vtable.readable != null or !entry.session.holdsNoLiveWork();
+                    if (pumped or delivered) token.queue.push(token);
+                }
             }
             if (self.clock() -| started >= pass_budget_ns) break;
         }
@@ -1838,6 +1898,7 @@ pub const Hub = struct {
             self.releaseSession(entry);
             return outcome;
         }
+        entry.observe(false);
         var attempt: usize = 0;
         while (attempt < close_attempts) : (attempt += 1) {
             outcome.attempts += 1;
@@ -2224,7 +2285,29 @@ pub const Hub = struct {
             .journal_capacity = journal_capacity,
             .active_ns = self.clock(),
         });
-        return &self.entries.items[self.entries.items.len - 1];
+        errdefer _ = self.entries.pop();
+        const entry = &self.entries.items[self.entries.items.len - 1];
+        try self.watch(entry);
+        return entry;
+    }
+
+    fn watch(self: *Hub, entry: *Entry) Failure!void {
+        entry.polling = true;
+        if (entry.session.vtable.set_ready == null) return;
+        if (self.ready_queue == null) {
+            const queue = try self.allocator.create(ready.Queue);
+            errdefer self.allocator.destroy(queue);
+            queue.* = ready.Queue.init(if (builtin.is_test) testing.io else std.Io.Threaded.global_single_threaded.io()) catch return error.BackendFailed;
+            self.ready_queue = queue;
+        }
+        const index = for (self.entries.items, 0..) |*candidate, index| {
+            if (candidate == entry) break index;
+        } else unreachable;
+        const token = try self.allocator.create(ready.Token);
+        token.* = .{ .queue = self.ready_queue.?, .index = index };
+        entry.ready_token = token;
+        entry.polling = entry.session.vtable.readable != null or !entry.session.holdsNoLiveWork();
+        entry.observe(true);
     }
 
     fn removeSession(self: *Hub, entry: *Entry) void {
@@ -2234,6 +2317,9 @@ pub const Hub = struct {
             if (index < self.next_entry) self.next_entry -= 1;
             self.pass_remaining = @min(self.pass_remaining, self.entries.items.len);
             removed.deinit(self.allocator);
+            for (self.entries.items[index..], index..) |*remaining, at| {
+                if (remaining.ready_token) |token| token.index = at;
+            }
             return;
         }
         entry.deinit(self.allocator);
@@ -2406,6 +2492,249 @@ pub const Hub = struct {
 };
 
 const testing = std.testing;
+
+const SignallingMemory = struct {
+    inner: *memory.Adapter,
+    sessions: std.ArrayList(*Session) = .empty,
+
+    const Session = struct {
+        inner: contract.Session,
+        name: []u8,
+        observer: ?contract.Session.Ready = null,
+        closed: bool = false,
+        refuse_close: bool = false,
+
+        const vtable = contract.Session.VTable{
+            .id = id,
+            .native_id = id,
+            .state = state,
+            .submit = submit,
+            .resolve = resolve,
+            .cancel = cancel,
+            .pump = pump,
+            .drain = drain,
+            .drain_mixed = drain,
+            .activity = activity,
+            .close = close,
+            .live_work = liveWork,
+            .set_ready = setReady,
+        };
+
+        fn cast(ptr: *anyopaque) *Session {
+            return @ptrCast(@alignCast(ptr));
+        }
+
+        fn id(ptr: *anyopaque) []const u8 {
+            return cast(ptr).name;
+        }
+
+        fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
+            return cast(ptr).inner.state(arena, refusal);
+        }
+
+        fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+            const self = cast(ptr);
+            const result = try self.inner.submit(arena, request, envelope_id, refusal);
+            self.signal();
+            return result;
+        }
+
+        fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
+            const self = cast(ptr);
+            try self.inner.resolve(arena, resolution, refusal);
+            self.signal();
+        }
+
+        fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
+            const self = cast(ptr);
+            const result = try self.inner.cancel(arena, run_id, refusal);
+            self.signal();
+            return result;
+        }
+
+        fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
+            const self = cast(ptr);
+            const moved = try self.inner.pump(wait_ns);
+            if (moved) self.signal();
+            return moved;
+        }
+
+        fn drain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
+            try cast(ptr).inner.drain(allocator, out);
+        }
+
+        fn activity(ptr: *anyopaque) contract.Activity {
+            return cast(ptr).inner.activity();
+        }
+
+        fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+            const self = cast(ptr);
+            if (self.observer != null) return error.BackendFailed;
+            if (self.closed) return;
+            if (self.refuse_close) {
+                self.refuse_close = false;
+                return error.BackendFailed;
+            }
+            try self.inner.vtable.close(self.inner.ptr, force);
+            self.closed = true;
+        }
+
+        fn liveWork(_: *anyopaque) bool {
+            return false;
+        }
+
+        fn setReady(ptr: *anyopaque, observer: ?contract.Session.Ready) void {
+            const self = cast(ptr);
+            self.observer = observer;
+            self.signal();
+        }
+
+        fn signal(self: *Session) void {
+            if (self.observer) |observer| observer.notify(observer.ctx);
+        }
+
+        fn repeatedlySignal(self: *Session) void {
+            for (0..1000) |_| self.signal();
+        }
+    };
+
+    fn deinit(self: *SignallingMemory) void {
+        for (self.sessions.items) |session| {
+            if (!session.closed) session.inner.teardown();
+            testing.allocator.free(session.name);
+            testing.allocator.destroy(session);
+        }
+        self.sessions.deinit(testing.allocator);
+        self.* = undefined;
+    }
+
+    fn adapter(self: *SignallingMemory) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+    }
+
+    fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+        const self: *SignallingMemory = @ptrCast(@alignCast(ptr));
+        var descriptor = try self.inner.adapter().probe(refusal);
+        descriptor.features = &.{
+            .{ .key = contract.feature_submit, .level = .native },
+            .{ .key = contract.feature_open_reopen, .level = .native },
+            .{ .key = "session.open.subscribe", .level = .native },
+            .{ .key = "run.cancel", .level = .native },
+        };
+        return descriptor;
+    }
+
+    fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+        const self: *SignallingMemory = @ptrCast(@alignCast(ptr));
+        const inner = try self.inner.adapter().open(arena, request, refusal);
+        errdefer inner.teardown();
+        const session = try testing.allocator.create(Session);
+        errdefer testing.allocator.destroy(session);
+        const name = try testing.allocator.dupe(u8, inner.id());
+        errdefer testing.allocator.free(name);
+        try self.sessions.append(testing.allocator, session);
+        session.* = .{ .inner = inner, .name = name };
+        return .{ .ptr = session, .vtable = &Session.vtable };
+    }
+};
+
+test "notified sessions share one readable wake, coalesce, and survive a queued neighbor closing" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const first = try hub.open(arena, "signalling", .{ .session_id = "ready-first", .subscribe = true });
+    const middle = try hub.open(arena, "signalling", .{ .session_id = "ready-middle", .subscribe = true });
+    const last = try hub.open(arena, "signalling", .{ .session_id = "ready-last", .subscribe = true });
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    const handles = try hub.readableHandles(arena);
+    try testing.expectEqual(@as(usize, 1), handles.len);
+    var watched = [_]std.posix.pollfd{.{ .fd = handles[0], .events = std.posix.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+    adapter.sessions.items[0].signal();
+    adapter.sessions.items[1].signal();
+    const worker = try std.Thread.spawn(.{}, SignallingMemory.Session.repeatedlySignal, .{adapter.sessions.items[2]});
+    worker.join();
+    try testing.expectEqual(@as(usize, 1), try std.posix.poll(&watched, 0));
+    try hub.close(arena, middle.session_id);
+    try hub.close(arena, first.session_id);
+    const request = try submitFor(arena, last.session_id);
+    const admitted = try hub.submit(arena, last.session_id, &request, "ready-submit");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    const event = last.subscription.?.next().?;
+    try testing.expectEqualStrings(admitted.run_id.?, event.run_id);
+    try testing.expect(std.mem.indexOf(u8, event.line, "ready-last") != null);
+    _ = try hub.cancel(arena, last.session_id, admitted.run_id.?);
+    try hub.close(arena, last.session_id);
+    for (adapter.sessions.items) |session| session.signal();
+    try testing.expect(!hub.hasPendingPass());
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+}
+
+fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    _ = hub.open(scratch.allocator(), "signalling", .{ .session_id = "failed-open" }) catch |err| {
+        try testing.expectEqual(false, hub.knows("failed-open"));
+        for (adapter.sessions.items) |session| session.signal();
+        try testing.expectEqual(false, hub.hasPendingPass());
+        return err;
+    };
+}
+
+test "a failed observed open leaves no visible session or callback behind" {
+    try testing.checkAllAllocationFailures(testing.allocator, failedOpenLeavesNoSession, .{});
+}
+
+test "observed sessions resume after a refused park and keep a pending terminal through parking" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "signalling", .{ .session_id = "park-ready", .subscribe = true });
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    adapter.sessions.items[0].refuse_close = true;
+    try testing.expect(!try hub.park(arena, opened.session_id));
+    try testing.expect(hub.hasPendingPass());
+    const request = try submitFor(arena, opened.session_id);
+    const first = try hub.submit(arena, opened.session_id, &request, "before-park");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, opened.session_id, first.run_id.?);
+    try testing.expect(try hub.park(arena, opened.session_id));
+    var cancelled = false;
+    while (opened.subscription.?.next()) |event| {
+        cancelled = cancelled or std.mem.indexOf(u8, event.line, "run.cancelled") != null;
+    }
+    try testing.expectEqual(true, cancelled);
+    const next = try hub.submit(arena, opened.session_id, &request, "after-park");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings(next.run_id.?, opened.subscription.?.next().?.run_id);
+    _ = try hub.cancel(arena, opened.session_id, next.run_id.?);
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try hub.close(arena, opened.session_id);
+    for (adapter.sessions.items) |session| session.signal();
+    try testing.expect(!hub.hasPendingPass());
+}
 
 var now_ns: u64 = 1_000_000_000;
 
