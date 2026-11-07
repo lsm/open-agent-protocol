@@ -2897,6 +2897,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         _ = scratch.reset(.retain_capacity);
         const arena = scratch.allocator();
         const input_ready = try waitOn(frontend, stream, arena, cycle_budget_ns);
+        if (stream.signals) |count| try frontend.takeSignals(count());
         var more = false;
         if (input_ready) {
             more = try readAvailable(allocator, stream, &pending);
@@ -2962,6 +2963,7 @@ fn pending_bound(limit: usize) usize {
 
 const pollable = @import("builtin").os.tag != .windows;
 fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
+    if (try frontend.shutdownComplete(arena)) return false;
     if (comptime !pollable) return waitByPeeking(frontend, stream, frontend.hub.waitBudget(wait_ns));
     const polling = frontend.hub.needsPolling() or stream.stop != null or (stream.signals != null and stream.signal_readable == null);
     const budget_ns = frontend.hub.waitBudget(if (polling) wait_ns else std.math.maxInt(u64));

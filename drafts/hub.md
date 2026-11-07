@@ -2063,7 +2063,7 @@ preserves a pending owner wake, and an empty Hub can consume it.
 
 POSIX stdio waits on stdin, backend descriptors, the shared queue and a separate
 process-lifetime signal pipe. Its timeout is the next hold or idle-parking
-deadline. A backend without readiness or a readable handle, a custom stop
+deadline. A backend with fallback obligations, a custom stop
 callback, or a signal counter without a readable handle requires bounded
 polling. A signal increments its counter before writing the nonblocking pipe,
 and counting drains the pipe while retaining the total for graceful and forced

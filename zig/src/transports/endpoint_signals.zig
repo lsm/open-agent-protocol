@@ -119,6 +119,21 @@ test "signals make a borrowed handle readable and counting drains the wake" {
     try std.testing.expectEqual(@as(u32, 2), count());
 }
 
+test "a full signal pipe preserves errno and retains the signal count" {
+    if (is_windows or !builtin.link_libc) return error.SkipZigTest;
+    try install();
+    defer reset();
+    const pipe = wake_pipe.?;
+    const bytes: [4096]u8 = @splat(1);
+    while (std.posix.errno(std.posix.system.write(pipe[1], &bytes, bytes.len)) == .SUCCESS) {}
+    std.c._errno().* = 123;
+    try std.posix.raise(std.posix.SIG.TERM);
+    try std.testing.expectEqual(@as(c_int, 123), std.c._errno().*);
+    try std.testing.expectEqual(@as(u32, 1), count());
+    var watched = [_]std.posix.pollfd{.{ .fd = readable().?, .events = std.posix.POLL.IN, .revents = 0 }};
+    try std.testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+}
+
 test "a console interrupt, break or close marks the endpoint signalled; logoff and shutdown pass to the next handler" {
     if (!is_windows) return error.SkipZigTest;
     defer reset();

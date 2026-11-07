@@ -700,7 +700,9 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             timeline.halt.set()
             timeline.join(timeout=5)
         if result["status"] == "ok":
-            time.sleep(1.0 + (options.park_after + 1 if park else 0))
+            settle = options.idle_settle if scenario == "empty" else 1.0
+            settle += options.park_after + 1 if park else 0
+            time.sleep(settle)
         sampler.stop()
         result.update(peak_rss=sampler.peak["rss"], peak_threads=sampler.peak["threads"])
         if hub.process.poll() is None:
@@ -709,7 +711,7 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
                 idle_started = time.perf_counter()
                 time.sleep(options.idle_window)
                 idle = probe.sample()
-                result.update(idle_wall_s=time.perf_counter() - idle_started,
+                result.update(idle_settle_s=settle, idle_wall_s=time.perf_counter() - idle_started,
                               idle_cpu_s=idle["cpu"] - settled["cpu"],
                               idle_switches=idle["switches"] - settled["switches"])
             result.update(settled_rss=settled["rss"], threads=settled["threads"], fds=settled["fds"],
@@ -895,6 +897,7 @@ def main():
     parser.add_argument("--max-hub-cores", type=float, default=12, help="stop a flight whose hub holds this many cores for 5 s")
     parser.add_argument("--park-after", type=int, default=0, help="serve the Zig targets with --park-after, and settle past it")
     parser.add_argument("--idle-window", type=float, default=5, help="seconds to sample CPU and context switches after empty sessions settle")
+    parser.add_argument("--idle-settle", type=float, default=10, help="seconds for empty-session startup work and thread retirement to settle")
     parser.add_argument("--out", help="directory for results.json and results.md")
     parser.add_argument("--no-build", action="store_true", help="use existing zig-out and rust/target/release binaries")
     parser.add_argument("--go", help="a prebuilt goap binary")
@@ -912,6 +915,8 @@ def main():
     counts = sorted({int(n) for n in arguments.n.split(",")})
     if arguments.idle_window <= 0:
         parser.error("--idle-window must be positive")
+    if arguments.idle_settle < 0:
+        parser.error("--idle-settle must be nonnegative")
     unknown = set(targets) - set(TARGETS) | set(scenarios) - set(SCENARIOS) - set(FLIGHTS)
     if unknown:
         parser.error("unknown target or scenario: " + ", ".join(sorted(unknown)))

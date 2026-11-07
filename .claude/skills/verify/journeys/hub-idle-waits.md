@@ -21,8 +21,9 @@ The restart journey observes asynchronous native reads and a completed model
 turn with no further input needed to publish it. Automatic parking must still
 happen on its timer, and a subsequent input must restore the old conversation.
 
-The empty benchmark waits for settlement, then samples process CPU and context
-switches over `--idle-window` seconds. Require `status` to be `ok`, zero
+The empty benchmark allows `--idle-settle` seconds for startup work and thread
+retirement, then samples process CPU and context switches over `--idle-window`
+seconds. Both intervals are explicit in the JSON. Require `status` to be `ok`, zero
 `idle_switches` and no CPU increase in the native idle case. The idle fields
 report process context switches and CPU deltas. Retain
 `results.json` and compare alternating baseline and candidate runs in one window.
@@ -33,7 +34,7 @@ quiet again even with no sessions. Signal tests require a readable descriptor,
 draining on count, a monotonically increasing signal count and preserved libc
 errno. The parking test retries a refused close at the next idle deadline.
 
-POSIX stdio uses descriptor and deadline waits for notifying sessions. Legacy
-backends without handles and custom stop callbacks retain bounded polling.
+POSIX stdio uses descriptor and deadline waits for notifying sessions. Backends
+with fallback obligations and custom stop callbacks use bounded polling.
 Windows uses bounded completion/peek waits. HTTP's polling budget changes in
 the separate deadline slice.

@@ -1708,10 +1708,7 @@ pub const Hub = struct {
     }
 
     pub fn needsPolling(self: *const Hub) bool {
-        for (self.fallbacks.items) |index| {
-            if (handleOf(&self.entries.items[index]) == null) return true;
-        }
-        return false;
+        return self.fallbacks.items.len > 0;
     }
 
     fn handleOf(entry: *const Entry) ?std.Io.File.Handle {
