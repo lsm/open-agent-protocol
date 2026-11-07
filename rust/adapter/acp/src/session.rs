@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::lock::Mutex as AsyncMutex;
+use oap_adapter::jsonrpc::Inbound;
 use oap_adapter::{
     BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution, ModelLister,
     ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
@@ -15,9 +16,10 @@ use oap_protocol::{
 use crate::adapter::{unavailable, Config};
 use crate::native::{decode, ConfigOption, SessionNewParams, SessionNewResult, METHOD_SESSION_NEW};
 use crate::process::{Implementation, Process};
+use crate::PromptBridge;
 
 pub(crate) struct Inner {
-    pub(crate) process: Option<Arc<Process>>,
+    pub(crate) process: Option<Arc<PromptBridge>>,
     pub(crate) state: SessionState,
 }
 
@@ -99,7 +101,11 @@ impl Session {
         };
         Ok(Box::new(Self {
             inner: Mutex::new(Inner {
-                process: Some(Arc::new(process)),
+                process: Some(Arc::new(PromptBridge::new(process, |message| {
+                    if let Inbound::Request(request) = message {
+                        let _ = request.respond_error(-32601, "method not supported");
+                    }
+                }))),
                 state: SessionState {
                     session_id,
                     status: SessionStatus::IDLE,
@@ -148,7 +154,7 @@ impl SessionContract for Session {
                 process
             };
             process
-                .close_shared_async()
+                .close()
                 .await
                 .map_err(|error| Error::Harness(error.to_string()))
         })

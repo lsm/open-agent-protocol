@@ -1,0 +1,79 @@
+[
+  {
+    "index": 1,
+    "direction": "host-to-copilot",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 2,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 3,
+    "direction": "host-to-copilot",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 4,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 5,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  },
+  {
+    "index": 6,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  },
+  {
+    "index": 7,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  },
+  {
+    "index": 8,
+    "direction": "copilot-to-host",
+    "classification": "observed-only",
+    "fidelity": "observed-only",
+    "oap": "ignore stale interaction i1 after i2 starts"
+  },
+  {
+    "index": 9,
+    "direction": "copilot-to-host",
+    "classification": "observed-only",
+    "fidelity": "observed-only",
+    "oap": "ignore stale interaction i1 after i2 starts"
+  },
+  {
+    "index": 10,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  },
+  {
+    "index": 11,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  }
+]

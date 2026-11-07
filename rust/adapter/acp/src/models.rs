@@ -98,7 +98,7 @@ impl ModelSwitcher for Session {
             })
             .map_err(|error| Error::Harness(error.to_string()))?;
             let raw = process
-                .call_shared_async(METHOD_SESSION_SET_CONFIG_OPTION.into(), Some(params), None)
+                .call(METHOD_SESSION_SET_CONFIG_OPTION.into(), Some(params), None)
                 .await
                 .map_err(|error| match error.fault {
                     oap_adapter::jsonrpc::Fault::Remote { object, .. } => refusal(format!(

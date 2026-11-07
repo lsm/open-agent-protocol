@@ -116,6 +116,24 @@ impl Client {
         )
     }
 
+    pub(crate) fn replay_event(&mut self, run: &RunId) -> Result<Envelope, ClientError> {
+        self.wait_for(
+            self.deadline,
+            true,
+            &format!("sequenced replay event for run {run}"),
+            |client| {
+                let index = client.events.iter().position(|event| {
+                    event.run_id.as_ref() == Some(run) && event.sequence.is_some()
+                })?;
+                client.events.remove(index)
+            },
+        )
+    }
+
+    pub(crate) fn send_line(&mut self, line: &str) -> Result<(), ClientError> {
+        Ok(self.process.send_line(line)?)
+    }
+
     pub fn close_input(&mut self) {
         self.process.close_input();
     }

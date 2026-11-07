@@ -29,6 +29,11 @@ stores, or keys. Do not print the environment. macOS has no stock `timeout`;
 use Python `subprocess.run(..., timeout=...)` or bounded PTY waits and always
 terminate/reap children in cleanup. Never run unattended GUI tests.
 
+The Rust SDK usage consumer has an explicit 10-second fixture handshake budget.
+Its first synthetic fixture delays startup by two seconds to verify that budget
+and retains the complete consumer's elapsed time. SDK transport tests exercise
+timeout behavior.
+
 ## Validators and guardrails
 
 Run `bash .claude/skills/verify/scripts/check.sh` for the complete baseline
