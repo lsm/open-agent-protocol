@@ -2492,6 +2492,201 @@ pub const Hub = struct {
 
 const testing = std.testing;
 
+const SignallingMemory = struct {
+    inner: *memory.Adapter,
+    sessions: std.ArrayList(*Session) = .empty,
+
+    const Session = struct {
+        inner: contract.Session,
+        name: []u8,
+        observer: ?contract.Session.Ready = null,
+        closed: bool = false,
+
+        const vtable = contract.Session.VTable{
+            .id = id,
+            .state = state,
+            .submit = submit,
+            .resolve = resolve,
+            .cancel = cancel,
+            .pump = pump,
+            .drain = drain,
+            .drain_mixed = drain,
+            .activity = activity,
+            .close = close,
+            .live_work = liveWork,
+            .set_ready = setReady,
+        };
+
+        fn cast(ptr: *anyopaque) *Session {
+            return @ptrCast(@alignCast(ptr));
+        }
+
+        fn id(ptr: *anyopaque) []const u8 {
+            return cast(ptr).name;
+        }
+
+        fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
+            return cast(ptr).inner.state(arena, refusal);
+        }
+
+        fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+            const self = cast(ptr);
+            const result = try self.inner.submit(arena, request, envelope_id, refusal);
+            self.signal();
+            return result;
+        }
+
+        fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
+            const self = cast(ptr);
+            try self.inner.resolve(arena, resolution, refusal);
+            self.signal();
+        }
+
+        fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
+            const self = cast(ptr);
+            const result = try self.inner.cancel(arena, run_id, refusal);
+            self.signal();
+            return result;
+        }
+
+        fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
+            const self = cast(ptr);
+            const moved = try self.inner.pump(wait_ns);
+            if (moved) self.signal();
+            return moved;
+        }
+
+        fn drain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
+            try cast(ptr).inner.drain(allocator, out);
+        }
+
+        fn activity(ptr: *anyopaque) contract.Activity {
+            return cast(ptr).inner.activity();
+        }
+
+        fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+            const self = cast(ptr);
+            if (self.observer != null) return error.BackendFailed;
+            if (self.closed) return;
+            try self.inner.vtable.close(self.inner.ptr, force);
+            self.closed = true;
+        }
+
+        fn liveWork(_: *anyopaque) bool {
+            return false;
+        }
+
+        fn setReady(ptr: *anyopaque, observer: ?contract.Session.Ready) void {
+            const self = cast(ptr);
+            self.observer = observer;
+            self.signal();
+        }
+
+        fn signal(self: *Session) void {
+            if (self.observer) |observer| observer.notify(observer.ctx);
+        }
+
+        fn repeatedlySignal(self: *Session) void {
+            for (0..1000) |_| self.signal();
+        }
+    };
+
+    fn deinit(self: *SignallingMemory) void {
+        for (self.sessions.items) |session| {
+            if (!session.closed) session.inner.teardown();
+            testing.allocator.free(session.name);
+            testing.allocator.destroy(session);
+        }
+        self.sessions.deinit(testing.allocator);
+        self.* = undefined;
+    }
+
+    fn adapter(self: *SignallingMemory) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+    }
+
+    fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+        const self: *SignallingMemory = @ptrCast(@alignCast(ptr));
+        var descriptor = try self.inner.adapter().probe(refusal);
+        descriptor.features = &.{
+            .{ .key = contract.feature_submit, .level = .native },
+            .{ .key = contract.feature_open_reopen, .level = .native },
+            .{ .key = "session.open.subscribe", .level = .native },
+            .{ .key = "run.cancel", .level = .native },
+        };
+        return descriptor;
+    }
+
+    fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+        const self: *SignallingMemory = @ptrCast(@alignCast(ptr));
+        const inner = try self.inner.adapter().open(arena, request, refusal);
+        errdefer inner.teardown();
+        const session = try testing.allocator.create(Session);
+        errdefer testing.allocator.destroy(session);
+        const name = try testing.allocator.dupe(u8, inner.id());
+        errdefer testing.allocator.free(name);
+        try self.sessions.append(testing.allocator, session);
+        session.* = .{ .inner = inner, .name = name };
+        return .{ .ptr = session, .vtable = &Session.vtable };
+    }
+};
+
+test "notified sessions share one readable wake, coalesce, and survive a queued neighbor closing" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const first = try hub.open(arena, "signalling", .{ .session_id = "ready-first", .subscribe = true });
+    const last = try hub.open(arena, "signalling", .{ .session_id = "ready-last", .subscribe = true });
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    const handles = try hub.readableHandles(arena);
+    try testing.expectEqual(@as(usize, 1), handles.len);
+    var watched = [_]std.posix.pollfd{.{ .fd = handles[0], .events = std.posix.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+    const worker = try std.Thread.spawn(.{}, SignallingMemory.Session.repeatedlySignal, .{adapter.sessions.items[1]});
+    worker.join();
+    try testing.expectEqual(@as(usize, 1), try std.posix.poll(&watched, 0));
+    try hub.close(arena, first.session_id);
+    const request = try submitFor(arena, last.session_id);
+    const admitted = try hub.submit(arena, last.session_id, &request, "ready-submit");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    const event = last.subscription.?.next().?;
+    try testing.expectEqualStrings(admitted.run_id.?, event.run_id);
+    try testing.expect(std.mem.indexOf(u8, event.line, "ready-last") != null);
+    _ = try hub.cancel(arena, last.session_id, admitted.run_id.?);
+    try hub.close(arena, last.session_id);
+    for (adapter.sessions.items) |session| session.signal();
+    try testing.expect(!hub.hasPendingPass());
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+}
+
+fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    _ = hub.open(scratch.allocator(), "signalling", .{ .session_id = "failed-open" }) catch |err| {
+        try testing.expectEqual(false, hub.knows("failed-open"));
+        return err;
+    };
+}
+
+test "a failed observed open leaves no visible session or callback behind" {
+    try testing.checkAllAllocationFailures(testing.allocator, failedOpenLeavesNoSession, .{});
+}
+
 var now_ns: u64 = 1_000_000_000;
 
 fn testClock() u64 {
