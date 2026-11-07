@@ -29,6 +29,11 @@ stores, or keys. Do not print the environment. macOS has no stock `timeout`;
 use Python `subprocess.run(..., timeout=...)` or bounded PTY waits and always
 terminate/reap children in cleanup. Never run unattended GUI tests.
 
+Keep the selected Python >=3.11 executable on `PATH` throughout verification.
+If Go reports a missing build-cache archive, retain its stderr and rerun with
+`GOCACHE` pointing at an owned, writable cache directory. Keep that cache for the
+complete rerun, then remove it with the other owned temporary state.
+
 The Rust SDK usage consumer has an explicit 10-second fixture handshake budget.
 Its first synthetic fixture delays startup by two seconds to verify that budget
 and retains the complete consumer's elapsed time. SDK transport tests exercise
