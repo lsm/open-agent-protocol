@@ -61,3 +61,10 @@ a claim that the frames were captured from a v2.2.6 account or model. The first
 synthetic `completed-text` case failed before the decoder change with
 `opencode_invalid_text_event` on the unknown `native` field. Expectations use
 the new capability revision. Rust tests read the same current corpus.
+
+Replacing the recorded completed-text case reduces corpus wire-shape coverage:
+`session.inbox.enqueued`, `session.usage.updated`, `session.renamed`,
+`session.instructions.updated`, `session.text.started`, `session.step.streamed`,
+`rawFinish`, and the envelope's `created`, `location`, and `metadata` members
+are no longer represented in this corpus. Go and Zig unit tests cover some of
+these shapes; that is not a three-language corpus claim.
