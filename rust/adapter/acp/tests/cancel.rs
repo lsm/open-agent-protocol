@@ -28,54 +28,11 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         )));
         std::fs::create_dir(&fixture.0).unwrap();
-        std::fs::write(fixture.0.join("agent.py"), r#"import json,os,sys,time
-from pathlib import Path
-out=Path(sys.argv[1])
-mode=sys.argv[2]
-(out/'pid').write_text(str(os.getpid()))
-def read():
- line=sys.stdin.readline()
- if line:
-  with (out/'wire.jsonl').open('a') as wire: wire.write(line)
- return json.loads(line) if line else None
-def send(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
-def wait(name):
- deadline=time.monotonic()+10
- while not (out/name).exists() and time.monotonic()<deadline: time.sleep(.001)
- assert (out/name).exists(),name
-def chunk(text): send(dict(method='session/update',params=dict(sessionId='native',update=dict(sessionUpdate='agent_message_chunk',content=dict(type='text',text=text)))))
-def ask(name): send(dict(id=name,method='session/request_permission',params=dict(sessionId='native',toolCall=dict(toolCallId=name,title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])))
-request=read()
-send(dict(id=request['id'],result=dict(protocolVersion=1,agentCapabilities={})))
-request=read()
-send(dict(id=request['id'],result=dict(sessionId='native')))
-prompt=read()
-if prompt is not None:
- chunk('before')
- if mode=='auto':
-  send(dict(id=prompt['id'],result=dict(stopReason='end_turn')))
- else:
-  if mode=='gates': ask('initial')
-  cancel=read()
-  assert cancel==dict(jsonrpc='2.0',method='session/cancel',params=dict(sessionId='native')),cancel
-  (out/'cancel').write_text(json.dumps(cancel))
-  if mode=='gates':
-   (out/'gate-answer.json').write_text(json.dumps(read()))
-   ask('late')
-   (out/'late-answer.json').write_text(json.dumps(read()))
-  wait('stream')
-  chunk('after')
-  wait('finish')
-  if mode=='remote': send(dict(id=prompt['id'],error=dict(code=-32800,message='cancel acknowledged')))
-  else: send(dict(id=prompt['id'],result=dict(stopReason='end_turn' if mode=='complete' else 'cancelled',usage=dict(inputTokens=3,outputTokens=1,totalTokens=4))))
- while True:
-  request=read()
-  if request is None: break
-  if mode=='auto' and request.get('method')=='session/prompt':
-   chunk('next')
-   wait('second-finish')
-   send(dict(id=request['id'],result=dict(stopReason='end_turn')))
-"#).unwrap();
+        std::fs::write(
+            fixture.0.join("agent.py"),
+            include_str!("../../../../.claude/skills/verify/scripts/fixtures/acp-cancel-agent.py"),
+        )
+        .unwrap();
         let python = std::process::Command::new("python3")
             .args(["-c", "import sys; print(sys.executable)"])
             .output()
@@ -125,6 +82,22 @@ if prompt is not None:
     fn release(&self, phase: &str) {
         std::fs::write(self.0.join(phase), b"go").unwrap();
     }
+
+    fn wait_exit(&self) {
+        let pid = std::fs::read_to_string(self.0.join("pid")).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::process::Command::new("/bin/kill")
+            .args(["-0", pid.trim()])
+            .output()
+            .unwrap()
+            .status
+            .success()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.reaped();
+    }
 }
 
 fn submit(
@@ -169,6 +142,9 @@ fn exercise(mode: &str) {
     assert_eq!(cancelled.status.as_str(), "cancelling");
     assert_eq!(cancelled.run_id, run);
     assert_eq!(block_on(session.close()), Err(Error::RunActive));
+    if mode == "gates" {
+        fixture.release("late");
+    }
     fixture.release("stream");
     loop {
         let event = serde_json::to_value(block_on(stream.next()).unwrap().unwrap()).unwrap();
@@ -197,6 +173,10 @@ fn exercise(mode: &str) {
     for event in block_on(stream.collect::<Vec<_>>()) {
         events.push(serde_json::to_value(event.unwrap()).unwrap());
     }
+    if mode == "exit" {
+        fixture.release("exit");
+        fixture.wait_exit();
+    }
     let retry = block_on(session.cancel(run.clone()));
     let final_state = block_on(session.state()).unwrap();
     block_on(session.close()).unwrap();
@@ -224,16 +204,25 @@ fn exercise(mode: &str) {
         terminal["type"],
         if mode == "complete" {
             "run.completed"
+        } else if mode == "failure" {
+            "run.failed"
         } else {
             "run.cancelled"
         }
     );
-    if mode == "complete" {
+    if mode == "complete" || mode == "failure" {
         assert_eq!(
             retry,
             Err(Error::RunAlreadyTerminal {
                 run_id: Some(run),
-                status: Some("completed".into())
+                status: Some(
+                    if mode == "complete" {
+                        "completed"
+                    } else {
+                        "failed"
+                    }
+                    .into()
+                )
             })
         );
     } else {
@@ -247,7 +236,7 @@ fn exercise(mode: &str) {
             }
         );
     }
-    if mode == "remote" {
+    if mode == "remote" || mode == "failure" {
         assert!(terminal["payload"].get("usage").is_none());
     } else {
         assert_eq!(terminal["payload"]["usage"]["input_tokens"], 3);
@@ -296,6 +285,11 @@ fn cancellation_waits_for_the_native_cancelled_result() {
 }
 
 #[test]
+fn cancelled_retry_survives_the_native_agents_exit() {
+    exercise("exit");
+}
+
+#[test]
 fn remote_cancellation_confirmation_is_distinct_from_prompt_failure() {
     exercise("remote");
 }
@@ -303,6 +297,11 @@ fn remote_cancellation_confirmation_is_distinct_from_prompt_failure() {
 #[test]
 fn completion_wins_after_accepted_cancel_intent() {
     exercise("complete");
+}
+
+#[test]
+fn a_different_remote_error_wins_as_failure_after_cancel_intent() {
+    exercise("failure");
 }
 
 #[test]
