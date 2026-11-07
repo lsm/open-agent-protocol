@@ -53,6 +53,7 @@ pub const Jobs = struct {
         seen: u64 = 0,
         rule: ?Rule = null,
         rule_lock: std.atomic.Mutex = .unlocked,
+        output_ended: bool = false,
         wake: ?Wake = null,
 
         const Rule = struct { regex: re2.Regex, from: u64, skipping: bool = false };
@@ -352,6 +353,11 @@ pub const Jobs = struct {
         errdefer compiled.regex.deinit();
         const start = lineStart(job.*, seen);
         lockRule(job);
+        if (job.output_ended) {
+            job.rule_lock.unlock();
+            compiled.regex.deinit();
+            return false;
+        }
         if (job.rule) |*old| old.regex.deinit();
         job.rule = .{ .regex = compiled.regex, .from = start.from, .skipping = start.skipping };
         job.rule_lock.unlock();
@@ -366,6 +372,7 @@ pub const Jobs = struct {
     fn scan(self: *Jobs, job: *Job, final: bool) void {
         lockRule(job);
         defer job.rule_lock.unlock();
+        if (final) job.output_ended = true;
         if (job.rule == null) return;
         defer if (final) dropRule(job);
         var dir = common.openWorkspace(job.workspace_root, false) catch return;
