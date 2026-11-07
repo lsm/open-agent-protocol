@@ -282,7 +282,11 @@ watch and nothing polls: the copier blocks in `poll` on the pipes.
   matches what the file already holds. That catches a line written while the model
   was deciding. After that each chunk the copier writes is matched from the file.
 - A partial last line waits for its newline, and is matched as it stands when the
-  job ends.
+  job ends. A line of 64 KiB or more is skipped whole and never matched, so a rule
+  only ever sees complete lines.
+- A wake for a job that is then killed, cancelled or closed is not delivered, as its
+  end would not be. A match that cannot be read or built keeps its rule, and the next
+  output or the job's end looks again.
 - A slow matcher delays the copier, and a full pipe then stalls the job. A rule fires
   once, so this lasts only until the first match.
 - A command that redirects its own output elsewhere writes nothing here, so a rule

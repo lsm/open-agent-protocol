@@ -55,11 +55,15 @@ pub const Jobs = struct {
         rule_lock: std.atomic.Mutex = .unlocked,
         wake: ?Wake = null,
 
-        const Rule = struct { regex: re2.Regex, from: u64 };
+        const Rule = struct { regex: re2.Regex, from: u64, skipping: bool = false };
         const Wake = struct { text: []u8 };
 
         fn owesNotice(self: *const Job) bool {
             return self.term != null and !self.killed and !self.noticed;
+        }
+
+        fn owesWake(self: *const Job) bool {
+            return self.wake != null and !self.killed;
         }
     };
 
@@ -346,10 +350,10 @@ pub const Jobs = struct {
         var compiled = try re2.compile(self.allocator, wrapped);
         if (compiled != .regex) return error.InvalidWakePattern;
         errdefer compiled.regex.deinit();
-        const from = lineStart(job.*, seen);
+        const start = lineStart(job.*, seen);
         lockRule(job);
         if (job.rule) |*old| old.regex.deinit();
-        job.rule = .{ .regex = compiled.regex, .from = from };
+        job.rule = .{ .regex = compiled.regex, .from = start.from, .skipping = start.skipping };
         job.rule_lock.unlock();
         self.scan(job, false);
         return true;
@@ -373,21 +377,43 @@ pub const Jobs = struct {
             const read = file.readPositionalAll(common.defaultIo(), &buffer, rule.from) catch return;
             if (read == 0) return;
             var at: usize = 0;
+            if (rule.skipping) {
+                const newline = std.mem.indexOfScalar(u8, buffer[0..read], '\n') orelse {
+                    rule.from += read;
+                    if (read < buffer.len) return;
+                    continue;
+                };
+                at = newline + 1;
+                rule.skipping = false;
+            }
             while (at < read) {
                 const newline = std.mem.indexOfScalarPos(u8, buffer[0..read], at, '\n');
-                const whole = newline != null or read == buffer.len or final;
-                if (!whole) break;
+                if (newline == null and !(final and read < buffer.len)) break;
                 const line_end = newline orelse read;
-                if (self.lineMatches(&rule.regex, buffer[at..line_end])) {
-                    self.fire(job, file, rule.from + at, rule.from + line_end) catch {};
+                const woke = self.wakeOn(job, rule, file, buffer[at..line_end], rule.from + at) catch {
+                    rule.from += at;
+                    return;
+                };
+                if (woke) {
                     dropRule(job);
                     return;
                 }
                 at = @min(line_end + 1, read);
             }
             rule.from += at;
+            if (at == 0 and read == buffer.len) {
+                rule.from += read;
+                rule.skipping = true;
+                continue;
+            }
             if (at == 0 or read < buffer.len) return;
         }
+    }
+
+    fn wakeOn(self: *Jobs, job: *Job, rule: *const Job.Rule, file: std.Io.File, line: []const u8, line_start: u64) !bool {
+        if (!try self.lineMatches(&rule.regex, line)) return false;
+        try self.fire(job, file, line_start, line_start + line.len);
+        return true;
     }
 
     fn dropRule(job: *Job) void {
@@ -395,15 +421,14 @@ pub const Jobs = struct {
         job.rule = null;
     }
 
-    fn lineMatches(self: *Jobs, regex: *const re2.Regex, line: []const u8) bool {
-        const direct = regex.fullMatch(self.allocator, line) catch return false;
-        if (direct) |matched| return matched;
-        const ascii = self.allocator.dupe(u8, line) catch return false;
+    fn lineMatches(self: *Jobs, regex: *const re2.Regex, line: []const u8) !bool {
+        if (try regex.fullMatch(self.allocator, line)) |matched| return matched;
+        const ascii = try self.allocator.dupe(u8, line);
         defer self.allocator.free(ascii);
         for (ascii) |*byte| {
             if (byte.* >= 0x80) byte.* = '?';
         }
-        return (regex.fullMatch(self.allocator, ascii) catch return false) orelse false;
+        return (try regex.fullMatch(self.allocator, ascii)) orelse false;
     }
 
     fn fire(self: *Jobs, job: *Job, file: std.Io.File, line_start: u64, line_end: u64) !void {
@@ -435,16 +460,18 @@ pub const Jobs = struct {
         if (self.ready) |ready| ready.notify(ready.ctx);
     }
 
-    fn lineStart(job: Job, offset: u64) u64 {
-        var dir = common.openWorkspace(job.workspace_root, false) catch return offset;
+    const LineStart = struct { from: u64, skipping: bool = false };
+
+    fn lineStart(job: Job, offset: u64) LineStart {
+        var dir = common.openWorkspace(job.workspace_root, false) catch return .{ .from = offset };
         defer dir.close(common.defaultIo());
-        const file = dir.openFile(common.defaultIo(), job.output, .{}) catch return offset;
+        const file = dir.openFile(common.defaultIo(), job.output, .{}) catch return .{ .from = offset };
         defer file.close(common.defaultIo());
         var buffer: [scan_chunk_bytes]u8 = undefined;
         const first = offset -| buffer.len;
-        const read = file.readPositionalAll(common.defaultIo(), buffer[0..@intCast(offset - first)], first) catch return offset;
-        const at = std.mem.lastIndexOfScalar(u8, buffer[0..read], '\n') orelse return first;
-        return first + at + 1;
+        const read = file.readPositionalAll(common.defaultIo(), buffer[0..@intCast(offset - first)], first) catch return .{ .from = offset };
+        const at = std.mem.lastIndexOfScalar(u8, buffer[0..read], '\n') orelse return .{ .from = if (first == 0) 0 else offset, .skipping = first > 0 };
+        return .{ .from = first + at + 1 };
     }
 
     fn limitFor(self: *const Jobs, obj: std.json.ObjectMap) u64 {
@@ -593,7 +620,7 @@ pub const Jobs = struct {
         self.lock();
         defer self.mutex.unlock();
         for (self.list.items) |job| {
-            if (job.owesNotice() or job.wake != null) return true;
+            if (job.owesNotice() or job.owesWake()) return true;
         }
         return false;
     }
@@ -605,9 +632,9 @@ pub const Jobs = struct {
         errdefer text.deinit(allocator);
         var first: ?[]const u8 = null;
         for (self.list.items) |job| {
-            if (job.wake) |wake| {
+            if (job.owesWake()) {
                 if (text.items.len > 0) try text.appendSlice(allocator, "\n\n");
-                try text.appendSlice(allocator, wake.text);
+                try text.appendSlice(allocator, job.wake.?.text);
                 first = first orelse job.id;
             }
             if (!job.owesNotice()) continue;
