@@ -1,66 +1,51 @@
-# Owned Rust ACP permission controller
+# Normal Rust ACP Session permissions
 
 Follow shared setup and the mutex in SKILL.md. Run from the repository root
-with the ReleaseSafe validator built.
+with the ReleaseSafe validator built. Use fresh output directories.
 
 ```sh
-python3 .claude/skills/verify/scripts/rust-acp-permission-projection.py --consumer permission_controller --output-dir /tmp/oap-permission-controller-native-<unique>
-python3 .claude/skills/verify/scripts/rust-acp-permission-controller.py --output-dir /tmp/oap-permission-controller-ownership-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test permission_controller)
+python3 .claude/skills/verify/scripts/rust-acp-permission-projection.py --consumer session_permissions --output-dir /tmp/oap-session-permissions-native-<unique>
+python3 .claude/skills/verify/scripts/rust-acp-session-permissions.py --output-dir /tmp/oap-session-permissions-ownership-<unique>
 ```
 
-The first command uses the controller through its normal standalone native
-consumer. Fourteen cases compare exact fixed-clock/id projected event JSON
-and parsed host frames with the public Go adapter. Actual Rust events with a
-synthetic host prefix pass all three validators. It also retains the existing
-pending-window usage proof. Neither comparison claims byte-for-byte corpus
-coverage or normal Rust Session permission integration.
+The first command opens the normal public Rust Adapter and Session, submits
+synthetic text and resolves native permission asks through Session.resolve.
+Fourteen cases compare public Go/Rust event JSON after normalizing wall-clock
+fields and the declared staged capability revision. Parsed native host frames
+must match exactly. Both raw directions, admissions and results are retained.
+Actual Rust events with synthetic host exchanges pass all three validators.
+Immediate state samples must reflect publication, and terminal state must have
+the final cursor. This does not claim byte-for-byte corpus coverage.
 
-The ownership command sends a native permission request with a four-megabyte
-JSON-RPC string id. The agent consumes exactly 64 response bytes before going
-quiet, proving the reverse write started. Poll must return pending promptly.
-Dropping selected/settlement futures, dropping a queued native reply operation,
-and closing the bridge must reap the native child and join workers. The live
-consumer's OS thread inventory must return to its pre-open count. One local
-permission resolution must precede tool and parent settlement after failed
-writes, and all artifacts, PIDs and partial native frames are retained.
+The second command builds and runs the session_permission_ownership example
+against real synthetic stdio peers. It covers dropping a blocked resolution,
+close during resolution, pending-gate close and final Session-owner drop.
+Resolution cases consume exactly 64 response bytes from a four-megabyte native
+request id before the peer goes quiet. Poll must return pending promptly.
+Each child must be reaped and OS threads return to their pre-open count while
+the consumer remains alive. Abort close and drop retain the three-event prefix
+without appended events. Native frames, PIDs and thread inventories are saved.
 
-The focused tests reject a forged source object with a matching native id,
-refuse duplicate publication and serialize concurrent answers to one native
-reply and one correlated resolution. Late answers after selected or parent
-settlement return InteractionResolved while the bridge remains open. The initial signed API red precedes the
-implementation. Use the controller for all transitions of a managed TextRun,
-and keep native I/O outside the projection mutex. The clock is read at commit.
+That script also runs the public permissions integration tests and retains
+public-history.log. Require duplicate and late-answer refusals across later
+admissions, wrong-responder rejection, default active-close refusal, and idle
+permission cancellation or malformed-request errors. metadata-state.json must
+show a public state read preserving the newer model-switch timestamp after
+two permission runs.
 
-Run all existing ACP journeys, full baseline and Rust all-features under the
-same mutex. Read the actual PTY reply and `/quit` exit. Normal Session permission
-publication/resolve/admission/close are covered by
-`rust-acp-session-permissions.md`. Cancel, reopen/config and corpus retain
-following slices. The shared process helper's existing
-grandchild-held-pipe limitation applies.
+Its library resource regressions retain resource-checks.log and resources.json.
+Require zero Operation workers for 100 streamed notifications, local completion
+and local prompt failure. A test-only counter records the actual Operation
+spawn path while the native peer is held at a file barrier; all peers are reaped
+before assertions. Resolved and parent-settled runs must retain zero permission
+routes. Eighty resolved runs keep at most 64 recent refusal ids. An evicted id
+from an older run returns InteractionNotFound; the latest resolved id returns
+InteractionResolved. Keep signed human-review regression 359b955247 before
+the fixes.
 
-Review regressions drive actual native peers for malformed asks before run
-start and two sequential runs whose id generators restart. A malformed ask
-must receive -32602 even when local run failure cannot be emitted. The second
-run must cancel its own native ask and finish while the first request object
-is retained. Bindings match both the run object and interaction id. Completed
-bindings are pruned once their native request object has no external owner.
-Retained live request objects keep weak duplicate-publication guards until
-they are released and the next controller operation prunes them. Keep signed
-native failing regressions before both review fixes.
-
-Local observe/completion/error transitions execute inline on the polling caller
-under an asynchronous bindings lock, then the run lock. An owned Operation is
-created when native settlement replies require I/O. The queued-cancel proof
-therefore queues a native resolution behind a blocked response. The consumer
-polls pending settlement before waiting for the native partial-write marker.
-
-The ownership script also runs the native resource regressions and retains
-resource-checks.log and resources.json. Require zero Operation workers for 100
-streamed notifications, local completion and local prompt failure. A test-only
-counter records the actual Operation spawn path while the native peer is held
-at a file barrier; all peers are reaped before assertions. Resolved and
-parent-settled runs must retain zero permission routes. Eighty resolved runs
-keep at most 64 recent refusal ids. An evicted id from an older run is refused
-with InteractionNotFound, and the latest resolved id with InteractionResolved.
-Keep signed human-review regression 359b955247 before the fixes.
+Run rust-acp-permission-controller.md for standalone controller source binding,
+accepted-native-write/local-commit failure, serialized replies and cancellation
+ownership. Run all preceding ACP journeys, full baseline and Rust all-features
+under the same mutex. Read the actual PTY fixture reply and /quit exit.
+Accepted cancellation, reopen/config and corpus retain following slices. The
+shared process helper's existing grandchild-held-pipe limitation applies.
