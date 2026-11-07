@@ -300,7 +300,6 @@ fn settled_permission_stays_known_after_the_next_run_is_admitted() {
             session_id: "session".into(),
             model_id: "luna".into(),
             allow_degraded_features: vec!["session.model.switch".into()],
-            ..oap_protocol::SessionModelSwitchRequest::default()
         },
     ))
     .unwrap();

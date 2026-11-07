@@ -97,6 +97,14 @@ def main():
                     (case/'failure-observations.json').write_text(json.dumps(observations,indent=2))
                 if (case/'pid').exists() and not outbound.ownership.absent(int((case/'pid').read_text())):
                     os.kill(int((case/'pid').read_text()),signal.SIGKILL)
+    result=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permissions','--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+    (output/'public-history.log').write_text(result.stdout+result.stderr)
+    assert result.returncode==0,result.stdout+result.stderr
+    proof=json.loads(next(line.split('model-metadata-proof ',1)[1] for line in result.stdout.splitlines() if 'model-metadata-proof ' in line))
+    assert proof['switched_timestamp']>proof['run_timestamp'],proof
+    assert proof['sampled_timestamp']==proof['switched_timestamp'],proof
+    (output/'metadata-state.json').write_text(json.dumps(proof,indent=2))
+    print('PASS public history, idle asks, refusal and model metadata: a state read preserves the newer model-switch timestamp',flush=True)
     print(f'PASS normal Session permission ownership. Synthetic native inputs only. Evidence {output}',flush=True)
 
 

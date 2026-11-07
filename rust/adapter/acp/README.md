@@ -381,8 +381,9 @@ Incoming sources are registered before answers can acquire the controller lock,
 so a control consumer can resolve immediately after receiving the request.
 Malformed idle asks receive -32602 and valid idle asks receive cancelled.
 
-State reads refresh from the active projection, including during publication
-and settlement. Late completion workers refresh the current active projection.
+State reads refresh from the active projection when its cursor advances,
+including during publication and settlement. This preserves newer model-switch
+timestamps when the run stays settled. Late completion workers refresh the current active projection.
 Settled interaction ids retain typed already-resolved refusals across later
 admissions, with one shared id counter across normal Session runs.
 

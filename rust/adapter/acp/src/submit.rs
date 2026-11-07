@@ -27,7 +27,8 @@ impl Inner {
         }
         let Some(run) = &self.active else { return };
         let state = run.lock().state();
-        if state.status.is_empty() {
+        let cursor = state.sequence.to_string();
+        if state.status.is_empty() || self.state.transcript_cursor == cursor {
             return;
         }
         self.state.status = if state.closed {
@@ -40,7 +41,7 @@ impl Inner {
         } else {
             Some(run.id.clone())
         };
-        self.state.transcript_cursor = state.sequence.to_string();
+        self.state.transcript_cursor = cursor;
         self.state.updated_at_ms = state.updated_at_ms;
     }
 }

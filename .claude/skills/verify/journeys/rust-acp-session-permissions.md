@@ -46,3 +46,9 @@ same mutex, and inspect the real PTY reply and /quit exit. The descriptor now
 advertises native action.permissions and interactive gates. Accepted run cancel,
 reopen/config, byte corpus and C8 served parity retain their subsequent slices.
 The shared process helper's grandchild-held-pipe limitation applies.
+
+The public history test also switches the model after two completed permission
+runs. A state read must preserve the newer model-switch timestamp while the
+run cursor stays fixed. The script retains run, switched and sampled timestamps
+in metadata-state.json. Keep the signed failing public metadata regression
+before the cursor-advance refresh fix.
