@@ -20,6 +20,7 @@ REPLY = "synthetic saved reply 1170"
 FOLLOWUP = "synthetic second turn 1170"
 PARTIAL_PROMPT = "synthetic partial storage turn"
 COMPACT_FOCUS = "synthetic compaction offset proof"
+PARK_PROMPT = "synthetic turn after automatic parking"
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -154,6 +155,8 @@ def main():
                         help="limit child file sizes, then recover after an oversized transcript append")
     mode.add_argument("--compaction-offset", action="store_true",
                         help="compact a saved conversation and retain its index offset through another turn")
+    parser.add_argument("--auto-park", action="store_true",
+                        help="park the idle harness and verify the next input reopens its history")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -196,6 +199,7 @@ def main():
             hub = None
             assert not any(p.is_file() for p in (data / "sessions").rglob("*")), "opt-out saved transcript"
             hub = Hub(command, environment, root, output, "before",
+                      flags=("--park-after", "1") if args.auto_park else (),
                       file_limit=128 * 1024 if args.partial_write_recovery else None)
             capabilities = hub.call("capabilities", adapter="loop")
             assert "session.open.reopen" in json.dumps(capabilities), capabilities
@@ -242,6 +246,15 @@ def main():
                 (output / "later-index.json").write_text(json.dumps(later_index, indent=2))
                 assert later_index["compaction_offset"] == compacted_index["compaction_offset"], later_index
                 assert later_index["compactions"] == 1, later_index
+            if args.auto_park:
+                time.sleep(1.5)
+                submit(hub, "restart-proof", PARK_PROMPT)
+                resumed = hub.call("state", session_id="restart-proof")
+                (output / "auto-park-state.json").write_text(json.dumps(resumed, indent=2))
+                assert resumed["payload"]["recovery"]["recovered"] is True, resumed
+                assert all(text in json.dumps(Provider.requests[-1].get("messages", []))
+                           for text in (PROMPT, REPLY, PARK_PROMPT)), "parked harness lost its conversation"
+                before = hub.call("work.read", session_id="restart-proof")
             hub.stop()
             hub = None
             saved = list((data / "sessions").rglob("*"))
@@ -269,6 +282,8 @@ def main():
                 print("PASS: file-size-limited partial append allowed the next small turn to persist")
             if args.compaction_offset:
                 print("PASS: completed compaction kept its nonzero index offset through a later turn and restart")
+            if args.auto_park:
+                print("PASS: the next input reopened the automatically parked harness with its prior conversation")
         finally:
             if hub is not None:
                 hub.stop()

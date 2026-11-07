@@ -1,8 +1,8 @@
 # Rust staged pack loading
 
 Stage one constructs `pack::PackLoader` with descriptor shape, capability/error/type namespaces,
-prefix-freedom, envelope roles, reply targets, refusal declarations and type
-gates checked. This is explicitly a staged constructor. It does not load schema
+prefix-freedom, envelope roles, reply targets, refusal declarations and gates
+checked, including payload-member declarations after the resource slice. This is explicitly a staged constructor. It does not load schema
 documents, payload members, dependencies, references, branches or fixture corpora,
 and cannot produce a trace validator. Shared trace parity still skips load-invalid
 fixtures until the complete loader is connected.
@@ -29,3 +29,24 @@ remaining loader phases land.
 Inspect the generated `rust/target/doc/oap_validation/pack/struct.PackLoader.html`.
 Its staged API contract is included from `rust/validation/PACKS.md`, keeping prose
 in an external document while exposing coverage to Rust documentation consumers.
+
+## Contained resources and dependencies
+
+The second slice extends declaration checks to payload members, then
+`PackLoader::read_resources` consumes that stage. Schema paths and fixture-manifest
+paths resolve beneath the canonical pack root after lexical cleanup and symlink
+resolution. Dependencies name a loaded pack at their exact version. Returned
+`PackResources` exposes immutable schema documents and contained manifest paths.
+Reference ownership, branch compilation and corpus validation remain for stage three.
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_resources
+python3 .claude/skills/verify/scripts/rust-pack-resources.py --output-dir /tmp/oap-pack-resources-<unique>
+```
+
+The external consumer compares eighteen shared load refusals plus synthetic
+symlink, normalized-path and gate controls against Go's public CLI. Inspect the
+raw outputs and `results.json`; resource-stage success is explicitly labelled.
+An escaping schema or manifest symlink must yield `pack_schema_path_escape`.
+An internal link and a normalized path remain usable, and the shared positive
+packs retain their real schema content and manifest locations.

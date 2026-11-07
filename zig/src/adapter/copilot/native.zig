@@ -163,7 +163,7 @@ test "a response, a failure, a notification and a request each parse as what the
     defer arena.deinit();
     const scratch = arena.allocator();
 
-    const pong = try parseMessage(scratch, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"version\":\"1.0.98\",\"protocolVersion\":3}}");
+    const pong = try parseMessage(scratch, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"version\":\"" ++ harness_pins.copilot_cli_endpoint_version ++ "\",\"protocolVersion\":3}}");
     try testing.expectEqual(Kind.response, pong.kind);
     try testing.expectEqual(@as(i64, 1), pong.id.?.integer);
     try testing.expectEqualStrings(harness_pins.copilot_cli_endpoint_version, text(pong.result.?.object, "version"));

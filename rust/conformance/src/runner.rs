@@ -10,6 +10,7 @@ use crate::Client;
 
 mod models;
 mod probes;
+mod replay;
 mod runs;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
