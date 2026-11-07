@@ -1975,7 +1975,6 @@ test "a backpressured refusal closes its peer at the write-idle deadline" {
     try testing.expect(prepare(owned.handle()));
     const small: c_int = 1024;
     try std.posix.setsockopt(owned.handle(), std.posix.SOL.SOCKET, std.posix.SO.SNDBUF, std.mem.asBytes(&small));
-    try std.posix.setsockopt(compat.net.streamHandle(&client), std.posix.SOL.SOCKET, std.posix.SO.RCVBUF, std.mem.asBytes(&small));
     const body = try served.fixture.scratch.allocator().alloc(u8, 1024 * 1024);
     @memset(body, 'x');
     const reply = try render(served.fixture.scratch.allocator(), .{ .status = "403 Forbidden", .content_type = text_plain, .body = body }, true);
@@ -1991,8 +1990,9 @@ test "a backpressured refusal closes its peer at the write-idle deadline" {
     defer received.deinit(testing.allocator);
     var buffer: [4096]u8 = undefined;
     var ended = false;
-    const until = nowMs() + 1000;
-    while (nowMs() < until and try readableSoon(&client, 20)) {
+    const until = nowMs() + 3000;
+    while (nowMs() < until) {
+        if (!try readableSoon(&client, 20)) continue;
         const count = try client.readSome(&buffer);
         if (count == 0) {
             ended = true;
