@@ -58,6 +58,7 @@ impl CompiledPacks {
             self.branch_indices.get(kind).copied(),
         );
         if diagnostic.is_none() {
+            members.sort_by(|left, right| left.0.cmp(&right.0));
             diagnostic = members.into_iter().find_map(|(prefix, schema, value)| {
                 TraceValidator::diagnose_schema(schema, &value, fixture, None, None).map(
                     |mut diagnostic| {

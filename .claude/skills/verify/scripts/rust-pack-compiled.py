@@ -177,6 +177,7 @@ def main():
     (output / "diagnostic-differences.json").write_text(json.dumps(diagnostic_differences, indent=2) + "\n")
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public compiled-schema/load cases agree with Go")
+    print(f"RECORDED: {len(diagnostic_differences)} packed-branch primary diagnostics differ from Go; member pointers and ordering agree")
     print("STAGED: parsed-envelope schema validation; native packed trace semantics and tolerant mode follow")
 
 

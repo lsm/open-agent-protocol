@@ -244,3 +244,21 @@ three-tree agreeing controls. The current
 Rust URI requirement is retained. [Go resolver](../go/validation/pack.go),
 [Rust resolver](../rust/validation/src/pack/references.rs),
 [Zig loader](../zig/src/validation/packs.zig).
+
+## Packed-schema diagnostic selection
+
+The parsed-envelope Rust schema operation and Go's complete validator agree that
+`ext-packed-type-malformed` is schema-invalid. Rust reports the missing `key` at
+`/payload` in the declared storage request branch. Go instead reports missing
+`run_id` and `sequence` at the root, from a core branch the packed request does
+not declare. Go's preferred-branch map contains core types, so a packed type
+leaves unrelated branch errors eligible for primary selection.
+
+The three escaped-URI invalid-payload controls in `rust-pack-compiled.py` show the
+same selection difference. Rust reports the conflicting constant at `/payload/ok`.
+Go reports unrelated required core properties at the root. Their valid controls
+pass both validators. These four diagnostic-only differences are retained in
+`diagnostic-differences.json` by the public replay, alongside agreeing schema/load
+verdicts and member-pointer checks. Rust keeps the declared-branch diagnostic.
+[Go diagnostic selector](../go/validation/validator.go),
+[Rust schema operation](../rust/validation/src/pack/compiled.rs).
