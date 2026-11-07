@@ -22,6 +22,7 @@ pub const Jobs = struct {
     mutex: std.atomic.Mutex = .unlocked,
     next: u64 = 0,
     next_end: u64 = 0,
+    closing: bool = false,
     ready: ?Ready = null,
     list: std.ArrayList(*Job) = .empty,
 
@@ -89,6 +90,7 @@ pub const Jobs = struct {
     }
 
     pub fn deinit(self: *Jobs) void {
+        self.seal();
         self.endAll();
         for (self.list.items) |job| {
             self.allocator.free(job.id);
@@ -105,6 +107,12 @@ pub const Jobs = struct {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
+    pub fn seal(self: *Jobs) void {
+        self.lock();
+        defer self.mutex.unlock();
+        self.closing = true;
+    }
+
     pub fn start(self: *Jobs, scratch: std.mem.Allocator, workspace_root: []const u8, command: []const u8, tool_call_id: []const u8) !Started {
         var dir = try common.openWorkspace(workspace_root, false);
         defer dir.close(common.defaultIo());
@@ -112,6 +120,7 @@ pub const Jobs = struct {
         self.reap();
         self.lock();
         defer self.mutex.unlock();
+        if (self.closing) return error.SessionClosed;
         try self.list.ensureUnusedCapacity(self.allocator, 1);
         self.next += 1;
         var entropy: [6]u8 = undefined;
@@ -1319,4 +1328,6 @@ test "job completion wakes an attached observer and respects detach" {
     try std.testing.expectEqual(@as(usize, 1), selected.len);
     try std.testing.expectEqualStrings("call-two", selected[0].tool_call_id);
     try std.testing.expectEqual(@as(usize, 0), (try jobs.tasksForCall(arena.allocator(), "missing")).len);
+    jobs.seal();
+    try std.testing.expectError(error.SessionClosed, jobs.start(std.testing.allocator, case.root, "true", "call-late"));
 }
