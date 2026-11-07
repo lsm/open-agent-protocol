@@ -36,6 +36,8 @@ func (s *Server) errorEnvelope(request protocol.Envelope, err error) protocol.En
 			code = "unknown_session"
 		case errors.Is(err, serve.ErrScopeMismatch):
 			code = "scope_mismatch"
+		case errors.Is(err, base.ErrInvalidRequest):
+			code = "invalid_request"
 		case errors.Is(err, base.ErrSessionClosed):
 			code = "session_closed"
 		case errors.As(err, &terminal):

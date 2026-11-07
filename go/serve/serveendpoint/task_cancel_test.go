@@ -99,3 +99,52 @@ func TestTaskCancelAcknowledgesBeforeEnding(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func (s *taskCancelSession) TaskOutput(_ context.Context, id protocol.TaskID, from *uint64) (protocol.SessionTaskOutputResponse, error) {
+	if id != "t" {
+		return protocol.SessionTaskOutputResponse{}, base.ErrInvalidSubmission
+	}
+	if from == nil || *from != 2 {
+		return protocol.SessionTaskOutputResponse{}, base.ErrInvalidRequest
+	}
+	return protocol.SessionTaskOutputResponse{Output: "é", Next: 4, Ended: true}, nil
+}
+func TestTaskOutputEndpoint(t *testing.T) {
+	a := &taskCancelAdapter{Memory: base.NewMemory(base.Config{}), events: make(chan base.Result, 1)}
+	registry := serve.NewRegistry()
+	if err := registry.Register("tasks", a); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	defer hub.CloseSessions(context.Background())
+	if _, _, err := hub.Open(context.Background(), "tasks", base.OpenRequest{SessionID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(hub, Options{Adapter: "tasks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := uint64(2)
+	env, err := protocol.NewEnvelope(protocol.TypeSessionTaskOutputRequest, "out", protocol.SessionTaskOutputRequest{SessionID: "s", TaskID: "t", From: &from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.SessionID = "s"
+	result, _, err := server.serve(context.Background(), context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload protocol.SessionTaskOutputResponse
+	if result.Type != protocol.TypeSessionTaskOutputResponse || result.InReplyTo != "out" || result.DecodePayload(&payload) != nil || payload.Output != "é" || payload.Next != 4 || !payload.Ended {
+		t.Fatalf("answer %+v payload %+v", result, payload)
+	}
+	from = 1
+	env, _ = protocol.NewEnvelope(protocol.TypeSessionTaskOutputRequest, "bad", protocol.SessionTaskOutputRequest{SessionID: "s", TaskID: "t", From: &from})
+	env.SessionID = "s"
+	_, _, err = server.serve(context.Background(), context.Background(), env)
+	response := server.errorEnvelope(env, err)
+	var refusal protocol.ErrorResponse
+	if err == nil || response.DecodePayload(&refusal) != nil || refusal.Error.Code != "invalid_request" {
+		t.Fatalf("error %v refusal %+v", err, refusal)
+	}
+}

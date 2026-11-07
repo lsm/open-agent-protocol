@@ -12,6 +12,7 @@ pub const Verb = enum {
     submit,
     resolve,
     cancel,
+    task_output,
     settings,
     close,
     events,
@@ -38,6 +39,7 @@ pub const Route = union(Verb) {
     submit: []const u8,
     resolve: []const u8,
     cancel: []const u8,
+    task_output: []const u8,
     settings: []const u8,
     close: []const u8,
     events: []const u8,
@@ -91,6 +93,7 @@ pub const table = [_]Entry{
     .{ .method = "POST", .pattern = "/sessions/{id}/submit", .verb = .submit },
     .{ .method = "POST", .pattern = "/sessions/{id}/resolve", .verb = .resolve },
     .{ .method = "POST", .pattern = "/sessions/{id}/cancel", .verb = .cancel },
+    .{ .method = "POST", .pattern = "/sessions/{id}/task-output", .verb = .task_output },
     .{ .method = "POST", .pattern = "/sessions/{id}/settings", .verb = .settings },
     .{ .method = "POST", .pattern = "/sessions/{id}/close", .verb = .close },
     .{ .method = "GET", .pattern = "/sessions/{id}/events", .verb = .events },
@@ -117,7 +120,7 @@ pub fn readsBody(method: []const u8, path: []const u8) bool {
 
 fn bodyVerb(verb: Verb) bool {
     return switch (verb) {
-        .open, .submit, .resolve, .cancel, .settings, .work_start, .work_send, .shutdown => true,
+        .open, .submit, .resolve, .cancel, .task_output, .settings, .work_start, .work_send, .shutdown => true,
         else => false,
     };
 }
@@ -202,6 +205,7 @@ fn build(verb: Verb, parameter: ?[]const u8) Route {
         .submit => .{ .submit = parameter.? },
         .resolve => .{ .resolve = parameter.? },
         .cancel => .{ .cancel = parameter.? },
+        .task_output => .{ .task_output = parameter.? },
         .settings => .{ .settings = parameter.? },
         .close => .{ .close = parameter.? },
         .events => .{ .events = parameter.? },
@@ -241,8 +245,8 @@ fn matched(arena: std.mem.Allocator, method: []const u8, path: []const u8) !Matc
     return route(arena, method, path);
 }
 
-test "the table is the draft's twenty-three routes, one line each" {
-    try testing.expectEqual(@as(usize, 23), table.len);
+test "the table is the draft's twenty-four routes, one line each" {
+    try testing.expectEqual(@as(usize, 24), table.len);
     const paths = [_][]const u8{
         "/adapters",
         "/adapters/{name}/capabilities",
@@ -255,6 +259,7 @@ test "the table is the draft's twenty-three routes, one line each" {
         "/sessions/{id}/submit",
         "/sessions/{id}/resolve",
         "/sessions/{id}/cancel",
+        "/sessions/{id}/task-output",
         "/sessions/{id}/settings",
         "/sessions/{id}/close",
         "/sessions/{id}/events",
@@ -292,12 +297,13 @@ test "every route in the table resolves to its own verb and carries the name the
         .{ .method = "POST", .path = "/sessions/s-1/submit", .want = .submit, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/resolve", .want = .resolve, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/cancel", .want = .cancel, .parameter = "s-1" },
+        .{ .method = "POST", .path = "/sessions/s-1/task-output", .want = .task_output, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/settings", .want = .settings, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/close", .want = .close, .parameter = "s-1" },
         .{ .method = "GET", .path = "/sessions/s-1/events", .want = .events, .parameter = "s-1" },
         .{ .method = "GET", .path = "/sessions/s-1/transcript", .want = .transcript, .parameter = "s-1" },
     };
-    try testing.expectEqual(@as(usize, 14), cases.len);
+    try testing.expectEqual(@as(usize, 15), cases.len);
     for (cases) |case| {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
@@ -415,6 +421,7 @@ test "a route reads a body by its method and shape, whatever the length a reques
         .{ "POST", "/sessions/s1/submit" },
         .{ "POST", "/sessions/s1/resolve" },
         .{ "POST", "/sessions/s1/cancel" },
+        .{ "POST", "/sessions/s1/task-output" },
         .{ "POST", "/sessions/s1/settings" },
         .{ "POST", "/adapters/memory/work" },
         .{ "POST", "/work/sessions/w1/send" },

@@ -33,6 +33,7 @@ const (
 	opSubmit       = "submit"
 	opResolve      = "resolve"
 	opCancel       = "cancel"
+	opTaskOutput   = "task_output"
 	opSettings     = "settings"
 	opClose        = "close"
 	opTools        = "tools"
@@ -273,7 +274,7 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.modelsOp(ctx, request)
-	case opSubmit, opResolve, opCancel, opSettings:
+	case opSubmit, opResolve, opCancel, opTaskOutput, opSettings:
 		if werr := request.only(paramSession, paramRequest); werr != nil {
 			return nil, werr
 		}
@@ -284,6 +285,8 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return s.resolveOp(ctx, request)
 		case opSettings:
 			return s.settingsOp(ctx, request)
+		case opTaskOutput:
+			return s.taskOutputOp(ctx, request)
 		default:
 			return s.cancelOp(ctx, request)
 		}
@@ -849,6 +852,47 @@ func (s *Server) cancelOp(ctx context.Context, request requestLine) (json.RawMes
 	response.SessionID = ack.SessionID
 	response.RunID = ack.RunID
 	response.CapabilityRevision = envelope.CapabilityRevision
+	return envelopeResult(response)
+}
+
+func (s *Server) taskOutputOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionTaskOutputRequest)
+	if werr != nil {
+		return nil, werr
+	}
+	var payload protocol.SessionTaskOutputRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+	}
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	if payload.SessionID != entry.ID() || (envelope.SessionID != "" && envelope.SessionID != entry.ID()) {
+		return nil, &wireError{Code: "scope_mismatch", Message: "request session does not match the addressed session"}
+	}
+	result, err := entry.TaskOutput(ctx, payload.TaskID, payload.From)
+	if err != nil {
+		code := "internal"
+		switch {
+		case errors.Is(err, base.ErrInvalidRequest):
+			code = "invalid_request"
+		case errors.Is(err, base.ErrInvalidSubmission):
+			code = "invalid_submission"
+		case errors.Is(err, base.ErrUnsupportedInput):
+			code = "unsupported_feature"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionTaskOutputResponse, protocol.EnvelopeID(s.nextID("response")), result)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo, response.SessionID, response.CapabilityRevision = envelope.ID, entry.ID(), envelope.CapabilityRevision
 	return envelopeResult(response)
 }
 

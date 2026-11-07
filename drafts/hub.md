@@ -603,7 +603,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the sixteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire uses operations, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 
@@ -619,7 +619,8 @@ error. That is stated because the four reasons are the whole set.
 | `GET /sessions/{id}/models` | `models` | `models.response` | see [models](#models) |
 | `POST /sessions/{id}/submit` | `submit` | `session.message.submit.response`, or `session.compact.response` for a compaction | see [submit](#submit) |
 | `POST /sessions/{id}/resolve` | `resolve` | the matching resolve response | see [resolve](#resolve) |
-| `POST /sessions/{id}/cancel` | `cancel` | `run.cancel.response`; Zig also serves `session.task.cancel.response` | see [cancel](#cancel) |
+| `POST /sessions/{id}/cancel` | `cancel` | `run.cancel.response` or `session.task.cancel.response` | see [cancel](#cancel) |
+| `POST /sessions/{id}/task-output` | `task_output` | `session.task.output.response` | see [task_output](#task_output) |
 | `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
@@ -683,7 +684,7 @@ and the three tests run there too.
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. The gate is a
 property of the route, not of the length (owner, 2026-10-17, #1133): `open`,
-`submit`, `resolve`, `cancel`, `settings`, `work.start`, `work.send` and
+`submit`, `resolve`, `cancel`, `task_output`, `settings`, `work.start`, `work.send` and
 `shutdown` are gated even when the request declares no body, and a route that reads none, such
 as `close` or a listing, is not gated even when it carries one. The media type is
 refused before the length is measured, so a wrong type on a body over 16 MiB is
@@ -1838,6 +1839,24 @@ adapters can implement the optional task cancellation interface.
   `TestCloseAfterCancellation`, and Zig's `cancel accepts a task cancellation
   envelope and reports unavailable adapters`, `TestTaskCancelHTTP`, and
   `TestTaskCancelStdio`.
+
+### `task_output`
+
+A host reads a session task's output through a `session.task.output.request`
+envelope. Zig's oapx adapter serves background-job output; Go adapters can
+implement the optional task output reader. The response and byte-offset rules
+are specified in [triggered runs](triggered-runs.md).
+
+- **params:** `session_id` and `request`, and nothing else.
+- **answer:** the correlated `session.task.output.response` envelope.
+- **errors:** `unknown_session` (404), `invalid_request`, `malformed_json`,
+  `schema_invalid`, `type_mismatch`, `invalid_payload`, `scope_mismatch`,
+  `unsupported_feature`, `invalid_submission` (400), `session_closed` (409),
+  `request_cancelled` (400), `internal` (500). An offset inside a sequence or
+  past the end is `invalid_request`.
+- **pinned by:** `TestTaskOutputHTTP`, `TestTaskOutputStdio`, and Zig's
+  `task output op correlates responses and validates scope` and
+  `task output HTTP route accepts the protocol envelope`.
 
 ### `settings`
 

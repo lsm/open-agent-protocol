@@ -170,6 +170,7 @@ pub const Daemon = struct {
             .submit => |id| self.submit(arena, id, request.body),
             .resolve => |id| self.resolve(arena, id, request.body),
             .cancel => |id| self.cancel(arena, id, request.body),
+            .task_output => |id| self.taskOutput(arena, id, request.body),
             .settings => |id| self.settings(arena, id, request.body),
             .events => |id| self.events(arena, id, request),
             .transcript => |id| self.transcript(arena, id, request.split.query),
@@ -325,6 +326,11 @@ pub const Daemon = struct {
     fn resolve(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
         return self.control(arena, try self.frontend.resolveControl(arena, id, value), correlationOf(value));
+    }
+
+    fn taskOutput(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
+        const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
+        return self.control(arena, try self.frontend.taskOutputControl(arena, id, value), correlationOf(value));
     }
 
     fn cancel(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
@@ -2136,4 +2142,18 @@ test "GET /sessions/{id}/transcript answers the transcript op: an unknown sessio
     const unbounded = try fixture.answer("GET", "/sessions/absent/transcript?limit=501", "");
     try testing.expectEqualStrings("400 Bad Request", unbounded.status);
     try testing.expectEqualStrings("invalid_request", try fixture.code(unbounded));
+}
+
+test "task output HTTP route accepts the protocol envelope" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    const request = "{" ++ envelope_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"out\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"demo\",\"task_id\":\"job-1\"}}";
+    const answer = try fixture.answer("POST", "/sessions/demo/task-output", request);
+    try testing.expectEqualStrings("400 Bad Request", answer.status);
+    try testing.expectEqualStrings("unsupported_feature", try fixture.code(answer));
+    const wrong = "{" ++ envelope_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"out\",\"session_id\":\"other\",\"payload\":{\"session_id\":\"demo\",\"task_id\":\"job-1\"}}";
+    const crossed = try fixture.answer("POST", "/sessions/demo/task-output", wrong);
+    try testing.expectEqualStrings("scope_mismatch", try fixture.code(crossed));
 }
