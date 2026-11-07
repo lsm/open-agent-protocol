@@ -1,7 +1,9 @@
 use futures::executor::block_on;
 use oap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
 use oap_adapter_acp::{native::McpServer, pin, process::ProcessConfig, Adapter, Config};
-use oap_protocol::{Participant, SupportLevel, ToolDefinition, ToolSourceAttachment};
+use oap_protocol::{
+    CompactionPolicy, Participant, SupportLevel, ToolDefinition, ToolSourceAttachment,
+};
 
 fn config() -> Config {
     Config {
@@ -84,7 +86,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-reload", pin().capability_revision)
+        format!("{}-rust-settings", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
@@ -96,6 +98,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "capabilities"
             | "session.state"
             | "session.message.delivery.auto"
+            | "session.reasoning"
             | "run.status" => SupportLevel::EMULATED,
             "session.open" | "session.open.reopen" | "action.permissions" | "run.cancel" => {
                 SupportLevel::NATIVE
@@ -126,10 +129,13 @@ fn public_open_and_admission_return_typed_control_refusals() {
         ),
         (
             OpenRequest {
-                reasoning_level: "high".into(),
+                compaction_policy: Some(CompactionPolicy {
+                    kind: "off".into(),
+                    ..CompactionPolicy::default()
+                }),
                 ..request()
             },
-            "session.reasoning",
+            "session.compaction.policy",
         ),
         (
             OpenRequest {

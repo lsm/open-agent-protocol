@@ -37,6 +37,6 @@ buffer beyond the existing bounded JSON-RPC queue.
 Run the existing live-config, session, model-switch, operation, session-bridge,
 submit, permission and cancellation journeys, complete baseline and Rust
 all-features suite under the same mutex. Inspect the actual baseline PTY
-fixture reply and `/quit` exit. Opening configuration/reasoning and full byte
-corpus replay remain later slices of #1439. No live provider/harness, port,
+fixture reply and `/quit` exit. Opening configuration/reasoning is covered by `rust-acp-opening-config.md`;
+full byte corpus replay remains a later slice of #1439. No live provider/harness, port,
 credential, tag/release or C8 served-parity claim is involved.

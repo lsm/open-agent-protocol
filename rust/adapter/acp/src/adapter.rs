@@ -11,8 +11,8 @@ use oap_adapter::{
 use oap_protocol::{
     CapabilityDescriptor, EndpointDescriptor, FeatureSupport, SupportLevel, ToolSourceDescriptor,
     FEATURE_COMPACTION_POLICY, FEATURE_MODELS_LIST, FEATURE_OPEN_REOPEN,
-    FEATURE_SESSION_MODEL_SWITCH, FEATURE_SESSION_REASONING, FEATURE_TOOL_SOURCES_ATTACH, PROFILE,
-    TOOL_SOURCE_MCP, TOOL_SOURCE_PROCESS, VERSION,
+    FEATURE_SESSION_MODEL_SWITCH, FEATURE_SESSION_REASONING, FEATURE_TOOL_SOURCES_ATTACH,
+    MODE_SESSION_OPEN, PROFILE, TOOL_SOURCE_MCP, TOOL_SOURCE_PROCESS, VERSION,
 };
 
 use crate::native::McpServer;
@@ -22,6 +22,7 @@ use crate::process::ProcessConfig;
 pub struct Config {
     pub process: ProcessConfig,
     pub mcp_servers: Vec<McpServer>,
+    pub session_config: BTreeMap<String, String>,
     pub abort_active_on_close: bool,
 }
 
@@ -131,6 +132,11 @@ impl Adapter {
         ] {
             features.insert(key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() });
         }
+        features.insert(FEATURE_SESSION_REASONING.into(), FeatureSupport {
+            level:SupportLevel::EMULATED,modes:vec![MODE_SESSION_OPEN.into()],
+            reason:"session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level".into(),
+            ..FeatureSupport::default()
+        });
         Descriptor {
             capabilities: CapabilityDescriptor {
                 endpoint: EndpointDescriptor {
@@ -155,7 +161,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-reload", pin().capability_revision),
+            capability_revision: format!("{}-rust-settings", pin().capability_revision),
             max_active_runs_per_session: 1,
             interactive_gates: true,
             journal: JournalDescriptor {

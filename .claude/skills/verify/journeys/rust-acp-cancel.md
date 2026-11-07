@@ -52,5 +52,5 @@ under the same mutex. In particular, Session permission resource proof must
 still deliver text during a blocked native reply with zero per-chunk workers.
 Read the real PTY fixture reply and /quit exit. Only the tracked run is
 addressable while journal/resume is unavailable. Live config is covered by
-`rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening config, full ACP corpus and C8 served parity retain their following slices. Shared process
+`rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening config is covered by `rust-acp-opening-config.md`; full ACP corpus and C8 served parity retain their following slices. Shared process
 grandchild-held-pipe limits remain applicable. Start no live provider.

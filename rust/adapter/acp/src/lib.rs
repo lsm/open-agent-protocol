@@ -13,6 +13,8 @@ mod session;
 
 mod reload;
 
+mod settings;
+
 mod models;
 
 mod prompt;

@@ -142,6 +142,8 @@ impl Session {
                 return Err(error);
             }
         };
+        let (process, opened) =
+            crate::settings::configure(process, opened, config, &request).await?;
         let mut usage = UsageScope::default();
         if request.reopen {
             usage.consume_prompt();
@@ -175,6 +177,7 @@ impl Session {
                 session_id,
                 status: SessionStatus::IDLE,
                 current_model_id,
+                reasoning_level: request.reasoning_level.clone(),
                 recovery: request.reopen.then(|| RecoveryMetadata {
                     recovered: true,
                     reason: crate::reload::REASON.into(),
@@ -185,11 +188,15 @@ impl Session {
                 ..SessionState::default()
             },
         }));
-        if request.reopen {
-            inner
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .apply_config(&opened.config_options);
+        if request.reopen || !config.session_config.is_empty() {
+            let mut state = inner.lock().unwrap_or_else(|p| p.into_inner());
+            state.apply_config(&opened.config_options);
+            if !request.reasoning_level.is_empty() {
+                state
+                    .state
+                    .reasoning_level
+                    .clone_from(&request.reasoning_level);
+            }
         }
         #[cfg(test)]
         tests::LAST_SESSION.with(|slot| *slot.borrow_mut() = Some(Arc::downgrade(&inner)));
