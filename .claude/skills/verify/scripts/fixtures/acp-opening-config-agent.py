@@ -41,6 +41,14 @@ while (frame := read()) is not None:
         for index in range(data.get('notifications', 320)):
             send({'method': 'session/update', 'params': {'sessionId': 'native', 'update': {
                 'sessionUpdate': 'session_info_update', 'title': str(index)}}})
+        if data.get('block_reverse'):
+            send({'id': 'r' * (2 * 1024 * 1024), 'method': 'fixture/unsupported', 'params': {}})
+            partial = b''
+            while len(partial) < 64:
+                partial += os.read(sys.stdin.fileno(), 64 - len(partial))
+            (out / 'partial.bin').write_bytes(partial)
+            while True:
+                time.sleep(1)
         send({'id': 'opening-query-' + str(setting), 'method': 'fixture/unsupported', 'params': {}})
         answer = read()
         assert answer == {'jsonrpc': '2.0', 'id': 'opening-query-' + str(setting), 'error': {
@@ -63,3 +71,10 @@ while (frame := read()) is not None:
     else:
         raise AssertionError(frame)
     send({'id': frame['id'], 'result': result})
+    if method in ['session/new', 'session/load'] and data.get('block_request'):
+        partial = b''
+        while len(partial) < 64:
+            partial += os.read(sys.stdin.fileno(), 64 - len(partial))
+        (out / 'partial.bin').write_bytes(partial)
+        while True:
+            time.sleep(1)
