@@ -268,6 +268,7 @@ send(dict(id=request['id'],result=dict(protocolVersion=1,agentCapabilities={})))
             queue_capacity: 1,
             write_queue_capacity: 1,
             shutdown_timeout: Some(Duration::from_secs(1)),
+            frame_limit: 8 * 1024 * 1024,
             ..ProcessConfig::default()
         },
         None,
@@ -435,4 +436,67 @@ sys.stdin.read()
         );
     }
     drop(retained);
+}
+
+#[test]
+fn an_accepted_reply_releases_its_native_request_when_local_commit_fails() {
+    let (fixture, bridge, received, permissions) = controller_peer(
+        r#"
+import time
+send(dict(id='ask'*(1024*1024),method='session/request_permission',params=dict(sessionId='native',toolCall=dict(toolCallId='tool',title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])))
+partial=sys.stdin.buffer.read(64)
+assert len(partial)==64
+(out/'writing').touch()
+deadline=time.monotonic()+5
+while not (out/'release').exists() and time.monotonic()<deadline: time.sleep(.005)
+assert (out/'release').exists()
+reply=json.loads(partial+sys.stdin.buffer.readline())
+(out/'accepted.json').write_text(json.dumps(dict(id_length=len(reply['id']),outcome=reply['result']['outcome'])))
+sys.stdin.read()
+"#,
+    );
+    let run = controller_run("closed-during-write");
+    let stream = run.lock().unwrap().start(1000).unwrap();
+    let request = received.recv_timeout(Duration::from_secs(3)).unwrap();
+    let weak = Arc::downgrade(&request);
+    let id = block_on(permissions.clone().request(run.clone(), request)).unwrap();
+    let response = permissions.clone().resolve(
+        run.clone(),
+        InteractionResolution {
+            run_id: "closed-during-write".into(),
+            responded_by: "user".into(),
+            permission: Some(PermissionResolveRequest {
+                interaction_id: id,
+                requested_by: "acp.v1".into(),
+                responded_by: "user".into(),
+                session_id: "session".into(),
+                run_id: "closed-during-write".into(),
+                choice_id: "allow".into(),
+                granted: true,
+                ..PermissionResolveRequest::default()
+            }),
+            ..InteractionResolution::default()
+        },
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !fixture.0.join("writing").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(fixture.0.join("writing").exists());
+    run.lock().unwrap().close();
+    std::fs::write(fixture.0.join("release"), b"continue").unwrap();
+    let outcome = block_on(response);
+    let released = weak.upgrade().is_none();
+    block_on(bridge.close()).unwrap();
+    let accepted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.0.join("accepted.json")).unwrap()).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>());
+    assert_eq!(outcome, Err(oap_adapter::Error::SessionClosed));
+    assert_eq!(accepted["id_length"], 3 * 1024 * 1024);
+    assert_eq!(accepted["outcome"]["outcome"], "selected");
+    assert_eq!(events.len(), 3);
+    assert!(
+        released,
+        "an accepted native request is still retained after its local commit failed"
+    );
 }
