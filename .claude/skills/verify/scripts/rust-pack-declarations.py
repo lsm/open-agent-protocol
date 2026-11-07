@@ -59,7 +59,7 @@ def main():
     page = (ROOT / "rust/target/doc/oap_validation/pack/struct.PackLoader.html").read_text()
     (output / "pack-loader.html").write_text(page)
     words = html.unescape(re.sub(r"<[^>]+>", "", page))
-    assert "Staged pack-loader construction" in words and "five loader slices" in words, words
+    assert "Staged pack-loader construction" in words and "six loader slices" in words, words
     goap = output / "goap"
     build = run(["go", "build", "-o", str(goap), "./go/cmd/goap"], output, "go-build")
     assert build.returncode == 0, build.stderr
