@@ -313,3 +313,29 @@ func TestClosedSessionOnlySubscriptionDoesNotInheritRunFailure(t *testing.T) {
 		t.Fatalf("closed session stream: %v, want EOF", err)
 	}
 }
+
+func TestTaskCancelGateCoversEventsWhenArmed(t *testing.T) {
+	session := newSession("s", "test", &eventSourceSession{}, nil)
+	defer session.markClosed()
+	sub, _, _, ok := session.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe")
+	}
+	stream := &Subscription{session: session, ctx: context.Background(), sub: sub}
+	defer stream.Close()
+	gate, err := session.armTaskGate(context.Background(), "t", "cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := eventEnvelope(t, protocol.TypeSessionTaskEnded, "ended")
+	if err := session.PublishSessionEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.NextWithin(20 * time.Millisecond); !errors.Is(err, ErrQuiet) {
+		t.Fatalf("event escaped the gate: %v", err)
+	}
+	session.liftGate(gate)
+	if got, err := stream.NextWithin(time.Second); err != nil || got.ID != "ended" {
+		t.Fatalf("after release: %+v %v", got, err)
+	}
+}

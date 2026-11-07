@@ -121,6 +121,8 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return s.compact(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
 		return s.cancel(ctx, e)
+	case protocol.TypeSessionTaskCancelRequest:
+		return s.cancelTask(ctx, e)
 	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest:
 		return plain(s.resolve(ctx, e))
 	case protocol.TypeModelsRequest:
@@ -531,6 +533,31 @@ func (s *Server) reportLostStream(ctx context.Context, run protocol.RunID, deliv
 	}); writeErr != nil {
 		s.logger.Printf("serveendpoint: reporting the lost stream: %v", writeErr)
 	}
+}
+
+func (s *Server) cancelTask(ctx context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
+	entry, err := s.session(e)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	var request protocol.SessionTaskCancelRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	if request.SessionID != entry.ID() {
+		return protocol.Envelope{}, nil, &refusal{code: "scope_mismatch", message: "payload session_id does not match the addressed session"}
+	}
+	published := func() { s.hub.Published(entry.ID(), e.ID) }
+	ack, err := entry.CancelTaskAndHold(ctx, request.TaskID, e.ID)
+	if err != nil {
+		return protocol.Envelope{}, published, err
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeSessionTaskCancelResponse, s.nextID("response"), ack)
+	if err != nil {
+		return protocol.Envelope{}, published, err
+	}
+	answer.InReplyTo, answer.SessionID, answer.CapabilityRevision = e.ID, entry.ID(), e.CapabilityRevision
+	return answer, published, nil
 }
 
 func (s *Server) cancel(ctx context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {

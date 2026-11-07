@@ -171,6 +171,7 @@ const steerDrainBatch = 64
 
 type publicationGate struct {
 	runs     []protocol.RunID
+	task     protocol.TaskID
 	unnamed  bool
 	request  protocol.EnvelopeID
 	boundary uint64
@@ -244,6 +245,9 @@ func (s *Session) gateServedLocked(gate *publicationGate) bool {
 func (g *publicationGate) drainPending() bool { return g.requested.Load() && !g.drained.Load() }
 
 func (g *publicationGate) withholds(envelope protocol.Envelope) bool {
+	if g.task != "" && envelope.RunID == "" {
+		return true
+	}
 	for _, covered := range g.runs {
 		if covered == envelope.RunID {
 			return true
@@ -345,6 +349,10 @@ func (s *Session) publishSessionEventLocked(event protocol.Envelope) {
 	s.stateSequence++
 	sequence := s.stateSequence
 	event.Sequence = &sequence
+	if s.gate != nil && s.gate.withholds(event) {
+		s.gate.withheld = append(s.gate.withheld, event)
+		return
+	}
 	s.deliverLocked(event)
 }
 
@@ -504,6 +512,14 @@ func (s *Session) UpdateSettings(ctx context.Context, request protocol.SessionSe
 }
 
 func (s *Session) armGate(ctx context.Context, run protocol.RunID, request protocol.EnvelopeID) (*publicationGate, error) {
+	return s.armGateFor(ctx, run, "", request)
+}
+
+func (s *Session) armTaskGate(ctx context.Context, task protocol.TaskID, request protocol.EnvelopeID) (*publicationGate, error) {
+	return s.armGateFor(ctx, "", task, request)
+}
+
+func (s *Session) armGateFor(ctx context.Context, run protocol.RunID, task protocol.TaskID, request protocol.EnvelopeID) (*publicationGate, error) {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -526,7 +542,7 @@ func (s *Session) armGate(ctx context.Context, run protocol.RunID, request proto
 	if s.closed {
 		return nil, base.ErrSessionClosed
 	}
-	gate := &publicationGate{request: request, boundary: s.sequences[run], drainedCh: make(chan struct{})}
+	gate := &publicationGate{request: request, task: task, boundary: s.sequences[run], drainedCh: make(chan struct{})}
 	gate.cover(run)
 	s.gate = gate
 	gate.deadline = time.AfterFunc(gateDeadline, func() { s.liftGate(gate) })
@@ -781,6 +797,35 @@ func (s *Session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 		}
 	}
 	return resolver.ResolveCall(ctx, resolution)
+}
+
+func (s *Session) CancelTask(ctx context.Context, taskID protocol.TaskID) (protocol.SessionTaskCancelResponse, error) {
+	s.mu.Lock()
+	closed := s.closed || s.closing
+	s.mu.Unlock()
+	if closed {
+		return protocol.SessionTaskCancelResponse{}, base.ErrSessionClosed
+	}
+	if taskID == "" {
+		return protocol.SessionTaskCancelResponse{}, base.ErrInvalidSubmission
+	}
+	canceller, ok := s.session.(base.TaskCanceller)
+	if !ok {
+		return protocol.SessionTaskCancelResponse{}, &base.UnsupportedControlError{Feature: "session.task.cancel", Reason: base.ControlUnadvertised}
+	}
+	return canceller.CancelTask(ctx, taskID)
+}
+
+func (s *Session) CancelTaskAndHold(ctx context.Context, taskID protocol.TaskID, request protocol.EnvelopeID) (protocol.SessionTaskCancelResponse, error) {
+	gate, err := s.armTaskGate(ctx, taskID, request)
+	if err != nil {
+		return protocol.SessionTaskCancelResponse{}, err
+	}
+	ack, err := s.CancelTask(ctx, taskID)
+	if err != nil {
+		s.liftGate(gate)
+	}
+	return ack, err
 }
 
 func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
