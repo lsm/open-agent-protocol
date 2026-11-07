@@ -240,6 +240,46 @@ def chunk(text, message=''):
     return json.dumps({'sessionUpdate':'agent_message_chunk','messageId':message,'content':{'type':'text','text':text}})
 
 
+def tool_scenarios():
+    def call(identifier='tool', status='pending', **fields):
+        return json.dumps(dict(sessionUpdate='tool_call', toolCallId=identifier,
+                               title='Read', status=status, **fields))
+
+    def patch(identifier='tool', **fields):
+        return json.dumps(dict(sessionUpdate='tool_call_update', toolCallId=identifier, **fields))
+
+    def turn(*updates, **fields):
+        return dict(updates=list(updates), **fields)
+
+    return {
+        'tool-progress': {'turns': [turn(
+            call(rawInput={'path': 'x'}, name='read_file'),
+            patch(status='in_progress'), patch(title='Read v2', name=7, content=['working']),
+            patch(status='completed', name='grep', rawOutput={'ok': True}))]},
+        'tool-direct-complete': {'turns': [turn(call(status='completed'))]},
+        'tool-direct-fail': {'turns': [turn(call(status='failed', rawOutput={'error': 'native'}))]},
+        'tool-unfinished-order': {'turns': [turn(call('z'), call('a'))]},
+        'tool-refusal-settles': {'turns': [turn(call(), stop='refusal')]},
+        'tool-rpc-error-settles': {'turns': [turn(call(), error={'code': -32000, 'message': 'synthetic'})]},
+        'tool-sparse-before-start': {'turns': [turn(call(), patch(title='Read v2'), patch(status='in_progress'), patch(status='completed'))]},
+        'tool-repeated-call': {'turns': [turn(call(rawInput={'path': 'x'}), call(status='in_progress'), patch(status='completed'))]},
+        'tool-after-terminal': {'turns': [turn(call(status='completed'), patch(status='in_progress'))]},
+        'tool-recreated-terminal': {'turns': [turn(call(status='completed'), call())]},
+        'tool-reused-across-turns': {'turns': [turn(call(status='completed')), turn(call())]},
+        'tool-patch-before-call': {'turns': [turn(patch(status='completed'))]},
+        'tool-invalid-call': {'turns': [turn('{"sessionUpdate":"tool_call","toolCallId":7}')]},
+        'tool-invalid-patch': {'turns': [turn('{"sessionUpdate":"tool_call_update","toolCallId":7}')]},
+        'tool-missing-title': {'turns': [turn('{"sessionUpdate":"tool_call","toolCallId":"tool"}')]},
+        'tool-invalid-status': {'turns': [turn(call(status='mystery'))]},
+        'tool-null-raw': {'turns': [turn(call(rawInput=None), patch(status='in_progress', rawOutput=None), patch(title='', status='completed'))]},
+        'tool-invalid-with-child': {'turns': [turn(call(), '{"sessionUpdate":"tool_call_update","toolCallId":7}')]},
+        'tool-raw-values': {'turns': [turn(
+            '{"sessionUpdate":"tool_call","toolCallId":"tool","title":"Read","name":"\\ud800","status":"in_progress","rawInput":{"n":18446744073709551615}}',
+            '{"sessionUpdate":"tool_call_update","toolCallId":"tool","content":{"n":18446744073709551615,"x":2},"locations":null}',
+            '{"sessionUpdate":"tool_call_update","toolCallId":"tool","status":"completed","rawOutput":{"n":18446744073709551615}}')]},
+    }
+
+
 def normalized(value):
     if isinstance(value, dict):
         result={}
@@ -259,7 +299,9 @@ def normalized(value):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output-dir',required=True,type=Path)
-    output=parser.parse_args().output_dir.resolve()
+    parser.add_argument('--suite',choices=['results','tools'],default='results')
+    arguments=parser.parse_args()
+    output=arguments.output_dir.resolve()
     output.mkdir(parents=True,exist_ok=False)
     source=output/'consumer'
     (source/'src').mkdir(parents=True)
@@ -292,6 +334,8 @@ def main():
         'refusal':{'idle':[context],'turns':[{'stop':'refusal','usage':usage}]},
         'unknown-stop':{'idle':[context],'turns':[{'stop':'future\nstop','usage':usage}]},
     }
+    if arguments.suite=='tools':
+        scenarios=tool_scenarios()
     with tempfile.TemporaryDirectory(prefix='oap-result-agent-') as temporary:
         agent=Path(temporary)/'agent.py'
         agent.write_text(AGENT)
@@ -323,7 +367,10 @@ def main():
                 assert turns[0]['events'][-1]['payload']['final_response']['content']=='prefixoneagaintail'
             if name=='max-counts':
                 assert turns[0]['events'][-1]['payload']['usage']['input_tokens']==18446744073709551615
-            trace=[]
+            common={'protocol':'open-agent-protocol','version':'0.1','profile':'open-agent-protocol.agent-control-core'}
+            trace=[dict(common,id='cap-request',type='capabilities.request',payload={}),
+                   dict(common,id='cap-response',type='capabilities.response',in_reply_to='cap-request',
+                        capability_revision=results['rust']['revision'],payload=results['rust']['descriptor'])]
             for index,turn in enumerate(results['rust']['turns']):
                 prefix=copy.deepcopy(json.loads((ROOT/'fixtures/valid/core-completed.json').read_text())[:2])
                 prefix[0].update(id=f'submit-{index}',session_id='session',capability_revision=results['rust']['revision'])
@@ -335,8 +382,8 @@ def main():
             path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
             for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{language}.log')
-            print(f'PASS {name}: public Go/Rust usage/message results and native frames agree, three validators accept Rust trace, children reaped',flush=True)
-    print(f'PASS public result mapping. Comparison normalizes wall-clock timestamps and the declared staged capability revision. Raw outputs retained at {output}',flush=True)
+            print(f'PASS {name}: public Go/Rust results and native frames agree, three validators accept Rust trace, children reaped',flush=True)
+    print(f'PASS public {arguments.suite} mapping. Comparison normalizes wall-clock timestamps and the declared staged capability revision. Raw outputs retained at {output}',flush=True)
 
 
 if __name__=='__main__':

@@ -39,3 +39,18 @@ cagent or Devin live test is claimed by this pin update.
 Rust ACP corpus replay remains an existing documented gap in
 `rust/adapter/acp/README.md`; the Go and Zig corpus checks do not establish
 Rust corpus parity.
+
+## Staged Rust tool projection
+
+The Rust `-rust-tools` stage projects observed native tool calls and sparse
+patches through the normal session submit stream. Tool identity is session-wide,
+terminal events synthesize a missing start, and unfinished children settle in
+creation order before the parent. The synthetic tools journey compares public
+Go/Rust results and native host frames, then validates actual Rust traces with
+all three validators. It normalizes wall clocks and the declared staged revision.
+Byte-for-byte corpus replay retains its final approved ACP slice.
+
+The degraded tool rows describe observed native execution only. Permission
+publication/resolution, accepted host cancellation, reopen and live config
+remain unavailable in this stage. Closing or abandoning an active session
+retains its existing bounded prefix and owned process cleanup contract.

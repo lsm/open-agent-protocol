@@ -54,7 +54,8 @@ public submit ownership journey. The normal session tests exercise idle
 snapshots and success/error first-turn behavior over real stdio.
 
 Run the remaining ACP journeys, full baseline and Rust all-features suite under
-the same mutex. Observe the baseline PTY reply and `/quit` exit. Tool lifecycle,
-accepted host cancellation evidence, permissions, reopen/live configuration,
+the same mutex. Observe the baseline PTY reply and `/quit` exit. Tool lifecycle
+is covered by `rust-acp-tools.md`. Accepted host cancellation evidence,
+permissions, reopen/live configuration,
 full ACP corpus and C8 served parity retain their approved later slices.
 Shared process-helper grandchild-held-pipe limitations remain applicable.

@@ -246,7 +246,7 @@ fn known_stop_reasons_and_failures_keep_their_observed_payloads() {
 }
 
 #[test]
-fn future_tool_mapping_is_explicitly_unavailable() {
+fn malformed_tool_identity_is_refused() {
     let mut run = engine();
     let stream = run.start(10).unwrap();
     run.observe(chunk("one", ""), 20).unwrap();
@@ -266,7 +266,7 @@ fn future_tool_mapping_is_explicitly_unavailable() {
             .unwrap()
             .error
             .code,
-        "acp_unavailable_update"
+        "acp_invalid_tool_call"
     );
 }
 
