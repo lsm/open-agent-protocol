@@ -23,8 +23,10 @@ explicit error on both peers. Abandonment retains the observed prefix. Focused
 tests also drop the text-run producer, consume its retained prefix and require
 the subscriber to finish immediately. Keep that ownership regression passing.
 
-Multiple native message identities, tool updates and cancellation without host
-evidence are explicitly unavailable in this staged Rust engine. The consumer
+Multiple native message identities retain their separate OAP ids and text, and
+the terminal response uses the last current message. Tool updates and
+cancellation without host evidence are explicitly unavailable in this staged
+Rust engine. The consumer
 retains both peers' outputs and verifies the declared Rust failures. Full parity
 for these mappings belongs to the later approved identity, tool and cancellation
 slices. In particular, `run.cancelled` requires

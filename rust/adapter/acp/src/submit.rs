@@ -134,7 +134,7 @@ impl Session {
             let id: RunId = self.new_id("run").into();
             let run = Arc::new(Run {
                 id: id.clone(),
-                text: Mutex::new(TextRun::new(
+                text: Mutex::new(TextRun::new_in_scope(
                     TextRunContext {
                         session_id: inner.state.session_id.clone(),
                         native_id: self.native_id.clone(),
@@ -148,6 +148,7 @@ impl Session {
                         capability_revision: Some(self.revision.clone()),
                     },
                     move |kind| format!("{kind}-{}", ids.fetch_add(1, Ordering::SeqCst) + 1),
+                    inner.usage.clone(),
                 )),
                 admitted,
             });
@@ -201,8 +202,7 @@ impl Session {
                 .unwrap_or_else(|p| p.into_inner())
                 .update(&run, |text| match result {
                     Ok(result) => text.complete(result, now_ms()),
-                    Err(error) => text.fail(
-                        "acp_prompt_error",
+                    Err(error) => text.prompt_error(
                         &error.to_string(),
                         !matches!(error.fault, oap_adapter::jsonrpc::Fault::Remote { .. }),
                         now_ms(),

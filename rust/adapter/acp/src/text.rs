@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use oap_adapter::gojson::go_quote;
 use oap_adapter::jsonrpc::NotificationMessage;
 use oap_adapter::subscriber::Subscriber;
@@ -5,7 +8,7 @@ use oap_adapter::{Error, EventStream};
 use oap_protocol::{
     ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType, Message,
     MessageContent, MessageId, MessageRole, ProtocolError, RunCompletedPayload, RunFailedPayload,
-    RunId, RunStartedPayload, RunStatus, SessionId, SETTLED_BY_INFERRED,
+    RunId, RunStartedPayload, RunStatus, SessionId, Usage, SETTLED_BY_INFERRED,
 };
 use serde::Serialize;
 
@@ -13,6 +16,7 @@ use crate::native::{
     decode, AgentMessageChunk, ConfigOptionUpdate, PromptResult, SessionUpdateParams, UpdateHeader,
     METHOD_SESSION_UPDATE,
 };
+use crate::usage::{Extensions, UsageScope};
 
 pub struct TextRunContext {
     pub session_id: SessionId,
@@ -34,20 +38,34 @@ pub struct TextRun {
     context: TextRunContext,
     ids: Box<dyn FnMut(&str) -> String + Send>,
     state: TextRunState,
-    text: String,
-    native_message: Option<String>,
+    texts: BTreeMap<MessageId, String>,
+    native_messages: BTreeMap<String, MessageId>,
     subscriber: Subscriber,
+    usage_scope: Arc<Mutex<UsageScope>>,
+    terminal_usage: Option<Usage>,
+    extensions: Extensions,
 }
 
 impl TextRun {
     pub fn new(context: TextRunContext, ids: impl FnMut(&str) -> String + Send + 'static) -> Self {
+        Self::new_in_scope(context, ids, Arc::default())
+    }
+
+    pub fn new_in_scope(
+        context: TextRunContext,
+        ids: impl FnMut(&str) -> String + Send + 'static,
+        usage_scope: Arc<Mutex<UsageScope>>,
+    ) -> Self {
         Self {
             context,
             ids: Box::new(ids),
             state: TextRunState::default(),
-            text: String::new(),
-            native_message: None,
+            texts: BTreeMap::new(),
+            native_messages: BTreeMap::new(),
             subscriber: Subscriber::new(64),
+            usage_scope,
+            terminal_usage: None,
+            extensions: Extensions::new(),
         }
     }
 
@@ -73,6 +91,9 @@ impl TextRun {
         self.state.updated_at_ms = now_ms;
         self.state.closed = status != RunStatus::RUNNING;
         self.state.status = status;
+        if self.state.closed {
+            event.extensions = self.extensions.clone();
+        }
         self.subscriber.offer(event, self.state.closed);
         Ok(())
     }
@@ -127,6 +148,7 @@ impl TextRun {
                 } else {
                     String::new()
                 },
+                usage: self.terminal_usage.clone(),
                 ..RunFailedPayload::default()
             },
             RunStatus::FAILED,
@@ -185,17 +207,26 @@ impl TextRun {
                     }
                 };
                 if !chunk.message_id.is_empty() {
-                    let message = self.native_message.get_or_insert(chunk.message_id.clone());
-                    if *message != chunk.message_id {
-                        return self.fail(
-                            "acp_unavailable_message_identity",
-                            "multiple native message ids are unavailable in the text-run engine",
-                            false,
-                            now_ms,
-                        );
-                    }
+                    let message = match self.native_messages.get(&chunk.message_id) {
+                        Some(message) => message.clone(),
+                        None => {
+                            let message = if self.native_messages.is_empty() {
+                                self.context.message_id.clone()
+                            } else {
+                                format!("{}/{}", self.context.session_id, (self.ids)("message"))
+                                    .into()
+                            };
+                            self.native_messages
+                                .insert(chunk.message_id, message.clone());
+                            message
+                        }
+                    };
+                    self.context.message_id = message;
                 }
-                self.text.push_str(&chunk.content.text);
+                self.texts
+                    .entry(self.context.message_id.clone())
+                    .or_default()
+                    .push_str(&chunk.content.text);
                 self.emit(
                     EnvelopeType::CONTENT_DELTA,
                     &ContentDeltaPayload {
@@ -218,6 +249,13 @@ impl TextRun {
                 false,
                 now_ms,
             ),
+            "usage_update" => {
+                self.usage_scope
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .update(std::str::from_utf8(raw).map_err(Error::harness)?);
+                Ok(())
+            }
             "user_message_chunk"
             | "agent_thought_chunk"
             | "plan"
@@ -226,8 +264,7 @@ impl TextRun {
             | "available_commands_update"
             | "current_mode_update"
             | "session_info_update"
-            | "config_option_update"
-            | "usage_update" => Ok(()),
+            | "config_option_update" => Ok(()),
             "tool_call" | "tool_call_update" => self.fail(
                 "acp_unavailable_update",
                 "tool updates are unavailable in the text-run engine",
@@ -245,6 +282,7 @@ impl TextRun {
     }
 
     pub fn complete(&mut self, result: PromptResult, now_ms: i64) -> Result<(), Error> {
+        self.settle_usage(result.usage.as_deref());
         if self.state.closed {
             return Ok(());
         }
@@ -260,10 +298,16 @@ impl TextRun {
                     final_response: Message {
                         id: Some(self.context.message_id.clone()),
                         role: MessageRole::ASSISTANT,
-                        content: MessageContent::from_text(&self.text),
+                        content: MessageContent::from_text(
+                            self.texts
+                                .get(&self.context.message_id)
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                        ),
                         ..Message::default()
                     },
                     stop_reason: result.stop_reason,
+                    usage: self.terminal_usage.clone(),
                     ..RunCompletedPayload::default()
                 },
                 RunStatus::COMPLETED,
@@ -281,6 +325,26 @@ impl TextRun {
                 self.fail("acp_invalid_stop_reason", &detail, false, now_ms)
             }
         }
+    }
+
+    fn settle_usage(&mut self, raw: Option<&serde_json::value::RawValue>) {
+        if !self.state.status.is_empty() {
+            (self.terminal_usage, self.extensions) = self
+                .usage_scope
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .settle(raw);
+        }
+    }
+
+    pub fn prompt_error(
+        &mut self,
+        message: &str,
+        inferred: bool,
+        now_ms: i64,
+    ) -> Result<(), Error> {
+        self.settle_usage(None);
+        self.fail("acp_prompt_error", message, inferred, now_ms)
     }
 
     pub fn close(&mut self) {

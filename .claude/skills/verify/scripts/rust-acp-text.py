@@ -132,8 +132,7 @@ fn main() {
             Err(error) => run
                 .lock()
                 .unwrap()
-                .fail(
-                    "acp_prompt_error",
+                .prompt_error(
                     &error.to_string(),
                     error.remote_code().is_none(),
                     1000,
@@ -346,7 +345,7 @@ def main():
     run(['go','build','-o',str(output/'go-reference'),str(output/'reference.go')], output/'go-build.log')
     run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'], output/'goap-build.log')
     cases=['complete','bad-config','empty','max-tokens','max-requests','refusal','unknown-stop','remote-error','malformed','foreign','unknown-update','bad-chunk','overflow','abandon','multi-message','tool','cancelled']
-    unavailable={'multi-message':'acp_unavailable_message_identity','tool':'acp_unavailable_update','cancelled':'acp_unavailable_cancellation'}
+    unavailable={'tool':'acp_unavailable_update','cancelled':'acp_unavailable_cancellation'}
     with tempfile.TemporaryDirectory(prefix='oap-text-engine-') as temporary:
         fake = Path(temporary)/'agent.py'
         fake.write_text(AGENT)

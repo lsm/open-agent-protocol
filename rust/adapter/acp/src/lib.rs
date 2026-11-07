@@ -20,3 +20,6 @@ mod text;
 pub use text::{TextRun, TextRunContext, TextRunState};
 
 mod submit;
+
+mod usage;
+pub use usage::UsageScope;
