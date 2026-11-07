@@ -348,8 +348,9 @@ reads session state to recover tasks, as well as resuming any run cursor. The
 stdio wrapper leaves out its outer `sequence` for session events. If one is
 unframeable, stdio reports the last delivered run cursor through
 `oap-frame-limit`; when there is no run cursor it uses `oap-stream-failed`
-without a run id. In either case the host reads session state. The Go raw
-endpoint's session-event forwarding follows separately. The sequence belongs to the hosted
+without a run id. In either case the host reads session state. The Go raw endpoint forwards session events between runs after the open response,
+and its state updates share the same ordered session counter. A failed session
+event stream ends the endpoint so the host can read state. The sequence belongs to the hosted
 session for its lifetime, not to a subscription or a transport connection;
 independent endpoints host distinct sessions and do not share counters. The
 Zig hub does not yet publish `session.state.updated`; when it does, those events

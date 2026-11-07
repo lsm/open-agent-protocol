@@ -334,14 +334,31 @@ func (s *Session) startSessionEvents() {
 					s.mu.Unlock()
 					return
 				}
-				s.stateSequence++
-				sequence := s.stateSequence
-				event.Sequence = &sequence
-				s.deliverLocked(event)
+				s.publishSessionEventLocked(event)
 				s.mu.Unlock()
 			}
 		}
 	}()
+}
+
+func (s *Session) publishSessionEventLocked(event protocol.Envelope) {
+	s.stateSequence++
+	sequence := s.stateSequence
+	event.Sequence = &sequence
+	s.deliverLocked(event)
+}
+
+func (s *Session) PublishSessionEvent(event protocol.Envelope) error {
+	if event.SessionID != s.id || event.RunID != "" || event.ID == "" || !strings.HasPrefix(string(event.Type), "session.") || strings.HasSuffix(string(event.Type), ".request") || strings.HasSuffix(string(event.Type), ".response") {
+		return errors.New("serve: invalid session-scoped event")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return base.ErrSessionClosed
+	}
+	s.publishSessionEventLocked(event)
+	return nil
 }
 
 func (s *Session) discardSessionEvents(stream base.EventStream) {
@@ -809,10 +826,11 @@ func (s *Session) Close(ctx context.Context) error {
 }
 
 type subscriber struct {
-	ch         chan protocol.Envelope
-	finish     chan struct{}
-	finishOnce sync.Once
-	terminal   atomic.Pointer[terminalState]
+	sessionOnly bool
+	ch          chan protocol.Envelope
+	finish      chan struct{}
+	finishOnce  sync.Once
+	terminal    atomic.Pointer[terminalState]
 
 	attached       protocol.RunID
 	attachedSerial uint64
@@ -823,6 +841,13 @@ type subscriber struct {
 	pending    map[protocol.RunID]int
 	runSerials map[protocol.RunID]uint64
 	ackSerial  uint64
+}
+
+func (sub *subscriber) stopRun(state *terminalState) {
+	if sub.sessionOnly {
+		state = nil
+	}
+	sub.stop(state)
 }
 
 func (sub *subscriber) acknowledge(run protocol.RunID) {
@@ -907,13 +932,14 @@ func (sub *subscriber) stop(state *terminalState) {
 	sub.finishOnce.Do(func() { close(sub.finish) })
 }
 
-func (s *Session) subscribe(queue int) (*subscriber, protocol.RunID, uint64, bool) {
+func (s *Session) subscribe(queue int, sessionOnly ...bool) (*subscriber, protocol.RunID, uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, "", 0, false
 	}
 	sub := newSubscriber(queue, s.runID, s.serials[s.runID])
+	sub.sessionOnly = len(sessionOnly) > 0 && sessionOnly[0]
 	if s.sessionEventErr != nil {
 		sub.stop(&terminalState{err: s.sessionEventErr})
 		return sub, s.runID, s.sequences[s.runID], true
@@ -1027,7 +1053,7 @@ func (s *Session) supersedeLocked() (cohort []*subscriber, failed *terminalState
 
 func (s *Session) deliverDeferredError(cohort []*subscriber, failed *terminalState) {
 	for _, sub := range cohort {
-		sub.stop(failed)
+		sub.stopRun(failed)
 	}
 }
 
@@ -1058,7 +1084,7 @@ func (s *Session) releaseReservation() {
 	}
 	s.mu.Unlock()
 	for _, sub := range cohort {
-		sub.stop(state)
+		sub.stopRun(state)
 	}
 }
 
@@ -1187,7 +1213,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 				state, cohort = s.pendingEnd, s.deferred
 				s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 				if cohort == nil {
-					cohort = s.detachSubsLocked()
+					cohort = s.detachRunSubsLocked()
 				} else {
 					for _, sub := range cohort {
 						delete(s.subs, sub)
@@ -1197,7 +1223,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 		}
 		s.mu.Unlock()
 		for _, sub := range cohort {
-			sub.stop(state)
+			sub.stopRun(state)
 		}
 		s.releaseReservation()
 		return
@@ -1233,7 +1259,7 @@ func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 	affected := s.detachExposedLocked(runID)
 	s.mu.Unlock()
 	for _, sub := range affected {
-		sub.stop(state)
+		sub.stopRun(state)
 	}
 }
 
@@ -1241,7 +1267,7 @@ func (s *Session) detachExposedLocked(runID protocol.RunID) []*subscriber {
 	serial := s.serials[runID]
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
-		if sub.exposedTo(runID, serial) {
+		if !sub.sessionOnly && sub.exposedTo(runID, serial) {
 			affected = append(affected, sub)
 			delete(s.subs, sub)
 		}
@@ -1272,7 +1298,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	if s.readers > 0 {
 		s.mu.Unlock()
 		for _, sub := range exposed {
-			sub.stop(end)
+			sub.stopRun(end)
 		}
 		return
 	}
@@ -1283,7 +1309,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 		}
 		s.mu.Unlock()
 		for _, sub := range exposed {
-			sub.stop(end)
+			sub.stopRun(end)
 		}
 		return
 	}
@@ -1292,7 +1318,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 		state, cohort := s.pendingEnd, s.deferred
 		s.pendingEnd, s.deferred = nil, nil
 		if cohort == nil {
-			cohort = s.detachSubsLocked()
+			cohort = s.detachRunSubsLocked()
 		} else {
 			for _, sub := range cohort {
 				delete(s.subs, sub)
@@ -1300,18 +1326,18 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 		}
 		s.mu.Unlock()
 		for _, sub := range exposed {
-			sub.stop(end)
+			sub.stopRun(end)
 		}
 		for _, sub := range cohort {
-			sub.stop(state)
+			sub.stopRun(state)
 		}
 		return
 	}
 	s.pendingEnd, s.deferred = nil, nil
-	subs := s.detachSubsLocked()
+	subs := s.detachRunSubsLocked()
 	s.mu.Unlock()
 	for _, sub := range subs {
-		sub.stop(end)
+		sub.stopRun(end)
 	}
 }
 
@@ -1332,6 +1358,9 @@ func (s *Session) deliverLocked(envelope protocol.Envelope) {
 		s.sequences[envelope.RunID] = *envelope.Sequence
 	}
 	for sub := range s.subs {
+		if sub.sessionOnly && envelope.RunID != "" {
+			continue
+		}
 
 		if envelope.RunID != "" {
 			sub.track(envelope.RunID, s.serials[envelope.RunID])
@@ -1389,7 +1418,18 @@ func (s *Session) detachSubs() []*subscriber {
 func (s *Session) snapshotSubsLocked() []*subscriber {
 	subs := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
+		if sub.sessionOnly && !s.closed {
+			continue
+		}
 		subs = append(subs, sub)
+	}
+	return subs
+}
+
+func (s *Session) detachRunSubsLocked() []*subscriber {
+	subs := s.snapshotSubsLocked()
+	for _, sub := range subs {
+		delete(s.subs, sub)
 	}
 	return subs
 }
