@@ -51,6 +51,9 @@ its declared status before `run.started`, keep tracked-run ownership checks,
 skip the known started lifecycle while still owing a terminal, and reject
 contradictions between remaining known votes. Known status transitions must
 re-engage after a future value. Inspect these named controls in `results.json`.
+Each state control is replayed through both the core constructor and a loaded
+storage pack; the `-loaded` rows must retain the same outcomes. This checks that
+both public tolerant constructors actually enable the prepared state handling.
 
 The packed-prelude regression uses the strict public constructor too. A declared
 packed event before `run.started` must retain sequencing without applying the

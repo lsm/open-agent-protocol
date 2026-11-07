@@ -10,6 +10,14 @@ import shutil
 
 ROOT = Path(__file__).resolve().parents[4]
 NATIVE = runpy.run_path(str(Path(__file__).with_name("rust-packed-traces.py")))
+STATE_CONTROLS = {
+    "foreign-admission", "foreign-effective_delivery", "foreign-status", "foreign-requested-delivery",
+    "known-admission-contradiction", "known-votes-under-foreign-admission", "all-admission-vocabulary-foreign",
+    "statuses-paused", "statuses-paused-queued", "statuses-paused-queued-waiting_for_input",
+    "opaque-admission-still-owes-terminal", "opaque-prestart-waiting_for_input", "opaque-prestart-queued",
+    "opaque-tracked-run-s1", "opaque-tracked-run-s-other", "cancel-status-draining", "cancel-status-cancelling",
+    "task-unadmitted-updated", "unknown-scope-partial-decode",
+}
 
 
 def main():
@@ -43,6 +51,8 @@ def main():
             results.append(item)
             if go_shape != rust_shape or rs.returncode != go.returncode:
                 failures.append(item)
+        if not directories and label in STATE_CONTROLS:
+            judge(label + "-loaded", trace, [ROOT / "fixtures/packs/storage"], strict, tolerant)
 
     base = json.loads((ROOT / "fixtures/valid/core-completed.json").read_text())
     for key, value in [("admission", "parked"), ("effective_delivery", "later"), ("status", "paused")]:
