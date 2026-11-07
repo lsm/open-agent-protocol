@@ -209,13 +209,20 @@ impl Permissions {
         self: Arc<Self>,
         run: Arc<Mutex<TextRun>>,
     ) -> BoxFuture<'static, RunCancelResponse> {
+        let state = run.lock().unwrap().cancel_state();
+        if !matches!(&state, Ok(response) if response.status == RunStatus::RUNNING) {
+            return Box::pin(async move {
+                let _owner = self;
+                state
+            });
+        }
         self.operation(move |owner, bindings| {
-            if owner.bridge.is_closed() {
-                return Err(Error::SessionClosed);
-            }
             let response = run.lock().unwrap().cancel_state()?;
             if response.status != RunStatus::RUNNING {
                 return Ok(response);
+            }
+            if owner.bridge.is_closed() {
+                return Err(Error::SessionClosed);
             }
             let params = serde_json::value::to_raw_value(&CancelParams {
                 session_id: run.lock().unwrap().context.native_id.clone(),

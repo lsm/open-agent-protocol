@@ -61,7 +61,7 @@ def main():
                 else:
                     assert expected in result['openError'], result
                 assert result['descriptor']['endpoint']['version'] == pin['endpoint_version']
-                assert result['revision'] == pin['capability_revision'] + '-rust-permissions'
+                assert result['revision'] == pin['capability_revision'] + '-rust-cancel'
                 assert result['corpus'] == pin['corpus']
                 assert result['journalReplay'] == 'unavailable'
                 assert result['descriptor']['sources'] == [

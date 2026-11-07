@@ -53,5 +53,5 @@ Run rust-acp-permission-controller.md for standalone controller source binding,
 accepted-native-write/local-commit failure, serialized replies and cancellation
 ownership. Run all preceding ACP journeys, full baseline and Rust all-features
 under the same mutex. Read the actual PTY fixture reply and /quit exit.
-Accepted cancellation, reopen/config and corpus retain following slices. The
+Native cancellation is covered by rust-acp-cancel.md. Reopen/config and corpus retain following slices. The
 shared process helper's existing grandchild-held-pipe limitation applies.

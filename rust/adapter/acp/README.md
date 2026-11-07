@@ -44,7 +44,8 @@ default), then kills and reaps a child that remains alive. Its result is cached,
 and dropping the process also closes it. This reuses the shared child-process
 helper and its documented pipe/grandchild limitations in `rust/adapter/README.md`.
 The handshake types share the native types' exact-key decoding limitation.
-Session operations and corpus replay remain subsequent slices of #1439.
+The Session operations are described below. Full corpus replay remains a later
+slice of #1439.
 
 Run the synthetic public-consumer journey in
 `.claude/skills/verify/journeys/rust-acp-process.md` for captured wire evidence.
@@ -59,9 +60,9 @@ and configured source descriptors.
 
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
-the same checks before opening the native session. Permission resolution uses the owned controller. Reopen, accepted cancellation and replay have approved follow-on slices. Text submission and
+the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Reopen and replay have approved follow-on slices. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-permissions` to the catalog revision because this descriptor has
+appends `-rust-cancel` to the catalog revision because this descriptor has
 fewer capabilities than the completed adapter. Remaining event mappings and live configuration updates are later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
@@ -100,7 +101,7 @@ opt-in. It reports the opening response's model config-option snapshot, flatteni
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-permissions`
+slice. The descriptor discloses the opening snapshot and uses a `-rust-cancel`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -201,8 +202,7 @@ finishes the retained prefix when the owner abandons a run.
 
 Native message identities map to separate OAP message ids and accumulated text.
 Repeated native ids reuse their OAP ids, and an omitted id continues the current
-message. The terminal response contains the last message's own text. Cancellation
-requiring host evidence produces an explicit staged failure. OAP
+message. The terminal response contains the last message's own text. Cancellation without an accepted controller intent produces an explicit failure. OAP
 `run.cancelled` requires accepted host cancellation evidence. Configuration-update
 bodies are decoded structurally and malformed bodies fail the run. Live config
 projection retains its approved later slice.
@@ -215,7 +215,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-permissions`
+opt-in. The staged descriptor records these limits under its `-rust-cancel`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -282,8 +282,8 @@ cancels outstanding tools. Abandonment and session close still finish the
 retained prefix under the documented ownership contract.
 
 `action.tools` and `action.tools.execute` are degraded observed-lifecycle claims.
-They expose no tool catalog or host execution API. Accepted host
-cancellation, reopen/config projection and the full byte corpus retain later
+They expose no tool catalog or host execution API. Native cancellation is
+described below; reopen/config projection and full byte corpus retain later
 slices. Run the synthetic `rust-acp-tools.md` verification journey.
 
 ## Owned native outbound operations
@@ -349,10 +349,12 @@ admitted participant. `request(run, incoming)` accepts only actual requests
 registered by that bridge. Reusing a request object is refused. The controller
 retains the source binding through native reply and correlated commit.
 
-`request` and `resolve` own native I/O workers. `observe`, `complete` and
-`prompt_error` run local projection transitions inline when polled using only
-the run lock, so ordinary text can progress during a blocked native reply.
-Settlement acquires the bindings lock before the run lock. Pending native cancellation replies
+`request`, `resolve` and `cancel` own native I/O workers. Ordinary `observe`
+projection runs inline using only the run lock, so text can progress during a
+blocked native reply. Parent completion/error waits for the bindings lock before
+projecting under the run lock, without creating a local worker. This serializes
+confirmation with an accepted cancel write and its intent commit. Settlement
+also acquires bindings before the run lock. Pending native cancellation replies
 use an owned I/O operation. Use these methods for a controller-managed run. Prepare and validate under the TextRun mutex, release
 it for native I/O, then read the clock and commit. A successful selected write
 and its commit belong to the same worker, so abandoning the future cannot
@@ -361,7 +363,7 @@ cancellations even when the native transport has failed.
 
 Native I/O operations begin work when constructed. Await joins their worker.
 Dropping one aborts and reaps its native child and joins its worker, including
-a native reply operation waiting for the controller lock. Pure local updates
+a native reply operation waiting for the controller lock. Ordinary notifications
 run on the polling caller without waiting for native writes. The bridge owns the dispatcher,
 and close joins it. Futures remain caller-owned through bridge shutdown.
 
@@ -372,7 +374,7 @@ Normal Session integration is described below.
 Malformed native asks receive their protocol error independently of whether a
 local failure event can be emitted. Binding lookup uses the actual run object
 and its interaction id. Completed entries expire with their native request
-object, with pruning after each controller operation. Retained request objects
+object, with pruning on the next native controller operation. Retained request objects
 keep weak duplicate guards until release. Per-run id generators can restart
 without routing the next run's reply through a preceding binding.
 
@@ -399,7 +401,39 @@ request binding before local commit, including a projection closed during the
 write. Parent settlement consumes the binding before committing cancellation.
 
 The descriptor advertises native action.permissions and interactive gates,
-under the staged -rust-permissions revision. Run
+under the staged -rust-cancel revision. Run
 `rust-acp-session-permissions.md` for normal Session event/wire comparisons,
 immediate resolution, idle replies, across-run history, state and cleanup.
-Accepted run cancellation, reopen/config and full corpus retain later slices.
+Native cancellation is described below. Reopen/config and full corpus retain later slices.
+
+## Run-targeted cancellation
+
+`Session.cancel(run_id)` targets the tracked run. Unknown or expired prior ids
+return RunNotFound, the retained completed/failed run returns RunAlreadyTerminal,
+and cancelling/cancelled retries are accepted without another native notification.
+Retained terminal metadata still answers after the native agent exits; an
+explicitly closed Session refuses controls with SessionClosed.
+No stale control can target a subsequent run. The journal and resume remain
+unavailable in this stage.
+
+A written native session/cancel accepts intent and emits run.status.updated
+with cancelling. Ordinary text/tool events preserve that status, and Session
+state stays running until authoritative settlement. A native cancelled stop or
+remote -32800 confirms cancellation; another result/error may win. Pending asks
+receive cancelled and correlated permission resolutions with run_cancelling.
+A later valid ask projects its observed tool but receives native cancellation
+without publishing another permission prompt.
+
+`Permissions.cancel(run)` exposes the same owned bridge operation for a managed
+TextRun. Native write and intent commit share one worker. Parent results wait
+for that transaction; ordinary notifications keep progressing. Dropping an
+unfinished control, including one queued behind a blocked permission reply,
+reaps its child and joins its worker. Abort close also joins the dispatcher and
+prompt workers while control futures remain caller-owned. No cancel settlement
+is invented when the native notification was never written.
+
+Run rust-acp-cancel.md for public Go/Rust event and parsed-wire comparisons,
+three-validator traces, controlled confirmation ordering and quiet-child/thread
+ownership. The staged revision is -rust-cancel and run.cancel is native. Submit
+and streaming retain their degradation opt-ins; live config, resume/reopen,
+full byte corpus and C8 served parity remain later slices.

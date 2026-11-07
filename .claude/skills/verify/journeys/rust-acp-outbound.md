@@ -35,8 +35,7 @@ retains native frames, partial-write evidence, public operation results,
 consumer stderr, timings and OS thread inventories.
 
 This layer exposes native operation ownership. Normal Session permissions are
-covered by rust-acp-session-permissions.md; accepted cancellation remains a
-following slice. Follow the existing ACP session, submit,
+covered by rust-acp-session-permissions.md; native cancellation is covered by rust-acp-cancel.md. Follow the existing ACP session, submit,
 results, tools, model and bridge journeys too, then run the full baseline and
 Rust all-features under the same mutex. Read the real PTY reply and `/quit`
 exit. Shared process-helper grandchild-held-pipe limitations remain applicable.
