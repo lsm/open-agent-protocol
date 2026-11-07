@@ -69,3 +69,14 @@ The external consumer includes the shared external-reference and escaping-ID
 refusals, both of which must yield `pack_external_ref` and exit 1. It retains the
 same positive schema resources. This constructor remains staged while branch
 compilation and typed corpus validation are added in separate following slices.
+
+### URI parsing compatibility
+
+```sh
+python3 .claude/skills/verify/scripts/rust-pack-uri-compat.py --output-dir /tmp/oap-pack-uri-compat-<unique>
+```
+
+Inspect `results.json` and retained raw outputs. Go currently accepts three raw
+pipe/space URI cases that Rust refuses with `pack_external_ref`. Their percent-
+encoded controls pass both. The helper labels the asymmetries as documented
+divergences, as recorded in `drafts/extension-pack-load-refusals.md`.
