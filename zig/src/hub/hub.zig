@@ -1016,6 +1016,7 @@ pub const Hub = struct {
         errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms), registered.journal_capacity orelse self.journal_capacity);
         adopted = true;
+        errdefer self.removeSession(entry);
         if (placed.directory.len > 0) entry.directory = try self.allocator.dupe(u8, placed.directory);
         entry.reopenable = reopenable(descriptor, request);
         if (entry.reopenable) entry.opened = try OpenedWith.init(self.allocator, request);
@@ -1026,7 +1027,6 @@ pub const Hub = struct {
         if (request.subscribe) {
             opened.subscription = self.subscribe(arena, opened.session_id, .{}) catch |err| {
                 self.recordBinding(.closed, entry.session_id, @intCast(self.clock() / std.time.ns_per_ms));
-                self.removeSession(entry);
                 return err;
             };
         }
