@@ -110,7 +110,9 @@ def compare(goap, rust, trace, directories, expected, output, label):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
-    output = Path(parser.parse_args().output_dir).resolve()
+    parser.add_argument("--zig", type=Path, help="Rebuilt oapx binary for the shared reply-role controls")
+    arguments = parser.parse_args()
+    output = Path(arguments.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     rust = build_native(output)
     goap = output / "goap"
@@ -239,6 +241,22 @@ def main():
         path = output / (label + ".json")
         path.write_text(json.dumps([envelope(request_a, "read", {}), response_envelope]))
         results.append(compare(goap, rust, path, [no_result], expected, output, label))
+    if arguments.zig:
+        zig_results = []
+        for fixture in manifest:
+            if "packs/reply-roles" not in fixture.get("packs", []):
+                continue
+            label = fixture["id"]
+            result = run([arguments.zig.resolve(), "validate", "--pack", ROOT / "fixtures/packs/reply-roles",
+                          ROOT / "fixtures" / fixture["path"]], output, label + ".zig")
+            codes = sorted(set(re.findall(r"semantic ([a-z_]+) at", result.stdout)))
+            expected = sorted(fixture.get("codes", []))
+            assert result.returncode == int(not fixture["valid"]), (label, result.stdout, result.stderr)
+            assert codes == expected, (label, codes, expected)
+            assert result.stdout.startswith("PASS " if fixture["valid"] else "FAIL "), (label, result.stdout)
+            zig_results.append({"id":label, "exit":result.returncode, "codes":codes})
+        assert len(zig_results) == 3, zig_results
+        (output / "zig-results.json").write_text(json.dumps(zig_results, indent=2) + "\n")
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} native strict packed trace/load cases agree on verdict, phase, code and index")
 

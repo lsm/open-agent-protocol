@@ -17053,6 +17053,11 @@
       ],
       "packs": [
         "packs/reply-roles"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/4",
+        "agent-control-core#request-and-stream-semantics/2",
+        "agent-control-core#request-and-stream-semantics/4"
       ]
     },
     {
@@ -17068,6 +17073,11 @@
       ],
       "packs": [
         "packs/reply-roles"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/4",
+        "agent-control-core#request-and-stream-semantics/2",
+        "agent-control-core#request-and-stream-semantics/4"
       ]
     },
     {
@@ -17083,6 +17093,11 @@
       ],
       "packs": [
         "packs/reply-roles"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/4",
+        "agent-control-core#request-and-stream-semantics/2",
+        "agent-control-core#request-and-stream-semantics/4"
       ],
       "phase": "semantic",
       "codes": [

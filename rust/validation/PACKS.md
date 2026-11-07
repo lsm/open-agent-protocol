@@ -73,5 +73,19 @@ pointer order. Auth-reply diagnostics retain sensitive-answer redaction.
 Packed envelope errors select the branch declared for that type. Four public
 controls record Go's existing selection of unrelated core-branch errors while
 Rust points at the declared packed payload. Their schema verdicts agree.
-This operation covers parsed-envelope schemas. Native strict trace semantics and
-tolerant mode follow in separate integration slices.
+This operation covers parsed-envelope schemas.
+
+## Native strict trace validation
+
+`Validator::with_packs(directories)` loads the complete pack set and returns a
+strict trace validator. Construction returns `PackLoadError` for refused packs.
+`validate` uses the composed schema, declared request/response/event roles,
+request-time advertisement captures and exact gate keys. Successful responses
+must be declared for their request. An event's `replies_to` field has no effect
+on response selection. A request with no declared success type can be refused.
+
+Declared packed run events share core run sequencing and terminal checks.
+Packed scope falls back from payload IDs to envelope IDs, and declared members
+retain core schema and semantic checks. Every validation call starts fresh trace
+state while sharing immutable compiled packs. `Validator::new` retains ordinary
+core validation. Tolerant mode follows separately.

@@ -178,5 +178,29 @@ Rust identifies the declared packed branch's missing key or conflicting payload
 constant; Go selects unrelated core-branch required-property errors. The ledger
 in `drafts/extension-pack-load-refusals.md` records this diagnostic-only difference.
 Inspect raw outputs and the new operation's unit controls for input preservation
-and auth-answer redaction. Native strict trace semantics and tolerant mode follow
-in their separate integration slices.
+and auth-answer redaction. Native strict trace semantics are exercised below.
+Tolerant mode follows separately.
+
+## Native strict packed traces
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test packed_traces
+python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oapx --output-dir /tmp/oap-native-packed-<unique>
+```
+
+The separate public consumer constructs `Validator::with_packs` and compares
+validity, phase, code and diagnostic index with Go. Inspect `results.json` and
+raw outputs for shared load refusals, packed schemas, exact feature keys,
+request-time gate captures across refreshes, typed refusals, scope fallback,
+member gates, declared roles, image handling and run sequencing/terminal checks.
+The public replay found two Rust reply-selection bugs. Go correctly refuses a
+suffix-matched success response without a declared mapping and ignores an event's
+`replies_to` when selecting the real response declaration. Signed failing public
+regressions precede both fixes, and shared fixtures retain the controls.
+
+Run the shared parity journey and complete Verify baseline as well. The rebuilt
+Zig CLI must judge each new `reply-roles` fixture with the pack loaded.
+The helper checks their exit status and exact diagnostic codes and retains
+`zig-results.json` plus raw outputs. Record any observed Zig difference in the
+per-tree gap list. The accepted packed-schema pointer differences
+and URI compatibility differences above remain separately pinned.
