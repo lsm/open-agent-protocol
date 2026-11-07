@@ -7,6 +7,7 @@ repository root.
 zig build --build-file zig/build.zig test-unit-hub -Doptimize=ReleaseSafe -j4
 zig build --build-file zig/build.zig -Doptimize=ReleaseSafe -j4
 python3 .claude/skills/verify/scripts/hub-http-deadlines.py --output-dir "$EVIDENCE/http-deadlines"
+python3 .claude/skills/verify/scripts/hub-http-deadlines.py --replay-only --output-dir "$EVIDENCE/http-replay"
 python3 .claude/skills/verify/scripts/hub-budgeted-passes.py --hold-expiry --output-dir "$EVIDENCE/http-held"
 ```
 
@@ -21,6 +22,13 @@ keepalive comment within the stream's timeout. The native session has readiness
 notifications, so these checks exercise descriptor waits. Inspect the timeout
 response, timing, opened envelope and keepalive artifacts. SIGTERM must stop the
 Hub with exit 0 and both owned processes must be reaped.
+
+The full journey also completes a large synthetic model reply, waits for the
+native run to settle, then replays its journal through a fresh SSE request.
+Require more than 256 KiB of replay and `run.completed` within the three-second
+read timeout. Inspect `replay-events.json` for envelope types, byte counts and
+arrival times. The replay-only invocation focuses on this regression. Filling
+one output batch must allow the next batch to progress immediately.
 
 The held-subscription journey additionally observes every memory-adapter gate,
 cancels and closes all sessions, and checks an accepted request after hold

@@ -2,6 +2,7 @@
 """Observe idle HTTP waits, header expiry, native SSE keepalive and shutdown."""
 import argparse
 import http.client
+import http.server
 import importlib.util
 import json
 import os
@@ -35,11 +36,27 @@ def stop(process):
     return {"exit": process.returncode, "reaped": process.poll() is not None}
 
 
+def serve_provider():
+    spec = importlib.util.spec_from_file_location("session_restart", ROOT / ".claude/skills/verify/scripts/oapx-session-restart.py")
+    restart = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(restart)
+    restart.REPLY = "synthetic reply " * 4
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), restart.Provider)
+    print(server.server_port, flush=True)
+    server.serve_forever()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir")
     parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--provider", action="store_true")
+    parser.add_argument("--replay-only", action="store_true")
     args = parser.parse_args()
+    if args.provider:
+        return serve_provider()
+    if not args.output_dir:
+        parser.error("--output-dir is required")
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="oap-http-deadlines-") as temporary:
@@ -50,8 +67,7 @@ def main():
         environment = {"PATH": "/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(root),
                        "OAPX_KEYCHAIN_SERVICE": "oap-http-deadlines-" + uuid.uuid4().hex}
         with (output / "provider.log").open("w") as provider_log, (output / "server.log").open("w") as server_log:
-            provider = subprocess.Popen([sys.executable, "-I", str(ROOT / "scripts/bench-resources.py"),
-                                         "provider", "--workspace", str(work)], env=environment,
+            provider = subprocess.Popen([sys.executable, "-I", __file__, "--provider"], env=environment,
                                         stdout=subprocess.PIPE, stderr=provider_log, text=True, start_new_session=True)
             server = None
             cleanup = {}
@@ -61,8 +77,8 @@ def main():
                 settings = home / ".oapx"
                 settings.mkdir()
                 (settings / "providers.json").write_text(json.dumps({"providers": [{"id": "bench", "api": "openai-completions",
-                    "base_url": f"http://127.0.0.1:{provider_port}/v1", "auth": "none", "models": ["bench-model"]}]}))
-                (settings / "config.json").write_text(json.dumps({"model": "bench-model", "provider": "bench",
+                    "base_url": f"http://127.0.0.1:{provider_port}/v1", "auth": "none", "models": ["synthetic-model"]}]}))
+                (settings / "config.json").write_text(json.dumps({"model": "synthetic-model", "provider": "bench",
                     "api": "openai-completions", "workspace": str(work)}))
                 config = root / "hub.json"
                 config.write_text(json.dumps({"adapters": {"loop": {"type": "oapx"}}}))
@@ -101,50 +117,89 @@ def main():
                         assert server.poll() is None
                         assert time.monotonic() < deadline, "Hub did not listen"
                         time.sleep(0.02)
-                time.sleep(10)
-                probe = bench.Probe(server.pid)
-                before = probe.sample()
-                idle_started = time.monotonic()
-                time.sleep(5)
-                after = probe.sample()
-                idle = {"idle_settle_s": 10, "idle_wall_s": time.monotonic() - idle_started,
-                        "idle_switches": after["switches"] - before["switches"],
-                        "idle_cpu_s": after["cpu"] - before["cpu"]}
-                (output / "idle.json").write_text(json.dumps(idle, indent=2))
-                assert idle["idle_switches"] == 0 and idle["idle_cpu_s"] == 0, idle
-                with socket.create_connection(("127.0.0.1", port), timeout=35) as partial:
-                    partial.sendall(f"GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n".encode())
-                    started = time.monotonic()
-                    head = b""
-                    while b"\r\n\r\n" not in head:
-                        chunk = partial.recv(4096)
-                        assert chunk, head
-                        head += chunk
-                    (output / "header-timeout.txt").write_bytes(head)
-                    assert head.startswith(b"HTTP/1.1 408 "), head
-                    (output / "header-timing.json").write_text(json.dumps({"seconds": time.monotonic() - started}))
+                if not args.replay_only:
+                    time.sleep(10)
+                    probe = bench.Probe(server.pid)
+                    before = probe.sample()
+                    idle_started = time.monotonic()
+                    time.sleep(5)
+                    after = probe.sample()
+                    idle = {"idle_settle_s": 10, "idle_wall_s": time.monotonic() - idle_started,
+                            "idle_switches": after["switches"] - before["switches"],
+                            "idle_cpu_s": after["cpu"] - before["cpu"]}
+                    (output / "idle.json").write_text(json.dumps(idle, indent=2))
+                    assert idle["idle_switches"] == 0 and idle["idle_cpu_s"] == 0, idle
+                    with socket.create_connection(("127.0.0.1", port), timeout=35) as partial:
+                        partial.sendall(f"GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n".encode())
+                        started = time.monotonic()
+                        head = b""
+                        while b"\r\n\r\n" not in head:
+                            chunk = partial.recv(4096)
+                            assert chunk, head
+                            head += chunk
+                        (output / "header-timeout.txt").write_bytes(head)
+                        assert head.startswith(b"HTTP/1.1 408 "), head
+                        (output / "header-timing.json").write_text(json.dumps({"seconds": time.monotonic() - started}))
                 opened = request("/adapters/loop/sessions", bench.envelope("session.open.request", {"session_id": "deadline-session"}))
                 (output / "opened.json").write_text(json.dumps(opened, indent=2))
-                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+                if not args.replay_only:
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+                    try:
+                        connection.request("GET", "/sessions/deadline-session/events")
+                        with connection.getresponse() as response:
+                            assert response.status == 200
+                            lines = []
+                            while True:
+                                line = response.readline()
+                                assert line, lines
+                                lines.append(line.decode())
+                                if line == b": keepalive\n":
+                                    break
+                            (output / "keepalive.txt").write_text("".join(lines))
+                    finally:
+                        connection.close()
+                admitted = request("/sessions/deadline-session/submit", bench.envelope("session.message.submit.request", {
+                    "session_id": "deadline-session", "delivery": "auto", "messages": [
+                        {"role": "user", "content": "synthetic partial storage turn"}]}, session_id="deadline-session"))
+                deadline = time.monotonic() + 30
+                while request("/sessions/deadline-session/state")["payload"]["status"] != "idle":
+                    assert time.monotonic() < deadline, "large synthetic run did not settle"
+                    time.sleep(0.02)
+                time.sleep(1)
+                run = admitted["payload"]["run_id"]
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                observed = []
+                received_bytes = 0
+                replay_started = time.monotonic()
                 try:
-                    connection.request("GET", "/sessions/deadline-session/events")
+                    connection.connect()
+                    connection.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
+                    connection.request("GET", f"/sessions/deadline-session/events?run_id={run}&after=0")
                     with connection.getresponse() as response:
                         assert response.status == 200
-                        lines = []
                         while True:
                             line = response.readline()
-                            assert line, lines
-                            lines.append(line.decode())
-                            if line == b": keepalive\n":
+                            assert line, observed
+                            received_bytes += len(line)
+                            if not line.startswith(b"data: "):
+                                continue
+                            event = json.loads(line[6:])
+                            observed.append({"type": event.get("type"), "bytes": len(line),
+                                             "seconds": time.monotonic() - replay_started})
+                            if event.get("type") in {"run.completed", "run.failed", "run.cancelled"}:
+                                assert event["type"] == "run.completed", event["type"]
                                 break
-                        (output / "keepalive.txt").write_text("".join(lines))
                 finally:
                     connection.close()
+                    (output / "replay-events.json").write_text(json.dumps({"bytes": received_bytes, "events": observed}, indent=2))
+                assert received_bytes > 256 * 1024, received_bytes
+                print("PASS native SSE replay crossed the buffer limit and reached run.completed without a keepalive delay")
                 request("/sessions/deadline-session/close", {})
                 server.send_signal(signal.SIGTERM)
                 assert server.wait(timeout=10) == 0
                 assert not list(home.rglob("auth.json")), "child wrote a credential file"
-                print("PASS HTTP: zero settled idle CPU/switches; partial header expired; native SSE keepalive arrived; SIGTERM exited 0")
+                if not args.replay_only:
+                    print("PASS HTTP: zero settled idle CPU/switches; partial header expired; native SSE keepalive arrived; SIGTERM exited 0")
             finally:
                 if server is not None:
                     cleanup["hub"] = stop(server)
