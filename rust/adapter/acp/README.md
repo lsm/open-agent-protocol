@@ -109,8 +109,18 @@ that remain alive after EOF are killed and reaped at the configured shutdown
 timeout. Dropping an opening or closing future uses the owning cancellation
 bridge. The session's remaining control methods return unavailable errors.
 
+After `session/new`, the session owns a `PromptBridge` that drains native
+inbound messages in order. Idle notifications therefore cannot fill an
+undrained queue while a model switch waits for its result. Unknown reverse
+RPCs receive the native method-not-supported error. Explicit close, cancelled
+close and dropping the final session owner release the child and dispatcher.
+Permission handling and live configuration projection belong to later slices.
+
 Run `.claude/skills/verify/journeys/rust-acp-session.md` for real synthetic
 stdio, public state/catalog output, cleanup and three-validator wire proof.
+The additional `rust-acp-session-bridge.md` journey measures OS thread counts
+before open and after public close/drop/cancellation while its consumer stays
+alive, and requires all threads to return to the initial count.
 
 
 ## Confirmed model switches

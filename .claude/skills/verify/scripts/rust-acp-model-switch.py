@@ -145,7 +145,7 @@ def main():
     thought = {'id':'thought', 'category':'thought_level', 'currentValue':'adaptive',
                'options':[{'value':'adaptive', 'name':'HİGH'}]}
     observed = None
-    modes = ['confirmed', 'current-level', 'unknown-level', 'unconfirmed', 'duplicate',
+    modes = ['confirmed', 'idle-inbound', 'current-level', 'unknown-level', 'unconfirmed', 'duplicate',
              'wrong-kind', 'refused', 'no-optin', 'unknown-model', 'wrong-scope', 'no-model']
     with tempfile.TemporaryDirectory(prefix='oap-model-switch-') as temporary:
         directory = Path(temporary)
@@ -169,7 +169,7 @@ def main():
             response = {'result':{'configOptions':options}}
             if mode == 'refused':
                 response = {'error':{'code':-32602,'message':'synthetic refusal'}}
-            data = {'opened':opened, 'switched':response}
+            data = {'opened':opened, 'switched':response, 'inbound':mode == 'idle-inbound'}
             (case / 'native.json').write_text(json.dumps(data))
             fake = directory / f'agent-{mode}'
             fake.write_text(f'#!{sys.executable} -u\n' + f'''import json, os, sys
@@ -187,6 +187,14 @@ for index, line in enumerate(sys.stdin):
         response = {{'result':data['opened']}}
     else:
         response = data['switched']
+        if data['inbound']:
+            for update in range(256):
+                print(json.dumps({{'jsonrpc':'2.0', 'method':'session/update', 'params':{{'sessionId':'native-session', 'update':{{'sessionUpdate':'session_info_update', 'title':str(update)}}}}}}), flush=True)
+            print(json.dumps({{'jsonrpc':'2.0', 'id':'fixture-native', 'method':'fixture/unsupported', 'params':{{}}}}), flush=True)
+            answer = sys.stdin.readline()
+            with (out / 'wire.jsonl').open('a') as wire:
+                wire.write(answer)
+            assert json.loads(answer) == {{'jsonrpc':'2.0', 'id':'fixture-native', 'error':{{'code':-32601,'message':'method not supported'}}}}, answer
     print(json.dumps(dict(response, jsonrpc='2.0', id=request['id'])), flush=True)
 ''')
             fake.chmod(0o700)
@@ -219,8 +227,10 @@ for index, line in enumerate(sys.stdin):
             assert results['rust'] == results['go'], (mode, results)
             assert wires['rust'] == wires['go'], (mode, wires)
             expected_count = 2 if mode in ['no-optin', 'unknown-model', 'wrong-scope', 'no-model'] else 3
+            if mode == 'idle-inbound':
+                expected_count += 1
             assert len(wires['rust']) == expected_count, (mode, wires)
-            if expected_count == 3:
+            if expected_count >= 3:
                 assert wires['rust'][2]['params'] == {'sessionId':'native-session', 'configId':'model', 'value':'luna'}
             print(f'PASS {mode}: public Go/Rust results and native wire agree; children reaped')
     assert observed['state']['current_model_id'] == 'luna'
