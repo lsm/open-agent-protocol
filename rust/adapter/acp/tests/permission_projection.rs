@@ -292,3 +292,119 @@ fn repeated_completion_preserves_the_pending_terminal_usage_snapshot() {
         10
     );
 }
+
+#[test]
+fn control_answers_validate_scope_responder_choice_and_grant_before_preparation() {
+    let (mut run, _stream, resolution) = projector("session");
+    for case in [
+        "outer-run",
+        "inner-run",
+        "session",
+        "outer-responder",
+        "inner-responder",
+        "requester",
+        "choice",
+        "grant",
+        "unknown",
+        "missing",
+        "input",
+    ] {
+        let mut candidate = resolution.clone();
+        let request = candidate.permission.as_mut().unwrap();
+        match case {
+            "outer-run" => candidate.run_id = "other".into(),
+            "inner-run" => request.run_id = "other".into(),
+            "session" => request.session_id = "other".into(),
+            "outer-responder" => candidate.responded_by = "other".into(),
+            "inner-responder" => request.responded_by = "other".into(),
+            "requester" => request.requested_by = "other".into(),
+            "choice" => request.choice_id = "unknown".into(),
+            "grant" => request.granted = false,
+            "unknown" => request.interaction_id = "unknown".into(),
+            "missing" => candidate.permission = None,
+            "input" => candidate.input = Some(Default::default()),
+            _ => unreachable!(),
+        }
+        let error = run.permission_reply(&candidate).err().expect(case);
+        match case {
+            "outer-responder" | "inner-responder" => assert!(
+                matches!(error, oap_adapter::Error::WrongResponder),
+                "{case}"
+            ),
+            "unknown" => assert!(
+                matches!(error, oap_adapter::Error::InteractionNotFound),
+                "{case}"
+            ),
+            _ => assert!(
+                matches!(error, oap_adapter::Error::InvalidResolution),
+                "{case}"
+            ),
+        }
+    }
+    let reply = run.permission_reply(&resolution).unwrap();
+    assert_eq!(reply.response().outcome.option_id, "allow");
+    run.commit_permission(reply, 30).unwrap();
+    assert!(matches!(
+        run.permission_reply(&resolution),
+        Err(oap_adapter::Error::InteractionResolved)
+    ));
+}
+
+#[test]
+fn pending_failure_settles_the_gate_before_children_and_keeps_its_metadata() {
+    let (mut run, stream, _) = projector("session");
+    run.fail("observed_failure", "first", false, 30).unwrap();
+    run.complete(
+        oap_adapter_acp::native::PromptResult {
+            stop_reason: "end_turn".into(),
+            usage: Some(
+                serde_json::value::to_raw_value(
+                    &json!({"totalTokens":10,"inputTokens":8,"outputTokens":2}),
+                )
+                .unwrap(),
+            ),
+        },
+        40,
+    )
+    .unwrap();
+    for reply in run.permission_settlements() {
+        run.commit_permission(reply, 50).unwrap();
+    }
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let values = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values
+            .iter()
+            .map(|e| e["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "action.permission.resolved",
+            "action.call.cancelled",
+            "run.failed"
+        ]
+    );
+    assert_eq!(
+        values.last().unwrap()["payload"]["error"]["code"],
+        "observed_failure"
+    );
+    assert!(values.last().unwrap()["payload"].get("usage").is_none());
+}
+
+#[test]
+fn closing_a_projection_refuses_a_prepared_commit_without_reviving_its_stream() {
+    let (mut run, stream, resolution) = projector("session");
+    let reply = run.permission_reply(&resolution).unwrap();
+    run.close();
+    assert!(matches!(
+        run.commit_permission(reply, 30),
+        Err(oap_adapter::Error::SessionClosed)
+    ));
+    assert!(block_on(stream.collect::<Vec<_>>()).is_empty());
+    assert!(run.state().closed);
+}

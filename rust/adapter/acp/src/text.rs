@@ -6,9 +6,10 @@ use oap_adapter::jsonrpc::NotificationMessage;
 use oap_adapter::subscriber::Subscriber;
 use oap_adapter::{Error, EventStream};
 use oap_protocol::{
-    ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType,
-    Message, MessageContent, MessageId, MessageRole, ProtocolError, RunCompletedPayload,
-    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionId, Usage, SETTLED_BY_INFERRED,
+    ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeId,
+    EnvelopeType, Message, MessageContent, MessageId, MessageRole, ProtocolError,
+    RunCompletedPayload, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionId, Usage,
+    SETTLED_BY_INFERRED,
 };
 use serde::Serialize;
 
@@ -35,8 +36,8 @@ pub struct TextRunState {
 }
 
 pub struct TextRun {
-    context: TextRunContext,
-    ids: Box<dyn FnMut(&str) -> String + Send>,
+    pub(crate) context: TextRunContext,
+    pub(crate) ids: Box<dyn FnMut(&str) -> String + Send>,
     state: TextRunState,
     texts: BTreeMap<MessageId, String>,
     native_messages: BTreeMap<String, MessageId>,
@@ -45,6 +46,13 @@ pub struct TextRun {
     terminal_usage: Option<Usage>,
     extensions: Extensions,
     pub(crate) tools: crate::tools::Tools,
+    pub(crate) permissions: Vec<crate::permissions::Gate>,
+    pub(crate) pending: Option<Terminal>,
+}
+
+pub(crate) enum Terminal {
+    Completed(String),
+    Failed(String, String, bool),
 }
 
 impl TextRun {
@@ -68,6 +76,8 @@ impl TextRun {
             terminal_usage: None,
             extensions: Extensions::new(),
             tools: crate::tools::Tools::default(),
+            permissions: Vec::new(),
+            pending: None,
         }
     }
 
@@ -75,13 +85,17 @@ impl TextRun {
         self.state.clone()
     }
 
-    fn emit(
+    pub(crate) fn emit(
         &mut self,
         kind: EnvelopeType,
         payload: &impl Serialize,
         status: RunStatus,
+        reply: Option<EnvelopeId>,
         now_ms: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<EnvelopeId, Error> {
+        if self.state.closed {
+            return Err(Error::SessionClosed);
+        }
         let mut event =
             Envelope::new(kind, (self.ids)("event"), payload).map_err(Error::harness)?;
         event.sequence = Some(self.state.sequence + 1);
@@ -89,7 +103,7 @@ impl TextRun {
         event.session_id = Some(self.context.session_id.clone());
         event.run_id = Some(self.context.run_id.clone());
         event.capability_revision = self.context.capability_revision.clone();
-        if event.envelope_type.as_str().starts_with("action.call.") {
+        if event.envelope_type.as_str().starts_with("action.") {
             event.tool_call_id = Some(
                 event
                     .decode_payload::<ActionCallPayload>()
@@ -101,11 +115,13 @@ impl TextRun {
         self.state.updated_at_ms = now_ms;
         self.state.closed = status != RunStatus::RUNNING;
         self.state.status = status;
+        event.in_reply_to = reply;
         if self.state.closed {
             event.extensions = self.extensions.clone();
         }
+        let id = event.id.clone();
         self.subscriber.offer(event, self.state.closed);
-        Ok(())
+        Ok(id)
     }
 
     pub fn start(&mut self, now_ms: i64) -> Result<EventStream, Error> {
@@ -125,6 +141,7 @@ impl TextRun {
                 ..RunStartedPayload::default()
             },
             RunStatus::RUNNING,
+            None,
             now_ms,
         )?;
         Ok(self.subscriber.stream())
@@ -137,11 +154,15 @@ impl TextRun {
         inferred: bool,
         now_ms: i64,
     ) -> Result<(), Error> {
-        if self.state.closed {
+        if self.state.closed || self.pending.is_some() {
             return Ok(());
         }
         if self.state.status.is_empty() {
             return Err(Error::InvalidSubmission);
+        }
+        if self.has_permissions() {
+            self.pending = Some(Terminal::Failed(code.into(), message.into(), inferred));
+            return Ok(());
         }
         let events = self.tools.settle(true);
         self.emit_tools(events, now_ms)?;
@@ -164,12 +185,17 @@ impl TextRun {
                 ..RunFailedPayload::default()
             },
             RunStatus::FAILED,
+            None,
             now_ms,
         )
+        .map(|_| ())
     }
 
     pub fn observe(&mut self, notification: NotificationMessage, now_ms: i64) -> Result<(), Error> {
-        if self.state.closed || notification.method != METHOD_SESSION_UPDATE {
+        if self.state.closed
+            || self.pending.is_some()
+            || notification.method != METHOD_SESSION_UPDATE
+        {
             return Ok(());
         }
         if self.state.status.is_empty() {
@@ -252,8 +278,10 @@ impl TextRun {
                         },
                     },
                     RunStatus::RUNNING,
+                    None,
                     now_ms,
                 )
+                .map(|_| ())
             }
             "config_option_update" if decode::<ConfigOptionUpdate>(raw).is_err() => self.fail(
                 "acp_invalid_update",
@@ -307,35 +335,49 @@ impl TextRun {
         if self.state.status.is_empty() {
             return Err(Error::InvalidSubmission);
         }
+        if self.pending.is_some() {
+            return Ok(());
+        }
+        if self.has_permissions() {
+            self.pending = Some(Terminal::Completed(result.stop_reason));
+            return Ok(());
+        }
+        self.complete_stop(result.stop_reason, now_ms)
+    }
+
+    fn complete_stop(&mut self, stop: String, now_ms: i64) -> Result<(), Error> {
         let events = self.tools.settle(!matches!(
-            result.stop_reason.as_str(),
+            stop.as_str(),
             "end_turn" | "max_tokens" | "max_turn_requests"
         ));
         self.emit_tools(events, now_ms)?;
-        match result.stop_reason.as_str() {
-            "end_turn" | "max_tokens" | "max_turn_requests" => self.emit(
-                EnvelopeType::RUN_COMPLETED,
-                &RunCompletedPayload {
-                    session_id: self.context.session_id.clone(),
-                    run_id: self.context.run_id.clone(),
-                    final_response: Message {
-                        id: Some(self.context.message_id.clone()),
-                        role: MessageRole::ASSISTANT,
-                        content: MessageContent::from_text(
-                            self.texts
-                                .get(&self.context.message_id)
-                                .map(String::as_str)
-                                .unwrap_or_default(),
-                        ),
-                        ..Message::default()
+        match stop.as_str() {
+            "end_turn" | "max_tokens" | "max_turn_requests" => self
+                .emit(
+                    EnvelopeType::RUN_COMPLETED,
+                    &RunCompletedPayload {
+                        session_id: self.context.session_id.clone(),
+                        run_id: self.context.run_id.clone(),
+                        final_response: Message {
+                            id: Some(self.context.message_id.clone()),
+                            role: MessageRole::ASSISTANT,
+                            content: MessageContent::from_text(
+                                self.texts
+                                    .get(&self.context.message_id)
+                                    .map(String::as_str)
+                                    .unwrap_or_default(),
+                            ),
+                            ..Message::default()
+                        },
+                        stop_reason: stop,
+                        usage: self.terminal_usage.clone(),
+                        ..RunCompletedPayload::default()
                     },
-                    stop_reason: result.stop_reason,
-                    usage: self.terminal_usage.clone(),
-                    ..RunCompletedPayload::default()
-                },
-                RunStatus::COMPLETED,
-                now_ms,
-            ),
+                    RunStatus::COMPLETED,
+                    None,
+                    now_ms,
+                )
+                .map(|_| ()),
             "cancelled" => self.fail(
                 "acp_unavailable_cancellation",
                 "cancellation evidence is unavailable in the text-run engine",
@@ -350,7 +392,7 @@ impl TextRun {
         }
     }
 
-    fn emit_tools(
+    pub(crate) fn emit_tools(
         &mut self,
         events: Vec<(EnvelopeType, ActionCallPayload)>,
         now_ms: i64,
@@ -358,18 +400,31 @@ impl TextRun {
         for (kind, mut payload) in events {
             payload.session_id = self.context.session_id.clone();
             payload.run_id = self.context.run_id.clone();
-            self.emit(kind, &payload, RunStatus::RUNNING, now_ms)?;
+            self.emit(kind, &payload, RunStatus::RUNNING, None, now_ms)?;
         }
         Ok(())
     }
 
     fn settle_usage(&mut self, raw: Option<&serde_json::value::RawValue>) {
         if !self.state.status.is_empty() {
-            (self.terminal_usage, self.extensions) = self
+            let observed = self
                 .usage_scope
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .settle(raw);
+            if self.pending.is_none() {
+                (self.terminal_usage, self.extensions) = observed;
+            }
+        }
+    }
+
+    pub(crate) fn finish_pending(&mut self, now_ms: i64) -> Result<(), Error> {
+        match self.pending.take() {
+            Some(Terminal::Completed(stop)) => self.complete_stop(stop, now_ms),
+            Some(Terminal::Failed(code, message, inferred)) => {
+                self.fail(&code, &message, inferred, now_ms)
+            }
+            None => Ok(()),
         }
     }
 

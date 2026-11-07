@@ -307,3 +307,35 @@ registration retains weak references and prunes expired entries when new
 requests arrive. Run `rust-acp-outbound.md` for successful frames, quiet-child
 cleanup, deadlines, bounded admission and thread inventories. Session permission
 publication/resolution and run cancellation retain the following approved layers.
+
+## Typed permission projection
+
+`TextRun.permission_request(request, participant, now_ms)` takes a decoded
+native permission request and the admitted control participant. It reuses the
+observed tool identity/input, filters native choices, publishes the permission
+and returns its OAP interaction id. Duplicate native option ids retain their
+last grant meaning and their presented choices.
+
+`permission_reply(&resolution)` validates the control answer and returns an
+opaque `PermissionReply`. Its `interaction_id()` and immutable `response()`
+allow the caller to locate the actual incoming request and send the native
+response through the owned bridge. Write outside the TextRun mutex, then call
+`commit_permission(reply, now_ms)` to publish the correlated OAP resolution.
+A reply belongs to its actual gate object. Another projection's coincident ids
+cannot authorize a commit, and a repeated resolution is refused.
+
+A pending permission defers the first selected parent terminal. Call
+`permission_settlements()` after completing/failing the projection, write its
+native cancellation replies in order and commit them. The last commit settles
+unfinished tools and the parent. Parent settlement cancels local gates even
+when the native cancellation write fails. Selected replies require successful
+native writes before commit. Callers serialize native reply attempts and keep
+projection locks out of native I/O. The following controller layer owns that
+coordination. Pending terminal usage/context stays at its first snapshot while
+later native answers still advance session usage scope.
+
+Closing the projection finishes its retained prefix and refuses a prepared
+commit. The typed methods require an active TextRun and an admitted participant.
+The standalone `rust-acp-permission-projection.md` journey proves native replies
+and three-validator traces. Normal `Session.resolve` permission support remains
+unavailable until the approved controller and Session integration layers land.

@@ -43,3 +43,7 @@ limits remain applicable.
 Run all existing ACP journeys, the full baseline and Rust all-features under
 the same mutex. Read the actual PTY reply and require `/quit` exit 0. Start no
 live provider or simulator and stop everything started by the proof.
+
+The standalone typed permission projection is covered by
+`rust-acp-permission-projection.md`. Its native controller and normal Session
+integration retain their following approved layers.

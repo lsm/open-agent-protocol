@@ -25,6 +25,13 @@ struct Tool {
 }
 
 impl Tools {
+    pub(crate) fn payload(&self, native_id: &str) -> Option<ActionCallPayload> {
+        self.calls
+            .iter()
+            .find(|tool| tool.native.tool_call_id == native_id)
+            .map(|tool| tool.event(EnvelopeType::ACTION_CALL_STARTED).1)
+    }
+
     pub(crate) fn observe(
         &mut self,
         raw: &[u8],

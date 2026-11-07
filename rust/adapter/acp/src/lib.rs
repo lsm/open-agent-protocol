@@ -25,3 +25,6 @@ mod usage;
 pub use usage::UsageScope;
 
 mod tools;
+
+mod permissions;
+pub use permissions::PermissionReply;

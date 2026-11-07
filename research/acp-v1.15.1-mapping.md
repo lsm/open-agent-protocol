@@ -54,3 +54,15 @@ The degraded tool rows describe observed native execution only. Permission
 publication/resolution, accepted host cancellation, reopen and live config
 remain unavailable in this stage. Closing or abandoning an active session
 retains its existing bounded prefix and owned process cleanup contract.
+
+## Typed Rust permission projection
+
+The public TextRun projection now handles typed permission publication, answer
+validation, native reply preparation and correlated commit. Parent transitions
+wait for gate settlements, then settle tools and the parent in order. The
+standalone native bridge consumer compares fixed-clock/id event JSON and
+native host frames with Go, with all three validators checking actual Rust
+events under a synthetic host prefix. This is component evidence. Normal Rust
+Session permission support is unavailable pending its controller/integration
+layers. Native async reply ownership and full corpus replay have separate
+approved slices.

@@ -1,0 +1,143 @@
+import argparse
+import copy
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[4]
+spec = importlib.util.spec_from_file_location('peer', Path(__file__).with_name('rust-acp-text.py'))
+peer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(peer)
+GO = peer.GO.replace('type input struct {', 'type input struct {\n    Resolve bool `json:"resolve"`\n    Granted bool `json:"granted"`')
+start = GO.index('\tmarker := "settled"')
+end = GO.index('\tvar closeError any', start)
+GO = GO[:start] + r'''	events, errors := []protocol.Envelope{}, []string{}
+	for event := range stream {
+		if event.Error != nil {
+			errors = append(errors, event.Error.Error())
+			continue
+		}
+		events = append(events, event.Envelope)
+		if event.Envelope.Type == protocol.TypeActionPermissionRequested && in.Resolve {
+			var permission protocol.PermissionRequestedPayload
+			if err := event.Envelope.DecodePayload(&permission); err != nil { panic(err) }
+			resolution := base.InteractionResolution{RunID:permission.RunID, RespondedBy:permission.RespondedBy,
+				Permission:&protocol.PermissionResolveRequest{InteractionID:permission.InteractionID,
+					RequestedBy:permission.RequestedBy,RespondedBy:permission.RespondedBy,
+					SessionID:permission.SessionID,RunID:permission.RunID,ChoiceID:"pick",Granted:in.Granted}}
+			if err := session.Resolve(ctx,resolution); err != nil { panic(err) }
+		}
+	}
+	deadline := time.Now().Add(10*time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(in.Case,"finished")); err == nil { break }
+		if time.Now().After(deadline) { panic("native wire did not finish") }
+		time.Sleep(time.Millisecond)
+	}
+	closed := session.Close(ctx)
+''' + GO[end:]
+AGENT = '''import json, os, sys
+from pathlib import Path
+out=Path(sys.argv[1])
+scenario=json.loads((out/'scenario.json').read_text())
+(out/'pid').write_text(str(os.getpid()))
+def read():
+    line=sys.stdin.readline()
+    with (out/'host.jsonl').open('a') as stream: stream.write(line)
+    return json.loads(line)
+def send(value):
+    value=dict(jsonrpc='2.0',**value)
+    with (out/'agent.jsonl').open('a') as stream: stream.write(json.dumps(value)+'\\n')
+    print(json.dumps(value),flush=True)
+request=read()
+send(dict(id=request['id'],result=dict(protocolVersion=1,agentCapabilities={})))
+request=read()
+send(dict(id=request['id'],result=dict(sessionId='native-session')))
+prompt=read()
+assert prompt['params']==dict(sessionId='native-session',prompt=[dict(type='text',text='synthetic')]),prompt
+for update in scenario.get('updates',[]): send(dict(method='session/update',params=dict(sessionId='native-session',update=update)))
+for index,params in enumerate(scenario['permissions']):
+    send(dict(id='permission-'+str(index),method='session/request_permission',params=params))
+    if scenario.get('resolve') or scenario.get('invalid'):
+        reply=read()
+        assert reply['id']=='permission-'+str(index),reply
+if scenario.get('error'):
+    send(dict(id=prompt['id'],error=dict(code=-32000,message='synthetic refusal')))
+else:
+    send(dict(id=prompt['id'],result=dict(stopReason=scenario.get('stop','end_turn'))))
+if not scenario.get('resolve') and not scenario.get('invalid'):
+    for index in range(len(scenario['permissions'])):
+        reply=read()
+        assert reply['id']=='permission-'+str(index),reply
+        assert reply['result']['outcome']['outcome']=='cancelled',reply
+(out/'finished').touch()
+sys.stdin.read()
+'''
+
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--output-dir',required=True,type=Path)
+    output=parser.parse_args().output_dir.resolve()
+    output.mkdir(parents=True,exist_ok=False)
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example','permission_projection'],output/'rust-build.log')
+    (output/'reference.go').write_text(GO)
+    peer.run(['gofmt','-w',str(output/'reference.go')],output/'gofmt.log')
+    peer.run(['go','build','-o',str(output/'reference'),str(output/'reference.go')],output/'go-build.log')
+    peer.run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'],output/'goap-build.log')
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate'],output/'validator-build.log')
+    allow=dict(optionId='pick',name='Allow',kind='allow_once')
+    deny=dict(optionId='pick',name='Reject',kind='reject_once')
+    def permission(identifier='tool',options=None):
+        return dict(sessionId='native-session',toolCall=dict(toolCallId=identifier,title='Act',rawInput=dict(path='x')),options=options or [allow])
+    scenarios={
+        'allow':dict(permissions=[permission()],resolve=True,granted=True),
+        'deny':dict(permissions=[permission(options=[deny])],resolve=True,granted=False),
+        'parent-order':dict(permissions=[permission('z'),permission('a')]),
+        'parent-refusal':dict(permissions=[permission()],stop='refusal'),
+        'parent-rpc-error':dict(permissions=[permission()],error=True),
+        'filtered-options':dict(permissions=[permission(options=[dict(optionId='',name='bad',kind='allow_once'),dict(optionId='future',name='Future',kind='new_kind'),allow])],resolve=True,granted=True),
+        'duplicate-option':dict(permissions=[permission(options=[allow,deny])],resolve=True,granted=False),
+        'wrong-session':dict(permissions=[dict(permission(),sessionId='foreign')],invalid=True),
+        'missing-tool-id':dict(permissions=[dict(permission(),toolCall=dict(title='Act'))],invalid=True),
+        'invalid-tool-title':dict(permissions=[dict(permission(),toolCall=dict(toolCallId='tool'))],invalid=True),
+        'invalid-options':dict(permissions=[permission(options=[dict(optionId='future',name='Future',kind='new_kind')])],invalid=True),
+        'malformed-tool':dict(permissions=[dict(permission(),toolCall=dict(toolCallId=7))],invalid=True),
+        'terminal-tool':dict(permissions=[permission()],updates=[dict(sessionUpdate='tool_call',toolCallId='tool',title='Act',status='completed')],invalid=True),
+    }
+    with tempfile.TemporaryDirectory(prefix='oap-permission-projection-') as temporary:
+        agent=Path(temporary)/'agent.py'
+        agent.write_text(AGENT)
+        for name,scenario in scenarios.items():
+            case=output/name
+            case.mkdir()
+            results,wires={},{}
+            for language,binary in [('rust',ROOT/'rust/target/debug/examples/permission_projection'),('go',output/'reference')]:
+                directory=case/language
+                directory.mkdir()
+                (directory/'scenario.json').write_text(json.dumps(scenario))
+                request=dict(path=sys.executable,args=['-u',str(agent),str(directory)],mode=name,case=str(directory),resolve=scenario.get('resolve',False),granted=scenario.get('granted',True))
+                try:
+                    results[language]=json.loads(peer.run([str(binary)],directory/'result.json',json.dumps(request)))
+                    assert peer.absent(int((directory/'pid').read_text())),language+' left a child alive'
+                    wires[language]=[json.loads(line) for line in (directory/'host.jsonl').read_text().splitlines()]
+                finally:
+                    if (directory/'pid').exists() and not peer.absent(int((directory/'pid').read_text())): os.kill(int((directory/'pid').read_text()),signal.SIGKILL)
+            assert wires['rust']==wires['go'],(name,wires)
+            assert results['rust']['events']==results['go']['events'],(name,results)
+            events=results['rust']['events']
+            trace=peer.trace(copy.deepcopy(events),results['go']['admission'],results['go']['descriptor'])
+            path=case/'trace.json'
+            path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
+            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+                peer.run(command+[str(path)],case/f'validate-{language}.log')
+            print(f'PASS {name}: exact Go/Rust projected event JSON and host frames; three validators accept actual Rust events; native children reaped',flush=True)
+    print(f'PASS standalone typed ACP permission projection. Normal Rust Session permission integration remains unavailable. Evidence {output}',flush=True)
+
+
+if __name__=='__main__':
+    main()
