@@ -29,6 +29,8 @@ def main():
     goap = output / "goap"
     build = run(["go", "build", "-o", str(goap), "./go/cmd/goap"], "go-build")
     assert build.returncode == 0, build.stderr
+    build = run(["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"], "zig-build")
+    assert build.returncode == 0, build.stderr
     results = []
     for label, identifier, reference in [
         ("fragment-pipe", "", "#/$defs/value|"),
@@ -61,11 +63,23 @@ def main():
         (directory / "pack.json").write_text(json.dumps(descriptor))
         rust = run([str(ROOT / "rust/target/debug/pack-uri-consumer"), str(directory)], label + ".rust")
         go = run([str(goap), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
-        results.append({"case": label, "rust_exit": rust.returncode, "rust_codes": json.loads(rust.stdout).get("codes", []), "go_exit": go.returncode, "go_codes": sorted(set(re.findall(r"\bpack_[a-z_]+\b", go.stderr)))})
+        zig = run([str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".zig")
+        rust_data = json.loads(rust.stdout)
+        results.append({
+            "case": label,
+            "rust_exit": rust.returncode,
+            "rust_codes": rust_data.get("codes", []),
+            "rust_messages": [r["message"] for r in rust_data.get("refusals", [])],
+            "go_exit": go.returncode,
+            "go_codes": sorted(set(re.findall(r"\bpack_[a-z_]+\b", go.stderr))),
+            "zig_exit": zig.returncode,
+            "zig_output": zig.stdout + zig.stderr,
+        })
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     for result in results:
         escaped = result["case"].endswith("-escaped")
-        assert result["go_exit"] == 0 and result["go_codes"] == [], result
+        assert result["go_exit"] == result["zig_exit"] == 0 and result["go_codes"] == [], result
+        assert all("Ok(" not in message and "Err(" not in message for message in result["rust_messages"]), result
         assert result["rust_exit"] == (0 if escaped else 1), result
         assert result["rust_codes"] == ([] if escaped else ["pack_external_ref"]), result
         print(("AGREE " if escaped else "DOCUMENTED DIVERGENCE ") + result["case"])
