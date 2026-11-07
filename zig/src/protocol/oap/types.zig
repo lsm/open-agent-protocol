@@ -1046,6 +1046,22 @@ pub const MessageSubmitResponse = struct {
     }
 };
 
+pub const TaskCancelOutcome = enum { requested, already_ended, not_cancellable };
+
+pub const TaskCancelRequest = struct {
+    session_id: []const u8,
+    task_id: []const u8,
+    pub fn deinit(self: *TaskCancelRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.task_id);
+    }
+};
+
+pub const TaskCancelResponse = struct {
+    outcome: TaskCancelOutcome,
+    pub fn deinit(_: *TaskCancelResponse, _: std.mem.Allocator) void {}
+};
+
 pub const RunCancelRequest = struct {
     session_id: []const u8,
     run_id: []const u8,
@@ -1177,6 +1193,8 @@ pub const Payload = union(enum) {
     message_submit_response: MessageSubmitResponse,
     session_compact_request: SessionCompactRequest,
     session_compact_response: MessageSubmitResponse,
+    task_cancel_request: TaskCancelRequest,
+    task_cancel_response: TaskCancelResponse,
     run_cancel_request: RunCancelRequest,
     run_cancel_response: RunCancelResponse,
     run_started: RunStarted,
@@ -1227,6 +1245,8 @@ pub const Payload = union(enum) {
             .message_submit_response => |*value| value.deinit(allocator),
             .session_compact_request => |*value| value.deinit(allocator),
             .session_compact_response => |*value| value.deinit(allocator),
+            .task_cancel_request => |*value| value.deinit(allocator),
+            .task_cancel_response => |*value| value.deinit(allocator),
             .run_cancel_request => |*value| value.deinit(allocator),
             .run_cancel_response => |*value| value.deinit(allocator),
             .run_started => |*value| value.deinit(allocator),
@@ -1279,6 +1299,8 @@ pub const Payload = union(enum) {
             .message_submit_response => "session.message.submit.response",
             .session_compact_request => "session.compact.request",
             .session_compact_response => "session.compact.response",
+            .task_cancel_request => "session.task.cancel.request",
+            .task_cancel_response => "session.task.cancel.response",
             .run_cancel_request => "run.cancel.request",
             .run_cancel_response => "run.cancel.response",
             .run_started => "run.started",

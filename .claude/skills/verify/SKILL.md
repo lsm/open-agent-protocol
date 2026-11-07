@@ -34,6 +34,13 @@ If Go reports a missing build-cache archive, retain its stderr and rerun with
 `GOCACHE` pointing at an owned, writable cache directory. Keep that cache for the
 complete rerun, then remove it with the other owned temporary state.
 
+Journeys that use `$EVIDENCE` write their separate artifact directories below a
+fresh shared root. Set it once before running those journeys:
+
+```sh
+export EVIDENCE=$(mktemp -d "${TMPDIR:-/tmp}/oap-journeys.XXXXXX")
+```
+
 The Rust SDK usage consumer has an explicit 10-second fixture handshake budget.
 Its first synthetic fixture delays startup by two seconds to verify that budget
 and retains the complete consumer's elapsed time. SDK transport tests exercise
@@ -115,8 +122,10 @@ until the administrator enables deployment.
 
 ## Evidence and merge
 
-Put commands, exit codes, observed CLI diagnostics and PTY reply/quit evidence,
-artifact paths, and explicit unverified surfaces in the PR description. For
+Keep commands, exit codes, observed CLI diagnostics, PTY reply/quit evidence,
+artifact paths and unverified surfaces in the task evidence report. Summarize
+observable verification briefly in the PR description, using portable commands
+and public links for public repositories. For
 broader Go changes run the Go checks from `CLAUDE.md`; for broader Rust changes
 also run `cargo test --all-features` in `rust/`; for SDK/TUI changes run their
 relevant CI groups and journeys. Do not describe lint or unit tests alone as
@@ -125,5 +134,6 @@ product proof.
 Send Neo `lsm/open-agent-protocol#N` when the PR opens and at merge. Wait for the
 review bot's approval of the latest head and green CI; address review threads,
 reply, and resolve each addressed thread via `resolveReviewThread`. A new commit
-needs fresh review. Manually run `gh pr merge N --squash` only after readiness;
-never enable auto-merge. Clean up processes and the worktree after merging.
+needs fresh review. The task's designated reviewer or merge service performs
+the merge after its exact-head readiness and human-review gates. Clean up
+processes and the worktree after merging.
