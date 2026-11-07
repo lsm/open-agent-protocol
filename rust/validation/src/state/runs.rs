@@ -136,13 +136,6 @@ fn admission_shape(tolerant: bool, p: &MessageSubmitResponse) -> bool {
     true
 }
 
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct RunScope {
-    session_id: Option<String>,
-    run_id: Option<String>,
-}
-
 type Finding = (&'static str, &'static str, &'static str, String, String);
 
 impl State {
@@ -370,13 +363,8 @@ impl State {
     }
 
     fn run_event(&mut self, at: (usize, usize), e: &Envelope) {
-        let scope: RunScope = payload(e);
-        self.check_scope(
-            at,
-            e,
-            &scope.session_id.unwrap_or_default(),
-            &scope.run_id.unwrap_or_default(),
-        );
+        let (session_scope, run_scope) = super::packed::scope(e);
+        self.check_scope(at, e, &session_scope, &run_scope);
         let run_id = os(&e.run_id);
         let triggered = e.envelope_type == EnvelopeType::RUN_STARTED
             && payload::<RunStartedPayload>(e).trigger.is_some();

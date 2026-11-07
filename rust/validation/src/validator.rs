@@ -20,6 +20,7 @@ enum Schemas {
     Packed(Arc<CompiledPacks>),
 }
 
+#[doc = include_str!("../PACKS.md")]
 pub struct Validator {
     core: Schemas,
     tolerant: bool,
