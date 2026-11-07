@@ -17039,6 +17039,71 @@
       "rules": [
         "0069#a-triggered-run-starts-only-on-an-idle-session/2"
       ]
+    },
+    {
+      "id": "ext-nonresponse-reply-field-ignored",
+      "path": "valid/ext-nonresponse-reply-field-ignored.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "extensions"
+      ],
+      "provenance": [
+        "decisions/0004-extension-packs.md"
+      ],
+      "packs": [
+        "packs/reply-roles"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/4",
+        "agent-control-core#request-and-stream-semantics/2",
+        "agent-control-core#request-and-stream-semantics/4"
+      ]
+    },
+    {
+      "id": "ext-request-without-success-refused",
+      "path": "valid/ext-request-without-success-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "extensions"
+      ],
+      "provenance": [
+        "decisions/0004-extension-packs.md"
+      ],
+      "packs": [
+        "packs/reply-roles"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/4",
+        "agent-control-core#request-and-stream-semantics/2",
+        "agent-control-core#request-and-stream-semantics/4"
+      ]
+    },
+    {
+      "id": "ext-undeclared-success-response",
+      "path": "semantic-invalid/ext-undeclared-success-response.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "units": [
+        "extensions"
+      ],
+      "provenance": [
+        "decisions/0004-extension-packs.md"
+      ],
+      "packs": [
+        "packs/reply-roles"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/4",
+        "agent-control-core#request-and-stream-semantics/2",
+        "agent-control-core#request-and-stream-semantics/4"
+      ],
+      "phase": "semantic",
+      "codes": [
+        "missing_response",
+        "unmatched_response"
+      ]
     }
   ]
 }

@@ -1,0 +1,24 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "com.example.replyroles.read",
+    "id": "read",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "refusal",
+    "payload": {
+      "error": {
+        "code": "unsupported_feature",
+        "message": "no result"
+      }
+    },
+    "in_reply_to": "read"
+  }
+]

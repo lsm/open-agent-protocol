@@ -10,6 +10,7 @@ mod live_settings;
 mod model_catalog;
 mod models;
 mod name_pattern;
+mod packed;
 mod provider_attach;
 mod queue;
 mod queue_leads;
@@ -26,6 +27,7 @@ mod steer;
 mod tool_sources;
 mod transcript;
 
+use crate::pack::CompiledPacks;
 use std::collections::{HashMap, HashSet};
 
 use oap_protocol::*;
@@ -44,10 +46,12 @@ struct Request {
     run: String,
     interaction: String,
     responded: bool,
+    gates: Vec<packed::Gate>,
 }
 
 pub(crate) struct State {
     fixture: String,
+    pub(crate) packs: Option<std::sync::Arc<CompiledPacks>>,
     pub diagnostics: Vec<Diagnostic>,
     ids: HashMap<String, usize>,
     requests: HashMap<String, Request>,
@@ -331,6 +335,7 @@ impl State {
     pub fn new(fixture: &str) -> Self {
         Self {
             fixture: fixture.to_owned(),
+            packs: None,
             diagnostics: Vec::new(),
             ids: HashMap::new(),
             requests: HashMap::new(),
@@ -442,9 +447,16 @@ impl State {
         }
         self.ids.insert(id.clone(), i);
         let revision = e.capability_revision.clone().unwrap_or_default();
-        if is_request(&e.envelope_type) {
-            let (session, run) = request_scope(e);
-            self.check_scope(at, e, &session, &run);
+        if self.packed_role(&e.envelope_type, "request") {
+            let (session, run) =
+                if packed::declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some() {
+                    packed::scope(e)
+                } else {
+                    request_scope(e)
+                };
+            if !self.packed_run_event(e) {
+                self.check_scope(at, e, &session, &run);
+            }
             let request = Request {
                 envelope_type: e.envelope_type.clone(),
                 index: i,
@@ -456,10 +468,12 @@ impl State {
                 run,
                 interaction: envelope_interaction(e),
                 responded: false,
+                gates: Vec::new(),
             };
             self.requests.insert(id, request);
         }
-        let duplicate_response = is_response(&e.envelope_type) && !self.response(at, e);
+        let duplicate_response =
+            self.packed_role(&e.envelope_type, "response") && !self.response(at, e);
         self.settling = self.settles_under_previous(e);
         if !self.settling
             && !revision.is_empty()
@@ -482,14 +496,15 @@ impl State {
         if duplicate_response {
             return;
         }
+        self.check_result_images(at, e);
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE
             && !self.current_capability.is_empty()
             && revision != self.current_capability
         {
+            self.pack_envelope(at, e);
             return;
         }
         self.payload_scope(at, e);
-        self.check_result_images(at, e);
         self.list_scope(at, e);
         if e.envelope_type == EnvelopeType::SESSION_LIST_RESPONSE {
             self.session_list_response(at, e);
@@ -544,7 +559,10 @@ impl State {
             self.current_capability = revision;
             self.capabilities_stale = true;
             self.limits = None;
-        } else if is_request(t) && self.capabilities_stale && !REFRESH_EXEMPT.contains(t) {
+        } else if self.packed_role(t, "request")
+            && self.capabilities_stale
+            && !REFRESH_EXEMPT.contains(t)
+        {
             self.add(
                 codes::STALE_CAPABILITY_REVISION,
                 at,
@@ -553,13 +571,21 @@ impl State {
                 "request occurred before the refreshed capabilities capabilities.updated owes",
             );
         }
+        if packed::declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some()
+            && !self.packed_run_event(e)
+            && !self.packed_role(&e.envelope_type, "request")
+        {
+            let (session, run) = packed::scope(e);
+            self.check_scope(at, e, &session, &run);
+        }
+        self.pack_envelope(at, e);
     }
 
     fn settles_under_previous(&mut self, e: &Envelope) -> bool {
         let Some(revision) = e.capability_revision.as_deref().filter(|r| !r.is_empty()) else {
             return false;
         };
-        if is_response(&e.envelope_type) {
+        if self.packed_role(&e.envelope_type, "response") {
             return self
                 .requests
                 .get(&os(&e.in_reply_to))
@@ -605,7 +631,7 @@ impl State {
             );
             return true;
         };
-        let expected = expected_response(&request.envelope_type);
+        let expected = packed::expected(self.packs.as_deref(), &request.envelope_type);
         if e.envelope_type != expected && e.envelope_type != EnvelopeType::ERROR_RESPONSE {
             self.add_expected(
                 codes::UNMATCHED_RESPONSE,
@@ -659,7 +685,12 @@ impl State {
         let (session, run, prefix) = if error {
             (os(&e.session_id), os(&e.run_id), "")
         } else {
-            let (session, run) = response_scope(e);
+            let (session, run) =
+                if packed::declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some() {
+                    packed::scope(e)
+                } else {
+                    response_scope(e)
+                };
             (session, run, "/payload")
         };
         let kind = if error { "error response" } else { "response" };

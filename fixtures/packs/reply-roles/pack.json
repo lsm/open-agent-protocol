@@ -1,0 +1,45 @@
+{
+  "id": "com.example.replyroles",
+  "version": "1",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.replyroles.notice",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/notice",
+      "replies_to": "com.example.replyroles.other"
+    },
+    {
+      "type": "com.example.replyroles.read",
+      "role": "request",
+      "schema": "types.schema.json#/$defs/read"
+    },
+    {
+      "type": "com.example.replyroles.other",
+      "role": "request",
+      "schema": "types.schema.json#/$defs/other"
+    },
+    {
+      "type": "com.example.replyroles.read.response",
+      "role": "response",
+      "schema": "types.schema.json#/$defs/response",
+      "replies_to": "com.example.replyroles.other"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.replyroles.notice",
+      "ungated": true
+    },
+    {
+      "type": "com.example.replyroles.read",
+      "ungated": true
+    },
+    {
+      "type": "com.example.replyroles.other",
+      "ungated": true
+    }
+  ]
+}

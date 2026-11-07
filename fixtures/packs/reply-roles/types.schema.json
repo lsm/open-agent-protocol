@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "notice": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.replyroles.notice"
+        }
+      }
+    },
+    "read": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.replyroles.read"
+        }
+      }
+    },
+    "other": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.replyroles.other"
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.replyroles.read.response"
+        }
+      }
+    }
+  }
+}

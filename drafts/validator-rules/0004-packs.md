@@ -74,6 +74,6 @@ These three are rows of the same `### A pack declares what it defines` rule, num
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#a-pack-declares-what-it-defines/8` | An event, or a success response, carrying a packed type or member MUST NOT appear unless its gate key is advertised above `unavailable`. | L106–112 | `unavailable_capability` | `packstate.go:packEnvelope` | `packEnvelope` | — |
-| `0004#a-pack-declares-what-it-defines/9` | A packed request under an unadvertised gate key MUST be refused with the typed unsupported-feature error naming that key. | L108–112 | `unavailable_capability` | `packstate.go:settleRefusal` | `packEnvelope` | — |
-| `0004#a-pack-declares-what-it-defines/10` | An endpoint advertising a pack's key MUST NOT refuse a schema-valid packed request under a code that request's `refusals` does not list. | L116–124 | `unhonoured_capability` | `packstate.go:settleRefusal` | `packEnvelope` | — |
+| `0004#a-pack-declares-what-it-defines/8` | An event, or a success response, carrying a packed type or member MUST NOT appear unless its gate key is advertised above `unavailable`. | L106–112 | `unavailable_capability` | `packstate.go:packEnvelope` | `packEnvelope` | `state/packed.rs:pack_envelope` |
+| `0004#a-pack-declares-what-it-defines/9` | A packed request under an unadvertised gate key MUST be refused with the typed unsupported-feature error naming that key. | L108–112 | `unavailable_capability` | `packstate.go:settleRefusal` | `packEnvelope` | `state/packed.rs:pack_refusal` |
+| `0004#a-pack-declares-what-it-defines/10` | An endpoint advertising a pack's key MUST NOT refuse a schema-valid packed request under a code that request's `refusals` does not list. | L116–124 | `unhonoured_capability` | `packstate.go:settleRefusal` | `packEnvelope` | `state/packed.rs:pack_refusal` |

@@ -1,0 +1,19 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "com.example.replyroles.other",
+    "id": "other",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "com.example.replyroles.read.response",
+    "id": "reply",
+    "payload": {},
+    "in_reply_to": "other"
+  }
+]

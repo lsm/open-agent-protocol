@@ -34,16 +34,45 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
     let mut wrong = Vec::new();
     let mut agreeing = Vec::new();
     for entry in manifest["fixtures"].as_array().unwrap() {
-        if entry["kind"] == "load-invalid" {
-            continue;
-        }
         let id = entry["id"].as_str().unwrap();
         let path = entry["path"].as_str().unwrap();
+        let packs: Vec<_> = entry["packs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|p| fixtures().join(p.as_str().unwrap()))
+            .collect();
+        if entry["kind"] == "load-invalid" {
+            let directories: Vec<_> = std::iter::once(fixtures().join(path))
+                .chain(packs)
+                .collect();
+            match Validator::with_packs(&directories) {
+                Ok(_) => wrong.push(format!("{id}: expected a load refusal")),
+                Err(error) => {
+                    let want: BTreeSet<_> = entry["codes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|c| c.as_str().unwrap())
+                        .collect();
+                    if error.codes() != want {
+                        wrong.push(format!("{id}: want {want:?}, got {:?}", error.codes()));
+                    }
+                }
+            }
+            judged.insert(id);
+            continue;
+        }
+        let packed = if packs.is_empty() {
+            None
+        } else {
+            Some(Validator::with_packs(&packs).unwrap())
+        };
         let data = std::fs::read(fixtures().join(path)).unwrap();
         let result = if entry["profile"] == "model-provider-core" {
             provider.validate(&data, path)
         } else {
-            validator.validate(&data, path)
+            packed.as_ref().unwrap_or(&validator).validate(&data, path)
         };
         let mut want: Vec<&str> = entry["codes"]
             .as_array()
