@@ -748,6 +748,10 @@ impl State {
             format!("agent_control.{name}"),
             format!("action.{name}"),
         ];
+        self.feature_keys(at, e, &keys);
+    }
+
+    pub(super) fn feature_keys(&mut self, at: (usize, usize), e: &Envelope, keys: &[String]) {
         if !self.settling && (self.current_capability.is_empty() || self.capabilities_stale) {
             self.add(
                 codes::UNAVAILABLE_CAPABILITY,

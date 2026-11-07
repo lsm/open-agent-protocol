@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use oap_protocol::Envelope;
 use serde_json::Value;
 
 use crate::diagnostic::sort_diagnostics;
+use crate::pack::{CompiledPacks, PackLoadError, PackLoader};
 use crate::schema::{compile, SchemaError, SCHEMAS};
 use crate::state::State;
 use crate::trace::{duplicate_key, parse_trace};
@@ -13,14 +15,25 @@ use crate::{codes, Diagnostic, Phase, ValidationResult};
 const AUTH_REPLY: &str = "auth.login.reply.request";
 const COMBINATORS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 
+enum Schemas {
+    Core(jsonschema::Validator),
+    Packed(Arc<CompiledPacks>),
+}
+
 pub struct Validator {
-    core: jsonschema::Validator,
+    core: Schemas,
 }
 
 impl Validator {
     pub fn new() -> Result<Self, SchemaError> {
         Ok(Self {
-            core: compile("envelope.schema.json")?,
+            core: Schemas::Core(compile("envelope.schema.json")?),
+        })
+    }
+
+    pub fn with_packs(directories: &[PathBuf]) -> Result<Self, PackLoadError> {
+        Ok(Self {
+            core: Schemas::Packed(Arc::new(PackLoader::load(directories)?)),
         })
     }
 
@@ -105,6 +118,9 @@ impl Validator {
         }
         if diagnostics.is_empty() {
             let mut state = State::new(fixture);
+            if let Schemas::Packed(packs) = &self.core {
+                state.packs = Some(Arc::clone(packs));
+            }
             for (index, envelope) in envelopes.iter().enumerate() {
                 state.apply(index, items[index].line, envelope);
             }
@@ -116,13 +132,16 @@ impl Validator {
     }
 
     fn schema_diagnostic(&self, value: &Value, fixture: &str) -> Option<Diagnostic> {
-        Self::diagnose_schema(
-            &self.core,
-            value,
-            fixture,
-            value.get("type").and_then(Value::as_str),
-            None,
-        )
+        match &self.core {
+            Schemas::Packed(packs) => packs.validate_schema(value, fixture).err().map(|d| *d),
+            Schemas::Core(schema) => Self::diagnose_schema(
+                schema,
+                value,
+                fixture,
+                value.get("type").and_then(Value::as_str),
+                None,
+            ),
+        }
     }
 
     pub(crate) fn diagnose_schema(

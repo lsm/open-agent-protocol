@@ -2,7 +2,7 @@ use oap_protocol::*;
 use serde_json::Value;
 
 use super::controls::affirmative;
-use super::{is_request, State};
+use super::State;
 use crate::codes;
 
 fn carries_image(result: Option<&Value>) -> bool {
@@ -65,7 +65,7 @@ fn tool_result_image(node: &Value, pointer: &str) -> Option<String> {
 
 impl State {
     pub(super) fn check_result_images(&mut self, at: (usize, usize), e: &Envelope) {
-        if is_request(&e.envelope_type) {
+        if self.packed_role(&e.envelope_type, "request") {
             return;
         }
         if self

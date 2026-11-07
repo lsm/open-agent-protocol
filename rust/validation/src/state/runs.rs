@@ -166,7 +166,7 @@ impl State {
                 }
                 Some(_) => {}
             }
-        } else if RUN_EVENTS.contains(t) {
+        } else if RUN_EVENTS.contains(t) || self.packed_run_event(e) {
             self.run_event(at, e);
         }
     }
