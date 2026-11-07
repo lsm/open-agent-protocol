@@ -1438,7 +1438,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Sixteen ops, plus `shutdown`, which [Shutdown and exit on
+Seventeen ops, plus `shutdown`, which [Shutdown and exit on
 stdio](#shutdown-and-exit-on-stdio) describes, with its route `POST /shutdown`.
 Each row gives the request line's parameters, the answer, and the errors. A
 refusal the row does not name is `internal` on both, with the
