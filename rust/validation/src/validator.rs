@@ -116,16 +116,42 @@ impl Validator {
     }
 
     fn schema_diagnostic(&self, value: &Value, fixture: &str) -> Option<Diagnostic> {
-        if self.core.is_valid(value) {
+        Self::diagnose_schema(
+            &self.core,
+            value,
+            fixture,
+            value.get("type").and_then(Value::as_str),
+            None,
+        )
+    }
+
+    pub(crate) fn diagnose_schema(
+        schema: &jsonschema::Validator,
+        value: &Value,
+        fixture: &str,
+        preferred_type: Option<&str>,
+        branch_index: Option<usize>,
+    ) -> Option<Diagnostic> {
+        if schema.is_valid(value) {
             return None;
         }
-        let list = serde_json::to_value(self.core.evaluate(value).list()).unwrap_or_default();
+        let list = serde_json::to_value(schema.evaluate(value).list()).unwrap_or_default();
+        let selected = branch_index.map(|index| format!("/oneOf/{index}"));
         let details: Vec<&Value> = list
             .get("details")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter(|detail| detail.get("errors").is_some())
+            .filter(|detail| {
+                selected.as_ref().is_none_or(|selected| {
+                    let path = detail["evaluationPath"].as_str().unwrap_or_default();
+                    !path.starts_with("/oneOf/")
+                        || path
+                            .strip_prefix(selected)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                })
+            })
             .collect();
         let paths: Vec<&str> = details
             .iter()
@@ -166,11 +192,7 @@ impl Validator {
                 }
             }
         }
-        let declared = value
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if let Some(want) = envelope_branches().get(declared) {
+        if let Some(want) = preferred_type.and_then(|kind| envelope_branches().get(kind)) {
             let preferred: Vec<_> = leaves
                 .iter()
                 .filter(|(branch, _, _)| branch.is_none_or(|b| b == want.as_str()))
@@ -197,7 +219,7 @@ impl Validator {
     }
 }
 
-fn contains_auth_reply(raw: &str) -> bool {
+pub(crate) fn contains_auth_reply(raw: &str) -> bool {
     raw.contains(AUTH_REPLY)
         || serde_json::from_str::<Value>(raw)
             .is_ok_and(|value| value.get("type").and_then(Value::as_str) == Some(AUTH_REPLY))
