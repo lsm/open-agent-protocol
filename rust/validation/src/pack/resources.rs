@@ -22,6 +22,23 @@ impl PackResources {
         &self.documents
     }
 
+    pub(super) fn schema_documents(&self) -> Vec<(String, &Value)> {
+        let mut documents: Vec<_> = self
+            .documents
+            .iter()
+            .map(|(uri, document)| (uri.clone(), document))
+            .collect();
+        for (_, descriptor) in self.descriptors() {
+            for (index, member) in entries(descriptor, "payload_members").enumerate() {
+                documents.push((
+                    format!("{}member-{index}.json", base(descriptor)),
+                    &member["schema"],
+                ));
+            }
+        }
+        documents
+    }
+
     pub fn manifests(&self) -> &BTreeMap<String, PathBuf> {
         &self.manifests
     }
@@ -94,6 +111,7 @@ impl PackLoader {
         if !found.is_empty() {
             return Err(PackLoadError { refusals: found });
         }
+        super::references::check(&resources)?;
         Ok(resources)
     }
 }

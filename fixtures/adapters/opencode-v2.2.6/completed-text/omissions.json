@@ -1,0 +1,7 @@
+[
+  {
+    "index": 2,
+    "type": "session.step.started",
+    "reason": "step accounting only; no core OAP event"
+  }
+]

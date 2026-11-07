@@ -119,6 +119,7 @@ type SessionInfo struct {
 	Time struct {
 		Created  int64  `json:"created"`
 		Updated  int64  `json:"updated"`
+		Busy     *int64 `json:"busy,omitempty"`
 		Idle     *int64 `json:"idle,omitempty"`
 		Viewed   *int64 `json:"viewed,omitempty"`
 		Archived *int64 `json:"archived,omitempty"`
@@ -151,6 +152,7 @@ func (i SessionInfo) Directory() string {
 type ServerInfo struct {
 	Version      string          `json:"version"`
 	PID          int             `json:"pid"`
+	Hostname     string          `json:"hostname,omitempty"`
 	URLs         []string        `json:"urls"`
 	Paths        json.RawMessage `json:"paths"`
 	Capabilities json.RawMessage `json:"capabilities"`
@@ -195,6 +197,8 @@ const (
 	TypePermissionAsked      Type = "permission.asked"
 	TypePermissionReplied    Type = "permission.replied"
 	TypeViewed               Type = "session.viewed"
+	TypeArchived             Type = "session.archived"
+	TypeUnarchived           Type = "session.unarchived"
 	TypeUsageUpdated         Type = "session.usage.updated"
 	TypeDeleted              Type = "session.deleted"
 	TypeForked               Type = "session.forked"
@@ -221,7 +225,7 @@ func (t Type) Supported() bool {
 		TypeTextStarted, TypeTextDelta, TypeTextEnded, TypeReasoningStarted, TypeReasoningDelta, TypeReasoningEnded,
 		TypeToolInputStarted, TypeToolInputDelta, TypeToolInputEnded, TypeToolCalled, TypeToolProgress,
 		TypeToolSuccess, TypeToolFailed, TypeCreated, TypeAgentSelected, TypeModelSelected, TypeMoved,
-		TypeRenamed, TypeMetadataUpdated, TypePermissions, TypeViewed, TypeUsageUpdated, TypeDeleted,
+		TypeRenamed, TypeMetadataUpdated, TypePermissions, TypeViewed, TypeArchived, TypeUnarchived, TypeUsageUpdated, TypeDeleted,
 		TypeForked, TypeInstructionsUpdated, TypeSynthetic, TypeSkillActivated, TypeShellStarted,
 		TypeShellEnded, TypeRetryScheduled, TypeCompactionStarted, TypeCompactionDelta, TypeCompactionEnded,
 		TypeCompactionFailed, TypeRevertStaged, TypeRevertCleared, TypeRevertCommitted,
@@ -375,6 +379,7 @@ type StepEndedData struct {
 	Finish           string          `json:"finish"`
 	RawFinish        string          `json:"rawFinish,omitempty"`
 	ProviderState    json.RawMessage `json:"providerState,omitempty"`
+	Native           json.RawMessage `json:"native,omitempty"`
 	Cost             float64         `json:"cost"`
 	Tokens           TokenAccounting `json:"tokens"`
 	Snapshot         string          `json:"snapshot,omitempty"`
@@ -388,6 +393,7 @@ type StepFailedData struct {
 	Finish           string           `json:"finish,omitempty"`
 	RawFinish        string           `json:"rawFinish,omitempty"`
 	ProviderState    json.RawMessage  `json:"providerState,omitempty"`
+	Native           json.RawMessage  `json:"native,omitempty"`
 	Cost             *float64         `json:"cost,omitempty"`
 	Tokens           *TokenAccounting `json:"tokens,omitempty"`
 	Snapshot         string           `json:"snapshot,omitempty"`
@@ -399,6 +405,7 @@ type PartStartedData struct {
 	AssistantMessage MessageID       `json:"assistantMessageID"`
 	Ordinal          int             `json:"ordinal"`
 	State            json.RawMessage `json:"state,omitempty"`
+	Native           json.RawMessage `json:"native,omitempty"`
 }
 
 type PartDeltaData struct {
@@ -414,6 +421,7 @@ type PartEndedData struct {
 	Ordinal          int             `json:"ordinal"`
 	Text             string          `json:"text"`
 	State            json.RawMessage `json:"state,omitempty"`
+	Native           json.RawMessage `json:"native,omitempty"`
 }
 
 type TextEndedData = PartEndedData
@@ -476,6 +484,7 @@ type ToolCalledData struct {
 	Input            map[string]any  `json:"input"`
 	Executed         bool            `json:"executed"`
 	State            json.RawMessage `json:"state,omitempty"`
+	Native           json.RawMessage `json:"native,omitempty"`
 }
 
 type ToolProgressData struct {
@@ -493,6 +502,7 @@ type ToolSuccessData struct {
 	Metadata         json.RawMessage `json:"metadata,omitempty"`
 	Executed         bool            `json:"executed"`
 	ResultState      json.RawMessage `json:"resultState,omitempty"`
+	Native           json.RawMessage `json:"native,omitempty"`
 }
 
 type ToolFailedData struct {
@@ -504,6 +514,7 @@ type ToolFailedData struct {
 	Metadata         json.RawMessage `json:"metadata,omitempty"`
 	Executed         bool            `json:"executed"`
 	ResultState      json.RawMessage `json:"resultState,omitempty"`
+	Native           json.RawMessage `json:"native,omitempty"`
 }
 
 type ToolContent struct {

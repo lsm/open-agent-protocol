@@ -1,0 +1,7 @@
+[
+  {
+    "index": 4,
+    "method": "session/update",
+    "reason": "arrives after authoritative terminal or is superseded by fatal settlement"
+  }
+]

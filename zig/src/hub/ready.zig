@@ -3,7 +3,7 @@ const pollable = @import("builtin").os.tag != .windows;
 
 pub const Token = struct {
     queue: *Queue,
-    index: usize,
+    index: ?usize,
     previous: ?*Token = null,
     next: ?*Token = null,
     queued: bool = false,

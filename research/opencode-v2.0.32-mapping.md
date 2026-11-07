@@ -1,6 +1,6 @@
 # OpenCode v2.0.32 mapping ledger
 
-Status: the current pin, a move over
+Status: a retired pin, a move over
 [`opencode-v2.0.26-mapping.md`](opencode-v2.0.26-mapping.md), itself a move
 over [`opencode-v2.0.24-mapping.md`](opencode-v2.0.24-mapping.md), which
 remains the mapping. This one records only what moved between v2.0.26 and

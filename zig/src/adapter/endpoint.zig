@@ -300,6 +300,7 @@ pub const Endpoint = struct {
             .message_submit_request => |*payload| try self.submit(arena, &request, payload, descriptor, refusal),
             .session_compact_request => |*payload| try self.compact(arena, &request, payload, refusal),
             .run_cancel_request => |*payload| try self.cancel(arena, &request, payload, refusal),
+            .task_cancel_request => |*payload| try self.cancelTask(arena, &request, payload, refusal),
             .user_input_resolve_request => |*payload| try self.resolveInput(arena, &request, payload, refusal),
             .permission_resolve_request => |*payload| try self.resolvePermission(arena, &request, payload, refusal),
             .call_resolve_request => |*payload| try self.resolveCall(arena, &request, payload, refusal),
@@ -725,6 +726,19 @@ pub const Endpoint = struct {
             .capability_revision = request.capability_revision,
             .payload = .{ .session_compact_response = admission },
         });
+    }
+
+    fn cancelTask(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.TaskCancelRequest, refusal: *contract.Refusal) Served!void {
+        const entry = try self.entryFor(arena, request);
+        try self.requireScope(arena, payload.session_id, entry);
+        const cancel_task = entry.session.vtable.cancel_task orelse return refusal.unsupported(contract.feature_task_cancel, contract.reason_unadvertised);
+        const result = try cancel_task(entry.session.ptr, payload.task_id, refusal);
+        try self.respond(arena, request, .{ .id = "", .session_id = entry.session.id(), .capability_revision = request.capability_revision, .payload = .{ .task_cancel_response = result } });
+        self.drainEntry(entry) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
+        };
     }
 
     fn cancel(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.RunCancelRequest, refusal: *contract.Refusal) Served!void {
