@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -199,6 +200,26 @@ def main():
         "gates":[{"type":request, "ungated":True}, {"type":event, "ungated":True}],
     }))
     image = {"nested":{"type":"tool_result", "result":[{"type":"image", "image":{"url":"https://example.invalid/image.png"}}]}}
+    image_pack = output / "descriptor-image"
+    shutil.copytree(ROOT / "fixtures/packs/descriptor-member", image_pack)
+    descriptor = json.loads((image_pack / "pack.json").read_text())
+    descriptor["payload_members"][0]["schema"] = {
+        "anyOf":[descriptor["payload_members"][0]["schema"], {"type":"object"}],
+    }
+    (image_pack / "pack.json").write_text(json.dumps(descriptor))
+    trace = json.loads((image_pack / "fixtures/region-on-stale-descriptor.json").read_text())
+    trace[4]["payload"]["com.example.descriptor.region"] = image
+    path = output / "stale-descriptor-member-image.json"
+    path.write_text(json.dumps(trace))
+    judgment = compare(goap, rust, path, [image_pack], ["stale_capability_revision", "unavailable_capability"],
+                       output, "stale-descriptor-member-image")
+    assert judgment["diagnostics"] == [
+        ("semantic", "stale_capability_revision", 4),
+        ("semantic", "stale_capability_revision", 5),
+        ("semantic", "unavailable_capability", 4),
+        ("semantic", "unavailable_capability", 4),
+    ], judgment
+    results.append(judgment)
     for label, trace, expected in [
         ("declared-roles-override-suffixes", [envelope(request,"request",{}), envelope(response,"response",{},in_reply_to="request")], []),
         ("packed-request-image", [envelope(request,"request",image), envelope(response,"response",{},in_reply_to="request")], []),
