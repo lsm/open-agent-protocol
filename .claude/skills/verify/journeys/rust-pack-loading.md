@@ -1,12 +1,13 @@
-# Rust staged pack loading
+# Rust pack loading and validation
 
 The declaration constructor checks descriptor shape, declared namespaces,
 prefix freedom, roles, reply targets, refusals and admitted gates, including
 payload-member declarations. `read_resources` adds contained resource loading,
 exact dependencies and reference ownership. Each surface states its staged
-contract. Branch compilation and corpus checks follow in the remaining slices.
-Shared trace parity includes load-invalid fixtures once the complete loader is
-connected.
+contract. `PackResources::compile` builds the schema operation, and
+`PackLoader::load` completes corpus policy. `Validator::with_packs` executes
+strict traces. Shared trace parity includes load refusals; tolerant construction
+follows in the successor.
 
 Run from the repository root:
 
