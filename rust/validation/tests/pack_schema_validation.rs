@@ -52,3 +52,25 @@ fn member_errors_point_into_the_original_payload() {
     assert_eq!(diagnostic.code, "schema_invalid");
     assert_eq!(diagnostic.pointer, "/payload/com.example.descriptor.region");
 }
+
+#[test]
+fn schema_checks_leave_the_callers_value_unchanged_and_redact_auth_answers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/packs/storage");
+    let compiled = PackLoader::load(&[root]).unwrap();
+    let value = serde_json::json!({
+        "protocol":"SENSITIVE_TEST_CODE", "version":"0.1",
+        "profile":"open-agent-protocol.agent-control-core",
+        "type":"auth.login.reply.request", "id":"reply",
+        "payload":{"flow_id":"flow", "prompt_id":"prompt", "answer":"SENSITIVE_TEST_CODE"}
+    });
+    let original = value.clone();
+    let diagnostic = compiled.validate_schema(&value, "redaction").unwrap_err();
+    assert_eq!(value, original);
+    assert_eq!(
+        diagnostic.message,
+        "invalid auth reply (sensitive answer redacted)"
+    );
+    assert!(!serde_json::to_string(&diagnostic)
+        .unwrap()
+        .contains("SENSITIVE_TEST_CODE"));
+}
