@@ -43,12 +43,17 @@ for line in sys.stdin:
  else:
   emit(dict(events[-1],id='foreign',run_id='foreign'))
   for event in replay: emit(event)
+if mode=='delayed-exit': time.sleep(.75)
 "#;
 
 fn seeded(mode: &str) -> Client {
     let mut command = Command::new("python3");
     command.args(["-u", "-c", ENDPOINT, mode]);
-    let mut client = Client::spawn(&mut command, Duration::from_millis(500)).unwrap();
+    let within = match mode {
+        "normal" | "delayed-exit" => Duration::from_secs(2),
+        _ => Duration::from_millis(500),
+    };
+    let mut client = Client::spawn(&mut command, within).unwrap();
     client
         .send(
             Envelope::new(
@@ -68,9 +73,8 @@ fn seeded(mode: &str) -> Client {
     client
 }
 
-#[test]
-fn an_exact_replay_passes_without_duplicating_the_collected_trace() {
-    let mut client = seeded("normal");
+fn exact_replay(mode: &str) {
+    let mut client = seeded(mode);
     let before = client.transcript().len();
     let mut runner = Runner::new(&mut client, "s");
     runner.replay_run(&"r".into());
@@ -83,6 +87,16 @@ fn an_exact_replay_passes_without_duplicating_the_collected_trace() {
     assert_eq!(client.event().unwrap().id.as_str(), "foreign");
     client.close_input();
     assert!(client.wait().unwrap().success());
+}
+
+#[test]
+fn an_exact_replay_passes_without_duplicating_the_collected_trace() {
+    exact_replay("normal");
+}
+
+#[test]
+fn cooperative_replay_endpoint_has_time_to_exit_after_eof() {
+    exact_replay("delayed-exit");
 }
 
 #[test]
