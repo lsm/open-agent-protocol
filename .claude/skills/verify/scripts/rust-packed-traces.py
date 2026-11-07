@@ -127,6 +127,10 @@ def main():
             results.append(compare(goap, rust, ROOT / "fixtures" / fixture["path"],
                                    [ROOT / "fixtures" / p for p in fixture["packs"]],
                                    fixture.get("codes", []), output, fixture["id"]))
+    descriptor = ROOT / "fixtures/packs/descriptor-member"
+    results.append(compare(goap, rust, descriptor / "fixtures/region-on-stale-descriptor.json",
+                           [descriptor], ["stale_capability_revision", "unavailable_capability"],
+                           output, "stale-descriptor-member-gate"))
     storage = ROOT / "fixtures/packs/storage"
     base = json.loads((ROOT / "fixtures/valid/ext-advertised-key-gated.json").read_text())
     mutations = []

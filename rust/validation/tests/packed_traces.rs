@@ -75,3 +75,25 @@ fn a_request_without_a_declared_success_type_only_accepts_a_refusal() {
         BTreeSet::from(["unmatched_response", "missing_response"])
     );
 }
+
+#[test]
+fn a_stale_descriptor_keeps_its_member_gate_and_cannot_clear_the_refresh_window() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let pack = root.join("packs/descriptor-member");
+    let validator = Validator::with_packs(std::slice::from_ref(&pack)).unwrap();
+    let trace = std::fs::read(pack.join("fixtures/region-on-stale-descriptor.json")).unwrap();
+    let result = validator.validate(&trace, "stale-descriptor-member");
+    let observed: BTreeSet<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.index))
+        .collect();
+    assert_eq!(
+        observed,
+        BTreeSet::from([
+            ("stale_capability_revision", 4),
+            ("unavailable_capability", 4),
+            ("stale_capability_revision", 5),
+        ])
+    );
+}
