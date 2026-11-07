@@ -25,9 +25,8 @@ fn tolerant_validation_accepts_unknown_envelopes_but_keeps_known_payload_shapes(
     assert!(!strict.validate(&data, "additive-member").valid());
     assert!(tolerant.validate(&data, "additive-member").valid());
     trace[2]["payload"]["status"] = json!("failed");
-    assert!(!tolerant
-        .validate(&serde_json::to_vec(&trace).unwrap(), "known-const")
-        .valid());
+    let result = tolerant.validate(&serde_json::to_vec(&trace).unwrap(), "known-const");
+    assert_eq!(result.diagnostics[0].pointer, "/payload/status");
 }
 
 #[test]

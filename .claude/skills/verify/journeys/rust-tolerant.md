@@ -22,6 +22,9 @@ pass tolerant validation. Known constants, required fields, numeric enums and
 known discriminator branches must enforce their constraints. Conditions under
 `if` must preserve their enum tests. A malformed declared packed type must draw
 its schema diagnostic even when the generic unknown-type fallback is available.
+The selected branch must report the missing packed payload key at `/payload`
+and a wrong core status constant at `/payload/status` in both modes; root
+`oneOf` and tolerant `anyOf` must narrow diagnostics consistently.
 
 Future run statuses and admission values are opaque where their vocabulary is
 unknown. Known values still constrain each other, and the status transition table

@@ -32,9 +32,10 @@ def main():
             go = NATIVE["run"]([goap, "validate", "--format", "json", "--mode", mode, *flags, path], output, label + "." + mode + ".go")
             rs = NATIVE["run"]([rust, *(["--tolerant"] if mode == "tolerant" else []), *flags, path], output, label + "." + mode + ".rust")
             go_report, rust_report = json.loads(go.stdout)[0], json.loads(rs.stdout)
-            if label == "ext-packed-type-malformed":
+            pointers = {"ext-packed-type-malformed":"/payload", "started-const":"/payload/status"}
+            if label in pointers:
                 diagnostic = rust_report["diagnostics"][0]
-                assert diagnostic.get("pointer") == "/payload", (mode, diagnostic)
+                assert diagnostic.get("pointer") == pointers[label], (mode, diagnostic)
             go_shape = NATIVE["shape"](go_report.get("diagnostics"))
             rust_shape = NATIVE["shape"](rust_report.get("diagnostics"))
             assert go_report["valid"] == valid and go.returncode == int(not valid), (label, mode, go_report)
