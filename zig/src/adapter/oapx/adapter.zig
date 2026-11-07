@@ -1041,6 +1041,7 @@ pub const Session = struct {
         }
         self.gate.cancelled.store(false, .release);
         self.call_gate.cancelled.store(false, .release);
+        self.jobs.beginRun();
         if (run.compaction) {
             const transcripts = self.compactionTranscripts(a) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -1498,6 +1499,7 @@ pub const Session = struct {
         self.gate.cancel();
         self.call_gate.cancel();
         self.runtime.cancel();
+        self.jobs.endMoved();
 
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
@@ -5163,6 +5165,14 @@ test "a steer naming a model is refused as unsatisfiable, since it cannot change
     try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
 }
 
+fn startSleepingJob(session: *Session, arena: std.mem.Allocator, root: []const u8, call_id: []const u8) ![]const u8 {
+    const args = try std.fmt.allocPrint(arena, "{{\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+    const tools = local_tools.shell.sessionTools(session.jobs);
+    var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, call_id, args, null, null, null, testing.allocator);
+    result.deinit(testing.allocator);
+    return (try session.jobs.tasksForCall(arena, call_id))[0].task_id;
+}
+
 test "a shell background job is visible as a session task before its run ends" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = testing.tmpDir(.{});
@@ -5370,7 +5380,9 @@ test "a spawned job is reported even if its shell call fails or the run ends fir
             .tool_name = Bytes.initBorrowed("Shell"),
             .args_json = Bytes.initBorrowed("{}"),
         } });
-        const job = try session.jobs.start(testing.allocator, root, "sleep 30", "call-job");
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const task_id = try startSleepingJob(session, arena.allocator(), root, "call-job");
         if (variant == 0) {
             try session.translate(.{ .tool_execution_end = .{
                 .tool_call_id = Bytes.initBorrowed("call-job"),
@@ -5387,7 +5399,7 @@ test "a spawned job is reported even if its shell call fails or the run ends fir
             const envelope = event.value.object;
             if (!std.mem.eql(u8, envelope.get("type").?.string, "session.task.started")) continue;
             const task = envelope.get("payload").?.object.get("task").?.object;
-            try testing.expectEqualStrings(job.task_id, task.get("task_id").?.string);
+            try testing.expectEqualStrings(task_id, task.get("task_id").?.string);
             try testing.expectEqualStrings(admitted.run_id.?, task.get("run_id").?.string);
         }
     }
@@ -5405,7 +5417,9 @@ test "a non-forced close refuses an active run without ending its job" {
     defer harness.deinit();
     _ = try harness.submit("work");
     const session = Session.cast(harness.session.ptr);
-    _ = try session.jobs.start(testing.allocator, root, "sleep 30", "call-job");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    _ = try startSleepingJob(session, arena.allocator(), root, "call-job");
     try testing.expectError(error.RunActive, harness.session.prepareClose(false));
     try testing.expect(session.jobs.anyRunning());
 }
@@ -5433,8 +5447,7 @@ test "forced endpoint finish reports an unannounced job of the active run" {
     const run = try wire.wait("run.started");
     const run_id = run.object.get("run_id").?.string;
     const session = Session.cast(wire.endpoint.entries.items[0].session.ptr);
-    const job = try session.jobs.start(testing.allocator, root, "sleep 30", "call-unannounced");
-    const task_id = try a.dupe(u8, job.task_id);
+    const task_id = try startSleepingJob(session, a, root, "call-unannounced");
     try wire.endpoint.finish(0, Clock.now);
     try wire.collect();
     const started = wireLast(&wire, "session.task.started").object.get("payload").?.object.get("task").?.object;

@@ -230,16 +230,27 @@ foreground, past that it becomes a session background job, and it has a 1 hour
 limit, the default for `timeout_ms` and its maximum. This section says how the rule
 fits the plan.
 
+Windows does not have this yet. The job table needs process groups and `poll`, so
+there a `Shell` command keeps its 30 second default and stays in the call, an
+explicit `timeout_ms` is not held to 1 hour, and `run_in_background` is refused.
+
 ### How a command moves
 
-- A command's output goes to its job file from the start, and the file is removed
-  if the call ends within the budget. The move is then bookkeeping: the process
-  keeps its pipes and its group, and no byte can fall between a reader and a file.
+- A foreground command runs on pipes as it always did, so a fast call answers
+  exactly as before. At the budget the job table takes over the pipes it has been
+  reading, writes what it read so far to the job's file, and keeps copying. The
+  process keeps its group and is never restarted. A `run_in_background` job takes
+  the same path with a budget of zero.
 - The budget is an `arm_timer` on the reactor. When it fires and the command is
   still running, `step` emits `move_tool`, and the driver records the job and posts
   `tool_moved`, which `step` treats as that call's result.
+- A command that has already ended at the budget is not moved. Its result is built
+  after reading its pipes until they go quiet or close, for at most about 200 ms,
+  so its last output is kept and a writer it left behind cannot hold the call.
 - A cancel inside the budget kills the command as today. After the move, a cancel
   of the run that moved it ends it too.
+- When the group has ended the copier takes what is left in the pipes and stops,
+  after at most 1 MiB, so a writer that left the group cannot hold the job open.
 - The job's exit watch posts `job_ended`. `step` folds the notice into the run's
   next model request if a run is going, and otherwise the session starts a
   triggered run.
@@ -261,9 +272,10 @@ that wants to hear about an error or a server coming up can ask. A rule fires on
 and is then gone, which stops a noisy log waking the session hundreds of times.
 Decision 0068 rule 8 has the whole rule.
 
-**How output is read.** A job's stdout and stderr go straight to its file, so the
-Hub holds no pipe to read. The matcher reads the file instead. A pipe would let a
-slow matcher stall the job, and the file is already the record the model reads.
+**How output is read.** A job's stdout and stderr reach its file through the job
+table's copier, which never waits on anything but the file. The matcher reads the
+file. Reading the pipes would let a slow matcher stall the job, and the file is
+already the record the model reads.
 
 - A job with no rule costs nothing here: no watch, and no byte read.
 - Setting a rule opens a read descriptor at the line holding the offset the model

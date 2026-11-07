@@ -10,6 +10,25 @@ pub const ProcessResult = struct {
     stderr: []u8,
 };
 
+pub const Moved = struct {
+    leader: std.posix.pid_t,
+    stdout: std.posix.fd_t,
+    stderr: std.posix.fd_t,
+    stdout_head: []u8,
+    stderr_head: []u8,
+};
+
+pub const Outcome = union(enum) {
+    finished: ProcessResult,
+    moved: Moved,
+};
+
+pub fn runWithBudget(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, budget_ms: ?u64, cancel_token: ?ai_types.CancelToken) !Outcome {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    return outcomeWithIo(allocator, threaded.io(), argv, cwd, timeout_ms, budget_ms, cancel_token);
+}
+
 pub fn run(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, cancel_token: ?ai_types.CancelToken) !ProcessResult {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
@@ -17,6 +36,10 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.proc
 }
 
 fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, cancel_token: ?ai_types.CancelToken) !ProcessResult {
+    return (try outcomeWithIo(allocator, io, argv, cwd, timeout_ms, null, cancel_token)).finished;
+}
+
+fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, budget_ms: ?u64, cancel_token: ?ai_types.CancelToken) !Outcome {
     if (common.isCancelled(cancel_token)) return error.Cancelled;
     const start_ms = common.nowMs();
     var environ_map = try saneChildEnv(allocator);
@@ -32,7 +55,8 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .pgid = if (builtin.os.tag != .windows) 0 else null,
     });
     const process_group = processGroupId(child.id);
-    defer cleanupChild(&child, io, process_group);
+    var handed_over = false;
+    defer if (!handed_over) cleanupChild(&child, io, process_group);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
@@ -48,12 +72,23 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
     var reap_wait_ms: u64 = 1;
     while (true) {
         if (common.isCancelled(cancel_token)) return error.Cancelled;
+        if (comptime builtin.os.tag != .windows) {
+            if (budget_ms) |budget| if (common.durationMs(start_ms) >= budget) {
+                if (term == null and budget > 0) term = try pollTerm(&child, io);
+                if (term) |t| return .{ .finished = try finish(allocator, &multi_reader, t, try drainEnded(&multi_reader, poll_timeout)) };
+                const stdout_head = try allocator.dupe(u8, stdout_reader.buffered());
+                errdefer allocator.free(stdout_head);
+                const stderr_head = try allocator.dupe(u8, stderr_reader.buffered());
+                handed_over = true;
+                return .{ .moved = .{ .leader = child.id.?, .stdout = child.stdout.?.handle, .stderr = child.stderr.?.handle, .stdout_head = stdout_head, .stderr_head = stderr_head } };
+            };
+        }
         if (common.durationMs(start_ms) >= timeout_ms) return error.Timeout;
         if (term == null) term = try pollTerm(&child, io);
         if (!pipes_closed) {
             multi_reader.fill(64, poll_timeout) catch |err| switch (err) {
                 error.Timeout => {
-                    if (term) |t| return finish(allocator, &multi_reader, t, false);
+                    if (term) |t| return .{ .finished = try finish(allocator, &multi_reader, t, false) };
                 },
                 error.EndOfStream => pipes_closed = true,
                 else => |e| return e,
@@ -64,8 +99,22 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
             io.sleep(.fromMilliseconds(@intCast(reap_wait_ms)), .boot) catch {};
             reap_wait_ms = @min(reap_wait_ms * 2, common.process_poll_ms);
         }
-        if (term) |t| if (pipes_closed) return finish(allocator, &multi_reader, t, true);
+        if (term) |t| if (pipes_closed) return .{ .finished = try finish(allocator, &multi_reader, t, true) };
     }
+}
+
+fn drainEnded(multi_reader: *std.Io.File.MultiReader, poll_timeout: std.Io.Timeout) !bool {
+    const start_ms = common.nowMs();
+    while (common.durationMs(start_ms) < common.process_poll_ms) {
+        multi_reader.fill(64, poll_timeout) catch |err| switch (err) {
+            error.Timeout => return false,
+            error.EndOfStream => return true,
+            else => |e| return e,
+        };
+        if (multi_reader.reader(0).buffered().len > common.process_output_bytes) return error.StreamTooLong;
+        if (multi_reader.reader(1).buffered().len > common.process_output_bytes) return error.StreamTooLong;
+    }
+    return false;
 }
 
 fn saneChildEnv(allocator: std.mem.Allocator) !std.process.Environ.Map {
@@ -224,25 +273,6 @@ fn statusToTerm(status: u32) std.process.Child.Term {
         .{ .stopped = std.posix.W.STOPSIG(status) }
     else
         .{ .unknown = status };
-}
-
-pub fn spawnGroup(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd) !std.posix.pid_t {
-    if (comptime builtin.os.tag == .windows) return error.Unsupported;
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    var environ_map = try saneChildEnv(allocator);
-    defer environ_map.deinit();
-    const child = try std.process.spawn(threaded.io(), .{
-        .argv = argv,
-        .cwd = cwd,
-        .environ_map = &environ_map,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-        .create_no_window = true,
-        .pgid = 0,
-    });
-    return @intCast(child.id.?);
 }
 
 pub fn waitLeader(leader: std.posix.pid_t) !std.process.Child.Term {
@@ -449,6 +479,110 @@ test "a command that exits early still takes its children with it" {
     switch (probeRecordedChild(dir)) {
         .dead => {},
         else => return error.TestUnexpectedResult,
+    }
+}
+
+test "a budget of zero hands over a command whose timeout has already passed" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const outcome = try runWithBudget(std.testing.allocator, &.{ "/bin/sh", "-c", "sleep 30" }, .inherit, 0, 0, null);
+    const moved = outcome.moved;
+    defer std.testing.allocator.free(moved.stdout_head);
+    defer std.testing.allocator.free(moved.stderr_head);
+    endGroup(moved.leader);
+    _ = try waitLeader(moved.leader);
+    _ = std.posix.system.close(moved.stdout);
+    _ = std.posix.system.close(moved.stderr);
+}
+
+test "a budget ends the wait on a command whose leader left a writer behind" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const began = common.nowMs();
+    const outcome = try runWithBudget(std.testing.allocator, &.{ "/bin/sh", "-c", "(while true; do echo x; sleep 0.01; done) & sleep 0.1" }, .inherit, 10_000, 500, null);
+    defer {
+        std.testing.allocator.free(outcome.finished.stdout);
+        std.testing.allocator.free(outcome.finished.stderr);
+    }
+    try std.testing.expect(common.durationMs(began) < 8_000);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, outcome.finished.term);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.finished.stdout, "x") != null);
+}
+
+test "a command that ends after the last exit check but within its budget is finished, not handed over" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.heap.smp_allocator;
+    const outcome = try runWithBudget(allocator, &.{ "/bin/sh", "-c", "sleep 5 & exit 3" }, .inherit, 10_000, 90, null);
+    switch (outcome) {
+        .finished => |finished| {
+            defer allocator.free(finished.stdout);
+            defer allocator.free(finished.stderr);
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 3 }, finished.term);
+        },
+        .moved => |moved| {
+            defer allocator.free(moved.stdout_head);
+            defer allocator.free(moved.stderr_head);
+            endGroup(moved.leader);
+            _ = try waitLeader(moved.leader);
+            _ = std.posix.system.close(moved.stdout);
+            _ = std.posix.system.close(moved.stderr);
+            return error.HandedOverAnEndedCommand;
+        },
+    }
+}
+
+const StallingAllocator = struct {
+    backing: std.mem.Allocator,
+    from_bytes: usize,
+    stall_ms: u64,
+    stalled: std.atomic.Value(bool) = .init(false),
+
+    fn allocator(self: *StallingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        if (new_len >= self.from_bytes and !self.stalled.swap(true, .monotonic)) compat.time.sleepMs(self.stall_ms);
+        return self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "a command that ends as its budget passes keeps everything it wrote" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var stalling = StallingAllocator{ .backing = std.heap.smp_allocator, .from_bytes = 1024, .stall_ms = 1_200 };
+    const allocator = stalling.allocator();
+    const outcome = try runWithBudget(allocator, &.{ "/bin/sh", "-c", "head -c 12000 /dev/zero" }, .inherit, 10_000, 1_000, null);
+    switch (outcome) {
+        .finished => |finished| {
+            defer allocator.free(finished.stdout);
+            defer allocator.free(finished.stderr);
+            try std.testing.expect(stalling.stalled.load(.monotonic));
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, finished.term);
+            try std.testing.expectEqual(@as(usize, 12_000), finished.stdout.len);
+        },
+        .moved => |moved| {
+            defer allocator.free(moved.stdout_head);
+            defer allocator.free(moved.stderr_head);
+            endGroup(moved.leader);
+            _ = try waitLeader(moved.leader);
+            _ = std.posix.system.close(moved.stdout);
+            _ = std.posix.system.close(moved.stderr);
+            return error.HandedOverAnEndedCommand;
+        },
     }
 }
 
