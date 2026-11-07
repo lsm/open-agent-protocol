@@ -39,8 +39,8 @@ const TOOL_SOURCE_MEMBERS: [&str; 7] = [
     "environment",
 ];
 
-const HARNESS_TYPES: [&str; 9] = [
-    "acp", "claude", "codex", "copilot", "deepseek", "hermes", "opencode", "pi", "oapx",
+const HARNESS_TYPES: [&str; 8] = [
+    "claude", "codex", "copilot", "deepseek", "hermes", "opencode", "pi", "oapx",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +62,8 @@ pub enum ConfigError {
 struct AdapterEntry {
     #[serde(rename = "type")]
     kind: String,
+    executable: String,
+    args: Vec<String>,
     environment: Vec<String>,
     working_directory: String,
     journal_capacity: i64,
@@ -121,7 +123,7 @@ impl Registry {
                 name: name.clone(),
                 reason,
             };
-            resolve_environment(&entry.environment, &environ).map_err(refuse)?;
+            let environment = resolve_environment(&entry.environment, &environ).map_err(refuse)?;
             if entry.any_directory {
                 return Err(refuse(
                     "any_directory is not served by the Rust hub yet".into(),
@@ -137,6 +139,27 @@ impl Registry {
                     journal_capacity: entry.journal_capacity as usize,
                     ..Config::default()
                 })),
+                "acp" => {
+                    if entry.journal_capacity != 0 {
+                        return Err(refuse(
+                            "nonzero journal_capacity is not supported by the Rust ACP adapter"
+                                .into(),
+                        ));
+                    }
+                    Arc::new(
+                        oap_adapter_acp::Adapter::new(oap_adapter_acp::Config {
+                            process: oap_adapter_acp::process::ProcessConfig {
+                                path: entry.executable,
+                                args: entry.args,
+                                dir: entry.working_directory.clone(),
+                                env: Some(environment),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .map_err(|err| refuse(err.to_string()))?,
+                    )
+                }
                 harness if HARNESS_TYPES.contains(&harness) => {
                     return Err(refuse(format!(
                         "type {harness:?} is not built in the Rust tree yet"

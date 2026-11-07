@@ -1160,6 +1160,7 @@ dependencies = [
  "httparse",
  "jsonschema",
  "oap-adapter",
+ "oap-adapter-acp",
  "oap-binding",
  "oap-protocol",
  "oap-validation",
