@@ -2045,9 +2045,9 @@ that keeps a session restores observation. Parking delivers pending OAP output
 before destroying the harness. An open that fails after adoption releases its
 entry and observer. Ready visits and fallback visits share the 64-session,
 4 ms pass budget. Backends with readable handles, background jobs, or no
-observer remain eligible for fallback visits. The shared-wake, refused-park,
-pending-terminal and failed-open tests in the readiness journey pin these
-ownership rules.
+observer remain eligible for fallback visits. Tests in the readiness journey
+observe the shared handle and a cancellation across parking, retry refused
+parking, and check allocation failures during open.
 
 **One rule here is where the trees differ in kind, not in answer.** Go's
 `CloseSessions` can only wait: it holds a context, so a session it is waiting on
