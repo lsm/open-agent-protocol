@@ -1961,6 +1961,52 @@ test "a refused chunked body leaves its connection draining what the client may 
     try testing.expectEqual(hub_http.drain_total_cap_bytes, connection.drain_left);
 }
 
+test "a backpressured refusal closes its peer at the write-idle deadline" {
+    if (comptime !hub_http.pollable) return error.SkipZigTest;
+    var served: Served = undefined;
+    try served.prepare();
+    defer {
+        compat.net.closeServer(&served.listener);
+        served.fixture.deinit();
+    }
+    var client = try served.dial();
+    defer client.close();
+    var connection: ?*Connection = try Connection.create(&served.fixture.daemon, try compat.net.acceptStream(&served.listener));
+    defer if (connection) |owned| owned.destroy();
+    const owned = connection.?;
+    try testing.expect(prepare(owned.handle()));
+    const small: c_int = 1024;
+    try std.posix.setsockopt(owned.handle(), std.posix.SOL.SOCKET, std.posix.SO.SNDBUF, std.mem.asBytes(&small));
+    try std.posix.setsockopt(compat.net.streamHandle(&client), std.posix.SOL.SOCKET, std.posix.SO.RCVBUF, std.mem.asBytes(&small));
+    const body = try served.fixture.scratch.allocator().alloc(u8, 1024 * 1024);
+    @memset(body, 'x');
+    const reply = try render(served.fixture.scratch.allocator(), .{ .status = "403 Forbidden", .content_type = text_plain, .body = body }, true);
+    owned.refuse(reply, 0);
+    owned.writable();
+    const overdue = owned.progress_ms + @as(u64, @intCast(hub_http.idle_read_ms));
+    if (owned.waitBudget(overdue) == 0) owned.settle(overdue);
+    if (owned.phase == .done) {
+        owned.destroy();
+        connection = null;
+    }
+    var received = std.ArrayList(u8).empty;
+    defer received.deinit(testing.allocator);
+    var buffer: [4096]u8 = undefined;
+    var ended = false;
+    const until = nowMs() + 1000;
+    while (nowMs() < until and try readableSoon(&client, 20)) {
+        const count = try client.readSome(&buffer);
+        if (count == 0) {
+            ended = true;
+            break;
+        }
+        try received.appendSlice(testing.allocator, buffer[0..count]);
+    }
+    try testing.expect(std.mem.startsWith(u8, received.items, "HTTP/1.1 403 Forbidden\r\n"));
+    try testing.expect(received.items.len < reply.len);
+    try testing.expectEqual(true, ended);
+}
+
 test "a media refusal reaches the client though the body outruns the drain" {
     if (comptime !hub_http.pollable) return error.SkipZigTest;
     var served: Served = undefined;
