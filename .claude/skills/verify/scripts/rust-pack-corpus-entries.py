@@ -3,6 +3,8 @@
 import argparse
 from copy import deepcopy
 import json
+import html
+import re
 from pathlib import Path
 import runpy
 
@@ -47,6 +49,12 @@ def main():
     build = run(["cargo", "build", "--offline", "--manifest-path", str(project / "Cargo.toml"),
                  "--target-dir", str(ROOT / "rust/target")], "consumer-build")
     assert build.returncode == 0, build.stderr
+    docs = run(["cargo", "doc", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--no-deps"], "docs-build")
+    assert docs.returncode == 0, docs.stderr
+    page = (ROOT / "rust/target/doc/oap_validation/pack/struct.CompiledPacks.html").read_text()
+    (output / "compiled-packs.html").write_text(page)
+    words = html.unescape(re.sub(r"<[^>]+>", "", page))
+    assert "Agent mode and provenance validation" in words, words
     goap = output / "goap"
     build = run(["go", "build", "-o", str(goap), "./go/cmd/goap"], "go-build")
     assert build.returncode == 0, build.stderr
@@ -134,9 +142,22 @@ def main():
         if not accepted:
             assert data["codes"] == [], (label, data)
         results.append({"id": label, "accepted": accepted})
+    differences = []
+    for label, patch in [("deferred-agent-mode", {"mode": "other"}), ("deferred-empty-provenance", {"provenance": [""]})]:
+        directory = output / label
+        directory.mkdir()
+        (directory / "pack.json").write_text(json.dumps({"id": "com.example.corpus", "version": "1", "schemas": ["types.json"], "fixtures": "manifest.json"}))
+        (directory / "types.json").write_text("{}")
+        (directory / "manifest.json").write_text(json.dumps({"version": 1, "fixtures": [dict(positive, **patch)]}))
+        rust = run([str(consumer), str(directory)], label + ".rust")
+        go = run([str(goap), "validate", "--format", "json", "--pack", str(directory), str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
+        assert rust.returncode == 0 and json.loads(rust.stdout)["accepted"], (label, rust.stdout)
+        assert go.returncode == 1 and "fixture manifest" in go.stderr, (label, go.stdout, go.stderr)
+        differences.append({"id": label, "rust": "accepted at staged boundary", "go": "refused by complete loader", "deferred_to": "full constructor"})
+    (output / "staged-differences.json").write_text(json.dumps(differences, indent=2) + "\n")
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public typed corpus expectation/profile/code cases agree with Go")
-    print("STAGED: identity, path, owner and capability completeness checks follow in the full constructor")
+    print("STAGED: two explicit mode/provenance differences recorded; identity, path, owner and completeness checks follow in the full constructor")
 
 
 if __name__ == "__main__":
