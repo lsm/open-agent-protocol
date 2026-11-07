@@ -103,6 +103,12 @@ An accepted `session.task.cancel.response` also precedes the
 `session.task.ended` it confirms; Go holds session events through the response
 (`TestTaskCancelAcknowledgesBeforeEnding`).
 
+A host can read a task's output by sending `session.task.output.request` as an
+ordinary envelope. An adapter that supports the operation returns the
+correlated response; an adapter that does not returns `unsupported_feature`.
+The oapx adapter reads the job's output with the raw-byte offsets and UTF-8
+replacement rule in [triggered runs](triggered-runs.md).
+
 ## Streaming is implicit
 
 There is no subscribe request. Once a session is open, the endpoint writes that

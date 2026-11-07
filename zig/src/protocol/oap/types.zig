@@ -1062,6 +1062,28 @@ pub const TaskCancelResponse = struct {
     pub fn deinit(_: *TaskCancelResponse, _: std.mem.Allocator) void {}
 };
 
+pub const TaskOutputRequest = struct {
+    session_id: []const u8,
+    task_id: []const u8,
+    from: ?u64 = null,
+
+    pub fn deinit(self: *TaskOutputRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.task_id);
+    }
+};
+
+pub const TaskOutputResponse = struct {
+    output: []const u8,
+    next: u64,
+    truncated: bool,
+    ended: bool,
+
+    pub fn deinit(self: *TaskOutputResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.output);
+    }
+};
+
 pub const RunCancelRequest = struct {
     session_id: []const u8,
     run_id: []const u8,
@@ -1195,6 +1217,8 @@ pub const Payload = union(enum) {
     session_compact_response: MessageSubmitResponse,
     task_cancel_request: TaskCancelRequest,
     task_cancel_response: TaskCancelResponse,
+    task_output_request: TaskOutputRequest,
+    task_output_response: TaskOutputResponse,
     run_cancel_request: RunCancelRequest,
     run_cancel_response: RunCancelResponse,
     run_started: RunStarted,
@@ -1247,6 +1271,8 @@ pub const Payload = union(enum) {
             .session_compact_response => |*value| value.deinit(allocator),
             .task_cancel_request => |*value| value.deinit(allocator),
             .task_cancel_response => |*value| value.deinit(allocator),
+            .task_output_request => |*value| value.deinit(allocator),
+            .task_output_response => |*value| value.deinit(allocator),
             .run_cancel_request => |*value| value.deinit(allocator),
             .run_cancel_response => |*value| value.deinit(allocator),
             .run_started => |*value| value.deinit(allocator),
@@ -1301,6 +1327,8 @@ pub const Payload = union(enum) {
             .session_compact_response => "session.compact.response",
             .task_cancel_request => "session.task.cancel.request",
             .task_cancel_response => "session.task.cancel.response",
+            .task_output_request => "session.task.output.request",
+            .task_output_response => "session.task.output.response",
             .run_cancel_request => "run.cancel.request",
             .run_cancel_response => "run.cancel.response",
             .run_started => "run.started",

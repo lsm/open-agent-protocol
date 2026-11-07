@@ -457,6 +457,92 @@ pub const Jobs = struct {
         return true;
     }
 
+    pub const Output = struct {
+        text: []u8,
+        next: u64,
+        truncated: bool,
+        ended: bool,
+    };
+
+    const DecodedOutput = struct { text: []u8, consumed: usize };
+    const output_limit = 32 * 1024;
+
+    fn sequencePrefix(bytes: []const u8) struct { length: usize, complete: bool, valid: bool } {
+        const first = bytes[0];
+        const length: usize = if (first < 0x80) 1 else if (first >= 0xc2 and first <= 0xdf) 2 else if (first >= 0xe0 and first <= 0xef) 3 else if (first >= 0xf0 and first <= 0xf4) 4 else return .{ .length = 1, .complete = true, .valid = false };
+        var i: usize = 1;
+        while (i < length and i < bytes.len) : (i += 1) {
+            const c = bytes[i];
+            if (c < 0x80 or c > 0xbf or (i == 1 and ((first == 0xe0 and c < 0xa0) or (first == 0xed and c > 0x9f) or (first == 0xf0 and c < 0x90) or (first == 0xf4 and c > 0x8f)))) {
+                return .{ .length = i, .complete = true, .valid = false };
+            }
+        }
+        return .{ .length = i, .complete = i == length, .valid = true };
+    }
+
+    fn decodeOutput(allocator: std.mem.Allocator, bytes: []const u8, ended: bool, limit: usize) !DecodedOutput {
+        var text = std.ArrayList(u8).empty;
+        errdefer text.deinit(allocator);
+        var pos: usize = 0;
+        while (pos < bytes.len) {
+            const seq = sequencePrefix(bytes[pos..]);
+            if (!seq.complete and !ended) break;
+            if (pos + seq.length > limit) break;
+            if (seq.valid and seq.complete) {
+                try text.appendSlice(allocator, bytes[pos..][0..seq.length]);
+            } else {
+                try text.appendSlice(allocator, "�");
+            }
+            pos += seq.length;
+        }
+        return .{ .text = try text.toOwnedSlice(allocator), .consumed = pos };
+    }
+
+    pub fn outputTask(self: *Jobs, allocator: std.mem.Allocator, task_id: []const u8, from: u64) !Output {
+        self.lock();
+        const job = for (self.list.items) |candidate| {
+            if (std.mem.eql(u8, candidate.id, task_id)) break candidate;
+        } else {
+            self.mutex.unlock();
+            return error.UnknownJob;
+        };
+        const root = allocator.dupe(u8, job.workspace_root) catch |err| {
+            self.mutex.unlock();
+            return err;
+        };
+        const path = allocator.dupe(u8, job.output) catch |err| {
+            self.mutex.unlock();
+            allocator.free(root);
+            return err;
+        };
+        const ended = job.term != null;
+        self.mutex.unlock();
+        defer allocator.free(root);
+        defer allocator.free(path);
+        var dir = try common.openWorkspace(root, false);
+        defer dir.close(common.defaultIo());
+        const file = dir.openFile(common.defaultIo(), path, .{ .follow_symlinks = false, .resolve_beneath = true }) catch |err| switch (err) {
+            error.FileNotFound => if (!ended and from == 0) return .{ .text = try allocator.dupe(u8, ""), .next = 0, .truncated = false, .ended = false } else return err,
+            else => return err,
+        };
+        defer file.close(common.defaultIo());
+        const size = (try file.stat(common.defaultIo())).size;
+        if (from > size) return error.InvalidOffset;
+        const prefix: usize = @intCast(@min(from, 3));
+        const available = size - from;
+        const wanted: usize = @intCast(@min(available, output_limit + 3));
+        const buf = try allocator.alloc(u8, prefix + wanted);
+        defer allocator.free(buf);
+        const got = try file.readPositionalAll(common.defaultIo(), buf, from - prefix);
+        if (got < prefix) return error.InvalidOffset;
+        for (0..prefix) |i| {
+            const seq = sequencePrefix(buf[i..got]);
+            if (i + seq.length > prefix or (seq.valid and !seq.complete and !ended and i + seq.length == prefix)) return error.InvalidOffset;
+        }
+        const result = try decodeOutput(allocator, buf[prefix..got], ended and got == prefix + available, output_limit);
+        return .{ .text = result.text, .next = from + result.consumed, .truncated = false, .ended = ended };
+    }
+
     pub fn noticeWaiting(self: *Jobs) bool {
         self.lock();
         defer self.mutex.unlock();
@@ -1911,4 +1997,54 @@ test "job completion wakes an attached observer and respects detach" {
     jobs.seal();
     try std.testing.expectError(error.SessionClosed, startJob(&jobs, &case, "sleep 30", "call-late"));
     try std.testing.expectEqual(@as(usize, 0), (try jobs.tasksForCall(arena.allocator(), "call-late")).len);
+}
+
+test "task output keeps raw offsets across invalid and split UTF-8" {
+    const a = std.testing.allocator;
+    const first = try Jobs.decodeOutput(a, "A\xc3", false, 32);
+    defer a.free(first.text);
+    try std.testing.expectEqualStrings("A", first.text);
+    try std.testing.expectEqual(@as(usize, 1), first.consumed);
+    const second = try Jobs.decodeOutput(a, "\xc3\xa9\xffZ", false, 32);
+    defer a.free(second.text);
+    try std.testing.expectEqualStrings("é�Z", second.text);
+    try std.testing.expectEqual(@as(usize, 4), second.consumed);
+    const last = try Jobs.decodeOutput(a, "\xe2\x82", true, 32);
+    defer a.free(last.text);
+    try std.testing.expectEqualStrings("�", last.text);
+    try std.testing.expectEqual(@as(usize, 2), last.consumed);
+    const bound = try Jobs.decodeOutput(a, "aé!", false, 2);
+    defer a.free(bound.text);
+    try std.testing.expectEqualStrings("a", bound.text);
+    try std.testing.expectEqual(@as(usize, 1), bound.consumed);
+}
+
+test "task file reads hold split characters until complete or ended" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    const job = try jobs.start(std.testing.allocator, case.root, "printf '\\303'; sleep 30", "call");
+    try waitForOutput(&case, job.output_path, "\xc3");
+    const a = std.testing.allocator;
+    const first = try jobs.outputTask(a, job.task_id, 0);
+    defer a.free(first.text);
+    try std.testing.expectEqualStrings("", first.text);
+    try std.testing.expectEqual(@as(u64, 0), first.next);
+    try std.testing.expect(!first.ended);
+    const file = try case.tmp.dir.createFile(common.defaultIo(), job.output_path, .{ .truncate = false });
+    defer file.close(common.defaultIo());
+    try file.writePositionalAll(common.defaultIo(), "\xa9\xff\xe2\x82", 1);
+    const second = try jobs.outputTask(a, job.task_id, first.next);
+    defer a.free(second.text);
+    try std.testing.expectEqualStrings("é�", second.text);
+    try std.testing.expectEqual(@as(u64, 3), second.next);
+    try std.testing.expectError(error.InvalidOffset, jobs.outputTask(a, job.task_id, 1));
+    try std.testing.expect(try jobs.cancelTask(job.task_id));
+    const last = try jobs.outputTask(a, job.task_id, second.next);
+    defer a.free(last.text);
+    try std.testing.expectEqualStrings("�", last.text);
+    try std.testing.expectEqual(@as(u64, 5), last.next);
+    try std.testing.expect(last.ended);
 }
