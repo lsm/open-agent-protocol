@@ -49,7 +49,11 @@ impl Fixture {
                 ],
                 env: Some(Vec::new()),
                 queue_capacity: 1,
-                shutdown_timeout: Some(Duration::from_millis(150)),
+                shutdown_timeout: Some(if matches!(mode, "quiet" | "blocked") {
+                    Duration::from_millis(150)
+                } else {
+                    Duration::from_secs(1)
+                }),
                 ..ProcessConfig::default()
             },
             None,

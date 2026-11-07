@@ -31,6 +31,11 @@ handler. Shared RPC tests gate an actual writer and prove its observer stays
 silent until writing completes, runs once and reports local write/admission
 refusals. Existing bounded-queue and stall-closing coverage must keep passing.
 
+The cooperative test fixture has a one-second shutdown budget. Its controlled
+peer reads EOF, then exits after 300 ms; close must succeed and reap that peer.
+Keep the signed failing reproduction before this fixture-budget correction.
+Quiet and blocked fixtures retain their 150 ms budget and cleanup assertions.
+
 This journey observes the native bridge layer. Normal OAP text submission is
 covered by `rust-acp-submit.md`. Run the existing ACP foundation/session/model-switch journeys to
 confirm those public OAP surfaces still work, the complete shared baseline and
