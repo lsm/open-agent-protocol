@@ -108,3 +108,24 @@ the compiler boundary used by Go. The initial replay compared the unprojected
 schema to Go's full validation result and was inconclusive for descriptor members.
 The corrected replay must agree on all declared schema/load outcomes. Corpus
 checks and complete loader construction follow separately.
+
+## Typed corpus expectations
+
+The fifth slice adds `CompiledPacks::check_corpus_entries`. It parses declared
+fixture manifests into typed entries and checks the manifest version, known
+kinds, positive and negative expectations, profile/scope rules and the distinct
+agent, provider and load-error vocabularies. Optional null fields preserve their
+zero/default meaning, including null string-list elements.
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_corpus_entries
+python3 .claude/skills/verify/scripts/rust-pack-corpus-entries.py --output-dir /tmp/oap-pack-corpus-entries-<unique>
+```
+
+The external public consumer compares typed field failures, null controls,
+positive/negative contradictions, every code represented in the shared agent
+and load fixtures, provider-only codes, scope derivation and profile restrictions
+against Go's public CLI. Inspect `results.json` and the retained raw outputs.
+Results explicitly carry stage `corpus-expectations`. Identity/path policy,
+unit ownership, coverage completeness and full construction follow in the sixth
+loader slice. Corpus trace execution follows with validator integration.

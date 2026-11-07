@@ -1,6 +1,6 @@
 # Staged pack-loader construction
 
-`PackLoader::read` constructs the declaration stage from the first of five loader slices. It checks
+`PackLoader::read` constructs the declaration stage from the first of six loader slices. It checks
 descriptor shape, declared namespaces, prefix freedom, envelope roles, reply
 targets, refusal declarations and gates. Payload-member declarations require
 unique names on core targets, preserve core members and name their gate.
@@ -24,4 +24,12 @@ the separately compiled member schemas, and `resources` retains the construction
 data. For a core envelope carrying declared members, callers validate its core
 projection and validate the removed values against their member schemas.
 
-Corpus checks and complete loader construction follow in the final loader slice.
+`CompiledPacks::check_corpus_entries` performs the fifth staged operation. It
+reads declared manifests into typed entries, checks version 1, positive and
+negative expectations, provider profiles and scopes, and the separate agent,
+provider and load-error code vocabularies. Optional null fields retain their
+zero/default meaning. Unknown manifest fields remain accepted.
+
+This operation checks declared expectations. Entry identity and path policy,
+unit ownership, capability coverage and complete loader construction follow in
+the final slice. Running the corpus traces follows with validator integration.
