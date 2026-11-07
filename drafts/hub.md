@@ -1572,6 +1572,7 @@ nowhere to put a reason (D12).
   `invalid_request`. Omission or null uses the adapter's configured directory.
   This member belongs to the hub transport object. The open payload can still
   name its own `session_id`, including when it also elects a message or subscription.
+  Pinned by `TestHubOpenDirectory`.
 - **answer:** a `session.open.response` envelope carrying the whole state
   document, with `in_reply_to` set to the request envelope's `id` and
   `capability_revision` set to the revision the open was gated under.
@@ -1603,6 +1604,7 @@ nowhere to put a reason (D12).
   place the session there, is refused `invalid_request` before opening the
   adapter. Close is an ordinary close of the adapter's session in both trees,
   so an adapter that keeps what it closed can be asked to reopen it. Pinned by
+  `TestHubOpenDirectory`, `TestAReopenDirectoryConflictIsABadRequest`,
   `TestAReopenIsRecordedAsReopenedAfterTheClose`,
   `TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked`,
   `TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise`,
