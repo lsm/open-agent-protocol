@@ -1452,6 +1452,119 @@ test "a job's end still wakes after its rule fired, and a rule not fired ends wi
     try std.testing.expect(jobs.list.items[1].rule == null);
 }
 
+test "a job the model killed gets no wake from what its end wrote" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "trap 'echo error' TERM; echo up; sleep 30; sleep 30", "call-bg");
+    const path = jobs.list.items[0].output;
+    try waitForOutput(&case, path, "up");
+    try std.testing.expect(try jobs.setRule(path, "error"));
+
+    _ = try jobs.report(path, true);
+
+    try waitForOutput(&case, path, "error");
+    try std.testing.expect(!jobs.noticeWaiting());
+    try std.testing.expect((try jobs.takeNotice(std.testing.allocator)) == null);
+}
+
+test "a wake still waiting when its job is cancelled is not delivered" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "echo ready; sleep 30", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "ready"));
+    try waitForNotice(&jobs);
+
+    try std.testing.expect(try jobs.cancelTask(jobs.list.items[0].id));
+
+    try std.testing.expect(!jobs.noticeWaiting());
+    try std.testing.expect((try jobs.takeNotice(std.testing.allocator)) == null);
+}
+
+test "a line too long to scan is skipped, and the line after it still matches" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "printf %070000d 0; echo ready; echo marker; sleep 30", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "ready|marker"));
+
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "Matching line: marker") != null);
+}
+
+test "a rule set inside a line too long to scan starts at the next line" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "printf %070000d 0; echo; echo marker; sleep 30", "call-bg");
+    const job = jobs.list.items[0];
+    try waitForOutput(&case, job.output, "marker");
+    jobs.lock();
+    job.seen = 69_000;
+    jobs.mutex.unlock();
+
+    try std.testing.expect(try jobs.setRule(job.output, "^0|marker"));
+
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "Matching line: marker") != null);
+}
+
+test "a last line too long to scan does not match when the job ends" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "sleep 0.2; printf %070000d 0", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "0"));
+
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "wake_on") == null);
+}
+
+test "a match that cannot be read or built leaves the rule set, and a later look fires it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "echo ready; sleep 30", "call-bg");
+    const job = jobs.list.items[0];
+    try waitForOutput(&case, job.output, "ready");
+    compat.time.sleepMs(50);
+    const compiled = try re2.compile(std.testing.allocator, ".*(?:ready).*");
+    Jobs.lockRule(job);
+    job.rule = .{ .regex = compiled.regex, .from = 0 };
+    job.rule_lock.unlock();
+
+    const held = jobs.allocator;
+    defer jobs.allocator = held;
+    var fail_index: usize = 0;
+    while (job.wake == null and fail_index < 64) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(held, .{ .fail_index = fail_index });
+        jobs.allocator = failing.allocator();
+        jobs.scan(job, false);
+        if (job.wake == null) try std.testing.expect(job.rule != null);
+    }
+    try std.testing.expect(job.wake != null);
+    try std.testing.expect(job.rule == null);
+}
+
 test "a line with bytes an ASCII pattern cannot read still matches" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
