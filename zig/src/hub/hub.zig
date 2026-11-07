@@ -2678,6 +2678,26 @@ test "notified sessions share one readable wake, coalesce, and survive a queued 
     try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
 }
 
+test "idle notifying sessions leave no unfinished fallback pass" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    for (0..150) |index| {
+        const id = try std.fmt.allocPrint(arena, "idle-ready-{d}", .{index});
+        _ = try hub.open(arena, "signalling", .{ .session_id = id });
+    }
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(false, hub.hasPendingPass());
+}
+
 fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
     var inner = memory.Adapter.init(testing.allocator);
     defer inner.deinit();
