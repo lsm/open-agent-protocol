@@ -53,6 +53,14 @@ request=read()
 send(dict(id=request['id'],result=dict(sessionId='native')))
 for index in range(turns):
  prompt=read()
+ if mode=='blocked':
+  send(dict(id='r'*(4*1024*1024),method='session/request_permission',params=dict(sessionId='native',toolCall=dict(toolCallId='tool',title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])))
+  partial=sys.stdin.buffer.read(64)
+  assert len(partial)==64
+  (out/'partial-write').write_bytes(partial)
+  send(dict(method='session/update',params=dict(sessionId='native',update=dict(sessionUpdate='agent_message_chunk',content=dict(type='text',text='while-native-write-blocked')))))
+  time.sleep(60)
+  continue
  if mode=='error':
   wait('start')
   send(dict(id=prompt['id'],error=dict(code=-32000,message='synthetic refusal')))
@@ -95,6 +103,7 @@ sys.stdin.read()
             shutdown_timeout: Some(Duration::from_secs(1)),
             ..ProcessConfig::default()
         },
+        abort_active_on_close: mode == "blocked",
         ..Config::default()
     })
     .unwrap();
@@ -190,6 +199,78 @@ fn streamed_notifications_create_no_operation_workers() {
         total, 0,
         "a synchronous completion created an operation worker"
     );
+}
+
+#[test]
+fn streamed_text_progresses_while_a_native_permission_reply_is_blocked() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let (fixture, session, _inner) = open("blocked", 1);
+    let mut stream = submit(&*session);
+    let mut events = Vec::new();
+    for _ in 0..3 {
+        events.push(block_on(stream.next()).unwrap().unwrap());
+    }
+    let permission = events
+        .last()
+        .unwrap()
+        .decode_payload::<PermissionRequestedPayload>()
+        .unwrap();
+    let mut answer = session.resolve(InteractionResolution {
+        run_id: permission.run_id.clone(),
+        responded_by: permission.responded_by.clone(),
+        permission: Some(PermissionResolveRequest {
+            interaction_id: permission.interaction_id,
+            requested_by: permission.requested_by,
+            responded_by: permission.responded_by,
+            session_id: permission.session_id,
+            run_id: permission.run_id,
+            choice_id: "allow".into(),
+            granted: true,
+            ..PermissionResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    });
+    let waker = futures::task::noop_waker();
+    let mut context = std::task::Context::from_waker(&waker);
+    assert!(answer.as_mut().poll(&mut context).is_pending());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !fixture.0.join("partial-write").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let before = crate::operation::SPAWNS.load(Ordering::Relaxed);
+    let observed = {
+        let mut next = Box::pin(stream.next());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let std::task::Poll::Ready(event) = next.as_mut().poll(&mut context) {
+                break event;
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let workers = crate::operation::SPAWNS.load(Ordering::Relaxed) - before;
+    drop(answer);
+    let _ = block_on(session.close());
+    reaped(&fixture);
+    let partial = std::fs::read(fixture.0.join("partial-write")).unwrap();
+    println!("blocked-reply-proof partial_bytes={} content={} operation_workers={workers} event={observed:?}", partial.len(), usize::from(observed.is_some()));
+    assert_eq!(partial.len(), 64);
+    let event = observed
+        .expect("a blocked native reply parked the inbound dispatcher")
+        .unwrap();
+    assert_eq!(event.envelope_type.as_str(), "content.delta");
+    assert_eq!(
+        event
+            .decode_payload::<oap_protocol::ContentDeltaPayload>()
+            .unwrap()
+            .part
+            .text,
+        "while-native-write-blocked"
+    );
+    assert_eq!(workers, 0);
 }
 
 #[test]
