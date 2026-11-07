@@ -353,6 +353,8 @@ and its state updates share the same ordered session counter. A failed session
 event stream ends the endpoint so the host can read state. The sequence belongs to the hosted
 session for its lifetime, not to a subscription or a transport connection;
 independent endpoints host distinct sessions and do not share counters. The
+oapx adapter reports background command starts and ends and includes tasks in
+session state. Close-time task endings and task controls follow separately. The
 Zig hub does not yet publish `session.state.updated`; when it does, those events
 share this counter.
 
