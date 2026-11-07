@@ -699,8 +699,7 @@ pub const Connection = struct {
             .flushing => if (!self.pending()) {
                 return 0;
             },
-            .refusing => {
-                if (self.pending()) return std.math.maxInt(u64);
+            .refusing => if (!self.pending()) {
                 if (self.drain_left == 0 or self.peer_closed) return 0;
                 deadline = self.drain_started_ms +| @as(u64, @intCast(hub_http.drain_total_ms));
             },
@@ -955,8 +954,7 @@ pub const Connection = struct {
                 if (!self.pending()) self.phase = .done;
             },
             .refusing => {
-                if (self.pending()) return;
-                if (self.drain_left == 0 or self.peer_closed or now -| self.drain_started_ms >= @as(u64, @intCast(hub_http.drain_total_ms))) self.phase = .done;
+                if (!self.pending() and (self.drain_left == 0 or self.peer_closed or now -| self.drain_started_ms >= @as(u64, @intCast(hub_http.drain_total_ms)))) self.phase = .done;
             },
             .streaming => {
                 if (self.stream_ended and !self.pending()) self.phase = .done;

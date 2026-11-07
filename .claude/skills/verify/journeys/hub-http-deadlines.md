@@ -30,6 +30,11 @@ read timeout. Inspect `replay-events.json` for envelope types, byte counts and
 arrival times. The replay-only invocation focuses on this regression. Filling
 one output batch must allow the next batch to progress immediately.
 
+The Hub group also creates a real TCP refusal with small socket buffers and a
+large response. With its write-idle deadline advanced, the peer must observe
+the refusal prefix followed by EOF before the full body arrives. The owner must
+schedule that due deadline and retire the stalled writer.
+
 The held-subscription journey additionally observes every memory-adapter gate,
 cancels and closes all sessions, and checks an accepted request after hold
 expiry. Require its `PASS` output and successful cleanup.
