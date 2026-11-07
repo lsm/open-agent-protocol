@@ -63,9 +63,15 @@ for line in sys.stdin:
     }
 
     fn config(&self, mode: &str) -> Config {
+        let selected = Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .unwrap();
+        assert!(selected.status.success());
+        let path = String::from_utf8(selected.stdout).unwrap();
         Config {
             process: ProcessConfig {
-                path: "/usr/bin/python3".into(),
+                path: path.trim().into(),
                 args: vec![
                     "-u".into(),
                     self.0.join("agent.py").to_string_lossy().into(),

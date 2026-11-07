@@ -14,6 +14,11 @@ Credential-free synthetic native processes run over stdio at queue capacity
 one. The script retains actual admission responses, session states, envelopes,
 native requests, native PIDs and OS thread inventories.
 
+A controlled PATH first selects the verifier's Python interpreter for the Rust
+integration fixture. The native agent records its actual interpreter, which
+must match that selection while its environment stays empty. Keep this
+portability regression committed before the fixture lookup fix.
+
 Seven cases cover complete Unicode text, bounded subscriber overflow, dropping
 an active session, opt-in abort close, cancelling close, cancelling blocked
 write admission and closing during blocked admission. Quiet agents ignore EOF.
