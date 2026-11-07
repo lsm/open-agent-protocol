@@ -274,7 +274,6 @@ const PROVIDER_CODES: &[&str] = &[
 ];
 
 const LOAD_CODES: &[&str] = &[
-    "load-invalid",
     "pack_unprefixed_name",
     "pack_foreign_prefix",
     "pack_id_collision",
