@@ -192,10 +192,7 @@ impl TextRun {
     }
 
     pub fn observe(&mut self, notification: NotificationMessage, now_ms: i64) -> Result<(), Error> {
-        if self.state.closed
-            || self.pending.is_some()
-            || notification.method != METHOD_SESSION_UPDATE
-        {
+        if self.state.closed || notification.method != METHOD_SESSION_UPDATE {
             return Ok(());
         }
         if self.state.status.is_empty() {
@@ -231,6 +228,9 @@ impl TextRun {
                 )
             }
         };
+        if self.pending.is_some() && header.session_update != "usage_update" {
+            return Ok(());
+        }
         match header.session_update.as_str() {
             "agent_message_chunk" => {
                 let chunk = match decode::<AgentMessageChunk>(raw) {

@@ -339,3 +339,7 @@ commit. The typed methods require an active TextRun and an admitted participant.
 The standalone `rust-acp-permission-projection.md` journey proves native replies
 and three-validator traces. Normal `Session.resolve` permission support remains
 unavailable until the approved controller and Session integration layers land.
+
+A pending terminal still accepts native usage observations into the shared
+session scope. They leave the chosen terminal snapshot intact and reach the
+next run. The pending-usage native barrier proof covers that hand-off.

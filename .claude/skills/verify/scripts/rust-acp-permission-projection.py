@@ -136,6 +136,29 @@ def main():
             for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{language}.log')
             print(f'PASS {name}: exact Go/Rust projected event JSON and host frames; three validators accept actual Rust events; native children reaped',flush=True)
+        observed=peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permission_projection','native_usage_in_the_pending_window','--','--nocapture'],output/'pending-usage.log')
+        proof=json.loads(next(line.split('pending-usage-proof ',1)[1] for line in observed.splitlines() if 'pending-usage-proof ' in line))
+        (output/'pending-usage.json').write_text(json.dumps(proof,ensure_ascii=False,indent=2))
+        assert peer.absent(proof['native_pid']),proof['native_pid']
+        assert [frame['method'] for frame in proof['wire'] if 'method' in frame]==['initialize','session/new','session/prompt','fixture/pending','fixture/barrier','session/prompt']
+        assert all(frame['params']['prompt']==[{'type':'text','text':'synthetic'}] for frame in proof['wire'] if frame.get('method')=='session/prompt')
+        contexts=[run[-1]['extensions']['com.agentclientprotocol.context']['used_tokens'] for run in proof['runs']]
+        assert contexts==[100,200],contexts
+        trace=[]
+        for index,events in enumerate(proof['runs']):
+            admission=copy.deepcopy(results['go']['admission'])
+            admission.update(run_id=events[0]['run_id'],submission_id=f'pending-submission-{index}',message_ids=[f'pending-input-{index}'])
+            assembled=peer.trace(copy.deepcopy(events),admission,results['go']['descriptor'])
+            prefix=assembled[2:4]
+            prefix[0]['id']=f'pending-submit-{index}'
+            prefix[0]['payload']['messages'][0]['id']=f'pending-input-{index}'
+            prefix[1].update(id=f'pending-admission-{index}',in_reply_to=prefix[0]['id'])
+            trace.extend((assembled[:2] if index==0 else [])+prefix+events)
+        path=output/'pending-usage.trace.json'
+        path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
+        for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+            peer.run(command+[str(path)],output/f'pending-usage-validate-{language}.log')
+        print('PASS pending usage: native barrier proves the update reached a pending projection; first terminal stays100, next run sees200; all three validators accept; child reaped',flush=True)
     print(f'PASS standalone typed ACP permission projection. Normal Rust Session permission integration remains unavailable. Evidence {output}',flush=True)
 
 

@@ -42,3 +42,12 @@ cancellation, reopen/config, full byte corpus and C8 served parity retain their
 later slices. The shared process helper's grandchild-held-pipe limits apply.
 Run all existing ACP journeys, full baseline and Rust all-features under the
 same mutex, and read the real PTY reply and `/quit` exit.
+
+The pending-usage regression drives two real native prompts through a shared
+UsageScope. After the first terminal becomes pending, a host notification
+releases the agent's newer usage update. A subsequent RPC barrier guarantees
+that the ordered dispatcher handled it before gate settlement. The first
+terminal must retain 100 context tokens and the next run must report 200.
+The script retains the complete native host wire and both actual event runs,
+validates their synthetic-host trace with all three validators, and requires
+the child PID absent. Keep this signed failing review regression before its fix.
