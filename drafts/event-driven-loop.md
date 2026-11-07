@@ -272,35 +272,31 @@ that wants to hear about an error or a server coming up can ask. A rule fires on
 and is then gone, which stops a noisy log waking the session hundreds of times.
 Decision 0068 rule 8 has the whole rule.
 
-**How output is read.** A job's stdout and stderr reach its file through the job
-table's copier, which never waits on anything but the file. The matcher reads the
-file. Reading the pipes would let a slow matcher stall the job, and the file is
-already the record the model reads.
+**How output is read.** A job does not write straight to its file. Its stdout and
+stderr are pipes, and a copier thread in the job table moves their bytes to the
+file, so whatever copies a byte knows at once that it arrived. That needs no file
+watch and nothing polls: the copier blocks in `poll` on the pipes.
 
-- A job with no rule costs nothing here: no watch, and no byte read.
-- Setting a rule opens a read descriptor at the line holding the offset the model
-  has seen, reads to the end of the file, and matches what is already there. That
-  is what catches a line written while the model was deciding.
-- After that a file watch says when the job wrote: `EVFILT_VNODE` with `NOTE_WRITE`
-  on `kqueue`, and `inotify` on Linux, since `epoll` cannot watch a regular file.
-  Each event reads to the end of the file, so a burst of writes is one read. Nothing
-  polls. A partial last line stays buffered, up to a bound, until its newline.
+- A job with no rule costs nothing extra: bytes are copied and none are matched.
+- Setting a rule starts at the line holding the offset the model has seen and
+  matches what the file already holds. That catches a line written while the model
+  was deciding. After that each chunk the copier writes is matched from the file.
+- A partial last line waits for its newline, and is matched as it stands when the
+  job ends.
+- A slow matcher delays the copier, and a full pipe then stalls the job. A rule fires
+  once, so this lasts only until the first match.
 - A command that redirects its own output elsewhere writes nothing here, so a rule
   cannot see that output.
 
-On the existing loop the watcher thread does this. Today it blocks in `waitLeader`
-(`zig/src/tools/shell.zig`), which cannot also see a write, so it changes to block
-on one `kqueue` or `epoll` set: the process's exit (`EVFILT_PROC`, or a `pidfd`), the
-file watch, and a wakeup descriptor that says a rule was set. It still reaps the
-leader and ends the group as today. In the event-driven loop the same registrations
-move to the reactor, and the read and match go to the bounded pool, because a noisy
-log is CPU work.
+The job's own watcher thread still blocks in `waitLeader`, so a moved job costs two
+threads until stage 6. In the event-driven loop the pipes and the exit watch move to
+the reactor, and the match goes to the bounded pool, because a noisy log is CPU work.
 
 **The line matcher.** `zig/src/validation/re2.zig` has only `fullMatch`, so a thin
 layer compiles the pattern as `.*(?:pattern).*` and runs `fullMatch` on each line.
 The engine has no backtracking, so a line costs time linear in its length.
-`fullMatch` answers null for bytes it cannot decode, and a line like that counts as
-no match rather than ending the rule.
+`fullMatch` answers null for bytes an ASCII pattern cannot read, so such a line is
+matched again with those bytes replaced.
 
 ### What run completion means to a host
 

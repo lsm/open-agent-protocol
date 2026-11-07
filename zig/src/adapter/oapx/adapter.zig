@@ -3360,6 +3360,58 @@ test "a run a job started leaves no empty id in the session's state" {
     try testing.expectEqual(@as(usize, 0), captured.as_of.?.admitted_submit_requests.len);
 }
 
+test "a wake_on match on an idle session starts one run and the job keeps running" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+
+    try startJob(session, root, "sleep 0.1; echo ready; sleep 30");
+    try testing.expect(try session.jobs.setRule(session.jobs.list.items[0].output, "ready"));
+    try harness.untilTerminal();
+
+    try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
+    try testing.expect(session.jobs.anyRunning());
+}
+
+test "a wake_on match during a turn folds into its next request and starts no run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .tool_first = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+
+    entered_tool.store(false, .release);
+    _ = try harness.submit("go");
+    const by = compat.time.nowMillis() + 5_000;
+    while (!entered_tool.load(.acquire) and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(entered_tool.load(.acquire));
+    try startJob(session, root, "echo ready; sleep 30");
+    try testing.expect(try session.jobs.setRule(session.jobs.list.items[0].output, "ready"));
+    while (!session.jobs.noticeWaiting() and compat.time.nowMillis() < by) compat.time.sleepMs(5);
+    try testing.expect(session.jobs.noticeWaiting());
+    held_tool.store(false, .release);
+    try harness.untilTerminal();
+
+    try testing.expect(script.saw_notice.load(.acquire));
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try testing.expectEqual(@as(usize, 1), countKind(&harness, "run.started"));
+}
+
 test "a job the model killed tells it nothing and starts no run" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = testing.tmpDir(.{});

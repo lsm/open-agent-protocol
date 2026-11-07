@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import time
 import uuid
 
 NOTICE = "SYSTEM NOTIFICATION"
+OUTPUT = re.compile(r"\.oapx/jobs/job-[0-9a-z-]+\.log")
 requests = []
 plan = []
 
@@ -35,8 +37,12 @@ class Model(http.server.BaseHTTPRequestHandler):
         requests.append({"at": time.monotonic(), "notice": any(NOTICE in json.dumps(m.get("content", "")) for m in messages[last_reply + 1:])})
         if plan:
             arguments = dict(plan.pop(0), description="probe", workspace_root=self.workspace)
+            name = "Shell"
+            if "path" in arguments:
+                name = "ShellJob"
+                arguments.update(path=OUTPUT.findall(json.dumps(messages))[-1], wake_on="ready")
             deltas = [{"role": "assistant", "tool_calls": [{"index": 0, "id": "call_" + uuid.uuid4().hex[:12], "type": "function",
-                       "function": {"name": "Shell", "arguments": json.dumps(arguments)}}]}]
+                       "function": {"name": name, "arguments": json.dumps(arguments)}}]}]
             finish = "tool_calls"
         else:
             deltas, finish = [{"role": "assistant", "content": "ok"}], "stop"
@@ -140,6 +146,19 @@ def mid_turn(hub, session):
     print(f"mid-turn: call returned at {returned - began:.2f}s, model working again at {second:.2f}s, told at {told[0]:.2f}s, run settled at {settled - began:.2f}s, no further run")
 
 
+def match_wake(hub, session):
+    began = submit(hub, session, [{"command": "sleep 6; echo server ready; echo x; sleep 3; echo done"}, {"path": None}])
+    hub.until(is_type("run.completed"), 30)
+    woke, started = hub.until(is_type("run.started"), 30)
+    assert started["payload"].get("trigger"), started
+    hub.until(is_type("run.completed"), 30)
+    told = requests[-1]["notice"]
+    ended, last = hub.until(is_type("run.started"), 30)
+    hub.until(is_type("run.completed"), 30)
+    assert told and requests[-1]["notice"], "the model was not told"
+    print(f"match: woken at {woke - began:.2f}s, woken again at the job's end at {ended - began:.2f}s")
+
+
 def main():
     binary = pathlib.Path(sys.argv[1]).resolve()
     root = pathlib.Path(tempfile.mkdtemp(prefix="oap-job-wake-"))
@@ -162,6 +181,7 @@ def main():
         hub.call("events", session_id="probe")
         idle(hub, "probe")
         mid_turn(hub, "probe")
+        match_wake(hub, "probe")
     finally:
         hub.process.terminate()
         hub.process.wait(timeout=10)

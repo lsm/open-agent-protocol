@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const ai_types = @import("ai_types");
 const agent = @import("agent");
 const compat = @import("compat");
+const re2 = @import("re2");
 const common = @import("tools/common");
 const process_runner = @import("tools/process_runner");
 
@@ -11,7 +12,7 @@ pub const schema_execute =
 ;
 
 pub const schema_job =
-    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string","description":"The output_path the background Shell call returned."},"kill":{"type":"boolean"}},"required":["description","workspace_root","path"],"additionalProperties":false}
+    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string","description":"The output_path the background Shell call returned."},"kill":{"type":"boolean"},"wake_on":{"type":"string","description":"An RE2 regular expression. The session is woken once, with the matching line, when the job writes a line it matches anywhere in; output since the offset you last saw counts. The rule then ends, so set it again to be woken again."}},"required":["description","workspace_root","path"],"additionalProperties":false}
 ;
 
 const jobs_dir = ".oapx/jobs";
@@ -49,6 +50,13 @@ pub const Jobs = struct {
         limit_ms: u64 = 0,
         deadline_ms: i64 = 0,
         limited: bool = false,
+        seen: u64 = 0,
+        rule: ?Rule = null,
+        rule_lock: std.atomic.Mutex = .unlocked,
+        wake: ?Wake = null,
+
+        const Rule = struct { regex: re2.Regex, from: u64 };
+        const Wake = struct { text: []u8 };
 
         fn owesNotice(self: *const Job) bool {
             return self.term != null and !self.killed and !self.noticed;
@@ -94,6 +102,7 @@ pub const Jobs = struct {
         exit_code: ?u8 = null,
         signal: ?u32 = null,
         reason: ?[]const u8 = null,
+        wake_rule_set: ?bool = null,
         bytes: u64,
         output_path: []const u8,
     };
@@ -110,7 +119,11 @@ pub const Jobs = struct {
             thread.join();
             _ = std.posix.system.close(self.limiter_wake[0]);
         };
-        for (self.list.items) |job| self.freeJob(job);
+        for (self.list.items) |job| {
+            dropRule(job);
+            if (job.wake) |wake| self.allocator.free(wake.text);
+            self.freeJob(job);
+        }
         self.list.deinit(self.allocator);
         self.* = undefined;
     }
@@ -200,9 +213,10 @@ pub const Jobs = struct {
         if (self.closing) return error.SessionClosed;
         try self.startLimiter();
         try self.list.ensureUnusedCapacity(self.allocator, 1);
-        const copier = try std.Thread.spawn(.{}, copyOutput, .{ moved.stdout, moved.stderr, stop[0], file });
+        const copier = try std.Thread.spawn(.{}, copyOutput, .{ self, job, moved.stdout, moved.stderr, stop[0], file });
         job.leader = moved.leader;
         job.limit_ms = options.limit_ms;
+        job.seen = moved.stdout_head.len + moved.stderr_head.len;
         job.deadline_ms = options.started_ms + @as(i64, @intCast(options.limit_ms));
         if (options.ends_with_run) job.moved_in = self.run_generation;
         job.killed = options.ends_with_run and self.cancelled_run == self.run_generation;
@@ -279,9 +293,10 @@ pub const Jobs = struct {
         return @intCast(@min(@max(until - common.nowMs(), 0), std.math.maxInt(i32)));
     }
 
-    fn copyOutput(stdout: std.posix.fd_t, stderr: std.posix.fd_t, stop: std.posix.fd_t, file: std.Io.File) void {
+    fn copyOutput(self: *Jobs, job: *Job, stdout: std.posix.fd_t, stderr: std.posix.fd_t, stop: std.posix.fd_t, file: std.Io.File) void {
         defer file.close(common.defaultIo());
         defer _ = std.posix.system.close(stop);
+        defer self.scan(job, true);
         var watched = [_]std.posix.pollfd{
             .{ .fd = stdout, .events = std.posix.POLL.IN, .revents = 0 },
             .{ .fd = stderr, .events = std.posix.POLL.IN, .revents = 0 },
@@ -309,10 +324,127 @@ pub const Jobs = struct {
                     continue;
                 }
                 file.writeStreamingAll(common.defaultIo(), buffer[0..count]) catch return;
+                self.scan(job, false);
                 if (stopping) drained += count;
                 if (drained >= stop_drain_bytes) return;
             }
         }
+    }
+
+    pub fn setRule(self: *Jobs, output_path: []const u8, pattern: []const u8) !bool {
+        self.lock();
+        const job = self.find(output_path) orelse {
+            self.mutex.unlock();
+            return error.UnknownJob;
+        };
+        const ended = job.term != null;
+        const seen = job.seen;
+        self.mutex.unlock();
+        if (ended) return false;
+        const wrapped = try std.fmt.allocPrint(self.allocator, ".*(?:{s}).*", .{pattern});
+        defer self.allocator.free(wrapped);
+        var compiled = try re2.compile(self.allocator, wrapped);
+        if (compiled != .regex) return error.InvalidWakePattern;
+        errdefer compiled.regex.deinit();
+        const from = lineStart(job.*, seen);
+        lockRule(job);
+        if (job.rule) |*old| old.regex.deinit();
+        job.rule = .{ .regex = compiled.regex, .from = from };
+        job.rule_lock.unlock();
+        self.scan(job, false);
+        return true;
+    }
+
+    fn lockRule(job: *Job) void {
+        while (!job.rule_lock.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    fn scan(self: *Jobs, job: *Job, final: bool) void {
+        lockRule(job);
+        defer job.rule_lock.unlock();
+        if (job.rule == null) return;
+        defer if (final) dropRule(job);
+        var dir = common.openWorkspace(job.workspace_root, false) catch return;
+        defer dir.close(common.defaultIo());
+        const file = dir.openFile(common.defaultIo(), job.output, .{}) catch return;
+        defer file.close(common.defaultIo());
+        var buffer: [scan_chunk_bytes]u8 = undefined;
+        while (job.rule) |*rule| {
+            const read = file.readPositionalAll(common.defaultIo(), &buffer, rule.from) catch return;
+            if (read == 0) return;
+            var at: usize = 0;
+            while (at < read) {
+                const newline = std.mem.indexOfScalarPos(u8, buffer[0..read], at, '\n');
+                const whole = newline != null or read == buffer.len or final;
+                if (!whole) break;
+                const line_end = newline orelse read;
+                if (self.lineMatches(&rule.regex, buffer[at..line_end])) {
+                    self.fire(job, file, rule.from + at, rule.from + line_end) catch {};
+                    dropRule(job);
+                    return;
+                }
+                at = @min(line_end + 1, read);
+            }
+            rule.from += at;
+            if (at == 0 or read < buffer.len) return;
+        }
+    }
+
+    fn dropRule(job: *Job) void {
+        if (job.rule) |*rule| rule.regex.deinit();
+        job.rule = null;
+    }
+
+    fn lineMatches(self: *Jobs, regex: *const re2.Regex, line: []const u8) bool {
+        const direct = regex.fullMatch(self.allocator, line) catch return false;
+        if (direct) |matched| return matched;
+        const ascii = self.allocator.dupe(u8, line) catch return false;
+        defer self.allocator.free(ascii);
+        for (ascii) |*byte| {
+            if (byte.* >= 0x80) byte.* = '?';
+        }
+        return (regex.fullMatch(self.allocator, ascii) catch return false) orelse false;
+    }
+
+    fn fire(self: *Jobs, job: *Job, file: std.Io.File, line_start: u64, line_end: u64) !void {
+        const first = line_start -| wake_window_bytes;
+        var window: [2 * wake_window_bytes + scan_chunk_bytes]u8 = undefined;
+        const length = try file.readPositionalAll(common.defaultIo(), &window, first);
+        const held = window[0..length];
+        const start: usize = @intCast(line_start - first);
+        const stop: usize = @min(@as(usize, @intCast(line_end - first)), length);
+        var from = start;
+        var before: usize = 0;
+        while (before < wake_context_lines and from > 0) : (before += 1) {
+            from = if (std.mem.lastIndexOfScalar(u8, held[0 .. from - 1], '\n')) |at| at + 1 else 0;
+        }
+        var to = stop;
+        var after: usize = 0;
+        while (after < wake_context_lines and to < length) : (after += 1) {
+            to = if (std.mem.indexOfScalarPos(u8, held, to + 1, '\n')) |at| at else length;
+        }
+        const offset = first + to;
+        const around = if (std.unicode.utf8ValidateSlice(held[from..to])) held[from..to] else "(not text)";
+        const line = if (std.unicode.utf8ValidateSlice(held[start..stop])) held[start..stop] else "(not text)";
+        const text = try std.fmt.allocPrint(self.allocator, wake_format, .{ job.id, offset, job.output, line, around });
+        self.lock();
+        defer self.mutex.unlock();
+        if (job.wake) |old| self.allocator.free(old.text);
+        job.wake = .{ .text = text };
+        job.seen = offset;
+        if (self.ready) |ready| ready.notify(ready.ctx);
+    }
+
+    fn lineStart(job: Job, offset: u64) u64 {
+        var dir = common.openWorkspace(job.workspace_root, false) catch return offset;
+        defer dir.close(common.defaultIo());
+        const file = dir.openFile(common.defaultIo(), job.output, .{}) catch return offset;
+        defer file.close(common.defaultIo());
+        var buffer: [scan_chunk_bytes]u8 = undefined;
+        const first = offset -| buffer.len;
+        const read = file.readPositionalAll(common.defaultIo(), buffer[0..@intCast(offset - first)], first) catch return offset;
+        const at = std.mem.lastIndexOfScalar(u8, buffer[0..read], '\n') orelse return first;
+        return first + at + 1;
     }
 
     fn limitFor(self: *const Jobs, obj: std.json.ObjectMap) u64 {
@@ -461,7 +593,7 @@ pub const Jobs = struct {
         self.lock();
         defer self.mutex.unlock();
         for (self.list.items) |job| {
-            if (job.owesNotice()) return true;
+            if (job.owesNotice() or job.wake != null) return true;
         }
         return false;
     }
@@ -473,6 +605,11 @@ pub const Jobs = struct {
         errdefer text.deinit(allocator);
         var first: ?[]const u8 = null;
         for (self.list.items) |job| {
+            if (job.wake) |wake| {
+                if (text.items.len > 0) try text.appendSlice(allocator, "\n\n");
+                try text.appendSlice(allocator, wake.text);
+                first = first orelse job.id;
+            }
             if (!job.owesNotice()) continue;
             try appendNotice(allocator, &text, job);
             first = first orelse job.id;
@@ -480,6 +617,8 @@ pub const Jobs = struct {
         const task_id = first orelse return null;
         const owned = try text.toOwnedSlice(allocator);
         for (self.list.items) |job| {
+            if (job.wake) |wake| self.allocator.free(wake.text);
+            job.wake = null;
             if (job.owesNotice()) job.noticed = true;
         }
         return .{ .task_id = task_id, .text = owned };
@@ -582,13 +721,26 @@ const commands_move = builtin.os.tag != .windows;
 const limiter_retry_ms = 1_000;
 const stop_drain_bytes = 1024 * 1024;
 const default_foreground_budget_ms: u64 = 5_000;
+const scan_chunk_bytes = 64 * 1024;
+const wake_window_bytes = 4096;
+const wake_context_lines = 3;
+const wake_format =
+    \\[SYSTEM NOTIFICATION - NOT USER INPUT]
+    \\Background job {s} is still running and wrote a line matching your wake_on rule.
+    \\The rule is now gone; set it again to be woken again. You have seen its output up
+    \\to byte {d} of {s}.
+    \\Matching line: {s}
+    \\Around it:
+    \\{s}
+;
 const command_limit_ms: u64 = 60 * 60 * 1_000;
 const limited_format = "was ended because it reached its time limit of {d} seconds; no command may run longer than 1 hour";
 const moved_tail_bytes = 4096;
 const moved_format =
     \\The command is still running in the background as job {s}. It has not failed.
     \\It has written {d} bytes so far. The last of them are at the end of this message, and all of its output goes to {s}.
-    \\You will be told when the command ends, so keep working.
+    \\You will be told when the command ends, so keep working. To be woken earlier, for
+    \\example on an error or a server coming up, call ShellJob with path and wake_on.
     \\
     \\{s}
 ;
@@ -703,7 +855,7 @@ pub fn sessionTools(jobs: *Jobs) [2]agent.AgentTool {
     return .{ shell_tool, .{
         .label = "Shell job",
         .name = job_tool_name,
-        .description = "Report a background job started with Shell run_in_background, named by the output_path that call returned: running, or its exit code or signal, with the bytes written to its output file. kill: true ends the job and everything it started.",
+        .description = "Report a background job, named by the output_path its Shell call returned: running, or its exit code or signal, with the bytes written to its output file. wake_on sets a one-shot rule that wakes the session on a matching output line. kill: true ends the job and everything it started.",
         .short_description = "Check or stop a background shell job.",
         .parameters_schema_json = schema_job,
         .execute = unavailableJob,
@@ -726,7 +878,13 @@ fn executeJob(ctx: ?*anyopaque, tool_call_id: []const u8, args_json: []const u8,
     var parsed = try common.parseArgs(allocator, args_json);
     defer parsed.deinit();
     const obj = parsed.value.object;
-    const reported = try jobs.report(try common.requiredString(obj, "path"), common.optionalBool(obj, "kill", false));
+    const path = try common.requiredString(obj, "path");
+    const kill = common.optionalBool(obj, "kill", false);
+    const wake_on = if (obj.get("wake_on")) |value| (if (value == .string) value.string else return error.InvalidWakePattern) else null;
+    if (kill and wake_on != null) return error.InvalidWakePattern;
+    const watching = if (wake_on) |pattern| try jobs.setRule(path, pattern) else false;
+    var reported = try jobs.report(path, kill);
+    if (wake_on != null) reported.wake_rule_set = watching;
     const details = try common.jsonString(allocator, reported);
     errdefer allocator.free(details);
     const text = try allocator.dupe(u8, details);
@@ -1007,6 +1165,7 @@ test "a command past its budget returns while it keeps running, and its end is r
     const text = result.content.slice()[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "still running") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "early") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "wake_on") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "late") == null);
     try std.testing.expect(jobs.anyRunning());
 
@@ -1092,7 +1251,10 @@ const EndlessCopy = struct {
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     fn run(self: *EndlessCopy, stdout: std.posix.fd_t, stderr: std.posix.fd_t, stop: std.posix.fd_t, file: std.Io.File) void {
-        Jobs.copyOutput(stdout, stderr, stop, file);
+        var jobs = Jobs.init(std.testing.allocator);
+        defer jobs.deinit();
+        var job = Jobs.Job{ .id = &.{}, .output = &.{}, .workspace_root = &.{}, .tool_call_id = &.{}, .leader = 0 };
+        jobs.copyOutput(&job, stdout, stderr, stop, file);
         self.done.store(true, .release);
     }
 };
@@ -1185,6 +1347,136 @@ test "a limit reached by a job already being cancelled leaves the cancel as its 
     const reported = try jobs.report(job.output, false);
     try std.testing.expectEqual(@as(?[]const u8, null), reported.reason);
     try std.testing.expectEqual(Jobs.Cause.cancelled_by_model, job.cause.?);
+}
+
+test "a match wakes an attached observer before the job ends" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Observer = struct {
+        fn notify(ctx: *anyopaque) void {
+            const ready: *std.Io.Event = @ptrCast(@alignCast(ctx));
+            ready.set(std.testing.io);
+        }
+    };
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    var ready: std.Io.Event = .unset;
+    jobs.setReady(.{ .ctx = &ready, .notify = Observer.notify });
+    try startJob(&jobs, &case, "echo marker; sleep 30", "call-bg");
+    const path = jobs.list.items[0].output;
+    try std.testing.expect(try jobs.setRule(path, "marker"));
+    const deadline = compat.time.nowMillis() + 10_000;
+    while (!ready.isSet() and compat.time.nowMillis() < deadline) compat.time.sleepMs(5);
+    try std.testing.expect(ready.isSet());
+    try std.testing.expect(jobs.anyRunning());
+    try std.testing.expect(jobs.noticeWaiting());
+}
+
+test "a match wakes once with the line around it, and the job keeps running" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "echo one; echo two; sleep 0.2; echo server ready; echo three; sleep 30", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "ready$"));
+
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "Matching line: server ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "two\nserver ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "still running") != null);
+    try std.testing.expect(jobs.anyRunning());
+    try std.testing.expect(jobs.list.items[0].rule == null);
+}
+
+test "a line written past the offset the model saw matches a rule set later, and one before it does not" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    jobs.foreground_budget_ms = 150;
+    var result = try movedCase(&jobs, &case, "echo seen failure; sleep 0.3; echo late failure; sleep 30");
+    defer result.deinit(std.testing.allocator);
+    compat.time.sleepMs(400);
+
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "failure"));
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer notice.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, notice.text, "Matching line: late failure") != null);
+}
+
+test "a flood of matching lines wakes once" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "sleep 0.1; while true; do echo failure; done", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "failure"));
+
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    notice.deinit(std.testing.allocator);
+    compat.time.sleepMs(200);
+    try std.testing.expect(!jobs.noticeWaiting());
+}
+
+test "a job's end still wakes after its rule fired, and a rule not fired ends with it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "sleep 0.1; echo hit; sleep 0.3", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "hit"));
+    try waitForNotice(&jobs);
+    const first = (try jobs.takeNotice(std.testing.allocator)).?;
+    first.deinit(std.testing.allocator);
+
+    try waitForNotice(&jobs);
+    const last = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer last.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, last.text, "exited with code 0") != null);
+
+    try startJob(&jobs, &case, "printf 'no newline'; sleep 0.1", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[1].output, "newline"));
+    try waitForNotice(&jobs);
+    const unterminated = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer unterminated.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, unterminated.text, "Matching line: no newline") != null);
+    try std.testing.expect(jobs.list.items[1].rule == null);
+}
+
+test "a line with bytes an ASCII pattern cannot read still matches" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "sleep 0.1; printf 'caf\\\\303\\\\251 failure\\\\n'; sleep 30", "call-bg");
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "failure"));
+    try waitForNotice(&jobs);
+    const notice = (try jobs.takeNotice(std.testing.allocator)).?;
+    notice.deinit(std.testing.allocator);
+}
+
+test "a pattern that does not compile is refused and a job that ended takes no rule" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "true", "call-bg");
+    const output = jobs.list.items[0].output;
+    try waitForNotice(&jobs);
+    try std.testing.expect(!try jobs.setRule(output, "true"));
+    try startJob(&jobs, &case, "sleep 30", "call-bg");
+    try std.testing.expectError(error.InvalidWakePattern, jobs.setRule(jobs.list.items[1].output, "("));
 }
 
 test "cancelling the run ends the command it moved and reports nothing" {
@@ -1762,6 +2054,44 @@ test "a notice whose tail starts inside a character is still text" {
 
     try std.testing.expect(std.mem.indexOf(u8, notice.text, "(not text)") == null);
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, notice.text, "\n"), "\u{e9}\u{e9}x"));
+}
+
+test "a wake that cannot be built stays owed" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+
+    const tools = sessionTools(&jobs);
+    const running = try backgroundArgs(&case, "echo ready; sleep 30");
+    defer std.testing.allocator.free(running);
+    var started = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-wake", running, null, null, null, std.testing.allocator);
+    defer started.deinit(std.testing.allocator);
+    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "ready"));
+    try waitForNotice(&jobs);
+    const quick = try backgroundArgs(&case, "echo finished");
+    defer std.testing.allocator.free(quick);
+    var ended = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-quick", quick, null, null, null, std.testing.allocator);
+    defer ended.deinit(std.testing.allocator);
+    const by = common.nowMs() + 5_000;
+    while (jobs.list.items[1].term == null and common.nowMs() < by) compat.time.sleepMs(5);
+
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const taken = jobs.takeNotice(failing.allocator()) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(jobs.noticeWaiting());
+            continue;
+        };
+        var notice = taken orelse return error.TestUnexpectedResult;
+        defer notice.deinit(failing.allocator());
+        try std.testing.expect(fail_index > 1);
+        try std.testing.expect(std.mem.indexOf(u8, notice.text, "ready") != null);
+        try std.testing.expect(std.mem.indexOf(u8, notice.text, "finished") != null);
+        break;
+    }
 }
 
 test "a notice that cannot be built stays owed" {
