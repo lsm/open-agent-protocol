@@ -244,6 +244,9 @@ explicit `timeout_ms` is not held to 1 hour, and `run_in_background` is refused.
 - The budget is an `arm_timer` on the reactor. When it fires and the command is
   still running, `step` emits `move_tool`, and the driver records the job and posts
   `tool_moved`, which `step` treats as that call's result.
+- A command that has already ended at the budget is not moved. Its result is built
+  after reading its pipes until they go quiet or close, for at most about 200 ms,
+  so its last output is kept and a writer it left behind cannot hold the call.
 - A cancel inside the budget kills the command as today. After the move, a cancel
   of the run that moved it ends it too.
 - When the group has ended the copier takes what is left in the pipes and stops,
