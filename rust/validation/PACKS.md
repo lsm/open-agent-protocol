@@ -94,6 +94,9 @@ core validation.
 
 `Validator::tolerant()` constructs a tolerant core validator, and
 `Validator::tolerant_with_packs(directories)` adds the fully loaded pack set.
+Semantic recognition uses the protocol vocabulary, independently of schema
+declarations. Schema-only task types retain generic tolerant scope and run
+checks while their task semantics remain staged under Decision 0069.
 Pack construction enforces the complete strict loader contract before compiling
 tolerant schemas. Trace validation accepts additive object members, future string
 enum values and future variants in discriminator unions whose branches are inline

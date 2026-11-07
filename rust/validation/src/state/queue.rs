@@ -220,7 +220,7 @@ impl State {
         let mut expectations = Vec::new();
         if p.delivery.is_empty()
             || p.delivery == RequestedDeliveryMode::AUTO
-            || (self.tolerant && crate::tolerant::foreign_delivery(p.delivery.as_str()))
+            || (self.tolerant && crate::tolerant::foreign_delivery(&p.delivery))
         {
             return (window, expectations);
         }

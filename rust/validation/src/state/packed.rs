@@ -53,7 +53,7 @@ pub(super) fn scope(e: &Envelope) -> (String, String) {
 
 impl State {
     pub(super) fn extension_scoped(&self, kind: &EnvelopeType) -> bool {
-        !crate::validator::envelope_branches().contains_key(kind.as_str())
+        !kind.is_known()
             && (self.tolerant || declared(self.packs.as_deref(), kind.as_str()).is_some())
     }
 

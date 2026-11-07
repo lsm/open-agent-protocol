@@ -26,6 +26,13 @@ The selected branch must report the missing packed payload key at `/payload`
 and a wrong core status constant at `/payload/status` in both modes; root
 `oneOf` and tolerant `anyOf` must narrow diagnostics consistently.
 
+The schema-only `session.task.*` vocabulary retains generic tolerant scope and
+run checks until its semantics graduate under Decision 0069. The public replay
+covers all seven types, unadmitted runs, pre-start sequencing and session-only
+events; strict-mode controls retain their existing results. Both request and
+response scope conflicts must draw the same diagnostic multiplicity as Go.
+The signed public regression records the ten disagreements before the fix.
+
 Future run statuses and admission values are opaque where their vocabulary is
 unknown. Known values still constrain each other, and the status transition table
 must engage again after a known status resumes. An opaque admission still owes

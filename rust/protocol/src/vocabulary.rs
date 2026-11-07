@@ -21,6 +21,10 @@ macro_rules! vocabulary {
             pub fn is_empty(&self) -> bool {
                 self.0.is_empty()
             }
+
+            pub fn is_known(&self) -> bool {
+                matches!(self.as_str(), $($value)|*)
+            }
         }
 
         impl From<String> for $name {

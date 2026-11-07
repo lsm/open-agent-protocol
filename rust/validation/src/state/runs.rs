@@ -109,7 +109,7 @@ fn admission_shape(tolerant: bool, p: &MessageSubmitResponse) -> bool {
     let votes = [
         (
             shape(p.admission.as_str(), "started", "queued"),
-            crate::tolerant::foreign_admission(p.admission.as_str()),
+            crate::tolerant::foreign_admission(&p.admission),
         ),
         (
             shape(p.effective_delivery.as_str(), "start", "queue"),
@@ -120,7 +120,7 @@ fn admission_shape(tolerant: bool, p: &MessageSubmitResponse) -> bool {
         ),
         (
             shape(p.status.as_str(), "running", "queued"),
-            crate::tolerant::foreign_status(p.status.as_str()),
+            crate::tolerant::foreign_status(&p.status),
         ),
     ];
     let mut named = "";
@@ -179,7 +179,7 @@ impl State {
                 Some(run) if !run.terminal => {
                     run.cancel_accepted = true;
                     run.status = RunStatus::CANCELLING;
-                    if self.tolerant && crate::tolerant::foreign_status(p.status.as_str()) {
+                    if self.tolerant && crate::tolerant::foreign_status(&p.status) {
                         run.status = p.status;
                     }
                 }
@@ -250,7 +250,7 @@ impl State {
         } else if !admission_shape(self.tolerant, &p) {
             Some(("/payload/admission", "v0.1 admission must resolve auto to one started (status running) or queued (status queued) run (decision 0002)"))
         } else if self.runs.contains_key(&run_id)
-            && !(self.tolerant && crate::tolerant::foreign_admission(p.admission.as_str()))
+            && !(self.tolerant && crate::tolerant::foreign_admission(&p.admission))
         {
             Some(("/payload/run_id", "run was admitted more than once"))
         } else {
@@ -286,8 +286,7 @@ impl State {
             self.apply_model_control(&session, &controls);
         }
         let deferred_model = queued && controls.model_control().is_some();
-        let opaque_admission =
-            self.tolerant && crate::tolerant::foreign_admission(p.admission.as_str());
+        let opaque_admission = self.tolerant && crate::tolerant::foreign_admission(&p.admission);
         let run = Run {
             session: session.clone(),
             next: 1,
@@ -567,7 +566,7 @@ impl State {
         if !run.started
             && *t != EnvelopeType::RUN_FAILED
             && *t != EnvelopeType::RUN_CANCELLED
-            && crate::validator::envelope_branches().contains_key(t.as_str())
+            && t.is_known()
             && !run.opaque_admission
         {
             plain.push((
@@ -580,8 +579,8 @@ impl State {
             let p: RunStatusUpdatedPayload = payload(e);
             if legal_transition(&run.status, &p.status)
                 || (self.tolerant
-                    && (crate::tolerant::foreign_status(run.status.as_str())
-                        || crate::tolerant::foreign_status(p.status.as_str())))
+                    && (crate::tolerant::foreign_status(&run.status)
+                        || crate::tolerant::foreign_status(&p.status)))
             {
                 run.status = p.status;
             } else {

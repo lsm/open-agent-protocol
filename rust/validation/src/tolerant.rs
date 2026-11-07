@@ -1,33 +1,22 @@
 use std::collections::BTreeSet;
 
+use oap_protocol::{Admission, RequestedDeliveryMode, RunStatus};
 use serde_json::{json, Value};
 
 pub(crate) fn widen(document: &Value) -> Value {
     walk(document, document, false)
 }
 
-pub(crate) fn foreign_status(value: &str) -> bool {
-    !matches!(
-        value,
-        "" | "queued"
-            | "running"
-            | "waiting_for_input"
-            | "cancelling"
-            | "completed"
-            | "failed"
-            | "cancelled"
-    )
+pub(crate) fn foreign_status(value: &RunStatus) -> bool {
+    !value.is_empty() && !value.is_known()
 }
 
-pub(crate) fn foreign_admission(value: &str) -> bool {
-    !matches!(
-        value,
-        "" | "started" | "queued" | "steered" | "side_started" | "rejected"
-    )
+pub(crate) fn foreign_admission(value: &Admission) -> bool {
+    !value.is_empty() && !value.is_known()
 }
 
-pub(crate) fn foreign_delivery(value: &str) -> bool {
-    !matches!(value, "" | "auto" | "queue" | "steer" | "btw")
+pub(crate) fn foreign_delivery(value: &RequestedDeliveryMode) -> bool {
+    !value.is_empty() && !value.is_known()
 }
 
 fn walk(document: &Value, node: &Value, condition: bool) -> Value {
