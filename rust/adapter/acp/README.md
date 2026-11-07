@@ -285,3 +285,25 @@ retained prefix under the documented ownership contract.
 They expose no tool catalog or host execution API. Permissions, accepted host
 cancellation, reopen/config projection and the full byte corpus retain later
 slices. Run the synthetic `rust-acp-tools.md` verification journey.
+
+## Owned native outbound operations
+
+`PromptBridge.notify(method, params, deadline)` forwards a notification through
+an owning `Operation<()>`. `respond(request, result)` and
+`respond_error(request, code, message, data)` own reverse-request response writes.
+The request must originate from this bridge. Identity is checked by the actual
+request object, and a matching wire id from another bridge is refused. Retained
+requests can be answered once through either response spelling.
+
+Operations begin work when constructed. Polling is nonblocking. Await joins the
+operation worker. Dropping an unfinished operation cancels the native process,
+kills/reaps its child and joins the worker, including a response whose native
+write is blocked. Bridge close/drop settles its native transport while pending
+operation futures remain caller-owned. A notification deadline returns its RPC
+error, after which the owner closes the bridge for complete process cleanup.
+
+All writes use the shared bounded FIFO writer and its queue-full result. Request
+registration retains weak references and prunes expired entries when new
+requests arrive. Run `rust-acp-outbound.md` for successful frames, quiet-child
+cleanup, deadlines, bounded admission and thread inventories. Session permission
+publication/resolution and run cancellation retain the following approved layers.
