@@ -20,7 +20,7 @@ oapx serve agent --stdio --backend acp --config oap-serve.json
 | `memory` | — | — | yes | — |
 | `claude` | `claude-code` | `2.1.302` | yes: `claude` from `PATH` | [mapping](../research/claude-code-agent-sdk-2.1.302-mapping.md) |
 | `codex` | `codex-app-server` | `rust-v0.163.0` | yes: `codex` from `PATH` | [mapping](../research/codex-app-server-0.163.0-mapping.md) |
-| `pi` | `pi` | `v1.3.0` | yes: `pi` from `PATH` | [mapping](../research/pi-v1.3.0-mapping.md) |
+| `pi` | `pi` | `v1.5.0` | yes: `pi` from `PATH` | [mapping](../research/pi-v1.5.0-mapping.md) |
 | `opencode` | `opencode` | `v2.0.32` | yes: the installed build, else `opencode` from `PATH` | [mapping](../research/opencode-v2.0.32-mapping.md) |
 | `acp` | `acp` | `v1.12.0` | no: needs `executable` | [mapping](../research/acp-v1.12.0-mapping.md) |
 | `hermes` | `hermes` | `v0.22.2` | no: needs `executable` | [mapping](../research/hermes-v0.22.2-mapping.md) |

@@ -38,7 +38,8 @@ model limit. Summary length and live compaction behavior were not verified.
 ## Corpus
 
 `fixtures/adapters/pi-v1.5.0` carries the prior corpus forward with
-updated provenance and capability revision. The completed-text case adds the
+updated provenance and capability revision; the retired v1.3.0 corpus is removed.
+The completed-text case adds the
 new cost flag; streaming-deltas adds synthetic tool-call start, fragmented
 arguments totaling 16 KiB, and end. A first draft omitted the required start ID and name, and
 failed the full Go corpus with `pi_invalid_message_update`; it was corrected
