@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::io::{self, Write};
 use std::path::Path;
 use std::task::Context;
