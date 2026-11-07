@@ -68,7 +68,13 @@ if prompt is not None:
   wait('finish')
   if mode=='remote': send(dict(id=prompt['id'],error=dict(code=-32800,message='cancel acknowledged')))
   else: send(dict(id=prompt['id'],result=dict(stopReason='end_turn' if mode=='complete' else 'cancelled',usage=dict(inputTokens=3,outputTokens=1,totalTokens=4))))
- while read() is not None: pass
+ while True:
+  request=read()
+  if request is None: break
+  if mode=='auto' and request.get('method')=='session/prompt':
+   chunk('next')
+   wait('second-finish')
+   send(dict(id=request['id'],result=dict(stopReason='end_turn')))
 "#).unwrap();
         let python = std::process::Command::new("python3")
             .args(["-c", "import sys; print(sys.executable)"])
@@ -241,6 +247,12 @@ fn exercise(mode: &str) {
             }
         );
     }
+    if mode == "remote" {
+        assert!(terminal["payload"].get("usage").is_none());
+    } else {
+        assert_eq!(terminal["payload"]["usage"]["input_tokens"], 3);
+        assert_eq!(terminal["payload"]["usage"]["output_tokens"], 1);
+    }
     assert_eq!(final_state.status.as_str(), "idle");
     assert!(final_state.active_run_id.is_none());
     for (index, event) in events.iter().enumerate() {
@@ -305,7 +317,21 @@ fn unknown_and_completed_run_controls_return_typed_refusals() {
     let (admission, stream) = submit(&*session);
     let events = block_on(stream.collect::<Vec<_>>());
     let terminal = block_on(session.cancel(admission.run_id.clone().unwrap()));
+    let (second, mut stream) = submit(&*session);
+    assert_ne!(second.run_id, admission.run_id);
+    assert_eq!(
+        block_on(stream.next())
+            .unwrap()
+            .unwrap()
+            .envelope_type
+            .as_str(),
+        "run.started"
+    );
+    let stale = block_on(session.cancel(admission.run_id.clone().unwrap()));
+    fixture.release("second-finish");
+    let second_events = block_on(stream.collect::<Vec<_>>());
     block_on(session.close()).unwrap();
+    let closed = block_on(session.cancel(second.run_id.unwrap()));
     fixture.reaped();
     assert_eq!(unknown, Err(Error::RunNotFound));
     assert_eq!(
@@ -321,8 +347,33 @@ fn unknown_and_completed_run_controls_return_typed_refusals() {
     assert_eq!(
         terminal,
         Err(Error::RunAlreadyTerminal {
-            run_id: admission.run_id,
+            run_id: admission.run_id.clone(),
             status: Some("completed".into())
         })
     );
+    match stale {
+        Err(Error::RunNotFound) => (),
+        Err(Error::RunAlreadyTerminal { run_id, status }) => {
+            assert_eq!(run_id, admission.run_id);
+            assert_eq!(status.unwrap().as_str(), "completed");
+        }
+        other => panic!("stale cancellation affected a later run: {other:?}"),
+    }
+    assert_eq!(closed, Err(Error::SessionClosed));
+    assert_eq!(
+        second_events
+            .last()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .envelope_type
+            .as_str(),
+        "run.completed"
+    );
+    let wire: Vec<Value> = std::fs::read_to_string(fixture.0.join("wire.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!wire.iter().any(|frame| frame["method"] == "session/cancel"));
 }
