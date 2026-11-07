@@ -123,25 +123,25 @@ fn permission_case(mode: &str) {
         .unwrap()
         .decode_payload::<PermissionRequestedPayload>()
         .unwrap();
+    let resolution = InteractionResolution {
+        run_id: permission.run_id.clone(),
+        responded_by: permission.responded_by.clone(),
+        permission: Some(PermissionResolveRequest {
+            interaction_id: permission.interaction_id,
+            requested_by: permission.requested_by,
+            responded_by: permission.responded_by,
+            session_id: permission.session_id,
+            run_id: permission.run_id,
+            choice_id: "allow".into(),
+            granted: true,
+            ..PermissionResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    };
     if mode != "parent" {
-        let resolution = InteractionResolution {
-            run_id: permission.run_id.clone(),
-            responded_by: permission.responded_by.clone(),
-            permission: Some(PermissionResolveRequest {
-                interaction_id: permission.interaction_id,
-                requested_by: permission.requested_by,
-                responded_by: permission.responded_by,
-                session_id: permission.session_id,
-                run_id: permission.run_id,
-                choice_id: "allow".into(),
-                granted: true,
-                ..PermissionResolveRequest::default()
-            }),
-            ..InteractionResolution::default()
-        };
         if mode == "concurrent" {
             let first = scope.clone().resolve(run.clone(), resolution.clone());
-            let second = scope.clone().resolve(run.clone(), resolution);
+            let second = scope.clone().resolve(run.clone(), resolution.clone());
             let (first, second) = block_on(futures::future::join(first, second));
             assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
             assert_eq!(
@@ -149,10 +149,14 @@ fn permission_case(mode: &str) {
                 Some(oap_adapter::Error::InteractionResolved)
             );
         } else {
-            block_on(scope.clone().resolve(run.clone(), resolution)).unwrap();
+            block_on(scope.clone().resolve(run.clone(), resolution.clone())).unwrap();
         }
     }
     block_on(scope.clone().complete(run.clone(), block_on(call).unwrap())).unwrap();
+    assert_eq!(
+        block_on(scope.clone().resolve(run.clone(), resolution)).unwrap_err(),
+        oap_adapter::Error::InteractionResolved
+    );
     events.extend(
         block_on(stream.collect::<Vec<_>>())
             .into_iter()
