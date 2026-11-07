@@ -14,4 +14,8 @@ pub use wire::{read_frame, write_frame, ControlFrame, Frame, WireError};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
+mod framing;
+#[cfg(unix)]
 pub use client::{Client, ClientError, CONTROL_ANSWER_BUDGET, DEFAULT_LINE_DEADLINE};
+#[cfg(unix)]
+pub use framing::framing_contract;

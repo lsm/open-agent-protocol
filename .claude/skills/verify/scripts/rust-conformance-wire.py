@@ -10,7 +10,7 @@ SOURCE = r'''
 use std::io::Cursor;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use oap_conformance::{read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Runner, Transcript};
+use oap_conformance::{framing_contract, read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Runner, Transcript};
 use oap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
@@ -167,12 +167,15 @@ for line in sys.stdin:
         assert_eq!(runner.checks().len(), 20);
         assert!(runner.checks().iter().all(|check| check.passed));
         println!("admitted run {run} resolved permission and user input, reached its terminal; checks {}", serde_json::to_string(runner.checks()).unwrap());
+        runner.replay_run(&run);
+        assert!(runner.checks().last().unwrap().passed && !runner.checks().last().unwrap().skipped);
+        println!("cursor replay re-delivered the exact ordered run identities, types and sequences");
         runner.check_state();
         runner.refuse_stale_revision();
         runner.answer_cancel(&descriptor, Some(&run));
         runner.refuse_addressable_envelope();
         runner.refuse_unknown_reopen(&descriptor);
-        assert_eq!(runner.checks().len(), 25);
+        assert_eq!(runner.checks().len(), 26);
         assert!(runner.checks().iter().all(|check| check.passed));
         println!("state and refusal checks {}", serde_json::to_string(&runner.into_checks()).unwrap());
         let trace = client.transcript();
@@ -183,7 +186,12 @@ for line in sys.stdin:
         assert!(client.transcript().iter().all(|envelope| !envelope.envelope_type.as_str().starts_with("session.list.")));
         client.close_input();
         assert!(client.wait().unwrap().success());
-        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list/run/refusal checks; streamed gates and terminal; malformed-object rejection; trace ordering; exact cursors");
+        let mut endpoint = Command::new(std::env::args().nth(1).unwrap());
+        endpoint.args(["serve", "agent"]).stderr(Stdio::null());
+        let framing = framing_contract(&mut endpoint, Duration::from_secs(2));
+        assert!(framing.iter().all(|check| check.passed));
+        println!("real endpoint fatal framing checks {}", serde_json::to_string(&framing).unwrap());
+        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list/run/refusal/replay checks; fatal framing; streamed gates and terminal; malformed-object rejection; trace ordering; exact cursors");
 }
 '''
 
