@@ -391,7 +391,7 @@ def main():
             for name, command in commands.items():
                 run(command,case/f'validate-{name}.log')
             print(f'PASS {mode}: host-prefix plus actual engine events accepted by all three validators',flush=True)
-    print(f'PASS bounded native text-run engine. Normal OAP submit remains unavailable. Evidence: {output}')
+    print(f'PASS bounded native text-run engine. Standalone engine proof. Evidence: {output}')
 
 
 if __name__ == '__main__':

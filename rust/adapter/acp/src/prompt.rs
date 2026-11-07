@@ -108,9 +108,23 @@ impl PromptBridge {
     }
 
     pub fn close(self: Arc<Self>) -> Operation<()> {
+        self.close_joining(Vec::new())
+    }
+
+    pub(crate) fn close_workers(&self, workers: Vec<JoinHandle<()>>) -> Result<(), Error> {
+        let mut outcome = self.shutdown();
+        for worker in workers {
+            if worker.join().is_err() {
+                outcome = Err(stopped());
+            }
+        }
+        outcome
+    }
+
+    pub(crate) fn close_joining(self: Arc<Self>, workers: Vec<JoinHandle<()>>) -> Operation<()> {
         Operation::spawn(move |control| {
             control.arm(&self.process.child, &self.process.client);
-            self.shutdown()
+            self.close_workers(workers)
         })
     }
 }

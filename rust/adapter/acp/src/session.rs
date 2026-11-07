@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::lock::Mutex as AsyncMutex;
@@ -16,20 +17,28 @@ use oap_protocol::{
 use crate::adapter::{unavailable, Config};
 use crate::native::{decode, ConfigOption, SessionNewParams, SessionNewResult, METHOD_SESSION_NEW};
 use crate::process::{Implementation, Process};
+use crate::submit::Run;
 use crate::PromptBridge;
+
+type Shutdown = (Arc<PromptBridge>, Vec<JoinHandle<()>>);
 
 pub(crate) struct Inner {
     pub(crate) process: Option<Arc<PromptBridge>>,
     pub(crate) state: SessionState,
+    pub(crate) active: Option<Arc<Run>>,
+    pub(crate) workers: Vec<JoinHandle<()>>,
 }
 
 pub(crate) struct Session {
-    inner: Mutex<Inner>,
+    pub(crate) inner: Arc<Mutex<Inner>>,
     closing: AsyncMutex<()>,
     pub(crate) native_id: String,
     pub(crate) model_option: Option<ConfigOption>,
     pub(crate) switching: AsyncMutex<()>,
-    revision: String,
+    pub(crate) revision: String,
+    pub(crate) submitting: AsyncMutex<()>,
+    pub(crate) ids: Arc<AtomicU64>,
+    abort_active_on_close: bool,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -47,7 +56,7 @@ impl Session {
         config: &Config,
         request: OpenRequest,
         descriptor: Descriptor,
-        next: &AtomicU64,
+        next: &Arc<AtomicU64>,
     ) -> Result<Box<dyn SessionContract>, Error> {
         let params = serde_json::value::to_raw_value(&SessionNewParams {
             cwd: config.process.dir.clone(),
@@ -99,27 +108,58 @@ impl Session {
         } else {
             request.session_id
         };
-        Ok(Box::new(Self {
-            inner: Mutex::new(Inner {
-                process: Some(Arc::new(PromptBridge::new(process, |message| {
-                    if let Inbound::Request(request) = message {
-                        let _ = request.respond_error(-32601, "method not supported");
+        let inner = Arc::new(Mutex::new(Inner {
+            process: None,
+            active: None,
+            workers: Vec::new(),
+            state: SessionState {
+                session_id,
+                status: SessionStatus::IDLE,
+                current_model_id,
+                updated_at_ms: now_ms(),
+                sources: descriptor.capabilities.sources,
+                ..SessionState::default()
+            },
+        }));
+        let weak = Arc::downgrade(&inner);
+        let done = process.client.done();
+        let bridge = PromptBridge::new(process, move |message| match message {
+            Inbound::Request(request) => {
+                let _ = request.respond_error(-32601, "method not supported");
+            }
+            Inbound::Notification(notification) => {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let run = inner
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .active
+                    .clone();
+                if let Some(run) = run {
+                    crossbeam_channel::select! {
+                        recv(done) -> _ => return,
+                        recv(run.admitted) -> _ => (),
                     }
-                }))),
-                state: SessionState {
-                    session_id,
-                    status: SessionStatus::IDLE,
-                    current_model_id,
-                    updated_at_ms: now_ms(),
-                    sources: descriptor.capabilities.sources,
-                    ..SessionState::default()
-                },
-            }),
+                    inner
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .update(&run, |text| text.observe(notification, now_ms()));
+                }
+            }
+            Inbound::Barrier(_) => (),
+        });
+        inner.lock().unwrap_or_else(|p| p.into_inner()).process = Some(Arc::new(bridge));
+        Ok(Box::new(Self {
+            inner,
             closing: AsyncMutex::new(()),
             switching: AsyncMutex::new(()),
             native_id: opened.session_id,
             model_option,
             revision: descriptor.capability_revision,
+            submitting: AsyncMutex::new(()),
+            ids: next.clone(),
+            abort_active_on_close: config.abort_active_on_close,
         }))
     }
 
@@ -127,6 +167,36 @@ impl Session {
         self.inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn shutdown(&self, abort: bool) -> Result<Option<Shutdown>, Error> {
+        let mut inner = self.lock();
+        if !abort
+            && inner
+                .active
+                .as_ref()
+                .is_some_and(|run| !run.lock().state().closed)
+        {
+            return Err(Error::RunActive);
+        }
+        let Some(process) = inner.process.take() else {
+            return Ok(None);
+        };
+        if let Some(run) = inner.active.take() {
+            run.lock().close();
+        }
+        inner.state.status = SessionStatus::CLOSED;
+        inner.state.active_run_id = None;
+        inner.state.updated_at_ms = now_ms();
+        Ok(Some((process, std::mem::take(&mut inner.workers))))
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Ok(Some((process, workers))) = self.shutdown(true) {
+            let _ = process.close_workers(workers);
+        }
     }
 }
 
@@ -144,17 +214,11 @@ impl SessionContract for Session {
     fn close(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {
             let _closing = self.closing.lock().await;
-            let process = {
-                let mut inner = self.lock();
-                let Some(process) = inner.process.take() else {
-                    return Ok(());
-                };
-                inner.state.status = SessionStatus::CLOSED;
-                inner.state.updated_at_ms = now_ms();
-                process
+            let Some((process, workers)) = self.shutdown(self.abort_active_on_close)? else {
+                return Ok(());
             };
             process
-                .close()
+                .close_joining(workers)
                 .await
                 .map_err(|error| Error::Harness(error.to_string()))
         })
@@ -170,8 +234,11 @@ impl SessionContract for Session {
         Some(self)
     }
 
-    fn submit(&self, _: SubmitRequest) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
-        Box::pin(async { Err(unavailable("session.message.submit")) })
+    fn submit(
+        &self,
+        request: SubmitRequest,
+    ) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
+        Box::pin(self.submit_text(request))
     }
     fn resolve(&self, _: InteractionResolution) -> BoxFuture<'_, ()> {
         Box::pin(async { Err(unavailable("action.permissions")) })

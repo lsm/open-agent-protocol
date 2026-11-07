@@ -33,8 +33,8 @@ accepted host cancellation evidence.
 Go, Rust and Zig validate each complete Rust engine event trace with a test-host
 submit prefix. The prefix uses the known test context and Go admission data,
 while all Rust run events come from the real native bridge consumer. This proves
-the standalone engine's event handoff. Normal Rust `Session.submit` and served
-adapter parity remain later slices. Overflow and abandoned prefixes intentionally
+the standalone engine's event handoff. Normal Rust `Session.submit` is covered separately by `rust-acp-submit.md`.
+Served adapter parity remains a later slice. Overflow and abandoned prefixes intentionally
 lack a terminal and are checked as prefixes instead of full completed traces.
 
 Run existing ACP opening/model/bridge journeys, the complete shared baseline

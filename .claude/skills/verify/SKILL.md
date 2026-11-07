@@ -12,9 +12,15 @@ current in the same PR when a command changes or a user journey is added.
 
 ## Isolation and prerequisites
 
-Use a fresh branch/worktree under `~/focus/worktrees/<name>`. Never run a bare
-`git stash` in a shared checkout. After merging, stop everything you started and
-remove your worktree with `git worktree remove <path>` from another checkout.
+Use the checkout/worktree assigned to the session and a fresh branch from the
+fetched target for each task. Keep assigned checkouts across tasks. Remove a
+task-created worktree when its task authorizes cleanup, after stopping anything
+you started. Never run a bare `git stash` in a shared checkout.
+
+Serialize verification on this machine with the shared `/tmp/oap-verify.lock`
+directory mutex. Acquire it with `mkdir`, wait and retry while held, and release
+only the directory acquired by this invocation in an exit trap. Keep the mutex
+through the baseline, relevant journeys and broader language suites.
 
 Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python >=3.11.
 Check `python3 --version` before running the scripts. If it selects an older

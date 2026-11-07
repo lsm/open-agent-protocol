@@ -131,7 +131,7 @@ def main():
                 if (case / 'pid').exists() and not absent(int((case / 'pid').read_text())):
                     os.killpg(consumer.pid, signal.SIGKILL)
             print(f'PASS {mode}: native wire/admission/order/result observed, child reaped, dispatcher released', flush=True)
-    print(f'PASS native ACP prompt bridge. OAP submit remains unavailable. Evidence: {output}')
+    print(f'PASS native ACP prompt bridge. Native-layer ownership proof. Evidence: {output}')
 
 
 if __name__ == '__main__':

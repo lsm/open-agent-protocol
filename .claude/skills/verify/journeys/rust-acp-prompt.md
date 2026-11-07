@@ -31,9 +31,9 @@ handler. Shared RPC tests gate an actual writer and prove its observer stays
 silent until writing completes, runs once and reports local write/admission
 refusals. Existing bounded-queue and stall-closing coverage must keep passing.
 
-OAP submit remains explicitly unavailable. This journey observes the native
-bridge layer. Run the existing ACP foundation/session/model-switch journeys to
+This journey observes the native bridge layer. Normal OAP text submission is
+covered by `rust-acp-submit.md`. Run the existing ACP foundation/session/model-switch journeys to
 confirm those public OAP surfaces still work, the complete shared baseline and
 Rust all-features suite, then inspect the baseline's isolated PTY reply/quit
-proof. OAP streamed run mapping and the byte-for-byte adapter corpus remain
-later slices. Shared grandchild-held-pipe limitations remain applicable.
+proof. Remaining event mappings and the byte-for-byte adapter corpus retain
+their approved later slices. Shared grandchild-held-pipe limitations remain applicable.

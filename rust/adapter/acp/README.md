@@ -59,10 +59,10 @@ and configured source descriptors.
 
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
-the same checks before opening the native session. Reopen, prompt streaming,
-interactive controls remain unavailable. The staged capability revision
-appends `-rust-switch` to the catalog revision because this descriptor has
-fewer capabilities than the completed adapter. Prompt/event mapping and live configuration updates are later slices of #1439.
+the same checks before opening the native session. Reopen and interactive controls remain unavailable. Text submission and
+streaming require explicit degradation opt-in. The staged capability revision
+appends `-rust-submit` to the catalog revision because this descriptor has
+fewer capabilities than the completed adapter. Remaining event mappings and live configuration updates are later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
@@ -100,7 +100,7 @@ opt-in. It reports the opening response's model config-option snapshot, flatteni
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-switch`
+slice. The descriptor discloses the opening snapshot and uses a `-rust-submit`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -171,7 +171,7 @@ owner also performs shutdown and joining. A child ignoring EOF is killed and
 reaped after the configured timeout. The shared helper's documented
 grandchild-held-pipe limitations remain applicable.
 
-This low-level native layer leaves OAP `session.message.submit` unavailable.
+The normal session integration below uses this native layer for OAP submission.
 Its public synthetic stdio proof is in
 `.claude/skills/verify/journeys/rust-acp-prompt.md`. OAP run/event mapping follows
 in the next approved #1439 slice.
@@ -204,8 +204,29 @@ updates and cancellation requiring host evidence produce explicit unavailable
 failures. OAP `run.cancelled` needs accepted host cancellation evidence.
 Configuration-update bodies are decoded structurally and malformed bodies fail
 the run. Usage and live configuration projection belong to their later mapping
-layers. The public consumer covers these staged limits. OAP submit remains unavailable
-until the approved session-integration slice.
+layers. The public consumer covers these staged limits. Normal sessions integrate this
+engine as described below.
 
 Run `.claude/skills/verify/journeys/rust-acp-text.md` for native wire, Go/Rust
 event comparison, bounded overflow, cleanup and three-validator event proof.
+
+
+## Public staged text submission
+
+`Session.submit` accepts user messages with string content and automatic delivery.
+Both `session.message.submit` and `run.streaming` require explicit degradation
+opt-in. The staged descriptor records these limits under its `-rust-submit`
+revision. Native writer admission precedes the accepted response and the first
+run event. The ordered dispatcher waits for admission before projecting native
+notifications. A shared session snapshot tracks the run alongside model switches.
+
+The submit future owns the prompt through native write admission. After admission,
+the session owns the completion worker. Default close immediately refuses an active run, including blocked write admission.
+`Config.abort_active_on_close` enables closing during a run or blocked admission.
+Close and final session drop release the native child, dispatcher and completion
+workers. A submission interrupted by close reports session closed. Cancelled close joins the same owned workers. An EOF-ignoring child can
+report a shutdown timeout after being killed and reaped. Abandonment closes the
+subscriber's retained prefix. Later mapping slices extend the staged engine.
+
+Run `.claude/skills/verify/journeys/rust-acp-submit.md` for public API traces,
+bounded overflow, child/thread ownership and three-validator proof.
