@@ -3,11 +3,45 @@
   "name": "Claude Code",
   "versions": [
     {
-      "label": "2.1.302",
+      "label": "2.1.319",
       "status": "current",
-      "endpoint_version": "v2.1.302",
-      "capability_revision": "claude-code-2.1.302-oap-v1",
-      "admits": ["2.1.302"],
+      "endpoint_version": "v2.1.319",
+      "capability_revision": "claude-code-2.1.319-oap-v1",
+      "admits": ["2.1.319"],
+      "ledgers": [
+        "research/claude-code-agent-sdk-2.1.319-mapping.md",
+        "research/claude-code-agent-sdk-2.1.302-mapping.md",
+        "research/claude-code-agent-sdk-2.1.296-mapping.md",
+        "research/claude-code-agent-sdk-2.1.288-mapping.md",
+        "research/claude-code-agent-sdk-2.1.282-mapping.md",
+        "research/claude-code-agent-sdk-2.1.280-mapping.md",
+        "research/claude-code-agent-sdk-2.1.263-mapping.md"
+      ],
+      "corpus": "fixtures/adapters/claude-code-2.1.319",
+      "components": [
+        { "name": "cli", "package": "@anthropic-ai/claude-code", "version": "2.1.319" },
+        { "name": "typescript-sdk", "package": "@anthropic-ai/claude-agent-sdk", "version": "0.3.319", "repository": "https://github.com/anthropics/claude-agent-sdk-typescript" },
+        { "name": "python-sdk", "version": "0.2.179", "repository": "https://github.com/anthropics/claude-agent-sdk-python" }
+      ],
+      "artifacts": [
+        { "component": "cli", "platform": "any", "kind": "npm-tarball", "name": "@anthropic-ai/claude-code@2.1.319", "sha256": "733a926c19df1c84f35a8e4285a637edce7bf2de13672cfe13a1397efd0bf823", "bytes": 31599 },
+        { "component": "cli", "platform": "any", "kind": "file", "name": "cli-wrapper.cjs", "sha256": "6815b1e3ca9f700b325e642b6b2434ac90190bd2b453b6a3fad27bcc79b576a5" },
+        { "component": "cli", "platform": "linux-x64", "kind": "npm-tarball", "name": "@anthropic-ai/claude-code-linux-x64@2.1.319", "sha256": "9b7b53954b8ffb886fafeefe9ef1e0e9e5c15e8aaf2f54d65ba64d0cca795dc7" },
+        { "component": "cli", "platform": "linux-x64", "kind": "binary", "name": "claude", "sha256": "dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed", "bytes": 340226576 },
+        { "component": "cli", "platform": "darwin-arm64", "kind": "npm-tarball", "name": "@anthropic-ai/claude-code-darwin-arm64@2.1.319", "sha256": "15d4176d3186db97836842e2c903c4a8d614246d8cb19b7bef2e5a2a4ed86e16" },
+        { "component": "cli", "platform": "darwin-arm64", "kind": "binary", "name": "claude", "sha256": "1f53587e92dee8e089fa349188a4cda64fa34ace6e7b0ca2ee278ddaa3cc2ebd", "bytes": 321995200 },
+        { "component": "typescript-sdk", "platform": "any", "kind": "npm-tarball", "name": "@anthropic-ai/claude-agent-sdk@0.3.319", "sha256": "6bfb9ccb6a5d15686f5c7dd12d7a7da6d7b486ca6e1331ac8a7ab98a2d302001" },
+        { "component": "typescript-sdk", "platform": "any", "kind": "file", "name": "sdk.d.ts", "sha256": "89b188a33abd97ed31fdaaee8e78b3b73855b0d8cec9d349d21141cae4941182" }
+      ],
+      "sources": [
+        { "component": "cli", "commit": "fbdd7e02e8530e4c2ade8cc67d30104e53d2c8f2" },
+        { "component": "typescript-sdk", "tag": "v0.3.319", "commit": "49dd8ef10dd5cb012dc9fe10703376489850c36c", "tree": "e368e7942a0b4fe1130cb991f02e93a9b65e31ed" },
+        { "component": "python-sdk", "tag": "v0.2.179", "commit": "2209f2c134fee914c0f75733b631a5fc238ca846", "tree": "ce678b4efb371eda296626a5ebb98f6ffef1dffd" }
+      ]
+    },
+    {
+      "label": "2.1.302",
+      "status": "retired",
       "ledgers": [
         "research/claude-code-agent-sdk-2.1.302-mapping.md",
         "research/claude-code-agent-sdk-2.1.296-mapping.md",
@@ -16,7 +50,6 @@
         "research/claude-code-agent-sdk-2.1.280-mapping.md",
         "research/claude-code-agent-sdk-2.1.263-mapping.md"
       ],
-      "corpus": "fixtures/adapters/claude-code-2.1.302",
       "components": [
         { "name": "cli", "package": "@anthropic-ai/claude-code", "version": "2.1.302" },
         { "name": "typescript-sdk", "package": "@anthropic-ai/claude-agent-sdk", "version": "0.3.302", "repository": "https://github.com/anthropics/claude-agent-sdk-typescript" },

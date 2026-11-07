@@ -1,0 +1,3 @@
+[
+  {"index": 16, "type": "observe:system/api_retry", "reason": "retry notice for the rejected request; it precedes the echo and settles nothing"}
+]
