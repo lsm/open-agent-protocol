@@ -199,3 +199,96 @@ fn native_permission_resolves_through_the_public_engine() {
 fn parent_completion_settles_permission_before_tool_and_run() {
     permission_case("parent");
 }
+
+fn projector(session: &str) -> (TextRun, oap_adapter::EventStream, InteractionResolution) {
+    let mut next = 0;
+    let mut run = TextRun::new(
+        TextRunContext {
+            session_id: session.into(),
+            native_id: "native".into(),
+            run_id: "run".into(),
+            message_id: "message".into(),
+            capability_revision: None,
+        },
+        move |kind| {
+            next += 1;
+            format!("{kind}-{next}")
+        },
+    );
+    let mut stream = run.start(10).unwrap();
+    let params=oap_adapter_acp::native::decode(br#"{"sessionId":"native","toolCall":{"toolCallId":"tool","title":"Read"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}"#).unwrap();
+    run.permission_request(params, "user".into(), 20).unwrap();
+    let mut events = Vec::new();
+    for _ in 0..3 {
+        events.push(block_on(stream.next()).unwrap().unwrap());
+    }
+    let request = events
+        .last()
+        .unwrap()
+        .decode_payload::<PermissionRequestedPayload>()
+        .unwrap();
+    let resolution = InteractionResolution {
+        run_id: request.run_id.clone(),
+        responded_by: request.responded_by.clone(),
+        permission: Some(PermissionResolveRequest {
+            interaction_id: request.interaction_id,
+            requested_by: request.requested_by,
+            responded_by: request.responded_by,
+            session_id: request.session_id,
+            run_id: request.run_id,
+            choice_id: "allow".into(),
+            granted: true,
+            ..PermissionResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    };
+    (run, stream, resolution)
+}
+
+#[test]
+fn a_reply_from_another_projection_is_refused_even_when_generated_ids_match() {
+    let (first, _first_stream, resolution) = projector("first");
+    let (mut second, _second_stream, _) = projector("second");
+    let reply = first.permission_reply(&resolution).unwrap();
+    let result = second.commit_permission(reply, 30);
+    assert!(
+        matches!(result, Err(oap_adapter::Error::InvalidResolution)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn repeated_completion_preserves_the_pending_terminal_usage_snapshot() {
+    let (mut run, stream, _) = projector("session");
+    for count in [10, 20] {
+        run.complete(
+            oap_adapter_acp::native::PromptResult {
+                stop_reason: "end_turn".into(),
+                usage: Some(
+                    serde_json::value::to_raw_value(
+                        &json!({"totalTokens":count,"inputTokens":count,"outputTokens":0}),
+                    )
+                    .unwrap(),
+                ),
+            },
+            30,
+        )
+        .unwrap();
+    }
+    for reply in run.permission_settlements() {
+        run.commit_permission(reply, 40).unwrap();
+    }
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let terminal = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert_eq!(
+        terminal["payload"]["usage"]["input_tokens"], 10,
+        "{terminal}"
+    );
+    assert_eq!(
+        terminal["extensions"]["com.agentclientprotocol.turn_usage"]["input_tokens"],
+        10
+    );
+}
