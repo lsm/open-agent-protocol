@@ -554,3 +554,30 @@ fn shared_usage_scope_accepts_idle_observations_without_a_run() {
         json!({"used_tokens":0,"size_tokens":1000})
     );
 }
+
+#[test]
+fn failed_admission_consumes_scope_before_any_run_started() {
+    let scope = Arc::default();
+    let mut first = scoped_engine(Arc::clone(&scope), "unadmitted");
+    let _ = first.prompt_error("native write failed", true, 10);
+    assert_eq!(first.state().sequence, 0);
+    let mut next = scoped_engine(scope, "next");
+    let stream = next.start(20).unwrap();
+    next.complete(
+        reported(r#"{"totalTokens":10,"inputTokens":8,"outputTokens":2}"#),
+        30,
+    )
+    .unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let terminal = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert!(terminal["payload"].get("usage").is_none(), "{terminal}");
+    assert_eq!(
+        terminal["extensions"]["com.agentclientprotocol.turn_usage"]["total_tokens"],
+        10
+    );
+    assert!(first.state().closed);
+    assert!(matches!(first.start(40), Err(Error::SessionClosed)));
+}
