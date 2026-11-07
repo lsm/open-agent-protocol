@@ -1350,6 +1350,14 @@ idle, none of them waking it. Every operation that needs the harness wakes it
 first. Closing a parked session releases it with nothing to stop. A failed reopen
 is that operation's failure, and the session stays parked.
 
+Current oapx limitation: with `--park-after` enabled, reopening a parked session
+creates an empty job table. An ended job from before the park is no longer found
+by `task_output` or task cancellation: both answer `invalid_submission` with
+`the task does not exist`, although the task draft requires ended tasks to remain
+until session close. A `task_output` read also wakes the session
+and counts as activity, contrary to the read rule above. Parking is off by
+default. Retaining job records across a park is a later decision.
+
 | rule | pinned by |
 | --- | --- |
 | A parked session keeps its subscriber and wakes on the next input | Zig: `a parked session keeps its subscriber and wakes on the next input`; see D37 |
