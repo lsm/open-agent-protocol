@@ -100,6 +100,14 @@ class Client:
             self.process.stdin = None
             stdout, _ = self.process.communicate(timeout=10)
             assert self.process.returncode == 0, stdout
+            native = self.output / 'native-pid'
+            if native.exists():
+                try:
+                    os.kill(int(native.read_text()), 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise AssertionError('native child survived normal EOF cleanup')
         finally:
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
@@ -194,14 +202,6 @@ def main():
         accepted = [frame for frame in client.trace if frame['id'] not in client.refused and
                     frame.get('in_reply_to') not in client.refused]
         (output / 'accepted.trace.json').write_text(json.dumps(accepted, indent=2))
-        pid = int((output / 'native-pid').read_text())
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            os.kill(pid, signal.SIGKILL)
-            raise AssertionError('native child was not reaped')
         for label, fields, diagnostic in [
             ('journal', dict(journal_capacity=1), 'nonzero journal_capacity'),
             ('directory', dict(any_directory=True), 'any_directory'),
