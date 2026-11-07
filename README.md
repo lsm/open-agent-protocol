@@ -234,12 +234,12 @@ start and how it authenticates.
 | --- | --- | --- |
 | `oapx` | oapx's own loop, as the terminal UI builds it | — |
 | `claude` | a Claude Code child | 2.1.319 |
-| `codex` | a Codex app-server child | `rust-v0.163.0` |
-| `pi` | a Pi RPC child | `v1.3.0` |
-| `acp` | an ACP v1 agent named by a `--config` entry | `v1.12.0` |
+| `codex` | a Codex app-server child | `rust-v0.167.0` |
+| `pi` | a Pi RPC child | `v1.5.0` |
+| `acp` | an ACP v1 agent named by a `--config` entry | `v1.15.1` |
 | `hermes` | a Hermes gateway | `v0.22.2` |
-| `deepseek` | a DeepSeek harness | `dsh-v0.2.1-rc.2` |
-| `opencode` | an OpenCode server, started by oapx or already running | `v2.0.32` |
+| `deepseek` | a DeepSeek harness | `dsh-v0.2.2-rc.1` (release candidate) |
+| `opencode` | an OpenCode server, started by oapx or already running | `v2.2.6` |
 | `memory` | the in-memory reference script that conformance runs against | — |
 
 When `opencode` names no endpoint, oapx runs the whole server lifecycle
@@ -276,7 +276,7 @@ oapx tui --backend opencode
 ```
 
 `oapx opencode install` downloads the OpenCode build the catalog pins for this
-platform (`v2.0.32`), checks its sha256, and unpacks it under
+platform (`v2.2.6`), checks its sha256, and unpacks it under
 `~/.oapx/opencode/<version>`. `oapx tui --backend opencode` then starts that
 server, runs the terminal UI over it, and stops it on exit. With
 `--config <path>` it takes the registry entry named `opencode` instead, and an
@@ -317,9 +317,9 @@ available only by explicit opt-in.
 ## Backends in detail
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.319),
-`--backend codex` a Codex app-server child (pinned `rust-v0.163.0`), `--backend pi` a
-Pi RPC child (pinned `v1.3.0`), an `acp`
-entry an ACP v1 agent (pinned `v1.12.0`), a `hermes` entry a Hermes gateway (pinned `v0.22.2`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.2.1-rc.2`), and an `opencode` entry an OpenCode server (pinned `v2.0.32`), behind the same stdio door instead of the built-in loop, following
+`--backend codex` a Codex app-server child (pinned `rust-v0.167.0`), `--backend pi` a
+Pi RPC child (pinned `v1.5.0`), an `acp`
+entry an ACP v1 agent (pinned `v1.15.1`), a `hermes` entry a Hermes gateway (pinned `v0.22.2`), a `deepseek` entry a DeepSeek harness (pinned release candidate `dsh-v0.2.2-rc.1`), and an `opencode` entry an OpenCode server (pinned `v2.2.6`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host
@@ -366,8 +366,8 @@ feeds both trees the same traffic and requires identical output. What that job
 is the last check on, and what the corpora cover instead, is written down in
 [docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
 is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.319-mapping.md),
-[codex](research/codex-app-server-0.163.0-mapping.md),
-[acp](research/acp-v1.12.0-mapping.md). Without `--config`, codex runs `codex`
+[codex](research/codex-app-server-0.167.0-mapping.md),
+[acp](research/acp-v1.15.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
 
@@ -1072,11 +1072,11 @@ Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
-- [Pinned Codex app-server mapping](research/codex-app-server-0.163.0-mapping.md)
-- [Pinned OpenCode server mapping](research/opencode-v2.0.32-mapping.md), over the [v2.0.24 mapping](research/opencode-v2.0.24-mapping.md)
-- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.12.0-mapping.md), over the [v1.11.0](research/acp-v1.11.0-mapping.md), [v1.10.2](research/acp-v1.10.2-mapping.md) and [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
-- [Pinned Pi coding-agent mapping](research/pi-v1.3.0-mapping.md), over the [v1.1.0](research/pi-v1.1.0-mapping.md), [v1.0.4](research/pi-v1.0.4-mapping.md), [v1.0.1](research/pi-v1.0.1-mapping.md), [v0.87.1](research/pi-v0.87.1-mapping.md) and [v0.85.1 base](research/pi-v0.85.1-mapping.md) mappings
-- [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.2.1-rc.2-mapping.md), over the [dsh-v0.2.1-alpha.2](research/deepseek-harness-dsh-v0.2.1-alpha.2-mapping.md), [dsh-v0.1.7-rc.2](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md) and [47f9438 base](research/deepseek-harness-47f9438-mapping.md) mappings
+- [Pinned Codex app-server mapping](research/codex-app-server-0.167.0-mapping.md)
+- [Pinned OpenCode server mapping](research/opencode-v2.2.6-mapping.md), over the [v2.0.24 mapping](research/opencode-v2.0.24-mapping.md)
+- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.15.1-mapping.md), over the [v1.11.0](research/acp-v1.11.0-mapping.md), [v1.10.2](research/acp-v1.10.2-mapping.md) and [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
+- [Pinned Pi coding-agent mapping](research/pi-v1.5.0-mapping.md), over the [v1.3.0](research/pi-v1.3.0-mapping.md), [v1.1.0](research/pi-v1.1.0-mapping.md), [v1.0.4](research/pi-v1.0.4-mapping.md), [v1.0.1](research/pi-v1.0.1-mapping.md), [v0.87.1](research/pi-v0.87.1-mapping.md) and [v0.85.1 base](research/pi-v0.85.1-mapping.md) mappings
+- [Pinned DeepSeek Harness release-candidate mapping](research/deepseek-harness-dsh-v0.2.2-rc.1-mapping.md), over [dsh-v0.2.1-rc.2](research/deepseek-harness-dsh-v0.2.1-rc.2-mapping.md), the [dsh-v0.2.1-alpha.2](research/deepseek-harness-dsh-v0.2.1-alpha.2-mapping.md), [dsh-v0.1.7-rc.2](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md) and [47f9438 base](research/deepseek-harness-47f9438-mapping.md) mappings
 - [Pinned Hermes agent mapping](research/hermes-v0.22.2-mapping.md), over the [v0.21.6](research/hermes-v0.21.6-mapping.md), [v2026.9.24](research/hermes-v2026.9.24-mapping.md) and [v2026.8.31 base](research/hermes-v2026.8.31-mapping.md) mappings
 - [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.319-mapping.md), over the [2.1.302](research/claude-code-agent-sdk-2.1.302-mapping.md), [2.1.296](research/claude-code-agent-sdk-2.1.296-mapping.md), [2.1.288](research/claude-code-agent-sdk-2.1.288-mapping.md), [2.1.282](research/claude-code-agent-sdk-2.1.282-mapping.md) and [2.1.280](research/claude-code-agent-sdk-2.1.280-mapping.md) mappings and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
@@ -1101,6 +1101,16 @@ go run ./go/cmd/goap conformance --command "some-agent --oap" # drive somebody e
 
 `oapx` carries `serve agent` today; `oapx conformance` is product work under
 Decision 0038. `goap` is this repository's own tool.
+
+The Rust Unix process runner is `oap_conformance::run`. Its `Options` select
+the session, model and wait budget. `Report` includes named checks, Rust
+validator diagnostics and an in-memory trace. Its JSON representation omits
+the trace. The repository example prints the report and exits 1 on failure.
+
+```sh
+cargo build --manifest-path rust/Cargo.toml -p oap-serve --bin oap-rust-hub
+cargo run --manifest-path rust/Cargo.toml -p oap-conformance --example endpoint_conformance -- rust/target/debug/oap-rust-hub serve agent
+```
 
 The binding carries cursor replay as a transport control frame — the same
 place the HTTP binding puts it, where `?after=` and `Last-Event-ID` are not
@@ -1186,7 +1196,7 @@ not survive. The loopback gate also verifies conversation history survives a
 new process, and `OAP_PI_CAPTURE_DIR` optionally records its native exchange.
 
 Pi real-process checks are also explicitly opt-in and skipped by ordinary CI.
-Provide an absolute Pi v1.3.0 executable in `OAP_PI_BIN`, then set
+Provide an absolute Pi v1.5.0 executable in `OAP_PI_BIN`, then set
 `OAP_PI_SMOKE=1` for the credential-free readiness check or
 `OAP_PI_INTEGRATION=1` for the loopback-provider path. The executable's reported
 semver is runtime-version evidence only; it does not prove the source commit.
@@ -1257,7 +1267,7 @@ Both ACP adapter trees reopen the binding's native session through the agent's
 advertised load or resume operation. Native load history stays outside the new
 OAP journal, and recovery reports the returned settings. The opt-in ACP gate
 also verifies conversation history survives close and reopen, as recorded in the
-[current mapping ledger](research/acp-v1.12.0-mapping.md).
+[current mapping ledger](research/acp-v1.15.1-mapping.md).
 
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an
@@ -1298,7 +1308,7 @@ production reducer, so codec and reducer regressions are caught without any
 external process.
 
 Go callers can use `go/adapter/copilot.New` or the Go-only configuration
-[`examples/oap-serve-go-copilot.json`](examples/oap-serve-go-copilot.json). The adapter pins CLI 1.0.98 over headless stdio,
+[`examples/oap-serve-go-copilot.json`](examples/oap-serve-go-copilot.json). The adapter pins CLI 1.0.107 over headless stdio,
 checks the reported version/protocol before opening, and supports text auto/queue
 delivery, streaming, state, bounded in-memory replay and Copilot-owned tools.
 Reopen, portable cancellation and interactive answers are not advertised.

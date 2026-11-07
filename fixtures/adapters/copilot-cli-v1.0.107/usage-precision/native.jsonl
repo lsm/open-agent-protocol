@@ -1,0 +1,5 @@
+{"direction":"host-to-copilot","classification":"mapped","fidelity":"normalized","action":"admit","raw":{"jsonrpc":"2.0","id":1,"method":"session.send","params":{"sessionId":"ses","prompt":"hello"}}}
+{"direction":"copilot-to-host","classification":"mapped","fidelity":"normalized","action":"bind","raw":{"jsonrpc":"2.0","id":1,"result":{"messageId":"m1"}}}
+{"direction":"copilot-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"ses","event":{"type":"user.message","data":{"messageId":"m1","interactionId":"i1","content":"hello"}}}}}
+{"direction":"copilot-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"ses","event":{"type":"assistant.usage","data":{"inputTokens":9007199254740993,"outputTokens":3,"cost":0}}}}}
+{"direction":"copilot-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"ses","event":{"type":"session.idle","data":{}}}}}

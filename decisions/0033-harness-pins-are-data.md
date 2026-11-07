@@ -156,3 +156,5 @@ entirely before or after a port, as Decision 0019 requires.
 - A corpus directory renamed and edited in place to follow a new release.
 - An adapter silently driving a harness version it was never proven against.
 - A workflow that downloads upstream artifacts, or re-pins on its own.
+
+DeepSeek Harness `dsh-v0.2.2-rc.1` is a release-candidate pin; the catalog status `current` means selected, not stable. Its synthetic and carried corpus evidence and unverified surfaces are recorded in the [mapping ledger](../research/deepseek-harness-dsh-v0.2.2-rc.1-mapping.md).

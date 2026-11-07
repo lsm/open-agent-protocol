@@ -49,10 +49,12 @@ type Server struct {
 
 	ids atomic.Uint64
 
-	participantMu sync.Mutex
-	participant   protocol.ParticipantID
-	stateMu       sync.Mutex
-	stateSequence map[protocol.SessionID]uint64
+	participantMu   sync.Mutex
+	participant     protocol.ParticipantID
+	sessionPumps    sync.WaitGroup
+	streamFailureMu sync.Mutex
+	streamFailure   error
+	sessionStop     chan struct{}
 
 	lines chan []byte
 
@@ -87,14 +89,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if stall <= 0 {
 		stall = DefaultWriteStall
 	}
-	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger, stateSequence: make(map[protocol.SessionID]uint64), stopping: newStopState()}, nil
-}
-
-func (s *Server) nextStateSequence(id protocol.SessionID) uint64 {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	s.stateSequence[id]++
-	return s.stateSequence[id]
+	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger, stopping: newStopState(), sessionStop: make(chan struct{})}, nil
 }
 
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -139,6 +134,12 @@ reading:
 		}
 	}
 
+	s.streamFailureMu.Lock()
+	if runErr == nil {
+		runErr = s.streamFailure
+	}
+	s.streamFailureMu.Unlock()
+
 	if s.settle(stopStreams, runErr != nil || s.stopping.forced()) {
 		if runErr == nil {
 			runErr = ErrShutdownStalled
@@ -147,6 +148,25 @@ reading:
 		return runErr
 	}
 
+	close(s.sessionStop)
+	sessionDone := make(chan struct{})
+	go func() { s.sessionPumps.Wait(); close(sessionDone) }()
+	select {
+	case <-sessionDone:
+	case <-time.After(s.shutdown):
+		stopStreams()
+		select {
+		case <-sessionDone:
+		case <-time.After(s.shutdown):
+			return ErrShutdownStalled
+		}
+	}
+	stopStreams()
+	s.streamFailureMu.Lock()
+	if runErr == nil {
+		runErr = s.streamFailure
+	}
+	s.streamFailureMu.Unlock()
 	close(s.lines)
 	var flushErr error
 	select {
@@ -158,6 +178,17 @@ reading:
 		return runErr
 	}
 	return flushErr
+}
+
+func (s *Server) failSessionStream(err error) {
+	s.streamFailureMu.Lock()
+	if s.streamFailure == nil {
+		s.streamFailure = err
+	}
+	s.streamFailureMu.Unlock()
+	s.stopping.mu.Lock()
+	s.stopping.finishLocked()
+	s.stopping.mu.Unlock()
 }
 
 func (s *Server) runWriter(out io.Writer) error {

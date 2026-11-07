@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Merged pull requests
 
+- **conformance: compare Rust replay and fatal framing** ([#1673](https://github.com/lsm/open-agent-protocol/pull/1673))
+- **copilot: Pin CLI 1.0.107 synthetic corpus** ([#1672](https://github.com/lsm/open-agent-protocol/pull/1672))
+- **hub: Schedule native sessions through a shared ready queue** ([#1671](https://github.com/lsm/open-agent-protocol/pull/1671))
+- **oapx: project background jobs as session tasks** ([#1670](https://github.com/lsm/open-agent-protocol/pull/1670))
+- **release: refresh alpha.31 notes** ([#1667](https://github.com/lsm/open-agent-protocol/pull/1667))
+- **validation: Stage Rust pack members and contained resources** ([#1665](https://github.com/lsm/open-agent-protocol/pull/1665))
+- **deepseek: Pin the dsh 0.2.2 release candidate** ([#1664](https://github.com/lsm/open-agent-protocol/pull/1664))
+- **adapter: own the Rust ACP session inbound dispatcher** ([#1663](https://github.com/lsm/open-agent-protocol/pull/1663))
+- **conformance: check Rust refusal probes and recovery** ([#1662](https://github.com/lsm/open-agent-protocol/pull/1662))
+- **serve: forward session events on raw endpoint** ([#1660](https://github.com/lsm/open-agent-protocol/pull/1660))
+- **codex: Upgrade app-server pin to 0.167.0** ([#1661](https://github.com/lsm/open-agent-protocol/pull/1661))
+- **release: ship alpha.31 binaries without npm** ([#1659](https://github.com/lsm/open-agent-protocol/pull/1659))
+- **adapter: Expose native session readiness notifications** ([#1658](https://github.com/lsm/open-agent-protocol/pull/1658))
+- **release: prepare 0.1.0-alpha.31** ([#1656](https://github.com/lsm/open-agent-protocol/pull/1656))
+- **codex: Record dynamic tool resume behavior** ([#1655](https://github.com/lsm/open-agent-protocol/pull/1655))
+- **serve: carry session events without run cursors** ([#1654](https://github.com/lsm/open-agent-protocol/pull/1654))
+- **conformance: drive Rust runs through streamed gates** ([#1653](https://github.com/lsm/open-agent-protocol/pull/1653))
+- **validation: Stage Rust pack descriptor and declaration loading** ([#1651](https://github.com/lsm/open-agent-protocol/pull/1651))
 - **adapter: bridge Rust ACP native prompt admission and dispatch** ([#1652](https://github.com/lsm/open-agent-protocol/pull/1652)): Adds a cancellable native prompt bridge for the Rust ACP adapter, with separate write admission and ordered inbound handling.
 - **hub: Batch served-session writes and recover failed appends** ([#1650](https://github.com/lsm/open-agent-protocol/pull/1650)): This batches served oapx history writes on the Stage 2 writer and syncs session files when a batch settles a run.
 - **adapter: confirm Rust ACP model switches** ([#1649](https://github.com/lsm/open-agent-protocol/pull/1649)): Adds confirmed model switching to the Rust ACP adapter, so callers can observe the agent's selected model and reasoning in recorded state.

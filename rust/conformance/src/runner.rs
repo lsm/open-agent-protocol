@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::Client;
 
 mod models;
+mod probes;
+mod replay;
 mod runs;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -36,6 +38,15 @@ impl Check {
             name: name.into(),
             detail: detail.into(),
             ..Self::default()
+        }
+    }
+
+    pub fn skipped(name: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            detail: detail.into(),
+            passed: true,
+            skipped: true,
         }
     }
 }
@@ -70,6 +81,29 @@ impl<'a> Runner<'a> {
 
     pub fn into_checks(self) -> Vec<Check> {
         self.checks
+    }
+
+    pub(crate) fn drive(&mut self, preferred_model: &str) {
+        self.initialize();
+        let Some(descriptor) = self.capabilities() else {
+            return;
+        };
+        let Some(state) = self.open() else {
+            return;
+        };
+        self.list_sessions(&descriptor);
+        let selected = self.select_model(&descriptor, &state.current_model_id, preferred_model);
+        let switched = self.switch_model(&selected, &state.current_model_id);
+        let Some(run) = self.submit_run(&selected, switched) else {
+            return;
+        };
+        self.consume_run(&run);
+        self.replay_run(&run);
+        self.check_state();
+        self.refuse_stale_revision();
+        self.answer_cancel(&descriptor, Some(&run));
+        self.refuse_addressable_envelope();
+        self.refuse_unknown_reopen(&descriptor);
     }
 
     pub fn initialize(&mut self) {

@@ -1,0 +1,9 @@
+{
+  "expected_oap": "expected-oap.json",
+  "id": "model-per-turn",
+  "mapping": "mapping.json",
+  "model_id": "glm-per-turn",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "version": 1
+}

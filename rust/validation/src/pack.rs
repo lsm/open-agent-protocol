@@ -1,3 +1,8 @@
+mod references;
+mod resources;
+
+pub use resources::PackResources;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -264,5 +269,6 @@ fn declarations(descriptor: &Value) -> Vec<PackRefusal> {
             ));
         }
     }
+    found.extend(resources::members(descriptor, &gated));
     found
 }

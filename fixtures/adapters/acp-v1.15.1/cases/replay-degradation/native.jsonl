@@ -1,0 +1,4 @@
+{"action":"observe","classification":"mapped","direction":"server_response","fidelity":"normalized","raw":{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{},"protocolVersion":1}}}
+{"action":"observe","classification":"mapped","direction":"server_response","fidelity":"normalized","raw":{"id":2,"jsonrpc":"2.0","result":{"sessionId":"native-session"}}}
+{"action":"update","await_events":1,"classification":"mapped","direction":"server_to_client","fidelity":"normalized","raw":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"content":{"text":"replay","type":"text"},"sessionUpdate":"agent_message_chunk"}}}}
+{"action":"complete","classification":"mapped","direction":"server_response","fidelity":"normalized","raw":{"id":3,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}}

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "interrupt-idle",
+  "native": "native.jsonl",
+  "expected_oap": "expected-oap.json",
+  "mapping": "mapping.json",
+  "omissions": "omissions.json",
+  "provenance": {"repository": "https://github.com/anomalyco/opencode", "tag": "v2.2.6", "commit": "dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06", "commit_tree": "bb6cdba40a593a0281e3ef5ea38deee9019580ed", "session_event_blob": "0b6af19e6e420abfc767f207ed7b5b3172893d14", "session_input_blob": "16e900189369130b6ed690b82866fc09f1006c81", "session_delivery_blob": "ce11a7a0f97dc235bcd351eca3e60ebc02a02588", "session_group_blob": "2816f25bf1e75f42c28477fae0d19bc2a2919241", "server_handler_blob": "2b7f8b990337320845c1566fdf6ffbcc85591ee7", "core_session_blob": "8c1f40b76792aaf60fdadea6049d88313de25550"},
+  "advertised_capabilities": {"session.message.submit": "native", "run.streaming": "native", "action.tools": "native"},
+  "identity_map": {"ses_fake00000000000000": "session", "msg_rebind": "admitted input (rebound by runner)", "msg_a1": "assistant message"},
+  "cancel": true
+}

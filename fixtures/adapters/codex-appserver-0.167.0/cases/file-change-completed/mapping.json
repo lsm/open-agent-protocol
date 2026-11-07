@@ -1,0 +1,26 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "native",
+    "index": 1,
+    "method": "turn/started"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 2,
+    "method": "item/started"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 3,
+    "method": "item/completed"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 4,
+    "method": "turn/completed"
+  }
+]

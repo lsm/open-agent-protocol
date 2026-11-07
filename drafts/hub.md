@@ -348,10 +348,15 @@ reads session state to recover tasks, as well as resuming any run cursor. The
 stdio wrapper leaves out its outer `sequence` for session events. If one is
 unframeable, stdio reports the last delivered run cursor through
 `oap-frame-limit`; when there is no run cursor it uses `oap-stream-failed`
-without a run id. In either case the host reads session state. The Go raw
-endpoint's session-event forwarding follows separately. The sequence belongs to the hosted
+without a run id. In either case the host reads session state. The Go raw endpoint forwards session events between runs after the open response,
+and its state updates share the same ordered session counter. A failed session
+event stream ends the endpoint so the host can read state. The sequence belongs to the hosted
 session for its lifetime, not to a subscription or a transport connection;
 independent endpoints host distinct sessions and do not share counters. The
+oapx adapter reports background command starts and ends and includes tasks in
+session state. A job completion wakes its session, and close publishes endings
+with `session_closed` before ending its subscriptions. Task controls follow
+separately. The
 Zig hub does not yet publish `session.state.updated`; when it does, those events
 share this counter.
 
@@ -2035,6 +2040,25 @@ the runtime. The owner detaches before releasing the observer context.
 output until detached`, `runtime readiness detach waits for an in-flight
 notification` and `a native readiness observer sees a submitted run and can
 detach before the next` pin this hook.
+
+The Zig Hub queues each observed session once on a shared ready queue. Its
+nonblocking close-on-exec pipe wakes POSIX hosts when the queue becomes
+nonempty. Queue tokens stay stable while the session array moves. Closing or
+parking detaches the observer before releasing the token, and a refused close
+that keeps a session restores observation. Parking delivers pending OAP output
+before destroying the harness. An open that fails after adoption releases its
+entry and observer. Ready visits and fallback visits share the 64-session,
+4 ms pass budget. Backends with readable handles, background jobs, or no
+observer remain eligible for fallback visits. A separate fallback list contains
+only those sessions, and handle collection also visits only that list. Sessions
+enter or leave it after a ready visit observes a change in live work. Parking
+removes membership and reopening restores it when needed. Removing an entry
+updates both fallback references and ready tokens before the next pass. Idle
+notifying sessions consume no fallback visits and leave no unfinished pass.
+Fallback removal preserves the order of the remaining visits in an active pass.
+Tests in the readiness journey
+observe the shared handle and a cancellation across parking, retry refused
+parking, and check allocation failures during open.
 
 **One rule here is where the trees differ in kind, not in answer.** Go's
 `CloseSessions` can only wait: it holds a context, so a session it is waiting on

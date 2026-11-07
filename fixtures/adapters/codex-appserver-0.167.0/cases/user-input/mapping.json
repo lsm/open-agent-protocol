@@ -1,0 +1,5 @@
+[
+  {"index":1,"method":"turn/started","classification":"mapped","fidelity":"native"},
+  {"index":2,"method":"item/tool/requestUserInput","classification":"mapped","fidelity":"lossy"},
+  {"index":3,"method":"turn/completed","classification":"mapped","fidelity":"normalized"}
+]

@@ -47,6 +47,8 @@ pub const EventType = enum {
     metadata_updated,
     permissions,
     viewed,
+    archived,
+    unarchived,
     usage_updated,
     deleted,
     forked,
@@ -78,21 +80,22 @@ pub const EventType = enum {
         "session.tool.failed",            "session.created",               "session.agent.selected",
         "session.model.selected",         "session.moved",                 "session.renamed",
         "session.metadata.updated",       "session.permissions",           "session.viewed",
-        "session.usage.updated",          "session.deleted",               "session.forked",
-        "session.instructions.updated",   "session.synthetic",             "session.skill.activated",
-        "session.shell.started",          "session.shell.ended",           "session.retry.scheduled",
-        "session.compaction.started",     "session.compaction.delta",      "session.compaction.ended",
-        "session.compaction.failed",      "session.revert.staged",         "session.revert.cleared",
-        "session.revert.committed",       "permission.asked",              "permission.replied",
+        "session.archived",               "session.unarchived",            "session.usage.updated",
+        "session.deleted",                "session.forked",                "session.instructions.updated",
+        "session.synthetic",              "session.skill.activated",       "session.shell.started",
+        "session.shell.ended",            "session.retry.scheduled",       "session.compaction.started",
+        "session.compaction.delta",       "session.compaction.ended",      "session.compaction.failed",
+        "session.revert.staged",          "session.revert.cleared",        "session.revert.committed",
+        "permission.asked",               "permission.replied",
     };
 
     pub fn wire(self: EventType) []const u8 {
-        return names[@intFromEnum(self)];
+        return names[@backingInt(self)];
     }
 
     pub fn parse(text: []const u8) ?EventType {
         for (names, 0..) |name, index| {
-            if (std.mem.eql(u8, name, text)) return @enumFromInt(index);
+            if (std.mem.eql(u8, name, text)) return @fromBackingInt(@intCast(index));
         }
         return null;
     }
@@ -106,6 +109,14 @@ pub const EventType = enum {
 };
 
 pub const server_connected = "server.connected";
+
+test "archive events have durable positions" {
+    for ([_][]const u8{ "session.archived", "session.unarchived" }) |name| {
+        const kind = EventType.parse(name) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(kind.durable());
+        try std.testing.expectEqualStrings(name, kind.wire());
+    }
+}
 
 pub fn sessionScoped(type_name: []const u8) bool {
     return std.mem.startsWith(u8, type_name, "session.") or std.mem.eql(u8, type_name, "permission.asked") or std.mem.eql(u8, type_name, "permission.replied");
@@ -339,6 +350,7 @@ const step_ended_fields = [_]Field{
     .{ .name = "finish", .kind = .string },
     .{ .name = "rawFinish", .kind = .string },
     .{ .name = "providerState", .kind = .raw },
+    .{ .name = "native", .kind = .raw },
     .{ .name = "cost", .kind = .float },
     .{ .name = "tokens", .kind = .{ .record = &token_fields } },
     .{ .name = "snapshot", .kind = .string },
@@ -351,6 +363,7 @@ const step_failed_fields = [_]Field{
     .{ .name = "finish", .kind = .string },
     .{ .name = "rawFinish", .kind = .string },
     .{ .name = "providerState", .kind = .raw },
+    .{ .name = "native", .kind = .raw },
     .{ .name = "cost", .kind = .float },
     .{ .name = "tokens", .kind = .{ .optional_record = &token_fields } },
     .{ .name = "snapshot", .kind = .string },
@@ -362,6 +375,7 @@ const part_ended_fields = [_]Field{
     .{ .name = "ordinal", .kind = .integer },
     .{ .name = "text", .kind = .string },
     .{ .name = "state", .kind = .raw },
+    .{ .name = "native", .kind = .raw },
 };
 const part_delta_fields = [_]Field{
     .{ .name = "sessionID", .kind = .string },
@@ -402,6 +416,7 @@ const tool_called_fields = [_]Field{
     .{ .name = "input", .kind = .any_object },
     .{ .name = "executed", .kind = .boolean },
     .{ .name = "state", .kind = .raw },
+    .{ .name = "native", .kind = .raw },
 };
 const tool_progress_fields = [_]Field{
     .{ .name = "sessionID", .kind = .string },
@@ -417,6 +432,7 @@ const tool_success_fields = [_]Field{
     .{ .name = "metadata", .kind = .raw },
     .{ .name = "executed", .kind = .boolean },
     .{ .name = "resultState", .kind = .raw },
+    .{ .name = "native", .kind = .raw },
 };
 const tool_failed_fields = [_]Field{
     .{ .name = "sessionID", .kind = .string },
@@ -427,6 +443,7 @@ const tool_failed_fields = [_]Field{
     .{ .name = "metadata", .kind = .raw },
     .{ .name = "executed", .kind = .boolean },
     .{ .name = "resultState", .kind = .raw },
+    .{ .name = "native", .kind = .raw },
 };
 const content_fields = [_]Field{
     .{ .name = "type", .kind = .string },
@@ -449,6 +466,7 @@ const admitted_fields = [_]Field{
 const session_time_fields = [_]Field{
     .{ .name = "created", .kind = .integer },
     .{ .name = "updated", .kind = .integer },
+    .{ .name = "busy", .kind = .integer },
     .{ .name = "idle", .kind = .integer },
     .{ .name = "viewed", .kind = .integer },
     .{ .name = "archived", .kind = .integer },
@@ -480,6 +498,7 @@ const interrupted_fields = [_]Field{
 const info_fields = [_]Field{
     .{ .name = "version", .kind = .string },
     .{ .name = "pid", .kind = .integer },
+    .{ .name = "hostname", .kind = .string },
     .{ .name = "urls", .kind = .strings },
     .{ .name = "paths", .kind = .raw },
     .{ .name = "capabilities", .kind = .raw },
