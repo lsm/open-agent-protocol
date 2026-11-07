@@ -10,7 +10,7 @@ use oap_protocol::{
 use serde::Serialize;
 
 use crate::native::{
-    decode, AgentMessageChunk, PromptResult, SessionUpdateParams, UpdateHeader,
+    decode, AgentMessageChunk, ConfigOptionUpdate, PromptResult, SessionUpdateParams, UpdateHeader,
     METHOD_SESSION_UPDATE,
 };
 
@@ -62,8 +62,8 @@ impl TextRun {
         status: RunStatus,
         now_ms: i64,
     ) -> Result<(), Error> {
-        let mut event = Envelope::new(kind, (self.ids)("event"), payload)
-            .map_err(|error| Error::Harness(error.to_string()))?;
+        let mut event =
+            Envelope::new(kind, (self.ids)("event"), payload).map_err(Error::harness)?;
         event.sequence = Some(self.state.sequence + 1);
         event.timestamp_ms = Some(now_ms);
         event.session_id = Some(self.context.session_id.clone());
@@ -212,6 +212,12 @@ impl TextRun {
                     now_ms,
                 )
             }
+            "config_option_update" if decode::<ConfigOptionUpdate>(raw).is_err() => self.fail(
+                "acp_invalid_update",
+                "malformed config option update",
+                false,
+                now_ms,
+            ),
             "user_message_chunk"
             | "agent_thought_chunk"
             | "plan"

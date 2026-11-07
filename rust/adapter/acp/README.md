@@ -195,15 +195,16 @@ ownership boundary over real synthetic stdio.
 The engine emits contiguous sequences, text deltas, a complete assistant
 message, observed completion/refusal errors and explicitly inferred transport
 failures. Once settled, late updates and repeated settlement preserve the first
-terminal. A slow consumer receives its bounded prefix and an explicit overflow;
+terminal. A slow consumer receives its bounded prefix and an explicit overflow.
 the native projection can still settle. `close()` or dropping the engine
 finishes the retained prefix when the owner abandons a run.
 
 This slice handles one native message identity. Multiple identities, tool
 updates and cancellation requiring host evidence produce explicit unavailable
-failures. OAP `run.cancelled` needs accepted host cancellation evidence. Usage
-and live config observations belong to their later mapping layers. These staged
-limits are covered by the public consumer, and OAP submit remains unavailable
+failures. OAP `run.cancelled` needs accepted host cancellation evidence.
+Configuration-update bodies are decoded structurally and malformed bodies fail
+the run. Usage and live configuration projection belong to their later mapping
+layers. The public consumer covers these staged limits. OAP submit remains unavailable
 until the approved session-integration slice.
 
 Run `.claude/skills/verify/journeys/rust-acp-text.md` for native wire, Go/Rust

@@ -15,8 +15,9 @@ JSON compare exactly, including ids, timestamps, scope, sequences and payloads.
 Native request frames must also agree. Every native PID must be reaped.
 
 Cases cover Unicode and empty text, completion stop reasons, refusal and remote
-errors, malformed/foreign/unknown updates, invalid assistant chunks, bounded
-subscriber overflow and abandonment while an agent ignores EOF. The overflow
+errors, malformed/foreign/unknown updates, malformed config-option bodies,
+invalid assistant chunks, bounded subscriber overflow and abandonment while an
+agent ignores EOF. The overflow
 case consumes after settlement and must receive the same bounded prefix and
 explicit error on both peers. Abandonment retains the observed prefix. Focused
 tests also drop the text-run producer, consume its retained prefix and require
@@ -38,5 +39,5 @@ lack a terminal and are checked as prefixes instead of full completed traces.
 
 Run existing ACP opening/model/bridge journeys, the complete shared baseline
 and Rust all-features suite too. Inspect the retained PTY fixture reply and
-`/quit` exit. Synthetic inputs only; shared helper grandchild-held-pipe limits
+`/quit` exit. Use synthetic inputs. Shared helper grandchild-held-pipe limits
 remain applicable. The script cleans up isolated process groups on failure.
