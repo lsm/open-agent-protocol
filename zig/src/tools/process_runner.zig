@@ -641,16 +641,43 @@ test "process runner returns after child exits with inherited background pipe" {
     try std.testing.expectEqual(@as(u8, 0), result.term.exited);
 }
 
-test "a child that lingers briefly after closing its pipes is reaped without a full poll" {
+const ReapWaits = struct {
+    var real_sleep: *const fn (?*anyopaque, std.Io.Timeout) std.Io.Cancelable!void = undefined;
+    var release: std.Io.Dir = undefined;
+    var waits: [8]i64 = undefined;
+    var count: usize = 0;
+
+    fn sleep(userdata: ?*anyopaque, timeout: std.Io.Timeout) std.Io.Cancelable!void {
+        if (count < waits.len) {
+            waits[count] = timeout.duration.raw.toMilliseconds();
+            count += 1;
+            if (count == waits.len) release.writeFile(std.testing.io, .{ .sub_path = "go", .data = "" }) catch {};
+        }
+        return real_sleep(userdata, timeout);
+    }
+};
+
+test "a child that lingers after closing its pipes is awaited from 1 ms, doubling up to a poll" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const argv = [_][]const u8{ "/bin/sh", "-c", "exec >/dev/null 2>&1; sleep 0.02" };
-    const started = common.nowMs();
-    const result = try run(std.heap.smp_allocator, &argv, .inherit, 5_000, null);
-    const elapsed = common.durationMs(started);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const real = threaded.io();
+    var vtable = real.vtable.*;
+    ReapWaits.real_sleep = vtable.sleep;
+    ReapWaits.release = tmp.dir;
+    ReapWaits.count = 0;
+    vtable.sleep = ReapWaits.sleep;
+    const io = std.Io{ .userdata = real.userdata, .vtable = &vtable };
+
+    const argv = [_][]const u8{ "/bin/sh", "-c", "exec >/dev/null 2>&1; while [ ! -e go ]; do sleep 0.01; done" };
+    const result = try runWithIo(std.heap.smp_allocator, io, &argv, .{ .dir = tmp.dir }, 30_000, null);
     defer std.heap.smp_allocator.free(result.stdout);
     defer std.heap.smp_allocator.free(result.stderr);
+
     try std.testing.expectEqual(@as(u8, 0), result.term.exited);
-    try std.testing.expect(elapsed < common.process_poll_ms - 10);
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 4, 8, 16, 32, 64, common.process_poll_ms }, &ReapWaits.waits);
 }
 
 test "process runner enforces timeout after pipe eof" {
