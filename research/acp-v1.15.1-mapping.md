@@ -40,9 +40,9 @@ Rust ACP corpus replay remains an existing documented gap in
 `rust/adapter/acp/README.md`; the Go and Zig corpus checks do not establish
 Rust corpus parity.
 
-## Staged Rust tool projection
+## Staged Rust tool and permission projection
 
-The Rust `-rust-tools` stage projects observed native tool calls and sparse
+The Rust `-rust-permissions` stage projects observed native tool calls and sparse
 patches through the normal session submit stream. Tool identity is session-wide,
 terminal events synthesize a missing start, and unfinished children settle in
 creation order before the parent. The synthetic tools journey compares public
@@ -50,9 +50,9 @@ Go/Rust results and native host frames, then validates actual Rust traces with
 all three validators. It normalizes wall clocks and the declared staged revision.
 Byte-for-byte corpus replay retains its final approved ACP slice.
 
-The degraded tool rows describe observed native execution only. Permission
-publication/resolution, accepted host cancellation, reopen and live config
-remain unavailable in this stage. Closing or abandoning an active session
+The degraded tool rows describe observed native execution. Permission
+publication/resolution uses the native support described below. Accepted host
+cancellation, reopen and live config retain their following slices. Closing or abandoning an active session
 retains its existing bounded prefix and owned process cleanup contract.
 
 ## Typed Rust permission projection
@@ -74,7 +74,8 @@ owns cancellation through the existing Operation worker. The native consumer
 compares fourteen Go/Rust event and parsed-wire cases, including trailing
 notifications. Blocked selected and settlement replies, queued cancellation
 and bridge close use synthetic native children and return OS threads to their
-starting inventory after child reap. Normal Session permission integration is described below. The byte-for-byte corpus remains a later gate.
+starting inventory after child reap. Normal Session permission integration is
+described below. The byte-for-byte corpus remains a later gate.
 
 ## Normal Rust Session permission integration
 
