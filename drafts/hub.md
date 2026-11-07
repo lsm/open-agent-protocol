@@ -300,7 +300,7 @@ served and one byte more is a defect. A host computes its own line against the
 same number.
 
 The twelve members a request line may carry are `id`, `op`, `adapter`,
-`session_id`, `run_id`, `after`, `request`, `cursor`, `limit`, `subscription` and
+`session_id`, `run_id`, `after`, `request`, `cursor`, `limit`, `subscription`,
 `allow_degraded_features` and `directory`. An op
 that takes a parameter it does not define is refused `invalid_request`, and the
 check is on **presence**, so a supplied-but-null parameter still counts as
@@ -1571,7 +1571,7 @@ nowhere to put a reason (D12).
   `any_directory` adapter. It must be an absolute path to an existing directory.
   A fixed-directory adapter refuses this election even when the given path
   equals its configured directory. Empty, relative, missing and file paths are
-  `invalid_request`. Omission or null uses the adapter's configured directory.
+  `invalid_request`. On a fresh open, omission or null uses the adapter's configured directory.
   This member belongs to the stdio hub transport object. The open payload can still
   name its own `session_id`, including when it also elects a message or subscription.
   Pinned by `TestHubOpenDirectory`.
@@ -1602,8 +1602,8 @@ nowhere to put a reason (D12).
   not from the adapter's reply. A successful reopen's state declares
   `recovery.recovered`, and a binding store records it as `reopened`. The binding
   retains its selected directory across a restart, and a reopen uses that recorded
-  directory. An explicit different directory on a stdio reopen, or a registry that can no longer
-  place the session there, is refused `invalid_request` before opening the
+  directory. An explicit different directory on a stdio reopen, or an adapter
+  now fixed to a different configured directory, is refused `invalid_request` before opening the
   adapter. Close is an ordinary close of the adapter's session in both trees,
   so an adapter that keeps what it closed can be asked to reopen it. Pinned by
   `TestHubOpenDirectory`, `TestAReopenDirectoryConflictIsABadRequest`,
