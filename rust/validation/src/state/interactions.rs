@@ -795,7 +795,9 @@ impl State {
     }
 
     pub(super) fn feature_for(&mut self, at: (usize, usize), e: &Envelope) {
-        if super::runs::RUN_EVENTS.contains(&e.envelope_type) {
+        if self.extension_scoped(&e.envelope_type)
+            || super::runs::RUN_EVENTS.contains(&e.envelope_type)
+        {
             return;
         }
         let t = e.envelope_type.as_str();
