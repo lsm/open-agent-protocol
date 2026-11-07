@@ -75,7 +75,7 @@ fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const
         if (comptime builtin.os.tag != .windows) {
             if (budget_ms) |budget| if (common.durationMs(start_ms) >= budget) {
                 if (term == null and budget > 0) term = try pollTerm(&child, io);
-                if (term) |t| return .{ .finished = try finish(allocator, &multi_reader, t, false) };
+                if (term) |t| return .{ .finished = try finish(allocator, &multi_reader, t, try drainEnded(&multi_reader, poll_timeout)) };
                 const stdout_head = try allocator.dupe(u8, stdout_reader.buffered());
                 errdefer allocator.free(stdout_head);
                 const stderr_head = try allocator.dupe(u8, stderr_reader.buffered());
@@ -101,6 +101,20 @@ fn outcomeWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const
         }
         if (term) |t| if (pipes_closed) return .{ .finished = try finish(allocator, &multi_reader, t, true) };
     }
+}
+
+fn drainEnded(multi_reader: *std.Io.File.MultiReader, poll_timeout: std.Io.Timeout) !bool {
+    const start_ms = common.nowMs();
+    while (common.durationMs(start_ms) < common.process_poll_ms) {
+        multi_reader.fill(64, poll_timeout) catch |err| switch (err) {
+            error.Timeout => return false,
+            error.EndOfStream => return true,
+            else => |e| return e,
+        };
+        if (multi_reader.reader(0).buffered().len > common.process_output_bytes) return error.StreamTooLong;
+        if (multi_reader.reader(1).buffered().len > common.process_output_bytes) return error.StreamTooLong;
+    }
+    return false;
 }
 
 fn saneChildEnv(allocator: std.mem.Allocator) !std.process.Environ.Map {
