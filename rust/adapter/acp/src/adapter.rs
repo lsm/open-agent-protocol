@@ -117,9 +117,9 @@ impl Adapter {
         for (key, level, reason) in [
             ("session.open", SupportLevel::NATIVE, "session/new opens an ACP session"),
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
-            (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the session/new model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
+            (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the agent's model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
             (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
-            ("session.message.submit", SupportLevel::DEGRADED, "ACP usage semantics remain lossy and unverified, with live config still unavailable"),
+            ("session.message.submit", SupportLevel::DEGRADED, "ACP usage semantics remain lossy and unverified"),
             ("run.streaming", SupportLevel::DEGRADED, "ordered text and tool events from the staged run projection"),
             ("session.message.delivery.auto", SupportLevel::EMULATED, "start when idle and refuse an active run"),
             ("run.status", SupportLevel::EMULATED, "adapter-owned text-run projection"),

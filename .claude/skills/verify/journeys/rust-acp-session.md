@@ -17,8 +17,8 @@ observes the initialize/session-new wire with its working directory and configur
 MCP servers, then reads OAP idle state and an opted-in model catalog. Native
 model options flatten in order, including groups. UI placeholders stay absent
 from the current model. The response carries no inferred provider, pricing or
-context window. The catalog in this slice is the opening response's snapshot;
-live native configuration updates belong to the later config/event slice.
+context window. This journey checks the opening snapshot; live replacement is
+covered by `rust-acp-live-config.md`.
 
 The consumer closes and repeats close, observes state refused after closing,
 and checks every native PID is gone. Missing/invalid session ids and a null

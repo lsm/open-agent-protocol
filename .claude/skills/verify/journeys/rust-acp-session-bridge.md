@@ -14,7 +14,7 @@ The `session_owner` public consumer opens an OAP session through the normal
 adapter contract, using a credential-free synthetic ACP process with native
 queue capacity one. Its real child emits 256 idle notifications and an unknown
 reverse request. The recorded native response must be method-not-supported.
-The opening model snapshot stays observable throughout this staged layer.
+The latest model snapshot stays observable throughout this staged layer.
 
 Five lifecycle cases exercise explicit close, dropping the session, cancelling
 a quiet model switch, cancelling quiet close and closing while a quiet model
@@ -38,4 +38,5 @@ exchange must still pass Go, Rust and Zig validators.
 Run the full baseline and Rust all-features suite too, and inspect the baseline
 PTY fixture reply and `/quit` exit. No ports, credentials or live provider calls
 are used. Normal text submission is covered by `rust-acp-submit.md`; permission handling
-and live config updates remain later slices. Shared grandchild-held-pipe limitations remain applicable.
+is covered by `rust-acp-session-permissions.md`; live config is covered by
+`rust-acp-live-config.md`. Shared grandchild-held-pipe limitations remain applicable.

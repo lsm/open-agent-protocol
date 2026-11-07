@@ -33,6 +33,7 @@ pub(crate) struct Inner {
     permission_runs: BTreeMap<InteractionId, RunId>,
     resolved_permissions: VecDeque<InteractionId>,
     pub(crate) state: SessionState,
+    pub(crate) model_option: Option<ConfigOption>,
     pub(crate) active: Option<Arc<Run>>,
     pub(crate) workers: Vec<JoinHandle<()>>,
     pub(crate) usage: Arc<Mutex<UsageScope>>,
@@ -60,7 +61,6 @@ pub(crate) struct Session {
     pub(crate) inner: Arc<Mutex<Inner>>,
     closing: AsyncMutex<()>,
     pub(crate) native_id: String,
-    pub(crate) model_option: Option<ConfigOption>,
     pub(crate) switching: AsyncMutex<()>,
     pub(crate) revision: String,
     pub(crate) submitting: AsyncMutex<()>,
@@ -144,6 +144,7 @@ impl Session {
             workers: Vec::new(),
             usage: Arc::default(),
             tool_history: Arc::default(),
+            model_option,
             state: SessionState {
                 session_id,
                 status: SessionStatus::IDLE,
@@ -163,8 +164,11 @@ impl Session {
             crossbeam_channel::select! { recv(done) -> _ => return, recv(binding) -> _ => () }
             let Some(shared) = weak.upgrade() else { return };
             let (run, permissions, bridge) = {
-                let inner = shared.lock().unwrap_or_else(|p| p.into_inner());
+                let mut inner = shared.lock().unwrap_or_else(|p| p.into_inner());
                 if let Inbound::Notification(notification) = &message {
+                    if inner.observe_config(notification, &native_id) {
+                        return;
+                    }
                     if inner
                         .usage
                         .lock()
@@ -273,7 +277,6 @@ impl Session {
             closing: AsyncMutex::new(()),
             switching: AsyncMutex::new(()),
             native_id: opened.session_id,
-            model_option,
             revision: descriptor.capability_revision,
             submitting: AsyncMutex::new(()),
             ids: next.clone(),
@@ -439,7 +442,7 @@ impl ModelLister for Session {
             {
                 return Err(Error::RunNotFound);
             }
-            let option = self
+            let option = inner
                 .model_option
                 .as_ref()
                 .ok_or_else(|| crate::models::missing_model(FEATURE_MODELS_LIST))?;

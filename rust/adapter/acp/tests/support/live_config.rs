@@ -78,8 +78,9 @@ pub fn run(input: &Value) -> Value {
     }))
     .unwrap();
     let initial = wait(session.state()).unwrap();
+    let mut admission = None;
     let mut stream = input["active"].as_bool().unwrap_or(false).then(|| {
-        let (_, stream) = wait(session.submit(SubmitRequest {
+        let (accepted, stream) = wait(session.submit(SubmitRequest {
             request: MessageSubmitRequest {
                 session_id: "session".into(),
                 messages: vec![Message {
@@ -97,6 +98,7 @@ pub fn run(input: &Value) -> Value {
             ..SubmitRequest::default()
         }))
         .unwrap();
+        admission = Some(accepted);
         observed(directory, "prompt");
         stream
     });
@@ -156,5 +158,5 @@ pub fn run(input: &Value) -> Value {
         .unwrap()
         .status
         .success());
-    json!({"initial":initial,"snapshots":snapshots,"events":events,"final":final_state,"descriptor":adapter.describe().capabilities,"revision":adapter.describe().capability_revision})
+    json!({"initial":initial,"snapshots":snapshots,"admission":admission,"events":events,"final":final_state,"descriptor":adapter.describe().capabilities,"revision":adapter.describe().capability_revision})
 }

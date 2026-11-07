@@ -161,3 +161,12 @@ fn wrong_session_and_malformed_idle_updates_do_not_change_the_recorded_settings(
         assert_eq!(snapshot["state"], out["initial"]);
     }
 }
+
+#[test]
+fn malformed_config_during_a_run_still_fails_with_native_protocol_evidence() {
+    let out = Fixture::run(true, json!([update(json!([{"currentValue":3}]))]));
+    let terminal = out["events"].as_array().unwrap().last().unwrap();
+    assert_eq!(terminal["type"], "run.failed");
+    assert_eq!(terminal["payload"]["error"]["code"], "acp_invalid_update");
+    assert_eq!(out["final"]["current_model_id"], "sol");
+}

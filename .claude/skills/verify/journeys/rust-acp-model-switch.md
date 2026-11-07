@@ -44,4 +44,6 @@ credentials or network calls are used.
 Run the complete baseline, full Rust all-features suite, format/clippy/comment
 checks and inspect the baseline's isolated PTY reply/quit evidence. The temporary
 capability revision is `-rust-cancel`. Normal permissions are covered by
-`rust-acp-session-permissions.md`. Live config updates and full ACP corpus replay retain their approved later slices of #1439.
+`rust-acp-session-permissions.md`. Live config updates are covered by
+`rust-acp-live-config.md`. Reload, opening configuration and full ACP corpus
+replay retain their approved later slices of #1439.
