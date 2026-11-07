@@ -126,6 +126,10 @@ The external public consumer compares typed field failures, null controls,
 positive/negative contradictions, every code represented in the shared agent
 and load fixtures, provider-only codes, scope derivation and profile restrictions
 against Go's public CLI. Inspect `results.json` and the retained raw outputs.
-Results explicitly carry stage `corpus-expectations`. Identity/path policy,
-unit ownership, coverage completeness and full construction follow in the sixth
-loader slice. Corpus trace execution follows with validator integration.
+Results explicitly carry stage `corpus-expectations`. The generated public API
+documentation must name the agent mode and provenance deferrals. Two separate
+controls retain Rust acceptance and complete-Go refusal of an unknown agent
+mode and an empty provenance string in `staged-differences.json`; they are
+explicit staged differences. Agent mode/provenance validation, identity/path
+policy, unit ownership, coverage completeness and full construction follow in
+the sixth loader slice. Corpus trace execution follows with validator integration.

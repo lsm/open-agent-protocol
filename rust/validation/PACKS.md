@@ -30,6 +30,7 @@ negative expectations, provider profiles and scopes, and the separate agent,
 provider and load-error code vocabularies. Optional null fields retain their
 zero/default meaning. Unknown manifest fields remain accepted.
 
-This operation checks declared expectations. Entry identity and path policy,
+This operation checks declared expectations. Agent mode and provenance validation, entry identity and path policy,
 unit ownership, capability coverage and complete loader construction follow in
-the final slice. Running the corpus traces follows with validator integration.
+the final slice. In this stage an agent entry with an unknown mode or an empty
+provenance string remains accepted; the complete Go loader refuses both. Running the corpus traces follows with validator integration.
