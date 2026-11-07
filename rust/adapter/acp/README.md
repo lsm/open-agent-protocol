@@ -221,7 +221,7 @@ run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
 
 The submit future owns the prompt through native write admission. After admission,
-the session owns the completion worker. Default close refuses an active run.
+the session owns the completion worker. Default close immediately refuses an active run, including blocked write admission.
 `Config.abort_active_on_close` enables closing during a run or blocked admission.
 Close and final session drop release the native child, dispatcher and completion
 workers. Cancelled close joins the same owned workers. An EOF-ignoring child can

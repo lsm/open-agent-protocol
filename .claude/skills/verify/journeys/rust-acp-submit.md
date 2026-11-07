@@ -19,9 +19,10 @@ integration fixture. The native agent records its actual interpreter, which
 must match that selection while its environment stays empty. Keep this
 portability regression committed before the fixture lookup fix.
 
-Seven cases cover complete Unicode text, bounded subscriber overflow, dropping
+Eight cases cover complete Unicode text, bounded subscriber overflow, dropping
 an active session, opt-in abort close, cancelling close, cancelling blocked
-write admission and closing during blocked admission. Quiet agents ignore EOF.
+write admission, opt-in closing during blocked admission and immediate default
+close refusal while the writer is blocked. Quiet agents ignore EOF.
 The consumer stays alive after cleanup so the verifier can require native PID
 absence and exact return to the initial OS thread count. Explicit shutdown of
 an EOF-ignoring child reports its timeout after killing, reaping and joining.

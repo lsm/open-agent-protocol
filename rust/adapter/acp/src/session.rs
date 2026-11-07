@@ -214,11 +214,6 @@ impl SessionContract for Session {
     fn close(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {
             let _closing = self.closing.lock().await;
-            let _submitting = if self.abort_active_on_close {
-                None
-            } else {
-                Some(self.submitting.lock().await)
-            };
             let Some((process, workers)) = self.shutdown(self.abort_active_on_close)? else {
                 return Ok(());
             };
