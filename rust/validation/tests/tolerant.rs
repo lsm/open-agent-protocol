@@ -100,3 +100,32 @@ fn an_unknown_run_event_checks_each_available_string_scope_field() {
         .collect();
     assert_eq!(observed, [("scope_mismatch", 3)]);
 }
+
+#[test]
+fn schema_only_task_types_keep_generic_tolerant_scope_and_run_checks() {
+    let validator = Validator::tolerant().unwrap();
+    let mut trace: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    let mut event = trace[2].clone();
+    event["type"] = json!("session.task.updated");
+    event["id"] = json!("task-event");
+    event["payload"] = json!({"task_id":"task", "status":"running"});
+    let result = validator.validate(&serde_json::to_vec(&event).unwrap(), "task-admission");
+    assert!(result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "illegal_run_transition"));
+    trace[2]["sequence"] = json!(2);
+    trace[3]["sequence"] = json!(3);
+    trace.as_array_mut().unwrap().insert(2, event);
+    assert!(validator
+        .validate(&serde_json::to_vec(&trace).unwrap(), "task-prelude")
+        .valid());
+    let mut request = trace[0].clone();
+    request["type"] = json!("session.task.output.request");
+    request["payload"] = json!({"session_id":"s-other", "task_id":"task"});
+    let result = validator.validate(&serde_json::to_vec(&request).unwrap(), "task-scope");
+    assert!(result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "scope_mismatch"));
+}

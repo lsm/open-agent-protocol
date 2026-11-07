@@ -171,6 +171,35 @@ def main():
     next(e for e in trace if e["type"] == "capabilities.response")["payload"]["features"]["tools"]["level"] = "partial"
     judge("unknown-support-is-unavailable", trace, [], False, False)
 
+    task_payloads = {
+        "started":{"task":{"task_id":"task", "kind":"command", "status":"running", "cancellable":True}},
+        "updated":{"task_id":"task", "status":"running"},
+        "ended":{"task_id":"task", "status":"completed", "cause":"finished"},
+    }
+    for suffix, task_payload in task_payloads.items():
+        event = dict(deepcopy(base[2]), type="session.task." + suffix, id="task-event", payload=task_payload)
+        judge("task-unadmitted-" + suffix, [event], [], True, False)
+        trace = deepcopy(base)
+        trace[2]["sequence"], trace[3]["sequence"] = 2, 3
+        trace.insert(2, event)
+        judge("task-prestart-" + suffix, trace, [], False, True)
+        event.pop("run_id")
+        judge("task-session-scoped-" + suffix, [event], [], True, True)
+    for operation, response_payload in [
+        ("cancel", {"outcome":"requested"}),
+        ("output", {"output":"", "next":0, "truncated":False, "ended":False}),
+    ]:
+        request = dict(deepcopy(base[0]), type="session.task." + operation + ".request", id="task-request",
+                       payload={"session_id":"s-other", "task_id":"task"})
+        response = dict(deepcopy(base[1]), type="session.task." + operation + ".response", id="task-response",
+                        in_reply_to="task-request", payload=response_payload)
+        request.pop("run_id", None)
+        response.pop("run_id", None)
+        judge("task-request-scope-" + operation, [request, response], [], True, False)
+        request["payload"]["session_id"] = "s1"
+        response["payload"]["session_id"] = "s-other"
+        judge("task-response-scope-" + operation, [request, response], [], False, False)
+
     storage = ROOT / "fixtures/packs/storage"
     for path, valid in [("valid/ext-advertised-key-gated.json", True), ("schema-invalid/ext-packed-type-malformed.json", False)]:
         judge(Path(path).stem, json.loads((ROOT / "fixtures" / path).read_text()), [storage], valid, valid)
