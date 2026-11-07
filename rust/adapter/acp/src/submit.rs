@@ -135,7 +135,7 @@ impl Session {
             }
             let ids = self.ids.clone();
             let id: RunId = self.new_id("run").into();
-            let run = Arc::new(Run {
+            let mut run = Run {
                 id: id.clone(),
                 text: Mutex::new(TextRun::new_in_scope(
                     TextRunContext {
@@ -154,7 +154,9 @@ impl Session {
                     inner.usage.clone(),
                 )),
                 admitted,
-            });
+            };
+            run.text.get_mut().unwrap().tools.seen = inner.tool_history.clone();
+            let run = Arc::new(run);
             inner.state.status = SessionStatus::RUNNING;
             inner.state.active_run_id = Some(run.id.clone());
             inner.state.updated_at_ms = now_ms();

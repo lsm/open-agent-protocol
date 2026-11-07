@@ -61,7 +61,7 @@ The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
 the same checks before opening the native session. Reopen and interactive controls remain unavailable. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-result` to the catalog revision because this descriptor has
+appends `-rust-tools` to the catalog revision because this descriptor has
 fewer capabilities than the completed adapter. Remaining event mappings and live configuration updates are later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
@@ -100,7 +100,7 @@ opt-in. It reports the opening response's model config-option snapshot, flatteni
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-result`
+slice. The descriptor discloses the opening snapshot and uses a `-rust-tools`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -201,8 +201,8 @@ finishes the retained prefix when the owner abandons a run.
 
 Native message identities map to separate OAP message ids and accumulated text.
 Repeated native ids reuse their OAP ids, and an omitted id continues the current
-message. The terminal response contains the last message's own text. Tool updates
-and cancellation requiring host evidence produce explicit staged failures. OAP
+message. The terminal response contains the last message's own text. Cancellation
+requiring host evidence produces an explicit staged failure. OAP
 `run.cancelled` requires accepted host cancellation evidence. Configuration-update
 bodies are decoded structurally and malformed bodies fail the run. Live config
 projection retains its approved later slice.
@@ -215,7 +215,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-result`
+opt-in. The staged descriptor records these limits under its `-rust-tools`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -264,3 +264,24 @@ from token counts. Native RPC errors carry context without invented turn counts.
 
 Run `.claude/skills/verify/journeys/rust-acp-results.md` for the public multi-turn
 Go/Rust replay, captured native frames and three-validator traces.
+
+## Observed native tool calls
+
+The normal session projects ACP tool creation and sparse patches into scoped
+requested, started, progress and terminal events. Native tool ids receive OAP
+ids, repeated observations retain them, and reuse across prompts is refused.
+Native string names override presentation titles. Invalid name patches retain
+the preceding name, and empty title patches retain the preceding title.
+
+A terminal without progress first emits start. Missing requested arguments and
+completed results are explicit null. Sparse progress patches omit arguments,
+results and errors. Native raw inputs, outputs, content and locations retain
+their JSON values. Unfinished children settle in creation order before the run.
+Normal completion starts pending tools and fails them as incomplete. Run failure
+cancels outstanding tools. Abandonment and session close still finish the
+retained prefix under the documented ownership contract.
+
+`action.tools` and `action.tools.execute` are degraded observed-lifecycle claims.
+They expose no tool catalog or host execution API. Permissions, accepted host
+cancellation, reopen/config projection and the full byte corpus retain later
+slices. Run the synthetic `rust-acp-tools.md` verification journey.

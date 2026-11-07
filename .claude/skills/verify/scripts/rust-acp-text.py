@@ -237,7 +237,11 @@ func main() {
 	if closed != nil {
 		closeError = closed.Error()
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"events": events, "errors": errors, "admission": admission, "closeError": closeError}); err != nil {
+	descriptor, err := adapter.Probe(ctx)
+	if err != nil {
+		panic(err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"events": events, "errors": errors, "admission": admission, "closeError": closeError, "descriptor": descriptor.Capabilities}); err != nil {
 		panic(err)
 	}
 }
@@ -320,13 +324,17 @@ def run(command, output, data=None):
             child.communicate()
 
 
-def trace(events, admission):
+def trace(events, admission, descriptor):
     template = json.loads((ROOT / 'fixtures/valid/core-completed.json').read_text())[:2]
     template[0]['session_id'] = 'session'
     template[0]['payload'] = {'session_id':'session','delivery':'auto','messages':[{'id':'input-message','role':'user','content':'synthetic'}]}
     template[1]['session_id'] = 'session'
     template[1]['payload'] = admission
-    return template + events
+    common={'protocol':'open-agent-protocol','version':'0.1','profile':'open-agent-protocol.agent-control-core'}
+    capabilities=[dict(common,id='cap-request',type='capabilities.request',payload={}),
+                  dict(common,id='cap-response',type='capabilities.response',in_reply_to='cap-request',
+                       capability_revision=events[0]['capability_revision'],payload=descriptor)]
+    return capabilities + template + events
 
 
 def main():
@@ -345,7 +353,7 @@ def main():
     run(['go','build','-o',str(output/'go-reference'),str(output/'reference.go')], output/'go-build.log')
     run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'], output/'goap-build.log')
     cases=['complete','bad-config','empty','max-tokens','max-requests','refusal','unknown-stop','remote-error','malformed','foreign','unknown-update','bad-chunk','overflow','abandon','multi-message','tool','cancelled']
-    unavailable={'tool':'acp_unavailable_update','cancelled':'acp_unavailable_cancellation'}
+    unavailable={'cancelled':'acp_unavailable_cancellation'}
     with tempfile.TemporaryDirectory(prefix='oap-text-engine-') as temporary:
         fake = Path(temporary)/'agent.py'
         fake.write_text(AGENT)
@@ -379,7 +387,7 @@ def main():
                 print(f'PASS {mode}: exact Go/Rust event JSON and native wire agree; children reaped',flush=True)
             if mode in ['overflow','abandon']:
                 continue
-            assembled=trace(copy.deepcopy(rust['events']),go['admission'])
+            assembled=trace(copy.deepcopy(rust['events']),go['admission'],go['descriptor'])
             path=case/'trace.json'
             path.write_text(json.dumps(assembled,indent=2))
             commands={

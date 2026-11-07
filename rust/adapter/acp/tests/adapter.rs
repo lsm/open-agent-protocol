@@ -84,7 +84,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-result", pin().capability_revision)
+        format!("{}-rust-tools", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
@@ -98,9 +98,12 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "session.message.delivery.auto"
             | "run.status" => SupportLevel::EMULATED,
             "session.open" => SupportLevel::NATIVE,
-            "models.list" | "session.model.switch" | "session.message.submit" | "run.streaming" => {
-                SupportLevel::DEGRADED
-            }
+            "models.list"
+            | "session.model.switch"
+            | "session.message.submit"
+            | "run.streaming"
+            | "action.tools"
+            | "action.tools.execute" => SupportLevel::DEGRADED,
             _ => SupportLevel::UNAVAILABLE,
         };
         assert_eq!(support.level, expected, "{key}");

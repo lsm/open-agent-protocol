@@ -272,6 +272,11 @@ def tool_scenarios():
         'tool-missing-title': {'turns': [turn('{"sessionUpdate":"tool_call","toolCallId":"tool"}')]},
         'tool-invalid-status': {'turns': [turn(call(status='mystery'))]},
         'tool-null-raw': {'turns': [turn(call(rawInput=None), patch(status='in_progress', rawOutput=None), patch(title='', status='completed'))]},
+        'tool-invalid-with-child': {'turns': [turn(call(), '{"sessionUpdate":"tool_call_update","toolCallId":7}')]},
+        'tool-raw-values': {'turns': [turn(
+            '{"sessionUpdate":"tool_call","toolCallId":"tool","title":"Read","name":"\\ud800","status":"in_progress","rawInput":{"n":18446744073709551615}}',
+            '{"sessionUpdate":"tool_call_update","toolCallId":"tool","content":{"n":18446744073709551615,"x":2},"locations":null}',
+            '{"sessionUpdate":"tool_call_update","toolCallId":"tool","status":"completed","rawOutput":{"n":18446744073709551615}}')]},
     }
 
 
@@ -362,7 +367,10 @@ def main():
                 assert turns[0]['events'][-1]['payload']['final_response']['content']=='prefixoneagaintail'
             if name=='max-counts':
                 assert turns[0]['events'][-1]['payload']['usage']['input_tokens']==18446744073709551615
-            trace=[]
+            common={'protocol':'open-agent-protocol','version':'0.1','profile':'open-agent-protocol.agent-control-core'}
+            trace=[dict(common,id='cap-request',type='capabilities.request',payload={}),
+                   dict(common,id='cap-response',type='capabilities.response',in_reply_to='cap-request',
+                        capability_revision=results['rust']['revision'],payload=results['rust']['descriptor'])]
             for index,turn in enumerate(results['rust']['turns']):
                 prefix=copy.deepcopy(json.loads((ROOT/'fixtures/valid/core-completed.json').read_text())[:2])
                 prefix[0].update(id=f'submit-{index}',session_id='session',capability_revision=results['rust']['revision'])

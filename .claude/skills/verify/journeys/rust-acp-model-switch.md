@@ -43,5 +43,5 @@ credentials or network calls are used.
 
 Run the complete baseline, full Rust all-features suite, format/clippy/comment
 checks and inspect the baseline's isolated PTY reply/quit evidence. The temporary
-capability revision is `-rust-result`. Live config updates, remaining event mappings,
+capability revision is `-rust-tools`. Live config updates, remaining event mappings,
 gates and full ACP corpus replay retain their approved later slices of #1439.

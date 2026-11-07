@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -28,6 +29,7 @@ pub(crate) struct Inner {
     pub(crate) active: Option<Arc<Run>>,
     pub(crate) workers: Vec<JoinHandle<()>>,
     pub(crate) usage: Arc<Mutex<UsageScope>>,
+    pub(crate) tool_history: Arc<Mutex<BTreeSet<String>>>,
 }
 
 pub(crate) struct Session {
@@ -114,6 +116,7 @@ impl Session {
             active: None,
             workers: Vec::new(),
             usage: Arc::default(),
+            tool_history: Arc::default(),
             state: SessionState {
                 session_id,
                 status: SessionStatus::IDLE,

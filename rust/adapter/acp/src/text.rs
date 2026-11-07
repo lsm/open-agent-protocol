@@ -6,9 +6,9 @@ use oap_adapter::jsonrpc::NotificationMessage;
 use oap_adapter::subscriber::Subscriber;
 use oap_adapter::{Error, EventStream};
 use oap_protocol::{
-    ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType, Message,
-    MessageContent, MessageId, MessageRole, ProtocolError, RunCompletedPayload, RunFailedPayload,
-    RunId, RunStartedPayload, RunStatus, SessionId, Usage, SETTLED_BY_INFERRED,
+    ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType,
+    Message, MessageContent, MessageId, MessageRole, ProtocolError, RunCompletedPayload,
+    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionId, Usage, SETTLED_BY_INFERRED,
 };
 use serde::Serialize;
 
@@ -44,6 +44,7 @@ pub struct TextRun {
     usage_scope: Arc<Mutex<UsageScope>>,
     terminal_usage: Option<Usage>,
     extensions: Extensions,
+    pub(crate) tools: crate::tools::Tools,
 }
 
 impl TextRun {
@@ -66,6 +67,7 @@ impl TextRun {
             usage_scope,
             terminal_usage: None,
             extensions: Extensions::new(),
+            tools: crate::tools::Tools::default(),
         }
     }
 
@@ -87,6 +89,14 @@ impl TextRun {
         event.session_id = Some(self.context.session_id.clone());
         event.run_id = Some(self.context.run_id.clone());
         event.capability_revision = self.context.capability_revision.clone();
+        if event.envelope_type.as_str().starts_with("action.call.") {
+            event.tool_call_id = Some(
+                event
+                    .decode_payload::<ActionCallPayload>()
+                    .map_err(Error::harness)?
+                    .tool_call_id,
+            );
+        }
         self.state.sequence += 1;
         self.state.updated_at_ms = now_ms;
         self.state.closed = status != RunStatus::RUNNING;
@@ -133,6 +143,8 @@ impl TextRun {
         if self.state.status.is_empty() {
             return Err(Error::InvalidSubmission);
         }
+        let events = self.tools.settle(true);
+        self.emit_tools(events, now_ms)?;
         self.emit(
             EnvelopeType::RUN_FAILED,
             &RunFailedPayload {
@@ -265,12 +277,18 @@ impl TextRun {
             | "current_mode_update"
             | "session_info_update"
             | "config_option_update" => Ok(()),
-            "tool_call" | "tool_call_update" => self.fail(
-                "acp_unavailable_update",
-                "tool updates are unavailable in the text-run engine",
-                false,
-                now_ms,
-            ),
+            "tool_call" | "tool_call_update" => {
+                let (events, fault) = self.tools.observe(
+                    raw,
+                    header.session_update == "tool_call_update",
+                    &mut *self.ids,
+                );
+                self.emit_tools(events, now_ms)?;
+                match fault {
+                    Some((code, message)) => self.fail(code, message, false, now_ms),
+                    None => Ok(()),
+                }
+            }
             name if name.starts_with('_') => Ok(()),
             _ => self.fail(
                 "acp_unknown_update",
@@ -289,6 +307,11 @@ impl TextRun {
         if self.state.status.is_empty() {
             return Err(Error::InvalidSubmission);
         }
+        let events = self.tools.settle(!matches!(
+            result.stop_reason.as_str(),
+            "end_turn" | "max_tokens" | "max_turn_requests"
+        ));
+        self.emit_tools(events, now_ms)?;
         match result.stop_reason.as_str() {
             "end_turn" | "max_tokens" | "max_turn_requests" => self.emit(
                 EnvelopeType::RUN_COMPLETED,
@@ -325,6 +348,19 @@ impl TextRun {
                 self.fail("acp_invalid_stop_reason", &detail, false, now_ms)
             }
         }
+    }
+
+    fn emit_tools(
+        &mut self,
+        events: Vec<(EnvelopeType, ActionCallPayload)>,
+        now_ms: i64,
+    ) -> Result<(), Error> {
+        for (kind, mut payload) in events {
+            payload.session_id = self.context.session_id.clone();
+            payload.run_id = self.context.run_id.clone();
+            self.emit(kind, &payload, RunStatus::RUNNING, now_ms)?;
+        }
+        Ok(())
     }
 
     fn settle_usage(&mut self, raw: Option<&serde_json::value::RawValue>) {

@@ -39,7 +39,7 @@ submit failure must remain committed before the implementation.
 Run the existing ACP foundation, opening, model, bridge and standalone text
 journeys, full shared baseline and Rust all-features suite under the same mutex.
 Inspect the retained PTY fixture reply and `/quit` result. Reported usage and
-native message identities are covered by `rust-acp-results.md`. Tool lifecycle,
-cancellation intent, permissions and live config projection retain their
+native message identities are covered by `rust-acp-results.md`. Tool lifecycle is covered by `rust-acp-tools.md`. Cancellation intent,
+permissions and live config projection retain their
 approved later slices. Shared process-helper
 grandchild-held-pipe limitations remain applicable.
