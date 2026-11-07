@@ -27,7 +27,8 @@ writes, and all artifacts, PIDs and partial native frames are retained.
 
 The focused tests reject a forged source object with a matching native id,
 refuse duplicate publication and serialize concurrent answers to one native
-reply and one correlated resolution. The initial signed API red precedes the
+reply and one correlated resolution. Late answers after selected or parent
+settlement return InteractionResolved while the bridge remains open. The initial signed API red precedes the
 implementation. Use the controller for all transitions of a managed TextRun,
 and keep native I/O outside the projection mutex. The clock is read at commit.
 

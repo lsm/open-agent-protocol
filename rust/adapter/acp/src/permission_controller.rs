@@ -122,7 +122,7 @@ impl Permissions {
         resolution: InteractionResolution,
     ) -> BoxFuture<'static, ()> {
         self.operation(move |owner, bindings| {
-            if owner.bridge.is_closed() || run.lock().unwrap().state().closed {
+            if owner.bridge.is_closed() {
                 return Err(Error::SessionClosed);
             }
             let reply = run.lock().unwrap().permission_reply(&resolution)?;
