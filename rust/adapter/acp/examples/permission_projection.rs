@@ -13,7 +13,13 @@ use serde_json::{json, Value};
 
 type Requests = Arc<Mutex<BTreeMap<InteractionId, Arc<IncomingRequest>>>>;
 
-fn settle(run: &Mutex<TextRun>, bridge: &PromptBridge, requests: &Requests) {
+fn settle(
+    run: &Mutex<TextRun>,
+    bridge: &PromptBridge,
+    requests: &Requests,
+    settlement: &Mutex<()>,
+) {
+    let _settlement = settlement.lock().unwrap();
     let replies = run.lock().unwrap().permission_settlements();
     for reply in replies {
         let request = requests.lock().unwrap()[reply.interaction_id()].clone();
@@ -67,6 +73,8 @@ fn main() {
     let active_owner = owner.clone();
     let requests: Requests = Arc::default();
     let pending = requests.clone();
+    let settlement = Arc::new(Mutex::new(()));
+    let receiving_settlement = settlement.clone();
     let granted = input["granted"].as_bool().unwrap_or(true);
     let resolve = input["resolve"].as_bool().unwrap_or(false);
     let bridge = Arc::new(PromptBridge::new(process, move |message| {
@@ -79,7 +87,7 @@ fn main() {
                     .unwrap()
                     .observe(notification, 1000)
                     .unwrap();
-                settle(&receiving, &bridge, &pending);
+                settle(&receiving, &bridge, &pending, &receiving_settlement);
             }
             Inbound::Request(request) if request.method == METHOD_SESSION_REQUEST_PERMISSION => {
                 let params = decode::<PermissionRequest>(
@@ -145,7 +153,7 @@ fn main() {
                         }
                     }
                     Err(error) => {
-                        settle(&receiving, &bridge, &pending);
+                        settle(&receiving, &bridge, &pending, &receiving_settlement);
                         let message = match error {
                             Error::Harness(message) => message,
                             other => other.to_string(),
@@ -204,7 +212,7 @@ fn main() {
             .prompt_error(&error.to_string(), error.remote_code().is_none(), 1000)
             .unwrap(),
     }
-    settle(&run, &bridge, &requests);
+    settle(&run, &bridge, &requests, &settlement);
     let closed = block_on(bridge.clone().close());
     let events = block_on(stream.collect::<Vec<_>>())
         .into_iter()

@@ -51,3 +51,12 @@ terminal must retain 100 context tokens and the next run must report 200.
 The script retains the complete native host wire and both actual event runs,
 validates their synthetic-host trace with all three validators, and requires
 the child PID absent. Keep this signed failing review regression before its fix.
+
+The standalone consumer serializes the complete settlement attempt, from ticket
+preparation through native write and commit, with one settlement mutex shared
+by the dispatcher and main thread. Native writes remain outside the TextRun
+mutex. A synthetic trailing-notification case leaves eight gates pending and
+emits legal plan updates after the first cancellation reply. It must finish
+without a duplicate reply, duplicate resolution or panic, match the Go events
+and wire, pass all three validators, and reap both native children. Keep the
+signed native failing regression before the example fix.
