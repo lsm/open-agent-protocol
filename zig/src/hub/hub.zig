@@ -1049,6 +1049,7 @@ pub const Hub = struct {
             else => return false,
         };
         if (reported.status != .idle or reported.active_run_id != null or reported.active_runs.len > 0) return false;
+        _ = try self.deliver(entry, arena);
         var holding = std.heap.ArenaAllocator.init(self.allocator);
         errdefer holding.deinit();
         const stored = try keepState(holding.allocator(), reported);
@@ -2689,6 +2690,8 @@ fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
     defer scratch.deinit();
     _ = hub.open(scratch.allocator(), "signalling", .{ .session_id = "failed-open" }) catch |err| {
         try testing.expectEqual(false, hub.knows("failed-open"));
+        for (adapter.sessions.items) |session| session.signal();
+        try testing.expectEqual(false, hub.hasPendingPass());
         return err;
     };
 }

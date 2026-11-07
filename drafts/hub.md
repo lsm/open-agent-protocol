@@ -2037,6 +2037,18 @@ output until detached`, `runtime readiness detach waits for an in-flight
 notification` and `a native readiness observer sees a submitted run and can
 detach before the next` pin this hook.
 
+The Zig Hub queues each observed session once on a shared ready queue. Its
+nonblocking close-on-exec pipe wakes POSIX hosts when the queue becomes
+nonempty. Queue tokens stay stable while the session array moves. Closing or
+parking detaches the observer before releasing the token, and a refused close
+that keeps a session restores observation. Parking delivers pending OAP output
+before destroying the harness. An open that fails after adoption releases its
+entry and observer. Ready visits and fallback visits share the 64-session,
+4 ms pass budget. Backends with readable handles, background jobs, or no
+observer remain eligible for fallback visits. The shared-wake, refused-park,
+pending-terminal and failed-open tests in the readiness journey pin these
+ownership rules.
+
 **One rule here is where the trees differ in kind, not in answer.** Go's
 `CloseSessions` can only wait: it holds a context, so a session it is waiting on
 gives the budget back. The Zig sweep is not waiting on anything — a Zig
