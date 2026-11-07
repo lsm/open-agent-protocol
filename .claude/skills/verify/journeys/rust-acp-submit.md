@@ -1,9 +1,7 @@
 # Rust ACP public text submission
 
-Follow shared setup in SKILL.md and run from the repository root. Serialize
-verification with the shared `/tmp/oap-verify.lock` directory mutex. Acquire it
-with `mkdir`, wait and retry while held, and release only the directory acquired
-by this invocation after its commands finish.
+Follow shared setup and verification mutex instructions in SKILL.md, and run
+from the repository root.
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-submit.py --output-dir /tmp/oap-submit-<unique>

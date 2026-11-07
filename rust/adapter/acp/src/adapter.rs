@@ -119,7 +119,7 @@ impl Adapter {
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
             (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the session/new model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
             (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
-            ("session.message.submit", SupportLevel::DEGRADED, "staged text runs decline multiple native messages, tool events and unproven cancellation"),
+            ("session.message.submit", SupportLevel::DEGRADED, "staged text runs omit usage and live config and decline multiple native messages, tools and unproven cancellation"),
             ("run.streaming", SupportLevel::DEGRADED, "ordered text events from the staged text-run projection"),
             ("session.message.delivery.auto", SupportLevel::EMULATED, "start when idle and refuse an active run"),
             ("run.status", SupportLevel::EMULATED, "adapter-owned text-run projection"),
