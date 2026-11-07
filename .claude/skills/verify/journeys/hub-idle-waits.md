@@ -36,5 +36,5 @@ errno. The parking test retries a refused close at the next idle deadline.
 
 POSIX stdio uses descriptor and deadline waits for notifying sessions. Backends
 with fallback obligations and custom stop callbacks use bounded polling.
-Windows uses bounded completion/peek waits. HTTP's polling budget changes in
-the separate deadline slice.
+Windows uses bounded completion/peek waits. HTTP's checks are in
+`hub-http-deadlines.md`.

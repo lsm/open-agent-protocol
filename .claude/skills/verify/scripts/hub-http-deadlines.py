@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -83,8 +84,13 @@ def main():
                     data = json.dumps(payload).encode() if payload is not None else None
                     req = urllib.request.Request(f"http://127.0.0.1:{port}" + path, data=data,
                                                  headers={"Content-Type": "application/json"})
-                    with urllib.request.urlopen(req, timeout=10) as response:
-                        return None if response.status == 204 else json.load(response)
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as response:
+                            return None if response.status == 204 else json.load(response)
+                    except urllib.error.HTTPError as error:
+                        body = error.read()
+                        (output / "http-refusal.json").write_bytes(body)
+                        raise AssertionError(f"{path}: HTTP {error.code}, {body.decode()}") from error
 
                 deadline = time.monotonic() + 15
                 while True:
@@ -117,21 +123,21 @@ def main():
                     (output / "header-timeout.txt").write_bytes(head)
                     assert head.startswith(b"HTTP/1.1 408 "), head
                     (output / "header-timing.json").write_text(json.dumps({"seconds": time.monotonic() - started}))
-                opened = request("/adapters/loop/sessions", bench.envelope("session.open.request", {"session_id": "deadline-session", "subscribe": True}))
+                opened = request("/adapters/loop/sessions", bench.envelope("session.open.request", {"session_id": "deadline-session"}))
                 (output / "opened.json").write_text(json.dumps(opened, indent=2))
                 connection = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
                 try:
                     connection.request("GET", "/sessions/deadline-session/events")
-                    response = connection.getresponse()
-                    assert response.status == 200
-                    lines = []
-                    while True:
-                        line = response.readline()
-                        assert line, lines
-                        lines.append(line.decode())
-                        if line == b": keepalive\n":
-                            break
-                    (output / "keepalive.txt").write_text("".join(lines))
+                    with connection.getresponse() as response:
+                        assert response.status == 200
+                        lines = []
+                        while True:
+                            line = response.readline()
+                            assert line, lines
+                            lines.append(line.decode())
+                            if line == b": keepalive\n":
+                                break
+                        (output / "keepalive.txt").write_text("".join(lines))
                 finally:
                     connection.close()
                 request("/sessions/deadline-session/close", {})

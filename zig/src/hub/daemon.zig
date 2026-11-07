@@ -690,6 +690,30 @@ pub const Connection = struct {
         return self.sent < self.out.items.len;
     }
 
+    fn waitBudget(self: *const Connection, now: u64) u64 {
+        var deadline: u64 = std.math.maxInt(u64);
+        switch (self.phase) {
+            .head => deadline = self.started_ms +| @as(u64, @intCast(hub_http.header_read_ms)),
+            .body, .chunked => deadline = self.progress_ms +| @as(u64, @intCast(hub_http.idle_read_ms)),
+            .flushing => if (!self.pending()) {
+                return 0;
+            },
+            .refusing => {
+                if (self.pending()) return std.math.maxInt(u64);
+                if (self.drain_left == 0 or self.peer_closed) return 0;
+                deadline = self.drain_started_ms +| @as(u64, @intCast(hub_http.drain_total_ms));
+            },
+            .streaming => if (!self.pending()) {
+                if (self.stream_ended) return 0;
+                deadline = self.progress_ms +| self.daemon.quiet_limit_ms;
+            },
+            .awaiting => {},
+            .done => return 0,
+        }
+        if (self.pending()) deadline = @min(deadline, self.progress_ms +| @as(u64, @intCast(hub_http.idle_read_ms)));
+        return if (deadline == std.math.maxInt(u64)) deadline else deadline -| now;
+    }
+
     fn events(self: *const Connection) i16 {
         var wanted: i16 = 0;
         switch (self.phase) {
@@ -1077,14 +1101,24 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
         for (connections.items) |connection| {
             watched.append(daemon.allocator, .{ .fd = connection.handle(), .events = connection.events(), .revents = 0 }) catch return null;
         }
-        const children = daemon.frontend.hub.readableHandles(scratch.allocator()) catch &.{};
+        const children = daemon.frontend.hub.readableHandles(scratch.allocator()) catch return null;
         for (children) |child| {
             watched.append(daemon.allocator, .{ .fd = child, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
         if (daemon.signal_readable) |handle| {
             watched.append(daemon.allocator, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
-        const limit_ns = if (poll_ms < 0) std.math.maxInt(u64) else @as(u64, @intCast(poll_ms)) * std.time.ns_per_ms;
+        const polling = daemon.frontend.hub.needsPolling() or
+            daemon.outer.check != hub_http.always_going.check or
+            (daemon.signals != null and daemon.signal_readable == null);
+        var budget_ms: u64 = std.math.maxInt(u64);
+        if (poll_ms >= 0) {
+            budget_ms = @intCast(poll_ms);
+        } else if (polling) budget_ms = 10;
+        const before_wait = nowMs();
+        for (connections.items) |connection| budget_ms = @min(budget_ms, connection.waitBudget(before_wait));
+        if (daemon.drained_at_ms) |drained| budget_ms = @min(budget_ms, shutdown_flush_ms -| (before_wait -| drained));
+        const limit_ns = budget_ms *| std.time.ns_per_ms;
         const wait_ns = daemon.frontend.hub.waitBudget(limit_ns);
         const wait_ms = if (wait_ns == std.math.maxInt(u64)) -1 else hubmod.pollMillis(wait_ns);
         _ = std.posix.poll(watched.items, wait_ms) catch 0;

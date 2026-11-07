@@ -2093,6 +2093,15 @@ shutdown. The handler preserves libc errno. Automatic parking excludes held
 subscriptions and live work from its timer candidates. A refused close is
 retried after the configured idle interval, and releasing a hold permits an
 already-due idle session to park immediately.
+
+POSIX HTTP also waits on its listener, connections, backend and owner wakes, and
+signal pipe. The connection state machine caps its wait at the next scheduled
+header, body, output-idle, refusal-drain or SSE keepalive deadline. A draining
+shutdown adds its remaining response-flush window. Explicit bounded caller
+budgets, fallback backends and custom stop or signal callbacks retain bounded
+polling. Failure to collect backend handles ends the owned serve loop with
+cleanup. The native HTTP deadline journey observes a quiet Hub, a partial
+header timing out, a native SSE keepalive and signal-driven shutdown.
 Tests in the readiness journey
 observe the shared handle and a cancellation across parking, retry refused
 parking, and check allocation failures during open.
