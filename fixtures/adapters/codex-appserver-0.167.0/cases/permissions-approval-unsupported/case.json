@@ -1,0 +1,8 @@
+{
+  "expected_oap": "expected-oap.json",
+  "id": "permissions-approval-unsupported",
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "version": 1
+}

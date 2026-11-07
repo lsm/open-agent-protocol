@@ -8,7 +8,7 @@ use serde_json::Value;
 
 fn corpus_frames() -> Vec<Value> {
     let cases = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../fixtures/adapters/codex-appserver-0.163.0/cases");
+        .join("../../../fixtures/adapters/codex-appserver-0.167.0/cases");
     let mut frames = Vec::new();
     for case in std::fs::read_dir(cases).unwrap() {
         let native = std::fs::read_to_string(case.unwrap().path().join("native.jsonl")).unwrap();

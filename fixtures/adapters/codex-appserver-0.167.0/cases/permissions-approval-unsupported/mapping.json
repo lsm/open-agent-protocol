@@ -1,0 +1,5 @@
+[
+  {"index":1,"method":"turn/started","classification":"mapped","fidelity":"native"},
+  {"index":2,"method":"item/permissions/requestApproval","classification":"unsupported-request","fidelity":"unsupported"},
+  {"index":3,"method":"turn/completed","classification":"mapped","fidelity":"normalized"}
+]
