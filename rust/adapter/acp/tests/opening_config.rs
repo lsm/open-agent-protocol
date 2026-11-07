@@ -91,3 +91,62 @@ fn dropping_a_quiet_opening_setting_future_reaps_the_native_agent() {
     );
     assert_eq!(out, json!({"cancelled":true}));
 }
+
+#[test]
+fn configured_options_are_applied_in_order_before_reasoning_and_returned_state() {
+    let out = run(
+        json!({}),
+        json!({"wanted":{"model":"luna","mode":"ask"},"reasoning":"high"}),
+    );
+    assert_eq!(out["state"]["current_model_id"], "luna");
+    assert_eq!(out["state"]["reasoning_level"], "high");
+    assert_eq!(
+        out["settings"],
+        json!([
+            {"sessionId":"native","configId":"mode","value":"ask"},
+            {"sessionId":"native","configId":"model","value":"luna"},
+            {"sessionId":"native","configId":"effort","value":"deep"}
+        ])
+    );
+}
+
+#[test]
+fn later_configuration_and_reasoning_cannot_undo_required_values() {
+    let mut mode = options();
+    mode[0]["currentValue"] = json!("ask");
+    let mut model = options();
+    model[1]["currentValue"] = json!("luna");
+    let out = run(
+        json!({"replies":[{"configOptions":mode.clone()},{"configOptions":model}]}),
+        json!({"wanted":{"mode":"ask","model":"luna"}}),
+    );
+    assert_eq!(out["failure"]["kind"], "config");
+    assert!(out["failure"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("later setting changed"));
+    let mut thought = options();
+    thought[2]["currentValue"] = json!("deep");
+    let out = run(
+        json!({"replies":[{"configOptions":mode},{"configOptions":thought}]}),
+        json!({"wanted":{"mode":"ask"},"reasoning":"high"}),
+    );
+    assert_eq!(out["failure"]["kind"], "config");
+}
+
+#[test]
+fn invalid_configured_ids_values_and_advertisements_close_without_returning_a_session() {
+    for wanted in [
+        json!({"missing":"x"}),
+        json!({"model":"unknown"}),
+        json!({"":"ask"}),
+        json!({"model":""}),
+    ] {
+        let out = run(json!({}), json!({"wanted":wanted}));
+        assert_eq!(out["failure"]["kind"], "config");
+    }
+    let mut wrong = options();
+    wrong[0]["type"] = json!("boolean");
+    let out = run(json!({"options":wrong}), json!({"wanted":{"mode":"ask"}}));
+    assert_eq!(out["failure"]["kind"], "config");
+}

@@ -29,7 +29,10 @@ fn failure(error: Error) -> Value {
         Error::UnsupportedControl(control) => {
             json!({"feature":control.feature,"reason":control.reason,"field":control.field,"detail":control.detail})
         }
-        error => json!({"error":error.to_string()}),
+        error => {
+            let message = error.to_string();
+            json!({"kind":if message.starts_with("ACP session config ") {"config"} else {"other"},"error":message})
+        }
     }
 }
 
@@ -50,6 +53,8 @@ fn reaped(directory: &Path) {
 pub fn run(input: &Value) -> Value {
     let directory = Path::new(input["case"].as_str().unwrap());
     let adapter = Adapter::new(Config {
+        session_config: serde_json::from_value(input.get("wanted").cloned().unwrap_or(json!({})))
+            .unwrap(),
         process: ProcessConfig {
             path: input["python"].as_str().unwrap().into(),
             args: vec![
@@ -121,5 +126,14 @@ pub fn run(input: &Value) -> Value {
     let native_id = session.native_session_id();
     wait(session.close()).unwrap();
     reaped(directory);
-    json!({"state":state,"models":models,"native_id":native_id,"descriptor":adapter.describe().capabilities,"revision":adapter.describe().capability_revision})
+    let settings = std::fs::read_to_string(directory.join("wire.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|value| {
+            value["from"] == "host" && value["frame"]["method"] == "session/set_config_option"
+        })
+        .map(|value| value["frame"]["params"].clone())
+        .collect::<Vec<_>>();
+    json!({"state":state,"models":models,"native_id":native_id,"settings":settings,"descriptor":adapter.describe().capabilities,"revision":adapter.describe().capability_revision})
 }
