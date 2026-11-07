@@ -1822,7 +1822,9 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
 The `cancel` operation also accepts a `session.task.cancel.request` envelope
 and returns its correlated `session.task.cancel.response`. Task cancellation is
 intent; `session.task.ended` reports its settlement on the session stream. Go
-adapters can implement the optional task cancellation interface.
+adapters can implement the optional task cancellation interface. Both task
+controls require the envelope and payload to name the addressed session; the
+schema gate rejects an envelope that omits its session ID.
 
 - **params:** `session_id` and `request`, and nothing else.
 - **answer:** a `run.cancel.response` envelope, or a `session.task.cancel.response`

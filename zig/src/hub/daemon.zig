@@ -2157,3 +2157,16 @@ test "task output HTTP route accepts the protocol envelope" {
     const crossed = try fixture.answer("POST", "/sessions/demo/task-output", wrong);
     try testing.expectEqualStrings("scope_mismatch", try fixture.code(crossed));
 }
+
+test "HTTP task controls reject envelopes without session scope" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    const output = "{" ++ envelope_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"out\",\"payload\":{\"session_id\":\"demo\",\"task_id\":\"job-1\"}}";
+    const bad_output = try fixture.answer("POST", "/sessions/demo/task-output", output);
+    try testing.expectEqualStrings("schema_invalid", try fixture.code(bad_output));
+    const cancel = "{" ++ envelope_head ++ ",\"type\":\"session.task.cancel.request\",\"id\":\"cancel\",\"payload\":{\"session_id\":\"demo\",\"task_id\":\"job-1\"}}";
+    const bad_cancel = try fixture.answer("POST", "/sessions/demo/cancel", cancel);
+    try testing.expectEqualStrings("schema_invalid", try fixture.code(bad_cancel));
+}

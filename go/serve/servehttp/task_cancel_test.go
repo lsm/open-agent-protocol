@@ -132,3 +132,26 @@ func TestTaskOutputHTTPRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskControlsRequireEnvelopeSessionHTTP(t *testing.T) {
+	hub, server := newServer(t, memoryRegistry(16), Options{})
+	defer hub.CloseSessions(context.Background())
+	if _, _, err := hub.Open(context.Background(), "memory", base.OpenRequest{SessionID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path    string
+		typ     protocol.EnvelopeType
+		payload any
+	}{
+		{"task-output", protocol.TypeSessionTaskOutputRequest, protocol.SessionTaskOutputRequest{SessionID: "s", TaskID: "t"}},
+		{"cancel", protocol.TypeSessionTaskCancelRequest, protocol.SessionTaskCancelRequest{SessionID: "s", TaskID: "t"}},
+	} {
+		env, _ := protocol.NewEnvelope(tc.typ, "req", tc.payload)
+		status, response := postEnvelope(t, server, "/sessions/s/"+tc.path, env)
+		var refusal protocol.ErrorResponse
+		if status != http.StatusBadRequest || response.DecodePayload(&refusal) != nil || refusal.Error.Code != "schema_invalid" {
+			t.Fatalf("%s: status %d %+v", tc.path, status, refusal)
+		}
+	}
+}

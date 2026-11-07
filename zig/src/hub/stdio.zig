@@ -5787,3 +5787,15 @@ test "task output op correlates responses and validates scope" {
     try harness.send(try controlLine(harness.arena(), 4, "task_output", "s1", wrong));
     try testing.expectEqualStrings("scope_mismatch", try harness.code());
 }
+
+test "task controls reject envelopes that omit session scope at the schema gate" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const output = "{" ++ control_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"out\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}";
+    try harness.send(try controlLine(harness.arena(), 2, "task_output", "s1", output));
+    try testing.expectEqualStrings("schema_invalid", try harness.code());
+    const cancel = "{" ++ control_head ++ ",\"type\":\"session.task.cancel.request\",\"id\":\"cancel\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}";
+    try harness.send(try controlLine(harness.arena(), 3, "cancel", "s1", cancel));
+    try testing.expectEqualStrings("schema_invalid", try harness.code());
+}

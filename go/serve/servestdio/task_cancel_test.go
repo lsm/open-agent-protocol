@@ -192,3 +192,30 @@ func TestTaskOutputStdioWire(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTaskControlsRequireEnvelopeSessionStdio(t *testing.T) {
+	hub := newTestHub(t, 16, 16)
+	defer hub.CloseSessions(context.Background())
+	if _, _, err := hub.Open(context.Background(), "memory", base.OpenRequest{SessionID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		op      string
+		typ     protocol.EnvelopeType
+		payload any
+	}{
+		{"task_output", protocol.TypeSessionTaskOutputRequest, protocol.SessionTaskOutputRequest{SessionID: "s", TaskID: "t"}},
+		{"cancel", protocol.TypeSessionTaskCancelRequest, protocol.SessionTaskCancelRequest{SessionID: "s", TaskID: "t"}},
+	} {
+		env, _ := protocol.NewEnvelope(tc.typ, "req", tc.payload)
+		raw, _ := json.Marshal(env)
+		_, refusal := server.dispatch(context.Background(), requestLine{Op: tc.op, SessionID: "s", Request: raw})
+		if refusal == nil || refusal.Code != "schema_invalid" {
+			t.Fatalf("%s: %+v", tc.op, refusal)
+		}
+	}
+}
