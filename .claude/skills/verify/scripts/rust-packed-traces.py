@@ -19,9 +19,11 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut paths = Vec::new();
     let mut packs = Vec::new();
     let mut provider = false;
+    let mut tolerant = false;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--provider") => provider = true,
+            Some("--tolerant") => tolerant = true,
             Some("--pack") => packs.push(PathBuf::from(arguments.next().ok_or("missing pack path")?)),
             _ => paths.push(PathBuf::from(argument)),
         }
@@ -30,10 +32,11 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         let validator = ProviderValidator::new()?;
         Box::new(move |data, fixture| validator.validate(data, fixture))
     } else if packs.is_empty() {
-        let validator = Validator::new()?;
+        let validator = if tolerant { Validator::tolerant()? } else { Validator::new()? };
         Box::new(move |data, fixture| validator.validate(data, fixture))
     } else {
-        let validator = match Validator::with_packs(&packs) {
+        let loaded = if tolerant { Validator::tolerant_with_packs(&packs) } else { Validator::with_packs(&packs) };
+        let validator = match loaded {
             Ok(validator) => validator,
             Err(error) => {
                 println!("{}", serde_json::json!({"load_codes":error.codes(), "refusals":error.refusals}));
