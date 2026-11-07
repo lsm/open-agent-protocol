@@ -52,6 +52,7 @@ fn main() {
             ..ProcessConfig::default()
         },
         mcp_servers: input.servers,
+        ..Config::default()
     }) {
         Ok(adapter) => adapter,
         Err(error) => {

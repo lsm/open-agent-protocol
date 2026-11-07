@@ -37,5 +37,5 @@ exchange must still pass Go, Rust and Zig validators.
 
 Run the full baseline and Rust all-features suite too, and inspect the baseline
 PTY fixture reply and `/quit` exit. No ports, credentials or live provider calls
-are used. OAP submit, permission handling and live config updates remain later
-slices. Shared grandchild-held-pipe limitations remain applicable.
+are used. Normal text submission is covered by `rust-acp-submit.md`; permission handling
+and live config updates remain later slices. Shared grandchild-held-pipe limitations remain applicable.
