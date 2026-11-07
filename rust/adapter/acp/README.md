@@ -175,3 +175,37 @@ This low-level native layer leaves OAP `session.message.submit` unavailable.
 Its public synthetic stdio proof is in
 `.claude/skills/verify/journeys/rust-acp-prompt.md`. OAP run/event mapping follows
 in the next approved #1439 slice.
+
+## Bounded native text-run engine
+
+`TextRun` projects one admitted ACP text run into OAP envelopes through the
+shared bounded `Subscriber`. Its context supplies valid session/run/message
+identities, the opaque native session id and an optional capability revision.
+The host supplies the event-id generator and observed timestamps. The engine
+serializes publication through its mutable methods.
+
+After the prompt's native writer admission, `start(now_ms)` publishes
+`run.started` and returns its event stream. Feed ordered RPC notifications to
+`observe(notification, now_ms)`, and finish with `complete(result, now_ms)` or
+`fail(code, message, inferred, now_ms)`. The host orders admission before
+notifications. A bridge handler can wait on admission and the RPC client's done
+receiver so shutdown can release it. The verification consumer exercises that
+ownership boundary over real synthetic stdio.
+
+The engine emits contiguous sequences, text deltas, a complete assistant
+message, observed completion/refusal errors and explicitly inferred transport
+failures. Once settled, late updates and repeated settlement preserve the first
+terminal. A slow consumer receives its bounded prefix and an explicit overflow.
+the native projection can still settle. `close()` or dropping the engine
+finishes the retained prefix when the owner abandons a run.
+
+This slice handles one native message identity. Multiple identities, tool
+updates and cancellation requiring host evidence produce explicit unavailable
+failures. OAP `run.cancelled` needs accepted host cancellation evidence.
+Configuration-update bodies are decoded structurally and malformed bodies fail
+the run. Usage and live configuration projection belong to their later mapping
+layers. The public consumer covers these staged limits. OAP submit remains unavailable
+until the approved session-integration slice.
+
+Run `.claude/skills/verify/journeys/rust-acp-text.md` for native wire, Go/Rust
+event comparison, bounded overflow, cleanup and three-validator event proof.

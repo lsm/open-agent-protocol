@@ -34,7 +34,16 @@ polls one shared handle, coalesces a producer thread's repeated notifications,
 closes queued head and middle sessions, and reads the surviving run's events.
 The park test observes a pending cancellation before reopening the session.
 The failed-open allocation sweep requires every refused open to leave its
-session absent.
+session absent, including an observed session with live background work.
+
+The idle regression opens 150 notifying sessions, consumes their initial
+notifications, and requires a subsequent idle pump to leave no unfinished pass.
+The mixed-adapter test keeps unnotified live-work output readable while closing
+neighboring fallback sessions. It then removes that session's live-work
+obligation, parks it, and observes a new run after reopening. Require both
+sessions' subscription events to carry their admitted run IDs.
+The large-batch test removes a visited fallback session between passes and
+requires the next pass to reach every remaining unvisited subscription.
 
 This slice exposes the observer for the Hub ready queue. Whole-stage resource
 acceptance uses the working and idle measurements in the Hub journey after the

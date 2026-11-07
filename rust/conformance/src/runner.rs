@@ -83,6 +83,29 @@ impl<'a> Runner<'a> {
         self.checks
     }
 
+    pub(crate) fn drive(&mut self, preferred_model: &str) {
+        self.initialize();
+        let Some(descriptor) = self.capabilities() else {
+            return;
+        };
+        let Some(state) = self.open() else {
+            return;
+        };
+        self.list_sessions(&descriptor);
+        let selected = self.select_model(&descriptor, &state.current_model_id, preferred_model);
+        let switched = self.switch_model(&selected, &state.current_model_id);
+        let Some(run) = self.submit_run(&selected, switched) else {
+            return;
+        };
+        self.consume_run(&run);
+        self.replay_run(&run);
+        self.check_state();
+        self.refuse_stale_revision();
+        self.answer_cancel(&descriptor, Some(&run));
+        self.refuse_addressable_envelope();
+        self.refuse_unknown_reopen(&descriptor);
+    }
+
     pub fn initialize(&mut self) {
         const NAME: &str = "protocol.initialize.request is answered";
         let payload = InitializeRequest {
