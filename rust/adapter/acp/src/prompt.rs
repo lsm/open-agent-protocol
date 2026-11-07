@@ -1,12 +1,12 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 use futures_channel::oneshot;
-use oap_adapter::jsonrpc::{Error, Fault, Inbound};
+use oap_adapter::jsonrpc::{Error, Fault, Inbound, IncomingRequest};
 use serde_json::value::RawValue;
 
 use crate::native::{decode, PromptParams, PromptResult, METHOD_SESSION_PROMPT};
@@ -16,6 +16,7 @@ use crate::Operation;
 pub struct PromptBridge {
     process: Arc<Process>,
     dispatcher: Mutex<Option<JoinHandle<bool>>>,
+    requests: Arc<Mutex<Vec<Weak<IncomingRequest>>>>,
 }
 
 pub struct PromptCall {
@@ -32,13 +33,22 @@ impl PromptBridge {
         let inbound = process.client.inbound();
         let done = process.client.done();
         let client = process.client.clone();
+        let requests = Arc::new(Mutex::new(Vec::<Weak<IncomingRequest>>::new()));
+        let received = requests.clone();
         let dispatcher = std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
                 crossbeam_channel::select! {
                     recv(done) -> _ => break,
                     recv(inbound) -> message => match message {
                         Ok(Inbound::Barrier(ack)) => drop(ack),
-                        Ok(message) => receive(message),
+                        Ok(message) => {
+                            if let Inbound::Request(request) = &message {
+                                let mut known = received.lock().unwrap_or_else(|p| p.into_inner());
+                                known.retain(|request| request.strong_count() > 0);
+                                known.push(Arc::downgrade(request));
+                            }
+                            receive(message);
+                        }
                         Err(_) => break,
                     }
                 }
@@ -49,7 +59,61 @@ impl PromptBridge {
         Self {
             process: Arc::new(process),
             dispatcher: Mutex::new(Some(dispatcher)),
+            requests,
         }
+    }
+
+    pub fn notify(
+        &self,
+        method: String,
+        params: Option<Box<RawValue>>,
+        deadline: Option<Instant>,
+    ) -> Operation<()> {
+        let process = self.process.clone();
+        Operation::spawn(move |control| {
+            control.arm(&process.child, &process.client);
+            process.client.notify(&method, params, deadline)
+        })
+    }
+
+    pub fn respond(&self, request: Arc<IncomingRequest>, result: Box<RawValue>) -> Operation<()> {
+        self.reverse(request, move |request| request.respond(&result))
+    }
+
+    pub fn respond_error(
+        &self,
+        request: Arc<IncomingRequest>,
+        code: i64,
+        message: String,
+        data: Option<Box<RawValue>>,
+    ) -> Operation<()> {
+        self.reverse(request, move |request| {
+            request.respond_error_with(code, &message, data)
+        })
+    }
+
+    fn reverse(
+        &self,
+        request: Arc<IncomingRequest>,
+        send: impl FnOnce(&IncomingRequest) -> Result<(), Error> + Send + 'static,
+    ) -> Operation<()> {
+        let process = self.process.clone();
+        let requests = self.requests.clone();
+        Operation::spawn(move |control| {
+            let known = requests
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|known| Arc::ptr_eq(&known, &request));
+            if !known {
+                return Err(DIALECT.error(Fault::InvalidMessage(
+                    "reverse request belongs to another bridge".into(),
+                )));
+            }
+            control.arm(&process.child, &process.client);
+            send(&request)
+        })
     }
 
     pub fn call(
