@@ -171,6 +171,10 @@ def main():
         envelope("run.completed", "terminal", {"final_response":{"role":"assistant", "content":"ok"}, "run_id":"r1", "session_id":"s1", "stop_reason":"end_turn"}, session_id="s1", run_id="r1", sequence=3),
     ]
     mutations.append(("packed-event-cursor", run_trace, []))
+    trace = deepcopy(run_trace)
+    trace[4], trace[5] = trace[5], trace[4]
+    trace[4]["sequence"], trace[5]["sequence"] = 1, 2
+    mutations.append(("packed-event-before-start", trace, []))
     for alias in ["session.message.", "agent_control.", "action."]:
         trace = deepcopy(run_trace)
         trace[1]["payload"]["features"] = {alias + "com.example.storage.objects":{"level":"native"}}

@@ -97,3 +97,31 @@ fn a_stale_descriptor_keeps_its_member_gate_and_cannot_clear_the_refresh_window(
         ])
     );
 }
+
+#[test]
+fn a_packed_run_prelude_does_not_claim_to_be_a_core_started_event() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let validator = Validator::with_packs(&[root.join("packs/storage")]).unwrap();
+    let mut core: Vec<Value> =
+        serde_json::from_slice(&std::fs::read(root.join("valid/core-completed.json")).unwrap())
+            .unwrap();
+    core[2]["sequence"] = serde_json::json!(2);
+    core[3]["sequence"] = serde_json::json!(3);
+    core.insert(
+        2,
+        serde_json::json!({
+            "protocol":"open-agent-protocol", "version":"0.1",
+            "profile":"open-agent-protocol.agent-control-core",
+            "type":"com.example.storage.objects.changed", "id":"prelude",
+            "session_id":"s1", "run_id":"r1", "sequence":1, "capability_revision":"v1",
+            "payload":{"session_id":"s1", "key":"object"},
+        }),
+    );
+    let descriptor: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(root.join("valid/ext-advertised-key-gated.json")).unwrap(),
+    )
+    .unwrap();
+    let trace: Vec<_> = descriptor.into_iter().take(2).chain(core).collect();
+    let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), "packed-prelude");
+    assert!(result.valid(), "{:?}", result.diagnostics);
+}
