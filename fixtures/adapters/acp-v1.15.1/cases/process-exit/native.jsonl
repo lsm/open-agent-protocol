@@ -1,0 +1,3 @@
+{"action":"observe","classification":"mapped","direction":"server_response","fidelity":"normalized","raw":{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{},"protocolVersion":1}}}
+{"action":"observe","classification":"mapped","direction":"server_response","fidelity":"normalized","raw":{"id":2,"jsonrpc":"2.0","result":{"sessionId":"native-session"}}}
+{"action":"process-exit","classification":"required-unmapped","direction":"server_to_client","fidelity":"synthesized","raw":{"jsonrpc":"2.0","method":"_fixture/process_exit","params":{}}}

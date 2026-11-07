@@ -1,0 +1,23 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 2,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "required-unmapped",
+    "fidelity": "synthesized",
+    "index": 3,
+    "method": "_fixture/process_exit",
+    "oap": "adapter setup or run evidence"
+  }
+]
