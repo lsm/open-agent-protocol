@@ -515,6 +515,63 @@ test "a command that ends after the last exit check but within its budget is fin
     }
 }
 
+const StallingAllocator = struct {
+    backing: std.mem.Allocator,
+    from_bytes: usize,
+    stall_ms: u64,
+    stalled: std.atomic.Value(bool) = .init(false),
+
+    fn allocator(self: *StallingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        if (new_len >= self.from_bytes and !self.stalled.swap(true, .monotonic)) compat.time.sleepMs(self.stall_ms);
+        return self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *StallingAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "a command that ends as its budget passes keeps everything it wrote" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var stalling = StallingAllocator{ .backing = std.heap.smp_allocator, .from_bytes = 1024, .stall_ms = 1_200 };
+    const allocator = stalling.allocator();
+    const outcome = try runWithBudget(allocator, &.{ "/bin/sh", "-c", "head -c 12000 /dev/zero" }, .inherit, 10_000, 1_000, null);
+    switch (outcome) {
+        .finished => |finished| {
+            defer allocator.free(finished.stdout);
+            defer allocator.free(finished.stderr);
+            try std.testing.expect(stalling.stalled.load(.monotonic));
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, finished.term);
+            try std.testing.expectEqual(@as(usize, 12_000), finished.stdout.len);
+        },
+        .moved => |moved| {
+            defer allocator.free(moved.stdout_head);
+            defer allocator.free(moved.stderr_head);
+            endGroup(moved.leader);
+            _ = try waitLeader(moved.leader);
+            _ = std.posix.system.close(moved.stdout);
+            _ = std.posix.system.close(moved.stderr);
+            return error.HandedOverAnEndedCommand;
+        },
+    }
+}
+
 test "process runner honors cancellation" {
     var cancelled = std.atomic.Value(bool).init(true);
     const token = ai_types.CancelToken{ .cancelled = &cancelled };
