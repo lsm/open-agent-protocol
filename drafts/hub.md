@@ -1818,9 +1818,11 @@ task cancellation follows separately.
   `schema_invalid`, `type_mismatch`, `invalid_payload`, `scope_mismatch` (400,
   a payload whose `session_id` is not the addressed session), `run_not_found`
   (404), `run_terminal` (409, a run that already settled), `session_closed`
-  (409), `request_cancelled` (400), `internal` (500).
+  (409), `request_cancelled` (400), `internal` (500). A task request on Zig
+  also answers `unsupported_feature` or `invalid_submission` (400).
 - **pinned by:** `TestCancelRejections`, `TestOpErrorCodesMirrorHTTP`,
-  `TestCloseAfterCancellation`.
+  `TestCloseAfterCancellation`, and Zig's `cancel accepts a task cancellation
+  envelope and reports unavailable adapters`.
 
 ### `settings`
 
