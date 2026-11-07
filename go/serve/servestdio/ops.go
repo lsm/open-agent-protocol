@@ -511,8 +511,6 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		}
 		code := "open_failed"
 		switch {
-		case errors.Is(err, serve.ErrDirectoryMismatch):
-			code = "invalid_request"
 		case errors.Is(err, serve.ErrUnknownAdapter):
 			code = "unknown_adapter"
 		case errors.Is(err, serve.ErrSessionExists):

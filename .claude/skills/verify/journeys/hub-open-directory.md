@@ -6,6 +6,7 @@ stdio differential without the Go test cache.
 ```sh
 zig build --build-file zig/build.zig -Doptimize=ReleaseSafe -j4
 OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubOpenDirectory$' -count=1 -v
+go test ./go/serve/servehttp -run '^TestAReopenDirectoryConflictIsABadRequest$' -count=1 -v
 zig build --build-file zig/build.zig test-unit-hub -Doptimize=ReleaseSafe -j4
 ```
 
@@ -32,7 +33,8 @@ reopen directories must be refused. Refusals must leave no sessions. A directory
 on another op is refused by presence, including null. A non-string directory
 is a fatal framing error. History must retain the original selected directory.
 Turning off any_directory after restart must refuse placement rather than use
-the new default.
+the new default. The HTTP check requires the same invalid_request refusal when
+a stored session's directory can no longer be placed by its fixed adapter.
 
 All replies are synthetic. HOME/data/config and workspaces are temporary.
 The script reaps its process groups, uses stdio and retains wire logs, stderr,

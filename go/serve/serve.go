@@ -425,6 +425,9 @@ func (e *SessionClosedError) Error() string { return "the session is closed" }
 func (e *SessionClosedError) Unwrap() error { return base.ErrSessionClosed }
 
 func ControlRefusal(err error) (code, message string, details map[string]any, ok bool) {
+	if errors.Is(err, ErrDirectoryMismatch) {
+		return "invalid_request", err.Error(), nil, true
+	}
 	var unsupported *base.UnsupportedControlError
 	if errors.As(err, &unsupported) {
 		details = map[string]any{"feature": unsupported.Feature, "reason": unsupported.Reason}
