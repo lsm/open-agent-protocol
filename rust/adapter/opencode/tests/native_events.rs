@@ -10,7 +10,7 @@ const STARTED: &str = r#"{"id":"evt_1","type":"session.execution.started","durab
 
 fn corpus_frames() -> Vec<String> {
     let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/adapters/opencode-v2.0.32");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/adapters/opencode-v2.2.6");
     let mut frames = Vec::new();
     for case in std::fs::read_dir(root).unwrap() {
         let Ok(native) = std::fs::read_to_string(case.unwrap().path().join("native.jsonl")) else {
@@ -152,4 +152,15 @@ fn an_event_without_data_fails_its_data_decode_with_go_s_eof() {
         decode_data::<Option<Value>>(&bare).unwrap_err().to_string(),
         "opencode native: invalid wire payload: server.heartbeat data: EOF"
     );
+}
+
+#[test]
+fn archive_events_are_durable() {
+    for kind in ["session.archived", "session.unarchived"] {
+        let raw = format!(
+            r#"{{"id":"evt_1","type":"{kind}","data":{{"sessionID":"ses_1"}},"durable":{{"aggregateID":"ses_1","seq":1,"version":1}}}}"#
+        );
+        let event = decode_event(&raw).unwrap();
+        assert!(durable(&event.kind));
+    }
 }

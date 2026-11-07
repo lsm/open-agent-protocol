@@ -183,6 +183,8 @@ pub struct SessionTime {
     #[serde(default, deserialize_with = "zero")]
     pub updated: i64,
     #[serde(default)]
+    pub busy: Option<i64>,
+    #[serde(default)]
     pub idle: Option<i64>,
     #[serde(default)]
     pub viewed: Option<i64>,
@@ -336,6 +338,8 @@ const SUPPORTED: &[&str] = &[
     "session.metadata.updated",
     "session.permissions",
     "session.viewed",
+    "session.archived",
+    "session.unarchived",
     "session.usage.updated",
     "session.deleted",
     "session.forked",

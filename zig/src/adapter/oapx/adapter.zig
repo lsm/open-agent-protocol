@@ -372,6 +372,7 @@ pub const Session = struct {
     loop: *local_loop.LocalLoop,
     jobs: *local_tools.shell.Jobs,
     task_origins: std.StringHashMapUnmanaged(TaskOrigin) = .empty,
+    shell_calls: std.StringHashMapUnmanaged([]const u8) = .empty,
     pending_tasks: usize = 0,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
@@ -468,6 +469,7 @@ pub const Session = struct {
         .activity = activity,
         .live_work = liveWork,
         .close = close,
+        .prepare_close = prepareClose,
         .tools = tools,
         .models = models,
         .switch_model = switchModel,
@@ -684,6 +686,7 @@ pub const Session = struct {
     fn setReady(ptr: *anyopaque, ready: ?contract.Session.Ready) void {
         const self = cast(ptr);
         self.ready = ready;
+        self.jobs.setReady(if (ready) |held| .{ .ctx = held.ctx, .notify = held.notify } else null);
         self.runtime.setReady(if (ready) |held| .{ .ctx = held.ctx, .notify = held.notify } else null);
     }
 
@@ -844,7 +847,11 @@ pub const Session = struct {
             try row.put("tool_call_id", .{ .string = task.tool_call_id });
             try row.put("cancellable", .{ .bool = false });
             if (task.cause) |cause| try row.put("cause", .{ .string = @tagName(cause) });
-            if (self.task_origins.get(task.task_id)) |origin| try row.put("run_id", .{ .string = origin.run_id });
+            if (self.task_origins.get(task.task_id)) |origin| {
+                if (origin.run_id.len > 0) try row.put("run_id", .{ .string = origin.run_id });
+            } else if (self.shell_calls.get(task.tool_call_id)) |run_id| {
+                try row.put("run_id", .{ .string = run_id });
+            }
             try task_rows.append(arena, row.value());
         }
         var result = oap_types.SessionState{
@@ -1530,6 +1537,20 @@ pub const Session = struct {
         try self.outbox.append(self.gpa, .{ .line = line, .run_id = "", .sequence = 0 });
     }
 
+    fn captureTasks(self: *Session, call_id: ?[]const u8, fallback_run: ?[]const u8) !void {
+        if (self.shell_calls.count() == 0 and fallback_run == null) return;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const tasks = try self.jobs.tasksForCall(scratch.allocator(), call_id);
+        const keep = self.keep.allocator();
+        for (tasks) |task| {
+            if (self.task_origins.contains(task.task_id)) continue;
+            const run_id = self.shell_calls.get(task.tool_call_id) orelse fallback_run orelse continue;
+            try self.task_origins.put(keep, try keep.dupe(u8, task.task_id), .{ .run_id = run_id, .tool_call_id = try keep.dupe(u8, task.tool_call_id) });
+            self.pending_tasks += 1;
+        }
+    }
+
     fn publishTasks(self: *Session) !bool {
         if (self.pending_tasks == 0) return false;
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
@@ -1544,7 +1565,7 @@ pub const Session = struct {
                     try row.put("task_id", .{ .string = task.task_id });
                     try row.put("kind", .{ .string = "command" });
                     try row.put("status", .{ .string = "running" });
-                    try row.put("run_id", .{ .string = origin.run_id });
+                    if (origin.run_id.len > 0) try row.put("run_id", .{ .string = origin.run_id });
                     try row.put("tool_call_id", .{ .string = origin.tool_call_id });
                     try row.put("cancellable", .{ .bool = false });
                     var payload = Payload.init(a);
@@ -1587,6 +1608,10 @@ pub const Session = struct {
             .thinking_delta => |payload| try self.emitPart(a, run, "reasoning", "reasoning", payload.delta.slice()),
             .tool_execution_start => |payload| {
                 if (self.providedNamed(payload.tool_name.slice()) != null) return self.requestCall(a, run, payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice());
+                if (std.mem.eql(u8, payload.tool_name.slice(), "Shell")) {
+                    const keep = self.keep.allocator();
+                    try self.shell_calls.put(keep, try keep.dupe(u8, payload.tool_call_id.slice()), run.id);
+                }
                 var requested = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 try requested.put("requested_by", .{ .string = endpoint_id });
                 try requested.put("arguments_json", try jsonOrString(a, payload.args_json.slice()));
@@ -1597,15 +1622,9 @@ pub const Session = struct {
             .tool_execution_end => |payload| {
                 run.after_tool = true;
                 if (self.providedNamed(payload.tool_name.slice()) != null) return self.endCall(a, run, payload.tool_call_id.slice());
-                if (!payload.is_error and std.mem.eql(u8, payload.tool_name.slice(), "Shell")) {
-                    const details = try jsonOrString(a, payload.result_json.slice());
-                    if (details == .object) if (details.object.get("task_id")) |task_id| {
-                        if (task_id == .string and !self.task_origins.contains(task_id.string)) {
-                            const keep = self.keep.allocator();
-                            try self.task_origins.put(keep, try keep.dupe(u8, task_id.string), .{ .run_id = run.id, .tool_call_id = try keep.dupe(u8, payload.tool_call_id.slice()) });
-                            self.pending_tasks += 1;
-                        }
-                    };
+                if (std.mem.eql(u8, payload.tool_name.slice(), "Shell")) {
+                    try self.captureTasks(payload.tool_call_id.slice(), null);
+                    _ = self.shell_calls.remove(payload.tool_call_id.slice());
                 }
                 var ended = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 if (payload.is_error) {
@@ -1621,8 +1640,8 @@ pub const Session = struct {
                     const parts = payload.result_parts.slice();
                     try ended.put("result", try jsonOrString(a, if (parts.len > 0) parts else payload.result_json.slice()));
                     try self.emitCallEnd(run, "action.call.completed", ended.value(), CallEnd.of(payload, payload.result_text.slice()));
-                    _ = try self.publishTasks();
                 }
+                _ = try self.publishTasks();
             },
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
             .message_end => |payload| {
@@ -1638,7 +1657,12 @@ pub const Session = struct {
                 run.error_text.clearRetainingCapacity();
                 try run.error_text.appendSlice(self.gpa, payload.message.slice());
             },
-            .agent_end => |payload| try self.settle(a, run, payload.reason),
+            .agent_end => |payload| {
+                try self.captureTasks(null, null);
+                self.shell_calls.clearRetainingCapacity();
+                _ = try self.publishTasks();
+                try self.settle(a, run, payload.reason);
+            },
             .compaction_start => if (!run.compaction) try self.compactionStarted(a, run, "threshold"),
             .compaction_end => |payload| if (run.compaction and !payload.in_run) try self.settleCompaction(a, run, payload) else {
                 _ = try self.compactionEnded(a, run, payload);
@@ -1866,6 +1890,26 @@ pub const Session = struct {
     fn activity(ptr: *anyopaque) contract.Activity {
         const self = cast(ptr);
         return if (self.live() != null) (if (self.pending != null) .waiting else .running) else if (self.queuedCount() > 0) .running else .idle;
+    }
+
+    fn prepareClose(ptr: *anyopaque, force: bool) contract.Failure!void {
+        const self = cast(ptr);
+        if (!force and (self.live() != null or self.queuedCount() > 0)) return error.RunActive;
+        const run_id = if (self.live()) |run| run.id else "";
+        if (force) {
+            self.runtime.cancel();
+            self.jobs.seal();
+            const stream = self.runtime.streamEvents();
+            while (stream.poll()) |event| {
+                var owned = event;
+                defer owned.deinit(self.gpa);
+                if (self.owner.recorder) |recorder| recorder.record(recorder.ctx, self.id, self.runtime.currentModel(), &owned);
+                try self.translate(owned);
+            }
+        }
+        try self.captureTasks(null, run_id);
+        self.jobs.endAll();
+        _ = try self.publishTasks();
     }
 
     fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
@@ -5249,4 +5293,142 @@ test "the served endpoint sequences background task events with state updates" {
     const ended = try wire.wait("session.task.ended");
     try testing.expectEqual(@as(i64, 3), ended.object.get("sequence").?.integer);
     try testing.expectEqualStrings(started.object.get("payload").?.object.get("task").?.object.get("task_id").?.string, ended.object.get("payload").?.object.get("task_id").?.string);
+}
+
+test "closing a served session publishes the job ending before removing it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Clock = struct {
+        fn now() u64 {
+            return @intCast(@max(0, compat.time.nowMillis()));
+        }
+    };
+    for (0..2) |variant| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(root);
+        const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+        defer testing.allocator.free(args);
+        var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+        var wire: Wire = undefined;
+        wire.init(&script);
+        defer wire.deinit();
+        wire.owner.options.permission_mode = .bypass;
+        try wireOpen(&wire);
+        const a = wire.arena.allocator();
+        try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+            \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"start a job"}]}
+        ));
+        const started = try wire.wait("session.task.started");
+        _ = try wire.wait("run.completed");
+        const calls = script.calls;
+        if (variant == 0) {
+            try testing.expect(wire.endpoint.closeSession("wire-session"));
+        } else {
+            try wire.endpoint.finish(0, Clock.now);
+        }
+        try wire.collect();
+        const ended = wireLast(&wire, "session.task.ended");
+        try testing.expectEqual(@as(i64, 2), ended.object.get("sequence").?.integer);
+        const payload = ended.object.get("payload").?.object;
+        try testing.expectEqualStrings("cancelled", payload.get("status").?.string);
+        try testing.expectEqualStrings("session_closed", payload.get("cause").?.string);
+        try testing.expectEqualStrings(started.object.get("payload").?.object.get("task").?.object.get("task_id").?.string, payload.get("task_id").?.string);
+        try testing.expectEqual(calls, script.calls);
+        try testing.expectEqual(@as(usize, 0), wire.endpoint.sessionCount());
+    }
+}
+
+test "a spawned job is reported even if its shell call fails or the run ends first" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Bytes = @import("owned_slice").OwnedSlice(u8);
+    for (0..2) |variant| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(root);
+        var script = Script{ .wait_for_cancel = true };
+        var harness: Harness = undefined;
+        try harness.init(&script);
+        defer harness.deinit();
+        const admitted = try harness.submit("begin");
+        const session = Session.cast(harness.session.ptr);
+        try session.translate(.{ .tool_execution_start = .{
+            .tool_call_id = Bytes.initBorrowed("call-job"),
+            .tool_name = Bytes.initBorrowed("Shell"),
+            .args_json = Bytes.initBorrowed("{}"),
+        } });
+        const job = try session.jobs.start(testing.allocator, root, "sleep 30", "call-job");
+        if (variant == 0) {
+            try session.translate(.{ .tool_execution_end = .{
+                .tool_call_id = Bytes.initBorrowed("call-job"),
+                .tool_name = Bytes.initBorrowed("Shell"),
+                .result_json = Bytes.initBorrowed("{}"),
+                .is_error = true,
+            } });
+        } else {
+            try session.translate(.{ .agent_end = .{ .reason = .@"error" } });
+        }
+        try harness.collect();
+        try testing.expectEqual(@as(usize, 1), harness.count("session.task.started"));
+        for (harness.seen.items) |event| {
+            const envelope = event.value.object;
+            if (!std.mem.eql(u8, envelope.get("type").?.string, "session.task.started")) continue;
+            const task = envelope.get("payload").?.object.get("task").?.object;
+            try testing.expectEqualStrings(job.task_id, task.get("task_id").?.string);
+            try testing.expectEqualStrings(admitted.run_id.?, task.get("run_id").?.string);
+        }
+    }
+}
+
+test "a non-forced close refuses an active run without ending its job" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .wait_for_cancel = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("work");
+    const session = Session.cast(harness.session.ptr);
+    _ = try session.jobs.start(testing.allocator, root, "sleep 30", "call-job");
+    try testing.expectError(error.RunActive, harness.session.prepareClose(false));
+    try testing.expect(session.jobs.anyRunning());
+}
+
+test "forced endpoint finish reports an unannounced job of the active run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Clock = struct {
+        fn now() u64 {
+            return @intCast(@max(0, compat.time.nowMillis()));
+        }
+    };
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .wait_for_cancel = true };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"work"}]}
+    ));
+    const run = try wire.wait("run.started");
+    const run_id = run.object.get("run_id").?.string;
+    const session = Session.cast(wire.endpoint.entries.items[0].session.ptr);
+    const job = try session.jobs.start(testing.allocator, root, "sleep 30", "call-unannounced");
+    const task_id = try a.dupe(u8, job.task_id);
+    try wire.endpoint.finish(0, Clock.now);
+    try wire.collect();
+    const started = wireLast(&wire, "session.task.started").object.get("payload").?.object.get("task").?.object;
+    try testing.expectEqualStrings(task_id, started.get("task_id").?.string);
+    try testing.expectEqualStrings(run_id, started.get("run_id").?.string);
+    const ended = wireLast(&wire, "session.task.ended").object.get("payload").?.object;
+    try testing.expectEqualStrings(task_id, ended.get("task_id").?.string);
+    try testing.expectEqualStrings("session_closed", ended.get("cause").?.string);
 }

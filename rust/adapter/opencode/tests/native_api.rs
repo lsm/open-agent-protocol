@@ -158,3 +158,12 @@ fn a_prompt_request_marshals_go_s_members_in_go_s_order_and_omits_the_empty_ones
         r#"{"id":"msg_1","text":"hi","files":[{"path":"a"}],"agents":["build"],"delivery":"queue","resume":false}"#
     );
 }
+
+#[test]
+fn session_info_accepts_busy_time() {
+    let info: SessionInfo = serde_json::from_str(
+        r#"{"id":"ses_1","projectID":"p","time":{"created":1,"updated":2,"busy":2}}"#,
+    )
+    .unwrap();
+    assert_eq!(info.validate(), Ok(()));
+}

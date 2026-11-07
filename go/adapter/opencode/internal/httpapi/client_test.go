@@ -64,6 +64,23 @@ func TestCreateSessionRejectsUnknownResponseFields(t *testing.T) {
 	}
 }
 
+func TestVersionTwoSessionTimeAndServerHostname(t *testing.T) {
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/session":
+			_, _ = w.Write([]byte(`{"data":{"id":"ses_test0000000000000000","projectID":"p","time":{"created":1,"updated":2,"busy":2}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"version":"test","pid":1,"hostname":"synthetic","urls":[],"paths":{},"capabilities":{}}`))
+		}
+	}), Options{})
+	if _, err := client.CreateSession(context.Background(), CreateSessionRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPromptReturnsAdmittedAndTypedConflicts(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/session/ses_a/prompt" {
