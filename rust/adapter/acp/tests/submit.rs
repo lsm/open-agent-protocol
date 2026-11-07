@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::Context;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
@@ -342,5 +342,29 @@ fn fixture_uses_the_python_interpreter_selected_from_path() {
     let observed = std::fs::read_to_string(fixture.0.join("python")).unwrap();
     assert_eq!(observed, selected.trim());
     block_on(session.close()).unwrap();
+    fixture.reaped();
+}
+
+#[test]
+fn default_close_refuses_an_active_run_during_blocked_write_admission() {
+    let fixture = Fixture::new();
+    let session = fixture.open("blocked");
+    fixture.wait("ready");
+    let mut submit = session.submit(submit(&"x".repeat(4 * 1024 * 1024)));
+    let waker = noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(submit.as_mut().poll(&mut context).is_pending());
+    assert_eq!(
+        block_on(session.state()).unwrap().status,
+        SessionStatus::RUNNING
+    );
+    let mut close = session.close();
+    assert!(matches!(
+        close.as_mut().poll(&mut context),
+        Poll::Ready(Err(Error::RunActive))
+    ));
+    drop(close);
+    drop(submit);
+    drop(session);
     fixture.reaped();
 }

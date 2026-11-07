@@ -68,7 +68,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='oap-submit-') as temporary:
         agent = Path(temporary)/'agent.py'
         agent.write_text(AGENT)
-        for mode in ['complete', 'overflow', 'drop', 'abort-close', 'cancel-close', 'cancel-admission', 'close-admission']:
+        for mode in ['complete', 'overflow', 'drop', 'abort-close', 'cancel-close', 'cancel-admission', 'close-admission', 'default-close-admission']:
             case = output/mode
             case.mkdir()
             child = subprocess.Popen([str(ROOT/'rust/target/debug/examples/submit_owner'), mode, sys.executable, '-u', str(agent), mode, str(case)],
@@ -136,6 +136,8 @@ def main():
                     assert cleaned['errors'] == ['adapter: event stream consumer fell behind; resume from the last sequence'], cleaned['errors']
                 else:
                     assert [event['type'] for event in events] == ([] if 'admission' in mode else ['run.started']), events
+                if mode == 'default-close-admission':
+                    assert cleaned['closeError'] == 'adapter: a run is already active', cleaned['closeError']
                 if mode in ['abort-close', 'close-admission']:
                     assert 'shutdown timed out' in cleaned['closeError'], cleaned
                 advance()

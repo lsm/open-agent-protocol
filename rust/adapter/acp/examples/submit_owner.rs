@@ -28,7 +28,7 @@ fn main() {
             shutdown_timeout: Some(Duration::from_millis(250)),
             ..ProcessConfig::default()
         },
-        abort_active_on_close: true,
+        abort_active_on_close: mode != "default-close-admission",
         ..Config::default()
     })
     .unwrap();
@@ -73,6 +73,11 @@ fn main() {
             .poll(&mut Context::from_waker(&waker))
             .is_pending();
         phase(json!({"phase":"pending", "pending":pending}));
+        if mode == "default-close-admission" {
+            let error = block_on(session.close()).unwrap_err();
+            assert!(matches!(error, oap_adapter::Error::RunActive));
+            close_error = Some(error.to_string());
+        }
         if mode == "close-admission" {
             close_error = block_on(session.close())
                 .err()
