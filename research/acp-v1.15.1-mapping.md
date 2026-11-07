@@ -40,9 +40,9 @@ Rust ACP corpus replay remains an existing documented gap in
 `rust/adapter/acp/README.md`; the Go and Zig corpus checks do not establish
 Rust corpus parity.
 
-## Staged Rust tool projection
+## Staged Rust tool and permission projection
 
-The Rust `-rust-tools` stage projects observed native tool calls and sparse
+The Rust `-rust-permissions` stage projects observed native tool calls and sparse
 patches through the normal session submit stream. Tool identity is session-wide,
 terminal events synthesize a missing start, and unfinished children settle in
 creation order before the parent. The synthetic tools journey compares public
@@ -50,9 +50,9 @@ Go/Rust results and native host frames, then validates actual Rust traces with
 all three validators. It normalizes wall clocks and the declared staged revision.
 Byte-for-byte corpus replay retains its final approved ACP slice.
 
-The degraded tool rows describe observed native execution only. Permission
-publication/resolution, accepted host cancellation, reopen and live config
-remain unavailable in this stage. Closing or abandoning an active session
+The degraded tool rows describe observed native execution. Permission
+publication/resolution uses the native support described below. Accepted host
+cancellation, reopen and live config retain their following slices. Closing or abandoning an active session
 retains its existing bounded prefix and owned process cleanup contract.
 
 ## Typed Rust permission projection
@@ -63,17 +63,35 @@ wait for gate settlements, then settle tools and the parent in order. The
 standalone native bridge consumer compares fixed-clock/id event JSON and
 native host frames with Go, with all three validators checking actual Rust
 events under a synthetic host prefix. This is component evidence. Normal Rust
-Session permission support is unavailable pending its controller/integration
-layers. Native async reply ownership and full corpus replay have separate
-approved slices.
+Session integration uses the owned controller described below. Full corpus
+replay retains its separate approved slice.
 
 ## Owned Rust permission controller
 
 The standalone Permissions component binds requests to their actual bridge,
-serializes response writes with correlated commits and parent transitions, and
-owns cancellation through the existing Operation worker. The native consumer
+serializes response writes with correlated commits and parent settlement.
+Pure local projection runs inline under the run lock without waiting for native
+writes; settlement uses bindings-before-run ordering and owned I/O cancellation.
+The native consumer
 compares fourteen Go/Rust event and parsed-wire cases, including trailing
 notifications. Blocked selected and settlement replies, queued cancellation
 and bridge close use synthetic native children and return OS threads to their
-starting inventory after child reap. Normal Session permission support remains
-unavailable pending integration. The byte-for-byte corpus remains a later gate.
+starting inventory after child reap. Normal Session permission integration is
+described below. The byte-for-byte corpus remains a later gate.
+
+## Normal Rust Session permission integration
+
+Normal Session publication, resolution, admission and close now use the owned
+controller. The descriptor exposes native action.permissions and interactive
+gates under -rust-permissions. Immediate control answers serialize behind
+publication, and state reads reflect the current projection. Live permission routes are pruned
+at commit or settlement. A bounded cache of 64 resolved ids preserves recent
+late-answer refusals across subsequent admissions. Idle native asks receive
+cancellation or malformed-request errors. Accepted native replies consume
+their bindings before a local commit that can fail after close.
+
+The normal public Go/Rust consumer comparison retains raw outputs and host
+frames. It normalizes wall-clock values and the declared staged revision for
+event comparison. Actual Rust traces use the actual Rust descriptor/admission
+and pass all three validators. Close/drop proof uses native quiet peers and
+OS thread inventories. Full byte-for-byte corpus replay remains a later gate.

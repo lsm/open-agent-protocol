@@ -59,9 +59,9 @@ and configured source descriptors.
 
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
-the same checks before opening the native session. Reopen and interactive controls remain unavailable. Text submission and
+the same checks before opening the native session. Permission resolution uses the owned controller. Reopen, accepted cancellation and replay have approved follow-on slices. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-tools` to the catalog revision because this descriptor has
+appends `-rust-permissions` to the catalog revision because this descriptor has
 fewer capabilities than the completed adapter. Remaining event mappings and live configuration updates are later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
@@ -100,21 +100,21 @@ opt-in. It reports the opening response's model config-option snapshot, flatteni
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-tools`
+slice. The descriptor discloses the opening snapshot and uses a `-rust-permissions`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
 state/catalog access report closed. Repeated close succeeds. Native children
 that remain alive after EOF are killed and reaped at the configured shutdown
 timeout. Dropping an opening or closing future uses the owning cancellation
-bridge. The session's remaining control methods return unavailable errors.
+bridge. The permission resolver uses the owned controller described below. Cancellation and replay expose their staged unavailable results.
 
 After `session/new`, the session owns a `PromptBridge` that drains native
 inbound messages in order. Idle notifications therefore cannot fill an
 undrained queue while a model switch waits for its result. Unknown reverse
 RPCs receive the native method-not-supported error. Explicit close, cancelled
 close and dropping the final session owner release the child and dispatcher.
-Permission handling and live configuration projection belong to later slices.
+Normal permission handling is described below. Live configuration projection belongs to a later slice.
 
 Run `.claude/skills/verify/journeys/rust-acp-session.md` for real synthetic
 stdio, public state/catalog output, cleanup and three-validator wire proof.
@@ -143,7 +143,7 @@ Missing or unrecognized reasoning clears the previous level. Catalog values stay
 the opening snapshot while their current/default flags follow recorded state.
 
 The feature remains degraded because model identity is the agent's word.
-Unsolicited config-option updates and prompt/event mapping are later slices.
+Unsolicited config-option projection retains its later slice.
 Run `.claude/skills/verify/journeys/rust-acp-model-switch.md` for public Go/Rust
 consumer comparisons, captured native frames and wire validation.
 
@@ -215,7 +215,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-tools`
+opt-in. The staged descriptor records these limits under its `-rust-permissions`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -282,7 +282,7 @@ cancels outstanding tools. Abandonment and session close still finish the
 retained prefix under the documented ownership contract.
 
 `action.tools` and `action.tools.execute` are degraded observed-lifecycle claims.
-They expose no tool catalog or host execution API. Permissions, accepted host
+They expose no tool catalog or host execution API. Accepted host
 cancellation, reopen/config projection and the full byte corpus retain later
 slices. Run the synthetic `rust-acp-tools.md` verification journey.
 
@@ -305,8 +305,7 @@ error, after which the owner closes the bridge for complete process cleanup.
 All writes use the shared bounded FIFO writer and its queue-full result. Request
 registration retains weak references and prunes expired entries when new
 requests arrive. Run `rust-acp-outbound.md` for successful frames, quiet-child
-cleanup, deadlines, bounded admission and thread inventories. Session permission
-publication/resolution and run cancellation retain the following approved layers.
+cleanup, deadlines, bounded admission and thread inventories. Normal Session permission publication/resolution is described below. Run cancellation retains its approved following layer.
 
 ## Typed permission projection
 
@@ -330,15 +329,14 @@ native cancellation replies in order and commit them. The last commit settles
 unfinished tools and the parent. Parent settlement cancels local gates even
 when the native cancellation write fails. Selected replies require successful
 native writes before commit. Callers serialize native reply attempts and keep
-projection locks out of native I/O. The following controller layer owns that
+projection locks out of native I/O. The owned Permissions controller below handles that
 coordination. Pending terminal usage/context stays at its first snapshot while
 later native answers still advance session usage scope.
 
 Closing the projection finishes its retained prefix and refuses a prepared
 commit. The typed methods require an active TextRun and an admitted participant.
 The standalone `rust-acp-permission-projection.md` journey proves native replies
-and three-validator traces. Normal `Session.resolve` permission support remains
-unavailable until the approved controller and Session integration layers land.
+and three-validator traces. Normal `Session.resolve` uses this projection through the owned controller and Session integration below.
 
 A pending terminal still accepts native usage observations into the shared
 session scope. They leave the chosen terminal snapshot intact and reach the
@@ -351,22 +349,25 @@ admitted participant. `request(run, incoming)` accepts only actual requests
 registered by that bridge. Reusing a request object is refused. The controller
 retains the source binding through native reply and correlated commit.
 
-`resolve`, `observe`, `complete` and `prompt_error` serialize native writes and
-projection transitions through an owned worker. Use these methods for a
-controller-managed run. Prepare and validate under the TextRun mutex, release
+`request` and `resolve` own native I/O workers. `observe`, `complete` and
+`prompt_error` run local projection transitions inline when polled using only
+the run lock, so ordinary text can progress during a blocked native reply.
+Settlement acquires the bindings lock before the run lock. Pending native cancellation replies
+use an owned I/O operation. Use these methods for a controller-managed run. Prepare and validate under the TextRun mutex, release
 it for native I/O, then read the clock and commit. A successful selected write
 and its commit belong to the same worker, so abandoning the future cannot
 discard an accepted reply between them. Parent settlement commits local
 cancellations even when the native transport has failed.
 
-The returned futures begin work when constructed. Await joins the worker.
-Dropping one aborts and reaps its native child and joins the worker, including
-an operation waiting for the controller lock. The bridge owns the dispatcher,
+Native I/O operations begin work when constructed. Await joins their worker.
+Dropping one aborts and reaps its native child and joins its worker, including
+a native reply operation waiting for the controller lock. Pure local updates
+run on the polling caller without waiting for native writes. The bridge owns the dispatcher,
 and close joins it. Futures remain caller-owned through bridge shutdown.
 
 Run `rust-acp-permission-controller.md` for the standalone native comparison,
 source/duplicate/concurrent-answer checks and quiet-child ownership proof.
-Normal Session permissions retain the following integration slice.
+Normal Session integration is described below.
 
 Malformed native asks receive their protocol error independently of whether a
 local failure event can be emitted. Binding lookup uses the actual run object
@@ -374,3 +375,31 @@ and its interaction id. Completed entries expire with their native request
 object, with pruning after each controller operation. Retained request objects
 keep weak duplicate guards until release. Per-run id generators can restart
 without routing the next run's reply through a preceding binding.
+
+## Normal Session permissions
+
+The public Session uses Permissions for native publication, control answers and
+parent transitions. It waits for prompt admission before publishing run events.
+Incoming sources are registered before answers can acquire the controller lock,
+so a control consumer can resolve immediately after receiving the request.
+Malformed idle asks receive -32602 and valid idle asks receive cancelled.
+
+State reads refresh from the active projection when its cursor advances,
+including during publication and settlement. This preserves newer model-switch
+timestamps when the run stays settled. Late completion workers refresh the current active projection.
+Live permission routes are removed on commit, parent settlement and close.
+Up to 64 resolved interaction ids retain typed already-resolved refusals across
+later admissions. An older id outside that cache returns InteractionNotFound
+after its run is replaced. Normal Session runs share one id counter.
+
+Default close refuses an active gate with RunActive. Opt-in abort close and
+owner drop finish the retained prefix, stop the native child and join the
+dispatcher and prompt workers. A successful native response consumes its
+request binding before local commit, including a projection closed during the
+write. Parent settlement consumes the binding before committing cancellation.
+
+The descriptor advertises native action.permissions and interactive gates,
+under the staged -rust-permissions revision. Run
+`rust-acp-session-permissions.md` for normal Session event/wire comparisons,
+immediate resolution, idle replies, across-run history, state and cleanup.
+Accepted run cancellation, reopen/config and full corpus retain later slices.

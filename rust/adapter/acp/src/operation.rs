@@ -12,6 +12,9 @@ use serde_json::value::RawValue;
 
 use crate::process::{Process, ProcessConfig, DIALECT};
 
+#[cfg(test)]
+pub(crate) static SPAWNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 #[derive(Default)]
 struct CancelState {
     cancelled: bool,
@@ -61,6 +64,8 @@ impl<T: Send + 'static> Operation<T> {
     pub(crate) fn spawn(
         work: impl FnOnce(&Cancellation) -> Result<T, Error> + Send + 'static,
     ) -> Self {
+        #[cfg(test)]
+        SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (reply, response) = oneshot::channel();
         let cancellation = Arc::new(Cancellation::default());
         let control = cancellation.clone();

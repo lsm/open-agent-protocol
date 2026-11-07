@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use futures_util::lock::Mutex as AsyncMutex;
 use oap_adapter::jsonrpc::{IncomingRequest, NotificationMessage};
 use oap_adapter::{BoxFuture, Error, InteractionResolution};
 use oap_protocol::{InteractionId, ParticipantId};
@@ -18,7 +19,7 @@ pub struct Permissions {
     bridge: Arc<PromptBridge>,
     participant: ParticipantId,
     clock: Box<dyn Fn() -> i64 + Send + Sync>,
-    bindings: Mutex<Vec<Binding>>,
+    bindings: AsyncMutex<Vec<Binding>>,
 }
 
 impl Permissions {
@@ -34,7 +35,7 @@ impl Permissions {
             bridge,
             participant,
             clock: Box::new(clock),
-            bindings: Mutex::new(Vec::new()),
+            bindings: AsyncMutex::new(Vec::new()),
         }))
     }
 
@@ -44,7 +45,7 @@ impl Permissions {
     ) -> BoxFuture<'static, T> {
         let operation = Operation::spawn(move |control| {
             self.bridge.arm(control);
-            let mut bindings = self.bindings.lock().unwrap_or_else(|p| p.into_inner());
+            let mut bindings = futures::executor::block_on(self.bindings.lock());
             let outcome = work(&self, &mut bindings);
             bindings.retain(|binding| binding.source.strong_count() > 0);
             Ok(outcome)
@@ -140,10 +141,10 @@ impl Permissions {
                 owner.settle(&run, bindings)?;
                 return Err(Error::harness(error));
             }
+            binding.request = None;
             run.lock()
                 .unwrap()
                 .commit_permission(reply, (owner.clock)())?;
-            binding.request = None;
             Ok(())
         })
     }
@@ -180,9 +181,27 @@ impl Permissions {
         run: Arc<Mutex<TextRun>>,
         update: impl FnOnce(&mut TextRun, i64) -> Result<(), Error> + Send + 'static,
     ) -> BoxFuture<'static, ()> {
-        self.operation(move |owner, bindings| {
-            update(&mut run.lock().unwrap(), (owner.clock)())?;
-            owner.settle(&run, bindings)
+        Box::pin(async move {
+            {
+                let mut text = run.lock().unwrap();
+                update(&mut text, (self.clock)())?;
+                if text.permission_settlements().is_empty() {
+                    return Ok(());
+                }
+            }
+            if let Some(mut bindings) = self.bindings.try_lock() {
+                bindings.retain(|binding| binding.source.strong_count() > 0);
+                let native_reply = bindings.iter().any(|binding| {
+                    Weak::ptr_eq(&binding.run, &Arc::downgrade(&run)) && binding.request.is_some()
+                });
+                if !native_reply {
+                    self.settle(&run, &mut bindings)?;
+                    return Ok(());
+                }
+            }
+            self.operation(move |owner, bindings| owner.settle(&run, bindings))
+                .await?;
+            Ok(())
         })
     }
 
@@ -193,10 +212,10 @@ impl Permissions {
             if let Some(request) = &binding.request {
                 let _ = request.respond(reply.response());
             }
+            binding.request = None;
             run.lock()
                 .unwrap()
                 .commit_permission(reply, (self.clock)())?;
-            binding.request = None;
         }
         Ok(())
     }

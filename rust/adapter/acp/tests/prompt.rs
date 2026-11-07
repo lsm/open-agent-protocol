@@ -36,7 +36,7 @@ impl Fixture {
         mode: &str,
         callback: impl FnMut(Inbound) + Send + 'static,
     ) -> Arc<PromptBridge> {
-        let script = r#"printf '%s' $$ > "$1"; read -r request; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'; read -r request; printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"native"}}'; if [ "$2" = blocked ]; then exec /bin/sleep 60; fi; read -r request; printf ready > "$1.ready"; if [ "$2" = quiet ]; then exec /bin/sleep 60; fi; printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"index":0}}' '{"jsonrpc":"2.0","id":"reverse","method":"fixture/request","params":{}}'; read -r reply; printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"index":1}}' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'; read -r waiting; exit 0"#;
+        let script = r#"printf '%s' $$ > "$1"; read -r request; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'; read -r request; printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"native"}}'; if [ "$2" = blocked ]; then exec /bin/sleep 60; fi; read -r request; printf ready > "$1.ready"; if [ "$2" = quiet ]; then exec /bin/sleep 60; fi; printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"index":0}}' '{"jsonrpc":"2.0","id":"reverse","method":"fixture/request","params":{}}'; read -r reply; printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"index":1}}' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'; read -r waiting; if [ "$2" = delayed-exit ]; then printf eof > "$1.eof"; exec /bin/sleep .3; fi; exit 0"#;
         let process = block_on(Process::start_async(
             ProcessConfig {
                 path: "/bin/sh".into(),
@@ -49,7 +49,11 @@ impl Fixture {
                 ],
                 env: Some(Vec::new()),
                 queue_capacity: 1,
-                shutdown_timeout: Some(Duration::from_millis(150)),
+                shutdown_timeout: Some(if matches!(mode, "quiet" | "blocked") {
+                    Duration::from_millis(150)
+                } else {
+                    Duration::from_secs(1)
+                }),
                 ..ProcessConfig::default()
             },
             None,
@@ -139,6 +143,32 @@ fn prompt_completion_follows_ordered_notifications_and_reverse_replies() {
     block_on(bridge.close()).unwrap();
     assert_eq!(Arc::strong_count(&events), 1);
     fixture.reaped();
+}
+
+#[test]
+fn a_cooperative_prompt_peer_can_finish_after_reading_eof() {
+    let fixture = Fixture::new();
+    let bridge = fixture.bridge("delayed-exit", |message| {
+        if let Inbound::Request(request) = message {
+            request
+                .respond(&serde_json::json!({"accepted":true}))
+                .unwrap();
+        }
+    });
+    let mut call = bridge.prompt(prompt(), None);
+    block_on(call.admitted()).unwrap();
+    assert_eq!(block_on(call).unwrap().stop_reason, "end_turn");
+    let began = Instant::now();
+    let closed = block_on(bridge.close());
+    let elapsed = began.elapsed();
+    fixture.reaped();
+    assert!(fixture.0.join("pid.eof").exists());
+    println!(
+        "prompt-cooperative-exit elapsed_ms={} result={closed:?}",
+        elapsed.as_millis()
+    );
+    assert!(closed.is_ok(), "cooperative prompt peer: {closed:?}");
+    assert!(elapsed >= Duration::from_millis(250));
 }
 
 #[test]

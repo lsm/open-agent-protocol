@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -11,25 +11,49 @@ use oap_adapter::{
     ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
 };
 use oap_protocol::{
-    MessageSubmitResponse, ModelDescriptor, ModelsRequest, ModelsResponse, RunCancelResponse,
-    RunId, SessionState, SessionStatus, FEATURE_MODELS_LIST, VERSION,
+    InteractionId, MessageSubmitResponse, ModelDescriptor, ModelsRequest, ModelsResponse,
+    RunCancelResponse, RunId, SessionState, SessionStatus, FEATURE_MODELS_LIST, VERSION,
 };
 
 use crate::adapter::{unavailable, Config};
-use crate::native::{decode, ConfigOption, SessionNewParams, SessionNewResult, METHOD_SESSION_NEW};
+use crate::native::{
+    decode, ConfigOption, PermissionOutcome, PermissionRequest, PermissionResponse,
+    SessionNewParams, SessionNewResult, METHOD_SESSION_NEW, METHOD_SESSION_REQUEST_PERMISSION,
+};
 use crate::process::{Implementation, Process};
 use crate::submit::Run;
-use crate::{PromptBridge, UsageScope};
+use crate::{Permissions, PromptBridge, UsageScope};
 
 type Shutdown = (Arc<PromptBridge>, Vec<JoinHandle<()>>);
+const RESOLVED_PERMISSION_CAPACITY: usize = 64;
 
 pub(crate) struct Inner {
     pub(crate) process: Option<Arc<PromptBridge>>,
+    pub(crate) permissions: Option<Arc<Permissions>>,
+    permission_runs: BTreeMap<InteractionId, RunId>,
+    resolved_permissions: VecDeque<InteractionId>,
     pub(crate) state: SessionState,
     pub(crate) active: Option<Arc<Run>>,
     pub(crate) workers: Vec<JoinHandle<()>>,
     pub(crate) usage: Arc<Mutex<UsageScope>>,
     pub(crate) tool_history: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl Inner {
+    fn remember_resolved(&mut self, id: InteractionId) {
+        if !self.resolved_permissions.contains(&id) {
+            self.resolved_permissions.push_back(id);
+            if self.resolved_permissions.len() > RESOLVED_PERMISSION_CAPACITY {
+                self.resolved_permissions.pop_front();
+            }
+        }
+    }
+
+    pub(crate) fn settle_permission_routes(&mut self) {
+        for (id, _) in std::mem::take(&mut self.permission_runs) {
+            self.remember_resolved(id);
+        }
+    }
 }
 
 pub(crate) struct Session {
@@ -113,6 +137,9 @@ impl Session {
         };
         let inner = Arc::new(Mutex::new(Inner {
             process: None,
+            permissions: None,
+            permission_runs: BTreeMap::new(),
+            resolved_permissions: VecDeque::new(),
             active: None,
             workers: Vec::new(),
             usage: Arc::default(),
@@ -126,43 +153,121 @@ impl Session {
                 ..SessionState::default()
             },
         }));
+        #[cfg(test)]
+        tests::LAST_SESSION.with(|slot| *slot.borrow_mut() = Some(Arc::downgrade(&inner)));
         let weak = Arc::downgrade(&inner);
         let done = process.client.done();
         let native_id = opened.session_id.clone();
-        let bridge = PromptBridge::new(process, move |message| match message {
-            Inbound::Request(request) => {
-                let _ = request.respond_error(-32601, "method not supported");
-            }
-            Inbound::Notification(notification) => {
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                let run = {
-                    let inner = inner.lock().unwrap_or_else(|p| p.into_inner());
+        let (bound, binding) = crossbeam_channel::bounded::<()>(0);
+        let bridge = Arc::new(PromptBridge::new(process, move |message| {
+            crossbeam_channel::select! { recv(done) -> _ => return, recv(binding) -> _ => () }
+            let Some(shared) = weak.upgrade() else { return };
+            let (run, permissions, bridge) = {
+                let inner = shared.lock().unwrap_or_else(|p| p.into_inner());
+                if let Inbound::Notification(notification) = &message {
                     if inner
                         .usage
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .observe(&notification, &native_id)
+                        .observe(notification, &native_id)
                     {
                         return;
                     }
-                    inner.active.clone()
-                };
-                if let Some(run) = run {
-                    crossbeam_channel::select! {
-                        recv(done) -> _ => return,
-                        recv(run.admitted) -> _ => (),
-                    }
-                    inner
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .update(&run, |text| text.observe(notification, now_ms()));
                 }
+                let (Some(permissions), Some(bridge)) = (&inner.permissions, &inner.process) else {
+                    return;
+                };
+                (
+                    inner
+                        .active
+                        .clone()
+                        .filter(|run| !run.lock().state().closed),
+                    permissions.clone(),
+                    bridge.clone(),
+                )
+            };
+            if let Some(run) = &run {
+                crossbeam_channel::select! { recv(done) -> _ => return, recv(run.admitted) -> _ => () }
             }
-            Inbound::Barrier(_) => (),
-        });
-        inner.lock().unwrap_or_else(|p| p.into_inner()).process = Some(Arc::new(bridge));
+            match message {
+                Inbound::Request(request)
+                    if request.method == METHOD_SESSION_REQUEST_PERMISSION =>
+                {
+                    if let Some(run) = &run {
+                        if let Ok(id) = futures::executor::block_on(
+                            permissions.request(run.text.clone(), request),
+                        ) {
+                            let mut inner = shared.lock().unwrap_or_else(|p| p.into_inner());
+                            if inner.process.is_some() {
+                                if run.lock().state().closed
+                                    || inner.resolved_permissions.contains(&id)
+                                {
+                                    inner.remember_resolved(id);
+                                } else {
+                                    inner.permission_runs.insert(id, run.id.clone());
+                                }
+                            }
+                        }
+                    } else {
+                        let valid = decode::<PermissionRequest>(
+                            request
+                                .params
+                                .as_ref()
+                                .map_or(b"null".as_slice(), |raw| raw.get().as_bytes()),
+                        )
+                        .is_ok_and(|params| {
+                            params.session_id == native_id
+                                && !params.tool_call.tool_call_id.is_empty()
+                                && !params.options.is_empty()
+                        });
+                        let reply = if valid {
+                            bridge.respond(
+                                request,
+                                serde_json::value::to_raw_value(&PermissionResponse {
+                                    outcome: PermissionOutcome {
+                                        outcome: "cancelled".into(),
+                                        ..PermissionOutcome::default()
+                                    },
+                                })
+                                .expect("native cancellation is JSON"),
+                            )
+                        } else {
+                            bridge.respond_error(
+                                request,
+                                -32602,
+                                "invalid permission request".into(),
+                                None,
+                            )
+                        };
+                        let _ = futures::executor::block_on(reply);
+                    }
+                }
+                Inbound::Request(request) => {
+                    let _ = futures::executor::block_on(bridge.respond_error(
+                        request,
+                        -32601,
+                        "method not supported".into(),
+                        None,
+                    ));
+                }
+                Inbound::Notification(notification) => {
+                    if let Some(run) = &run {
+                        let _ = futures::executor::block_on(
+                            permissions.observe(run.text.clone(), notification),
+                        );
+                    }
+                }
+                Inbound::Barrier(_) => (),
+            }
+            shared.lock().unwrap_or_else(|p| p.into_inner()).refresh();
+        }));
+        let permissions = Permissions::new(bridge.clone(), request.participant.id, now_ms)?;
+        {
+            let mut state = inner.lock().unwrap_or_else(|p| p.into_inner());
+            state.process = Some(bridge);
+            state.permissions = Some(permissions);
+        }
+        drop(bound);
         Ok(Box::new(Self {
             inner,
             closing: AsyncMutex::new(()),
@@ -195,6 +300,8 @@ impl Session {
         let Some(process) = inner.process.take() else {
             return Ok(None);
         };
+        inner.permissions.take();
+        inner.permission_runs.clear();
         if let Some(run) = inner.active.take() {
             run.lock().close();
         }
@@ -216,10 +323,11 @@ impl Drop for Session {
 impl SessionContract for Session {
     fn state(&self) -> BoxFuture<'_, SessionState> {
         Box::pin(async {
-            let inner = self.lock();
+            let mut inner = self.lock();
             if inner.process.is_none() {
                 return Err(Error::SessionClosed);
             }
+            inner.refresh();
             Ok(inner.state.clone())
         })
     }
@@ -253,8 +361,38 @@ impl SessionContract for Session {
     ) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
         Box::pin(self.submit_text(request))
     }
-    fn resolve(&self, _: InteractionResolution) -> BoxFuture<'_, ()> {
-        Box::pin(async { Err(unavailable("action.permissions")) })
+    fn resolve(&self, resolution: InteractionResolution) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let (permissions, run, id) = {
+                let inner = self.lock();
+                let permissions = inner.permissions.clone().ok_or(Error::SessionClosed)?;
+                let answer = resolution
+                    .permission
+                    .as_ref()
+                    .filter(|_| resolution.input.is_none())
+                    .ok_or(Error::InvalidResolution)?;
+                if inner.resolved_permissions.contains(&answer.interaction_id) {
+                    return Err(Error::InteractionResolved);
+                }
+                let run = inner.active.clone().ok_or(Error::InteractionNotFound)?;
+                if inner
+                    .permission_runs
+                    .get(&answer.interaction_id)
+                    .is_some_and(|id| *id != run.id)
+                {
+                    return Err(Error::InteractionResolved);
+                }
+                (permissions, run, answer.interaction_id.clone())
+            };
+            let result = permissions.resolve(run.text.clone(), resolution).await;
+            let mut inner = self.lock();
+            if result.is_ok() || result == Err(Error::InteractionResolved) {
+                inner.permission_runs.remove(&id);
+                inner.remember_resolved(id);
+            }
+            inner.refresh();
+            result
+        })
     }
     fn cancel(&self, _: RunId) -> BoxFuture<'_, RunCancelResponse> {
         Box::pin(async { Err(unavailable("run.cancel")) })
@@ -304,3 +442,7 @@ impl ModelLister for Session {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/session_permissions.rs"]
+mod tests;

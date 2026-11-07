@@ -19,7 +19,7 @@ coverage or normal Rust Session permission integration.
 The ownership command sends a native permission request with a four-megabyte
 JSON-RPC string id. The agent consumes exactly 64 response bytes before going
 quiet, proving the reverse write started. Poll must return pending promptly.
-Dropping selected/settlement futures, dropping a queued controller operation,
+Dropping selected/settlement futures, dropping a queued native reply operation,
 and closing the bridge must reap the native child and join workers. The live
 consumer's OS thread inventory must return to its pre-open count. One local
 permission resolution must precede tool and parent settlement after failed
@@ -34,8 +34,9 @@ and keep native I/O outside the projection mutex. The clock is read at commit.
 
 Run all existing ACP journeys, full baseline and Rust all-features under the
 same mutex. Read the actual PTY reply and `/quit` exit. Normal Session permission
-publication/resolve/admission/close remains the next approved slice, followed
-by cancel, reopen/config and corpus. The shared process helper's existing
+publication/resolve/admission/close are covered by
+`rust-acp-session-permissions.md`. Cancel, reopen/config and corpus retain
+following slices. The shared process helper's existing
 grandchild-held-pipe limitation applies.
 
 Review regressions drive actual native peers for malformed asks before run
@@ -45,5 +46,12 @@ run must cancel its own native ask and finish while the first request object
 is retained. Bindings match both the run object and interaction id. Completed
 bindings are pruned once their native request object has no external owner.
 Retained live request objects keep weak duplicate-publication guards until
-they are released and the next controller operation prunes them. Keep signed
+they are released and the next native operation prunes them. Keep signed
 native failing regressions before both review fixes.
+
+Local observe/completion/error projection executes inline on the polling caller
+using only the run lock. When settlement needs both locks, acquire bindings
+before the run. An owned Operation is created when native settlement replies
+need I/O or must wait behind an existing native write. The queued-cancel proof
+therefore queues a native resolution behind a blocked response. The consumer
+polls pending settlement before waiting for the native partial-write marker.
