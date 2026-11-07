@@ -21,6 +21,8 @@ python3 .claude/skills/verify/scripts/hub-open-directory.py --binary zig/zig-out
 Require PASS from both. The script observes host-named sessions in separate
 workspaces, a compound open carrying its first message, a subscribing open,
 and ordinary opens without a directory election. The synthetic Codex peers
+also exercise an adapter without a configured working directory while the
+hub runs from another directory. They
 record their real cwd and the native thread/start cwd. Both must match the
 selected workspace. thread/resume must keep the recorded native id and cwd
 after close and after a fresh hub process starts with a different default.

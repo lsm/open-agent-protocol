@@ -44,7 +44,7 @@ class Hub:
         self.process = subprocess.Popen([binary, 'serve', '--stdio', '--config', str(config),
                                          '--session-history', str(root / 'history.jsonl')],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.error,
-                                        env=env, start_new_session=True, bufsize=0)
+                                        env=env, cwd=root / 'base', start_new_session=True, bufsize=0)
 
     def call(self, op, **members):
         self.serial += 1
@@ -118,8 +118,11 @@ def main():
                      'args': [str(peer), str(log)], 'environment': ['PATH'],
                      'working_directory': str(root / base), 'model': 'synthetic-model',
                      'approval_policy': 'on-request', 'sandbox': 'workspace-write'}
+            unconfigured = {**entry, 'any_directory': True}
+            unconfigured.pop('working_directory')
             config.write_text(json.dumps({'adapters': {
                 'placed': {**entry, 'any_directory': any_directory}, 'fixed': entry,
+                'unconfigured': unconfigured,
                 'scripted': {'type': 'memory', 'working_directory': str(root / base), 'any_directory': True}}}))
 
         configure()
@@ -139,6 +142,9 @@ def main():
             opened(hub.call('open', adapter='placed', directory=None,
                             request=envelope('default')), 'default')
             opened(hub.call('open', adapter='fixed', request=envelope('fixed-default')), 'fixed-default')
+            opened(hub.call('open', adapter='unconfigured', directory=str(root / 'a'),
+                            request=envelope('no-default')), 'no-default')
+            assert hub.call('work.status', session_id='no-default')['result']['directory'] == str(root / 'a')
             for index, directory in enumerate(['relative', '', str(root / 'missing'), str(peer)]):
                 refused(hub.call('open', adapter='placed', directory=directory,
                                  request=envelope(f'refused-{index}')))
@@ -186,7 +192,7 @@ def main():
         assert not (out / 'malformed-wire.jsonl').read_text()
         native = [json.loads(line) for line in log.read_text().splitlines()]
         starts = [row for row in native if row['request'].get('method') == 'thread/start']
-        assert len(starts) == 5, starts
+        assert len(starts) == 6, starts
         assert {row['cwd'] for row in starts} == {str(root / name) for name in ['a', 'b', 'c', 'base']}, starts
         for row in starts:
             assert row['request']['params']['cwd'] == row['cwd'], row
