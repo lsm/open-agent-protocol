@@ -29,6 +29,7 @@ from pathlib import Path
 out = Path(sys.argv[1])
 mode = sys.argv[2]
 (out / 'pid').write_text(str(os.getpid()))
+(out / 'python').write_text(sys.executable)
 for line in sys.stdin:
     request = json.loads(line)
     with (out / 'wire').open('a') as wire:
@@ -318,6 +319,22 @@ fn invalid_scope_role_content_and_delivery_preserve_idle_session() {
     );
     let lines = std::fs::read_to_string(fixture.0.join("wire")).unwrap();
     assert_eq!(lines.lines().count(), 2);
+    block_on(session.close()).unwrap();
+    fixture.reaped();
+}
+
+#[test]
+fn fixture_uses_the_python_interpreter_selected_from_path() {
+    let fixture = Fixture::new();
+    let session = fixture.open("complete");
+    let selected = Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(selected.status.success());
+    let selected = String::from_utf8(selected.stdout).unwrap();
+    let observed = std::fs::read_to_string(fixture.0.join("python")).unwrap();
+    assert_eq!(observed, selected.trim());
     block_on(session.close()).unwrap();
     fixture.reaped();
 }

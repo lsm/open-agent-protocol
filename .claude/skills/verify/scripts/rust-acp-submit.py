@@ -48,8 +48,8 @@ else:
 '''
 
 
-def run(command, log):
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=180)
+def run(command, log, env=None):
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=180, env=env)
     log.write_text(result.stdout + result.stderr)
     assert result.returncode == 0, log
 
@@ -59,6 +59,11 @@ def main():
     parser.add_argument('--output-dir', required=True, type=Path)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    with tempfile.TemporaryDirectory(prefix='oap-submit-python-path-') as directory:
+        Path(directory, 'python3').symlink_to(sys.executable)
+        environment = dict(os.environ, PATH=directory + os.pathsep + os.environ.get('PATH', ''))
+        run(['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--test', 'submit',
+             'fixture_uses_the_python_interpreter_selected_from_path', '--', '--exact'], output/'path-python.log', env=environment)
     run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--example', 'submit_owner'], output/'build.log')
     with tempfile.TemporaryDirectory(prefix='oap-submit-') as temporary:
         agent = Path(temporary)/'agent.py'
