@@ -119,10 +119,11 @@ impl Adapter {
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
             (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the session/new model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
             (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
-            ("session.message.submit", SupportLevel::DEGRADED, "ACP usage semantics remain lossy and unverified, with live config and cancellation evidence still unavailable"),
+            ("session.message.submit", SupportLevel::DEGRADED, "ACP usage semantics remain lossy and unverified, with live config still unavailable"),
             ("run.streaming", SupportLevel::DEGRADED, "ordered text and tool events from the staged run projection"),
             ("session.message.delivery.auto", SupportLevel::EMULATED, "start when idle and refuse an active run"),
             ("run.status", SupportLevel::EMULATED, "adapter-owned text-run projection"),
+            ("run.cancel", SupportLevel::NATIVE, "session/cancel intent with native prompt settlement"),
             ("action.permissions", SupportLevel::NATIVE, "ACP permission choices with synthesized portable identity"),
             ("action.tools", SupportLevel::DEGRADED, "observed ACP presentation tool calls only; no catalog"),
             ("action.tools.execute", SupportLevel::DEGRADED, "observed tool lifecycle is normalized"),
@@ -153,7 +154,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-permissions", pin().capability_revision),
+            capability_revision: format!("{}-rust-cancel", pin().capability_revision),
             max_active_runs_per_session: 1,
             interactive_gates: true,
             journal: JournalDescriptor {

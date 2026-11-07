@@ -21,6 +21,8 @@ pub use text::{TextRun, TextRunContext, TextRunState};
 
 mod submit;
 
+mod cancel;
+
 mod usage;
 pub use usage::UsageScope;
 

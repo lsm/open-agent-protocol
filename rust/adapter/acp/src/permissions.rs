@@ -94,6 +94,9 @@ impl TextRun {
                 now_ms,
             );
         }
+        if self.state().status == RunStatus::CANCELLING {
+            return Err(Error::InteractionResolved);
+        }
         let requested = PermissionRequestedPayload {
             interaction_id: id.clone(),
             requested_by: "acp.v1".into(),
@@ -176,7 +179,7 @@ impl TextRun {
     }
 
     pub fn permission_settlements(&self) -> Vec<PermissionReply> {
-        if self.pending.is_none() {
+        if self.pending.is_none() && self.state().status != RunStatus::CANCELLING {
             return Vec::new();
         }
         self.permissions
@@ -217,8 +220,18 @@ impl TextRun {
             choice_id: choice,
             granted,
             reason: granted.is_none().then(|| ProtocolError {
-                code: "run_settled".into(),
-                message: "parent run settled the permission request".into(),
+                code: if self.state().status == RunStatus::CANCELLING {
+                    "run_cancelling"
+                } else {
+                    "run_settled"
+                }
+                .into(),
+                message: if self.state().status == RunStatus::CANCELLING {
+                    "the run's cancellation answered the permission request cancelled"
+                } else {
+                    "parent run settled the permission request"
+                }
+                .into(),
                 ..ProtocolError::default()
             }),
         };

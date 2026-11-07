@@ -394,8 +394,30 @@ impl SessionContract for Session {
             result
         })
     }
-    fn cancel(&self, _: RunId) -> BoxFuture<'_, RunCancelResponse> {
-        Box::pin(async { Err(unavailable("run.cancel")) })
+    fn cancel(&self, id: RunId) -> BoxFuture<'_, RunCancelResponse> {
+        Box::pin(async move {
+            let _submitting = self.submitting.lock().await;
+            let (permissions, run) = {
+                let inner = self.lock();
+                let permissions = inner.permissions.clone().ok_or(Error::SessionClosed)?;
+                let run = inner
+                    .active
+                    .clone()
+                    .filter(|run| run.id == id)
+                    .ok_or(Error::RunNotFound)?;
+                (permissions, run)
+            };
+            let result = permissions.cancel(run.text.clone()).await;
+            let mut inner = self.lock();
+            if inner.process.is_none() {
+                return Err(Error::SessionClosed);
+            }
+            if result.is_ok() {
+                inner.settle_permission_routes();
+            }
+            inner.refresh();
+            result
+        })
     }
     fn resume(&self, _: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
         Box::pin(async { Err(unavailable("run.resume")) })

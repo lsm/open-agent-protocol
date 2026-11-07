@@ -43,7 +43,7 @@ pub struct TextRun {
     native_messages: BTreeMap<String, MessageId>,
     subscriber: Subscriber,
     usage_scope: Arc<Mutex<UsageScope>>,
-    terminal_usage: Option<Usage>,
+    pub(crate) terminal_usage: Option<Usage>,
     extensions: Extensions,
     pub(crate) tools: crate::tools::Tools,
     pub(crate) permissions: Vec<crate::permissions::Gate>,
@@ -53,6 +53,7 @@ pub struct TextRun {
 pub(crate) enum Terminal {
     Completed(String),
     Failed(String, String, bool),
+    Cancelled(String),
 }
 
 impl TextRun {
@@ -113,7 +114,12 @@ impl TextRun {
         }
         self.state.sequence += 1;
         self.state.updated_at_ms = now_ms;
-        self.state.closed = status != RunStatus::RUNNING;
+        let status = if status == RunStatus::RUNNING && self.state.status == RunStatus::CANCELLING {
+            RunStatus::CANCELLING
+        } else {
+            status
+        };
+        self.state.closed = status != RunStatus::RUNNING && status != RunStatus::CANCELLING;
         self.state.status = status;
         event.in_reply_to = reply;
         if self.state.closed {
@@ -346,6 +352,9 @@ impl TextRun {
     }
 
     fn complete_stop(&mut self, stop: String, now_ms: i64) -> Result<(), Error> {
+        if stop == "cancelled" && self.state.status == RunStatus::CANCELLING {
+            return self.cancelled("ACP prompt returned cancelled", now_ms);
+        }
         let events = self.tools.settle(!matches!(
             stop.as_str(),
             "end_turn" | "max_tokens" | "max_turn_requests"
@@ -405,7 +414,7 @@ impl TextRun {
         Ok(())
     }
 
-    fn settle_usage(&mut self, raw: Option<&serde_json::value::RawValue>) {
+    pub(crate) fn settle_usage(&mut self, raw: Option<&serde_json::value::RawValue>) {
         if !self.state.status.is_empty() {
             let observed = self
                 .usage_scope
@@ -424,6 +433,7 @@ impl TextRun {
             Some(Terminal::Failed(code, message, inferred)) => {
                 self.fail(&code, &message, inferred, now_ms)
             }
+            Some(Terminal::Cancelled(reason)) => self.cancelled(&reason, now_ms),
             None => Ok(()),
         }
     }
