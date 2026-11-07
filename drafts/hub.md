@@ -1804,25 +1804,26 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
 
 ### `cancel`
 
-The Zig `cancel` operation also accepts a `session.task.cancel.request` envelope
+The `cancel` operation also accepts a `session.task.cancel.request` envelope
 and returns its correlated `session.task.cancel.response`. Task cancellation is
 intent; `session.task.ended` reports its settlement on the session stream. Go
-task cancellation follows separately.
+adapters can implement the optional task cancellation interface.
 
 - **params:** `session_id` and `request`, and nothing else.
 - **answer:** a `run.cancel.response` envelope, or a `session.task.cancel.response`
-  for a task request on Zig. A run cancellation is **intent, not settlement**:
+  for a task request. A run cancellation is **intent, not settlement**:
   a run settles `cancelled` only once an accepted cancel exchange is the
   evidence, so the host watches for `run.cancelled` on its subscription.
 - **errors:** `unknown_session` (404), `invalid_request`, `malformed_json`,
   `schema_invalid`, `type_mismatch`, `invalid_payload`, `scope_mismatch` (400,
   a payload whose `session_id` is not the addressed session), `run_not_found`
   (404), `run_terminal` (409, a run that already settled), `session_closed`
-  (409), `request_cancelled` (400), `internal` (500). A task request on Zig
+  (409), `request_cancelled` (400), `internal` (500). A task request
   also answers `unsupported_feature` or `invalid_submission` (400).
 - **pinned by:** `TestCancelRejections`, `TestOpErrorCodesMirrorHTTP`,
   `TestCloseAfterCancellation`, and Zig's `cancel accepts a task cancellation
-  envelope and reports unavailable adapters`.
+  envelope and reports unavailable adapters`, `TestTaskCancelHTTP`, and
+  `TestTaskCancelStdio`.
 
 ### `settings`
 

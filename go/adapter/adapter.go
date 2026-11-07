@@ -33,6 +33,10 @@ type Session interface {
 	Close(context.Context) error
 }
 
+type TaskCanceller interface {
+	CancelTask(context.Context, protocol.TaskID) (protocol.SessionTaskCancelResponse, error)
+}
+
 type SessionEventSource interface {
 	SessionEvents() EventStream
 }

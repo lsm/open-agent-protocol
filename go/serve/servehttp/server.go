@@ -526,8 +526,12 @@ func (s *Server) resolveCall(w http.ResponseWriter, r *http.Request, entry *serv
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
-	envelope, ok := s.readRequest(w, r, protocol.TypeRunCancelRequest)
+	envelope, ok := s.readRequest(w, r, protocol.TypeRunCancelRequest, protocol.TypeSessionTaskCancelRequest)
 	if !ok {
+		return
+	}
+	if envelope.Type == protocol.TypeSessionTaskCancelRequest {
+		s.handleTaskCancel(w, r, envelope)
 		return
 	}
 	var request protocol.RunCancelRequest
@@ -570,6 +574,45 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	response.SessionID = ack.SessionID
 	response.RunID = ack.RunID
 	response.CapabilityRevision = envelope.CapabilityRevision
+	writeEnvelope(w, http.StatusOK, response)
+}
+
+func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request, envelope protocol.Envelope) {
+	var request protocol.SessionTaskCancelRequest
+	if err := envelope.DecodePayload(&request); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_payload", err.Error(), envelope)
+		return
+	}
+	entry, ok := s.lookupSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if request.SessionID != entry.ID() || (envelope.SessionID != "" && envelope.SessionID != entry.ID()) {
+		s.writeError(w, http.StatusBadRequest, "scope_mismatch", "request session does not match the addressed session", envelope)
+		return
+	}
+	ack, err := entry.CancelTask(r.Context(), request.TaskID)
+	if err != nil {
+		status, code := http.StatusInternalServerError, "internal"
+		switch {
+		case errors.Is(err, base.ErrUnsupportedInput):
+			status, code = http.StatusBadRequest, "unsupported_feature"
+		case errors.Is(err, base.ErrInvalidSubmission):
+			status, code = http.StatusBadRequest, "invalid_submission"
+		case errors.Is(err, base.ErrSessionClosed):
+			status, code = http.StatusConflict, "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			status, code = http.StatusBadRequest, "request_cancelled"
+		}
+		s.writeError(w, status, code, adapterMessage(err), envelope)
+		return
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionTaskCancelResponse, s.nextID("response"), ack)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
+		return
+	}
+	response.InReplyTo, response.SessionID, response.CapabilityRevision = envelope.ID, entry.ID(), envelope.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 }
 
