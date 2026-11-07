@@ -49,7 +49,11 @@ if mode=='delayed-exit': time.sleep(.75)
 fn seeded(mode: &str) -> Client {
     let mut command = Command::new("python3");
     command.args(["-u", "-c", ENDPOINT, mode]);
-    let mut client = Client::spawn(&mut command, Duration::from_millis(500)).unwrap();
+    let within = match mode {
+        "normal" | "delayed-exit" => Duration::from_secs(2),
+        _ => Duration::from_millis(500),
+    };
+    let mut client = Client::spawn(&mut command, within).unwrap();
     client
         .send(
             Envelope::new(
