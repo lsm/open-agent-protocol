@@ -235,6 +235,7 @@ pub const Session = struct {
         drain_mixed: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void = null,
         activity: *const fn (ptr: *anyopaque) Activity,
         close: *const fn (ptr: *anyopaque, force: bool) Failure!void,
+        prepare_close: ?*const fn (ptr: *anyopaque, force: bool) Failure!void = null,
         tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!ToolSet = null,
         models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!Catalog = null,
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
@@ -301,6 +302,11 @@ pub const Session = struct {
 
     pub fn activity(self: Session) Activity {
         return self.vtable.activity(self.ptr);
+    }
+
+    pub fn prepareClose(self: Session, force: bool) Failure!void {
+        const prepare = self.vtable.prepare_close orelse return;
+        try prepare(self.ptr, force);
     }
 
     pub fn close(self: Session) Failure!void {

@@ -354,7 +354,9 @@ event stream ends the endpoint so the host can read state. The sequence belongs 
 session for its lifetime, not to a subscription or a transport connection;
 independent endpoints host distinct sessions and do not share counters. The
 oapx adapter reports background command starts and ends and includes tasks in
-session state. Close-time task endings and task controls follow separately. The
+session state. A job completion wakes its session, and close publishes endings
+with `session_closed` before ending its subscriptions. Task controls follow
+separately. The
 Zig hub does not yet publish `session.state.updated`; when it does, those events
 share this counter.
 
