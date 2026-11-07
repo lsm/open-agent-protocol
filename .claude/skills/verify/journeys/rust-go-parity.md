@@ -1,9 +1,9 @@
 # Rust and Go validators, fixture by fixture
 
 Lane A's shared check (#1440). It builds `goap` and a standalone consumer of
-the public Rust validator once, then judges manifest fixtures with both consumers. Both load the fixture's
-packs and use the provider validator for provider traces. Go receives the declared
-mode. Tolerant-mode fixtures remain explicitly listed Rust gaps until that slice:
+the public Rust validator once, then judges manifest fixtures with both consumers.
+Both load the fixture's packs and receive its declared validation mode, using the
+provider validator for provider traces:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-go-parity.py --output-dir /tmp/oap-rust-go-<unique-name>

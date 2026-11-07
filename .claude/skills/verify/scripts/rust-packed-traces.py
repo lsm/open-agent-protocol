@@ -19,9 +19,11 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut paths = Vec::new();
     let mut packs = Vec::new();
     let mut provider = false;
+    let mut tolerant = false;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--provider") => provider = true,
+            Some("--tolerant") => tolerant = true,
             Some("--pack") => packs.push(PathBuf::from(arguments.next().ok_or("missing pack path")?)),
             _ => paths.push(PathBuf::from(argument)),
         }
@@ -30,10 +32,11 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         let validator = ProviderValidator::new()?;
         Box::new(move |data, fixture| validator.validate(data, fixture))
     } else if packs.is_empty() {
-        let validator = Validator::new()?;
+        let validator = if tolerant { Validator::tolerant()? } else { Validator::new()? };
         Box::new(move |data, fixture| validator.validate(data, fixture))
     } else {
-        let validator = match Validator::with_packs(&packs) {
+        let loaded = if tolerant { Validator::tolerant_with_packs(&packs) } else { Validator::with_packs(&packs) };
+        let validator = match loaded {
             Ok(validator) => validator,
             Err(error) => {
                 println!("{}", serde_json::json!({"load_codes":error.codes(), "refusals":error.refusals}));
@@ -76,12 +79,12 @@ def run(command, output, label):
     return result
 
 
-def load_refusal(goap, rust, fixture, output):
+def load_refusal(goap, rust, fixture, output, tolerant=False):
     directories = [ROOT / "fixtures" / p for p in [fixture["path"], *fixture.get("packs", [])]]
     flags = [argument for directory in directories for argument in ["--pack", directory]]
     core = ROOT / "fixtures/valid/core-completed.json"
-    go = run([goap, "validate", "--format", "json", *flags, core], output, fixture["id"] + ".go")
-    rs = run([rust, *flags, core], output, fixture["id"] + ".rust")
+    go = run([goap, "validate", "--format", "json", "--mode", "tolerant" if tolerant else "strict", *flags, core], output, fixture["id"] + ".go")
+    rs = run([rust, *(["--tolerant"] if tolerant else []), *flags, core], output, fixture["id"] + ".rust")
     go_codes = sorted(set(re.findall(r"\b(?:pack_[a-z_]+|ext_claim_without_pack)\b", go.stderr)))
     rust_codes = json.loads(rs.stdout)["load_codes"]
     assert go.returncode == rs.returncode == 1, (fixture["id"], go.stderr, rs.stdout)

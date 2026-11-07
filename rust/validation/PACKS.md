@@ -14,8 +14,8 @@ declared dependencies. Schema identifiers stay within their own pack namespace.
 `documents` exposes immutable schema values indexed by resource URI,
 and `manifests` exposes the contained manifest paths indexed by the pack base URI.
 
-These are staged construction contracts. Complete trace validation follows in the
-validator integration slices.
+These methods expose construction stages. `PackLoader::load` completes
+construction, and the Validator constructors below execute traces.
 
 `PackResources::compile` pins every contributed branch to its declared type,
 prepares the core and pack schema registry, and returns `CompiledPacks`. Its
@@ -44,8 +44,8 @@ The final constructor adds the remaining corpus policy checks in the sixth slice
 
 The staged operation can accept an entry the complete Go loader refuses for any
 of these deferred policies. The public verification journey records representative
-controls separately from agreeing expectation cases. Corpus trace execution follows
-with validator integration.
+controls separately from agreeing expectation cases. Use `Validator::validate`
+to execute a corpus trace.
 
 ## Complete construction
 
@@ -58,7 +58,7 @@ manifest rules, including normalized path uniqueness.
 
 Every declared capability needs a manifest with a negative gate fixture and a
 negative honour fixture under the owning extension term. Construction validates
-the corpus declarations. Executing their traces follows with validator integration.
+the corpus declarations. `Validator::validate` executes trace data after construction.
 The earlier `check_corpus_entries` method retains its narrower staged contract.
 
 ## Parsed-envelope schema validation
@@ -90,4 +90,25 @@ string scope fields are checked independently when another field is non-string.
 Packed scope falls back from payload IDs to envelope IDs, and declared members
 retain core schema and semantic checks. Every validation call starts fresh trace
 state while sharing immutable compiled packs. `Validator::new` retains ordinary
-core validation. Tolerant mode follows separately.
+core validation.
+
+## Tolerant trace validation
+
+`Validator::tolerant()` constructs a tolerant core validator, and
+`Validator::tolerant_with_packs(directories)` adds the fully loaded pack set.
+Semantic recognition uses the protocol vocabulary, independently of schema
+declarations. Schema-only task types retain generic tolerant scope and run
+checks while their task semantics remain staged under Decision 0069.
+Pack construction enforces the complete strict loader contract before compiling
+tolerant schemas. Trace validation accepts additive object members, future string
+enum values and future variants in discriminator unions whose branches are inline
+or referenced within the same schema document. Known constants, required fields,
+numeric enums and conditional tests retain their constraints. Unknown envelope
+types still require the common envelope fields.
+
+Unknown run statuses and admission values are opaque to rules requiring known
+vocabulary. Known values still constrain each other, and known status transitions
+resume their table checks. An opaque admission still requires a terminal event.
+Unknown support levels fail capability gates. Unknown envelope requests, replies
+and sequenced events retain correlation, scope, sequence and terminal checks.
+String scope IDs in extension payloads are read independently.

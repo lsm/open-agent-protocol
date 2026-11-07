@@ -27,8 +27,8 @@ The native replay compares the real Rust public validator and Go CLI; the signed
 regressions fail before the fixes. The diagnostic unit control must point at
 `/payload` for both root `oneOf` and `anyOf`, excluding unrelated branch errors.
 
-This stage provides the vocabulary query and strict trace corrections. Future
-vocabulary state handling is internal preparation; public tolerant constructors
-and schema widening belong to the successor. The root `anyOf` diagnostic path
-gets its public tolerant integration check in that successor. Run the complete
-Verify baseline, including the sandboxed PTY fixture reply and `/quit`.
+The foundation supplies the vocabulary query and strict trace corrections.
+Its successor exposes the prepared future-value state handling through tolerant
+constructors and schema widening. Follow `rust-tolerant.md` for those public
+constructors and the root `anyOf` integration checks. Run the complete Verify
+baseline, including the sandboxed PTY fixture reply and `/quit`.

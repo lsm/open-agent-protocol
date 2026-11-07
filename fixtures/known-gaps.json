@@ -14,7 +14,6 @@
     "control-state-acknowledges-unpending",
     "control-state-omits-acknowledged",
     "descriptor-leaks-attachment-fields",
-    "ext-unpacked-type-tolerated",
     "model-switch-degraded-no-optin",
     "models-advertisement-mutates-within-revision",
     "models-catalog-constraints-mutate-within-revision",

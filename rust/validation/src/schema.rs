@@ -83,7 +83,7 @@ fn document(name: &str) -> Result<Value, SchemaError> {
     })
 }
 
-pub(crate) struct Bundle;
+pub(crate) struct Bundle(pub bool);
 
 impl Retrieve for Bundle {
     fn retrieve(
@@ -96,16 +96,30 @@ impl Retrieve for Bundle {
                 uri.as_str()
             )
         })?;
-        Ok(document(name)?)
+        let value = document(name)?;
+        Ok(
+            if self.0 && !matches!(name, "pack.schema.json" | "manifest.schema.json") {
+                crate::tolerant::widen(&value)
+            } else {
+                value
+            },
+        )
     }
 }
 
 pub(crate) fn compile(name: &str) -> Result<Validator, SchemaError> {
-    let root = document(name)?;
+    compile_mode(name, false)
+}
+
+pub(crate) fn compile_mode(name: &str, tolerant: bool) -> Result<Validator, SchemaError> {
+    let mut root = document(name)?;
+    if tolerant {
+        root = crate::tolerant::widen(&root);
+    }
     jsonschema::options()
         .with_draft(Draft::Draft202012)
         .with_base_uri(format!("{SCHEMA_BASE}{name}"))
-        .with_retriever(Bundle)
+        .with_retriever(Bundle(tolerant))
         .should_validate_formats(false)
         .build(&root)
         .map_err(|err| SchemaError::Compile {
