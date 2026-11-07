@@ -74,6 +74,9 @@ if not scenario.get('resolve') and not scenario.get('invalid'):
         reply=read()
         assert reply['id']=='permission-'+str(index),reply
         assert reply['result']['outcome']['outcome']=='cancelled',reply
+        if index==0 and scenario.get('trailing'):
+            for _ in range(16):
+                send(dict(method='session/update',params=dict(sessionId='native-session',update=dict(sessionUpdate='plan',entries=[]))))
 (out/'finished').touch()
 sys.stdin.read()
 '''
@@ -98,6 +101,7 @@ def main():
         'allow':dict(permissions=[permission()],resolve=True,granted=True),
         'deny':dict(permissions=[permission(options=[deny])],resolve=True,granted=False),
         'parent-order':dict(permissions=[permission('z'),permission('a')]),
+        'parent-trailing':dict(permissions=[permission('trailing-'+str(index)) for index in range(8)],trailing=True),
         'parent-refusal':dict(permissions=[permission()],stop='refusal'),
         'parent-rpc-error':dict(permissions=[permission()],error=True),
         'filtered-options':dict(permissions=[permission(options=[dict(optionId='',name='bad',kind='allow_once'),dict(optionId='future',name='Future',kind='new_kind'),allow])],resolve=True,granted=True),
