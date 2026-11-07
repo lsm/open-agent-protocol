@@ -22,7 +22,8 @@ portability regression committed before the fixture lookup fix.
 Eight cases cover complete Unicode text, bounded subscriber overflow, dropping
 an active session, opt-in abort close, cancelling close, cancelling blocked
 write admission, opt-in closing during blocked admission and immediate default
-close refusal while the writer is blocked. Quiet agents ignore EOF.
+close refusal while the writer is blocked. Opt-in close also awaits the
+interrupted submission and requires its typed session-closed result. Quiet agents ignore EOF.
 The consumer stays alive after cleanup so the verifier can require native PID
 absence and exact return to the initial OS thread count. Explicit shutdown of
 an EOF-ignoring child reports its timeout after killing, reaping and joining.

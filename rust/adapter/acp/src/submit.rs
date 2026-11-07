@@ -170,11 +170,12 @@ impl Session {
             },
             None,
         );
-        call.admitted().await.map_err(Error::harness)?;
+        let admitted = call.admitted().await;
         let mut inner = self.lock();
         if inner.process.is_none() {
             return Err(Error::SessionClosed);
         }
+        admitted.map_err(Error::harness)?;
         let stream = run.lock().start(now_ms())?;
         let state = run.lock().state();
         inner.state.transcript_cursor = state.sequence.to_string();

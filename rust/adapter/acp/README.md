@@ -224,7 +224,7 @@ The submit future owns the prompt through native write admission. After admissio
 the session owns the completion worker. Default close immediately refuses an active run, including blocked write admission.
 `Config.abort_active_on_close` enables closing during a run or blocked admission.
 Close and final session drop release the native child, dispatcher and completion
-workers. Cancelled close joins the same owned workers. An EOF-ignoring child can
+workers. A submission interrupted by close reports session closed. Cancelled close joins the same owned workers. An EOF-ignoring child can
 report a shutdown timeout after being killed and reaped. Abandonment closes the
 subscriber's retained prefix. Later mapping slices extend the staged engine.
 
