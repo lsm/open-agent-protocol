@@ -9,6 +9,7 @@ pub const Failure = error{
     UnknownSession,
     RunActive,
     InvalidSubmission,
+    InvalidRequest,
     RunNotFound,
     RunTerminal,
     ReplayCursorFuture,
@@ -30,6 +31,7 @@ pub const feature_models_list = "models.list";
 pub const feature_model_switch = "session.model.switch";
 pub const feature_session_compact = "session.compact";
 pub const feature_task_cancel = "session.task.cancel";
+pub const feature_task_output = "session.task.output";
 pub const feature_transcript_load = "transcript.load";
 pub const feature_tools_list = "action.tools.list";
 pub const feature_tools_provide = "action.tools.provide";
@@ -232,6 +234,7 @@ pub const Session = struct {
         resolve: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, resolution: Resolution, refusal: *Refusal) Failure!void,
         cancel: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *Refusal) Failure!oap_types.RunCancelResponse,
         cancel_task: ?*const fn (ptr: *anyopaque, task_id: []const u8, refusal: *Refusal) Failure!oap_types.TaskCancelResponse = null,
+        task_output: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, task_id: []const u8, from: ?u64, refusal: *Refusal) Failure!oap_types.TaskOutputResponse = null,
         pump: *const fn (ptr: *anyopaque, wait_ns: u64) Failure!bool,
         drain: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void,
         drain_mixed: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void = null,

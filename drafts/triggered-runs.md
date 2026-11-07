@@ -374,9 +374,16 @@ the run the fire triggers names it in `trigger.task_id`.
   recording.
 - **`session.task.output.request {session_id, task_id, from?}`** answers
   `{output, next, truncated, ended}`.
-  - `from` and `next` are byte offsets into the task's UTF-8 output. `next`
-    always falls on a code-point boundary, so `output` never ends mid
-    character, and a `from` that does not is refused `invalid_request`.
+  - `from` and `next` count raw bytes of the output file, which are UTF-8 byte
+    offsets when the output is valid UTF-8. `output` is always valid UTF-8:
+    each invalid sequence is replaced by U+FFFD, while `next` advances over
+    the raw bytes consumed. An incomplete trailing character is held while
+    the task runs and replaced if the task ends before it is completed. The
+    raw file remains available at `output_path`.
+  - `next` falls on a character or replacement boundary. A `from` inside a
+    sequence or past the end of the output is refused `invalid_request`.
+  - `ended` is true only when the task has ended and `next` has reached the
+    end of its output; a finished task with more pages returns `ended: false`.
   - `truncated` says bytes before `from` are gone.
   - An adapter over a harness that returns the whole output, as Claude does,
     slices it itself.

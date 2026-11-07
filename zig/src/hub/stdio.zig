@@ -541,6 +541,7 @@ pub fn controlRefusal(arena: std.mem.Allocator, err: hubmod.Failure, reported: *
         error.SessionClosed => .{ .code = "session_closed", .message = messageOr(reported, "the session is closed") },
         error.RunActive => .{ .code = "run_active", .message = messageOr(reported, "the session already has a run in flight") },
         error.InvalidSubmission => .{ .code = "invalid_submission", .message = messageOr(reported, "the submission is invalid") },
+        error.InvalidRequest => .{ .code = "invalid_request", .message = messageOr(reported, "the request is invalid") },
         error.UnsupportedFeature, error.ToolCatalogUnavailable => {
             const message = if (reported.detail.len > 0)
                 try std.fmt.allocPrint(arena, "unsupported input: {s} ({s}): {s}", .{ reported.feature, reported.reason, reported.detail })

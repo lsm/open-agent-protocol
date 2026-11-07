@@ -18,7 +18,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v18";
+pub const capability_revision = "oapx-agent-v19";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -47,6 +47,7 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "session.tasks", .level = .native },
     .{ .key = contract.feature_task_cancel, .level = .native },
+    .{ .key = contract.feature_task_output, .level = .native },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
     .{ .key = "run.cancel", .level = .native, .reason = "cancelling a run leaves its session open" },
@@ -465,6 +466,7 @@ pub const Session = struct {
         .resolve = resolve,
         .cancel = cancel,
         .cancel_task = cancelTask,
+        .task_output = taskOutput,
         .pump = pump,
         .set_ready = setReady,
         .drain = drain,
@@ -1465,6 +1467,17 @@ pub const Session = struct {
         const content = try allocator.alloc(ai_types.UserContentPart, 1);
         content[0] = .{ .text = .{ .text = text } };
         return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
+    }
+
+    fn taskOutput(ptr: *anyopaque, arena: std.mem.Allocator, task_id: []const u8, from: ?u64, refusal: *contract.Refusal) contract.Failure!oap_types.TaskOutputResponse {
+        const self = cast(ptr);
+        const result = self.jobs.outputTask(arena, task_id, from orelse 0) catch |err| switch (err) {
+            error.UnknownJob => return refusal.fail(error.InvalidSubmission, "the task does not exist"),
+            error.InvalidOffset => return refusal.fail(error.InvalidRequest, "the offset is not an output boundary"),
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return refusal.fail(error.BackendFailed, "the task output could not be read"),
+        };
+        return .{ .output = result.text, .next = result.next, .truncated = result.truncated, .ended = result.ended };
     }
 
     fn cancelTask(ptr: *anyopaque, task_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.TaskCancelResponse {
@@ -5501,4 +5514,42 @@ test "a host can cancel a background task and observe its separate ending" {
     try wire.send("session.task.cancel.request", wire_scope, try parseValue(a, request));
     const retry = wireLast(&wire, "session.task.cancel.response");
     try testing.expectEqualStrings("already_ended", retry.object.get("payload").?.object.get("outcome").?.string);
+}
+
+test "host reads task output using raw offsets and valid UTF-8" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"printf 'A\\\\303\\\\251\\\\377Z\\\\342\\\\202'\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    wire.owner.options.permission_mode = .bypass;
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"start a job"}]}
+    ));
+    const started = try wire.wait("session.task.started");
+    const task_id = started.object.get("payload").?.object.get("task").?.object.get("task_id").?.string;
+    _ = try wire.wait("session.task.ended");
+    const request = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"task_id\":\"{s}\"}}", .{task_id});
+    try wire.send("session.task.output.request", wire_scope, try parseValue(a, request));
+    const payload = wireLast(&wire, "session.task.output.response").object.get("payload").?.object;
+    try testing.expectEqualStrings("Aé�Z�", payload.get("output").?.string);
+    try testing.expectEqual(@as(i64, 7), payload.get("next").?.integer);
+    try testing.expect(payload.get("ended").?.bool);
+    const suffix = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"task_id\":\"{s}\",\"from\":3}}", .{task_id});
+    try wire.send("session.task.output.request", wire_scope, try parseValue(a, suffix));
+    const suffix_payload = wireLast(&wire, "session.task.output.response").object.get("payload").?.object;
+    try testing.expectEqualStrings("�Z�", suffix_payload.get("output").?.string);
+    try testing.expectEqual(@as(i64, 7), suffix_payload.get("next").?.integer);
+    const interior = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"task_id\":\"{s}\",\"from\":2}}", .{task_id});
+    try wire.send("session.task.output.request", wire_scope, try parseValue(a, interior));
+    const refusal = wireLast(&wire, "error.response");
+    try testing.expectEqualStrings("invalid_request", refusal.object.get("payload").?.object.get("error").?.object.get("code").?.string);
 }
