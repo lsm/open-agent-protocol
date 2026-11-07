@@ -408,3 +408,163 @@ fn closing_a_projection_refuses_a_prepared_commit_without_reviving_its_stream() 
     assert!(block_on(stream.collect::<Vec<_>>()).is_empty());
     assert!(run.state().closed);
 }
+
+#[test]
+fn native_usage_in_the_pending_window_reaches_the_next_run() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "oap-pending-usage-{}-{stamp}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    std::fs::create_dir(&fixture.0).unwrap();
+    let script = r#"printf '%s' $$ > "$2"; read -r request; printf '%s\n' "$request" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'; read -r request; printf '%s\n' "$request" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"native"}}'; read -r request; printf '%s\n' "$request" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"usage_update","used":100,"size":1000}}}' '{"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"native","toolCall":{"toolCallId":"tool","title":"Act"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'; read -r request; printf '%s\n' "$request" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"usage_update","used":200,"size":1000}}}'; read -r request; printf '%s\n' "$request" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","id":4,"result":{}}'; read -r reply; printf '%s\n' "$reply" >> "$1"; read -r request; printf '%s\n' "$request" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","id":5,"result":{"stopReason":"end_turn"}}'; read -r eof; exit 0"#;
+    let process = block_on(Process::start_async(
+        ProcessConfig {
+            path: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                "fixture".into(),
+                fixture.0.join("wire").to_string_lossy().into(),
+                fixture.0.join("pid").to_string_lossy().into(),
+            ],
+            env: Some(Vec::new()),
+            queue_capacity: 1,
+            write_queue_capacity: 1,
+            shutdown_timeout: Some(Duration::from_millis(200)),
+            ..ProcessConfig::default()
+        },
+        None,
+    ))
+    .unwrap();
+    let ids = Arc::new(AtomicU64::new(0));
+    let scope = Arc::default();
+    let engine = |id: &str| {
+        let ids = ids.clone();
+        Arc::new(Mutex::new(TextRun::new_in_scope(
+            TextRunContext {
+                session_id: "session".into(),
+                native_id: "native".into(),
+                run_id: id.into(),
+                message_id: format!("message-{id}").into(),
+                capability_revision: Some(oap_adapter_acp::pin().capability_revision.clone()),
+            },
+            move |kind| format!("{kind}-{}", ids.fetch_add(1, Ordering::Relaxed) + 1),
+            Arc::clone(&scope),
+        )))
+    };
+    let first = engine("first");
+    let active = Arc::new(Mutex::new(first.clone()));
+    let receiving = active.clone();
+    let (send, receive) = mpsc::channel();
+    let bridge = Arc::new(PromptBridge::new(process, move |message| match message {
+        Inbound::Notification(notification) => receiving
+            .lock()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .observe(notification, 20)
+            .unwrap(),
+        Inbound::Request(request) => send.send(request).unwrap(),
+        Inbound::Barrier(_) => unreachable!(),
+    }));
+    block_on(bridge.call(
+        "session/new".into(),
+        Some(serde_json::value::to_raw_value(&json!({"cwd":"/","mcpServers":[]})).unwrap()),
+        None,
+    ))
+    .unwrap();
+    let first_stream = first.lock().unwrap().start(10).unwrap();
+    let mut call = bridge.prompt(
+        PromptParams {
+            session_id: "native".into(),
+            prompt: vec![oap_adapter_acp::native::ContentBlock {
+                kind: "text".into(),
+                text: "synthetic".into(),
+                ..Default::default()
+            }],
+        },
+        None,
+    );
+    block_on(call.admitted()).unwrap();
+    let request = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    let params =
+        oap_adapter_acp::native::decode(request.params.as_ref().unwrap().get().as_bytes()).unwrap();
+    first
+        .lock()
+        .unwrap()
+        .permission_request(params, "user".into(), 20)
+        .unwrap();
+    let result = block_on(call).unwrap();
+    first.lock().unwrap().complete(result, 30).unwrap();
+    block_on(bridge.notify("fixture/pending".into(), None, None)).unwrap();
+    block_on(bridge.call("fixture/barrier".into(), None, None)).unwrap();
+    let replies = first.lock().unwrap().permission_settlements();
+    for reply in replies {
+        block_on(bridge.respond(
+            request.clone(),
+            serde_json::value::to_raw_value(reply.response()).unwrap(),
+        ))
+        .unwrap();
+        first.lock().unwrap().commit_permission(reply, 40).unwrap();
+    }
+    let first_events = block_on(first_stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let second = engine("second");
+    *active.lock().unwrap() = second.clone();
+    let second_stream = second.lock().unwrap().start(50).unwrap();
+    let mut call = bridge.prompt(
+        PromptParams {
+            session_id: "native".into(),
+            prompt: vec![oap_adapter_acp::native::ContentBlock {
+                kind: "text".into(),
+                text: "synthetic".into(),
+                ..Default::default()
+            }],
+        },
+        None,
+    );
+    block_on(call.admitted()).unwrap();
+    let result = block_on(call).unwrap();
+    second.lock().unwrap().complete(result, 60).unwrap();
+    let second_events = block_on(second_stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    block_on(bridge.clone().close()).unwrap();
+    let first_terminal = serde_json::to_value(first_events.last().unwrap()).unwrap();
+    let second_terminal = serde_json::to_value(second_events.last().unwrap()).unwrap();
+    let wire = std::fs::read_to_string(fixture.0.join("wire"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let native_pid: u32 = std::fs::read_to_string(fixture.0.join("pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(!std::process::Command::new("/bin/kill")
+        .args(["-0", &native_pid.to_string()])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    println!(
+        "pending-usage-proof {}",
+        json!({"runs":[first_events,second_events],"wire":wire,"native_pid":native_pid})
+    );
+    assert_eq!(
+        first_terminal["extensions"]["com.agentclientprotocol.context"]["used_tokens"],
+        100
+    );
+    assert_eq!(
+        second_terminal["extensions"]["com.agentclientprotocol.context"]["used_tokens"], 200,
+        "{second_terminal}"
+    );
+}
