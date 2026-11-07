@@ -82,9 +82,9 @@ impl PackResources {
                 .to_uri();
             registry = registry
                 .add(uri.as_str(), document.clone())
-                .map_err(&registry_error)?;
+                .map_err(registry_error)?;
         }
-        let registry = registry.prepare().map_err(&registry_error)?;
+        let registry = registry.prepare().map_err(registry_error)?;
         let build = |uri: &str, document: &Value| {
             jsonschema::options()
                 .with_registry(&registry)
