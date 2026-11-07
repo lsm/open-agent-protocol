@@ -65,6 +65,7 @@ fn main() {
     let mut events = Vec::new();
     let mut errors = Vec::new();
     let mut close_error = None;
+    let mut submit_error = None;
     if mode.contains("admission") {
         let mut submit = session.submit(request);
         let waker = noop_waker();
@@ -83,7 +84,15 @@ fn main() {
                 .err()
                 .map(|error| error.to_string());
         }
-        drop(submit);
+        if mode == "close-admission" {
+            let error = block_on(submit)
+                .err()
+                .expect("closed admission was accepted");
+            assert!(matches!(error, oap_adapter::Error::SessionClosed));
+            submit_error = Some(error.to_string());
+        } else {
+            drop(submit);
+        }
         drop(session);
     } else {
         let (response, mut stream) = block_on(session.submit(request)).unwrap();
@@ -131,5 +140,7 @@ fn main() {
         }
         assert!(block_on(stream.next()).is_none());
     }
-    phase(json!({"phase":"cleaned", "events":events, "errors":errors, "closeError":close_error}));
+    phase(
+        json!({"phase":"cleaned", "events":events, "errors":errors, "closeError":close_error, "submitError":submit_error}),
+    );
 }

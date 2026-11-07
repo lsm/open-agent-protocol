@@ -136,6 +136,8 @@ def main():
                     assert cleaned['errors'] == ['adapter: event stream consumer fell behind; resume from the last sequence'], cleaned['errors']
                 else:
                     assert [event['type'] for event in events] == ([] if 'admission' in mode else ['run.started']), events
+                if mode == 'close-admission':
+                    assert cleaned['submitError'] == 'adapter: session closed', cleaned['submitError']
                 if mode == 'default-close-admission':
                     assert cleaned['closeError'] == 'adapter: a run is already active', cleaned['closeError']
                 if mode in ['abort-close', 'close-admission']:

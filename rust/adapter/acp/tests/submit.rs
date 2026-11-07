@@ -54,7 +54,7 @@ for line in sys.stdin:
     else:
         continue
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
-    if method == 'session/new' and mode == 'blocked':
+    if method == 'session/new' and mode in ['blocked', 'blocked-abort']:
         (out / 'ready').write_text('quiet')
         while True:
             time.sleep(1)
@@ -84,6 +84,7 @@ for line in sys.stdin:
                 shutdown_timeout: Some(Duration::from_millis(100)),
                 ..ProcessConfig::default()
             },
+            abort_active_on_close: mode == "blocked-abort",
             ..Config::default()
         }
     }
@@ -365,6 +366,26 @@ fn default_close_refuses_an_active_run_during_blocked_write_admission() {
     ));
     drop(close);
     drop(submit);
+    drop(session);
+    fixture.reaped();
+}
+
+#[test]
+fn opt_in_close_settles_blocked_submission_as_session_closed() {
+    let fixture = Fixture::new();
+    let session = fixture.open("blocked-abort");
+    fixture.wait("ready");
+    let mut submission = session.submit(submit(&"x".repeat(4 * 1024 * 1024)));
+    let waker = noop_waker();
+    assert!(submission
+        .as_mut()
+        .poll(&mut Context::from_waker(&waker))
+        .is_pending());
+    let _ = block_on(session.close());
+    let error = block_on(submission)
+        .err()
+        .expect("closed admission was accepted");
+    assert!(matches!(error, Error::SessionClosed), "{error:?}");
     drop(session);
     fixture.reaped();
 }
