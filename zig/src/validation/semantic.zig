@@ -1,6 +1,6 @@
 const std = @import("std");
 const jsonschema = @import("jsonschema");
-const re2 = @import("re2.zig");
+const re2 = @import("re2");
 
 pub const code_unmatched_steer = "unmatched_steer";
 pub const code_duplicate_steer = "duplicate_steer";

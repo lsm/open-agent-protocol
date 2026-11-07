@@ -116,12 +116,15 @@ pub fn build(b: *std.Build) void {
     decode_mod.addImport("usage", usage_mod);
     fixture_gate_mod.addImport("decode", decode_mod);
     const decode_test = b.addTest(.{ .root_module = decode_mod });
+    const re2_mod = b.createModule(.{ .root_source_file = b.path("src/validation/re2.zig"), .target = target, .optimize = optimize });
     const semantic_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic.zig"),
         .target = target,
         .optimize = optimize,
     });
     semantic_mod.addImport("jsonschema", jsonschema_mod);
+    semantic_mod.addImport("re2", re2_mod);
+    const re2_test = b.addTest(.{ .root_module = re2_mod });
     const semantic_test = b.addTest(.{ .root_module = semantic_mod });
     const provider_semantic_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/provider_semantic.zig"),
@@ -200,6 +203,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(re2_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(decode_test).step);
@@ -1978,7 +1982,7 @@ pub fn build(b: *std.Build) void {
 
     const tools_common_mod = b.createModule(.{ .root_source_file = b.path("src/tools/common.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "artifact/store", .module = artifact_store_mod }, .{ .name = "compat", .module = compat_mod } } });
     const tools_process_runner_mod = b.createModule(.{ .root_source_file = b.path("src/tools/process_runner.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "compat", .module = compat_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
-    const tools_shell_mod = b.createModule(.{ .root_source_file = b.path("src/tools/shell.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
+    const tools_shell_mod = b.createModule(.{ .root_source_file = b.path("src/tools/shell.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "re2", .module = re2_mod }, .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
     const tools_file_mod = b.createModule(.{ .root_source_file = b.path("src/tools/file.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_edit_mod = b.createModule(.{ .root_source_file = b.path("src/tools/edit.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
@@ -2969,6 +2973,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_test).step);
+    test_step.dependOn(&b.addRunArtifact(re2_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(decode_test).step);
