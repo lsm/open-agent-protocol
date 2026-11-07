@@ -73,6 +73,8 @@ for line in sys.stdin:
         (out / 'ready').write_text('quiet')
         while True:
             time.sleep(1)
+if mode == 'delayed-exit':
+    time.sleep(.2)
 "#).unwrap();
         Self(path)
     }
@@ -84,6 +86,10 @@ for line in sys.stdin:
             .unwrap();
         assert!(selected.status.success());
         let path = String::from_utf8(selected.stdout).unwrap();
+        let shutdown_timeout = match mode {
+            "quiet" | "blocked" | "blocked-abort" => Duration::from_millis(100),
+            _ => Duration::from_secs(1),
+        };
         Config {
             process: ProcessConfig {
                 path: path.trim().into(),
@@ -96,7 +102,7 @@ for line in sys.stdin:
                 dir: "/".into(),
                 env: Some(Vec::new()),
                 queue_capacity: 1,
-                shutdown_timeout: Some(Duration::from_millis(100)),
+                shutdown_timeout: Some(shutdown_timeout),
                 ..ProcessConfig::default()
             },
             abort_active_on_close: mode == "blocked-abort",
@@ -449,4 +455,21 @@ fn usage_scope_keeps_idle_context_and_limits_core_counts_to_the_first_answer() {
         block_on(session.close()).unwrap();
         fixture.reaped();
     }
+}
+
+#[test]
+fn graceful_close_accepts_cooperative_interpreter_exit_delay() {
+    let fixture = Fixture::new();
+    let session = fixture.open("delayed-exit");
+    let (_, stream) = block_on(session.submit(submit("hi"))).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        events.last().unwrap().envelope_type.as_str(),
+        "run.completed"
+    );
+    block_on(session.close()).unwrap();
+    fixture.reaped();
 }

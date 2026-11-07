@@ -43,3 +43,10 @@ native message identities are covered by `rust-acp-results.md`. Tool lifecycle i
 permissions and live config projection retain their
 approved later slices. Shared process-helper
 grandchild-held-pipe limitations remain applicable.
+
+The integration fixture gives cooperative Python agents one second to finish
+interpreter shutdown after EOF. Its controlled delayed-exit case waits 200 ms and
+must close successfully, then prove the child reaped. The EOF-ignoring quiet,
+blocked and blocked-abort cases retain their 100 ms termination budget. Keep the
+signed failing delayed-exit regression before the fixture-budget fix. This
+fixture budget covers cooperative process finalization during parallel tests.
