@@ -37,15 +37,19 @@ for line in sys.stdin:
     if method == 'initialize':
         result = {'protocolVersion': 1, 'agentCapabilities': {}}
     elif method == 'session/new':
-        result = {'sessionId': 'native'}
+        result = {'sessionId': 'native', 'configOptions': [{'id':'model','category':'model','type':'select','currentValue':'sol','options':[{'value':'sol','name':'Sol'},{'value':'luna','name':'Luna'}]}]}
     elif method == 'session/prompt':
         (out / 'prompt').write_text('seen')
+        if mode == 'switch-quiet':
+            continue
         if mode == 'quiet':
             while True:
                 time.sleep(1)
         for text in ['hello ', '世界']:
             print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'native','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}}), flush=True)
         result = {'stopReason':'end_turn'}
+    elif method == 'session/set_config_option':
+        result = {'configOptions':[{'id':'model','type':'select','currentValue':request['params']['value']}]}
     else:
         continue
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
@@ -252,6 +256,68 @@ fn submission_controls_and_staged_opt_in_are_explicit() {
         .collect::<Vec<_>>();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1]["method"], json!("session/new"));
+    block_on(session.close()).unwrap();
+    fixture.reaped();
+}
+
+#[test]
+fn model_switch_snapshot_preserves_the_active_text_run() {
+    let fixture = Fixture::new();
+    let session = fixture.open("switch-quiet");
+    let (admission, stream) = block_on(session.submit(submit("hi"))).unwrap();
+    fixture.wait("prompt");
+    let (_, state) = block_on(session.model_switcher().unwrap().switch_model(
+        oap_protocol::SessionModelSwitchRequest {
+            session_id: "session".into(),
+            model_id: "luna".into(),
+            allow_degraded_features: vec!["session.model.switch".into()],
+        },
+    ))
+    .unwrap();
+    assert_eq!(state.current_model_id, "luna");
+    assert_eq!(state.status, SessionStatus::RUNNING);
+    assert_eq!(state.active_run_id, admission.run_id);
+    assert_eq!(block_on(session.state()).unwrap().current_model_id, "luna");
+    drop(session);
+    let events = block_on(stream.collect::<Vec<_>>());
+    assert_eq!(events.len(), 1);
+    fixture.reaped();
+}
+
+#[test]
+fn invalid_scope_role_content_and_delivery_preserve_idle_session() {
+    let fixture = Fixture::new();
+    let session = fixture.open("complete");
+    let mut wrong_scope = submit("hi");
+    wrong_scope.request.session_id = "other".into();
+    assert!(matches!(
+        block_on(session.submit(wrong_scope)),
+        Err(Error::RunNotFound)
+    ));
+    let mut role = submit("hi");
+    role.request.messages[0].role = MessageRole::ASSISTANT;
+    assert!(matches!(
+        block_on(session.submit(role)),
+        Err(Error::UnsupportedInput)
+    ));
+    let mut parts = submit("hi");
+    parts.request.messages[0].content = MessageContent::from_parts(&[]);
+    assert!(matches!(
+        block_on(session.submit(parts)),
+        Err(Error::UnsupportedInput)
+    ));
+    let mut delivery = submit("hi");
+    delivery.request.delivery = "future".into();
+    assert!(matches!(
+        block_on(session.submit(delivery)),
+        Err(Error::InvalidSubmission)
+    ));
+    assert_eq!(
+        block_on(session.state()).unwrap().status,
+        SessionStatus::IDLE
+    );
+    let lines = std::fs::read_to_string(fixture.0.join("wire")).unwrap();
+    assert_eq!(lines.lines().count(), 2);
     block_on(session.close()).unwrap();
     fixture.reaped();
 }

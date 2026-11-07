@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 crossbeam-channel = "0.5"
+futures = "0.3"
 futures-channel = "0.3"
 futures-util = "0.3"
 oap-adapter = { path = ".." }
@@ -16,9 +17,6 @@ oap-harness = { path = "../../harness" }
 oap-protocol = { path = "../../protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-
-[dev-dependencies]
-futures = "0.3"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use oap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
@@ -21,11 +22,12 @@ use crate::process::ProcessConfig;
 pub struct Config {
     pub process: ProcessConfig,
     pub mcp_servers: Vec<McpServer>,
+    pub abort_active_on_close: bool,
 }
 
 pub struct Adapter {
     config: Config,
-    next_session: AtomicU64,
+    next_session: Arc<AtomicU64>,
 }
 
 pub fn pin() -> &'static oap_harness::Version {
@@ -62,7 +64,7 @@ impl Adapter {
         }
         Ok(Self {
             config,
-            next_session: AtomicU64::new(0),
+            next_session: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -117,6 +119,10 @@ impl Adapter {
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
             (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the session/new model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
             (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
+            ("session.message.submit", SupportLevel::DEGRADED, "staged text runs decline multiple native messages, tool events and unproven cancellation"),
+            ("run.streaming", SupportLevel::DEGRADED, "ordered text events from the staged text-run projection"),
+            ("session.message.delivery.auto", SupportLevel::EMULATED, "start when idle and refuse an active run"),
+            ("run.status", SupportLevel::EMULATED, "adapter-owned text-run projection"),
         ] {
             features.insert(key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() });
         }
@@ -144,7 +150,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-switch", pin().capability_revision),
+            capability_revision: format!("{}-rust-submit", pin().capability_revision),
             journal: JournalDescriptor {
                 replay: SupportLevel::UNAVAILABLE,
                 ..JournalDescriptor::default()
