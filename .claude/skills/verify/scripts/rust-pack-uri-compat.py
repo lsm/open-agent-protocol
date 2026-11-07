@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observe strict Rust and lenient Go URI parsing with escaped controls."""
+"""Observe URI parsing through the three public consumers with escaped controls."""
 import argparse
 import json
 from pathlib import Path
@@ -65,6 +65,11 @@ def main():
         go = run([str(goap), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
         zig = run([str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".zig")
         rust_data = json.loads(rust.stdout)
+        go_reports = json.loads(go.stdout)
+        assert len(go_reports) == 1 and go_reports[0]["valid"], (label, go.stdout)
+        if rust.returncode == 0:
+            assert rust_data["stage"] == "resources" and rust_data["ids"] == ["com.example.compat"], rust_data
+            assert len(rust_data["documents"]) == 1, rust_data
         results.append({
             "case": label,
             "rust_exit": rust.returncode,
@@ -73,17 +78,25 @@ def main():
             "go_exit": go.returncode,
             "go_codes": sorted(set(re.findall(r"\bpack_[a-z_]+\b", go.stderr))),
             "zig_exit": zig.returncode,
-            "zig_output": zig.stdout + zig.stderr,
+            "zig_reports": json.loads(zig.stdout),
         })
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     for result in results:
         escaped = result["case"].endswith("-escaped")
-        assert result["go_exit"] == result["zig_exit"] == 0 and result["go_codes"] == [], result
+        assert result["go_exit"] == 0 and result["go_codes"] == [], result
+        assert len(result["zig_reports"]) == 1, result
+        if result["case"] == "fragment-escaped":
+            assert result["zig_exit"] == 1, result
+            assert any(r.get("unjudged") == "the schema interpreter cannot judge this trace" for r in result["zig_reports"]), result
+            label = "DOCUMENTED ZIG UNJUDGED "
+        else:
+            assert result["zig_exit"] == 0 and all(r["valid"] for r in result["zig_reports"]), result
+            label = "AGREE " if escaped else "DOCUMENTED RUST DIFFERENCE "
         assert all("Ok(" not in message and "Err(" not in message for message in result["rust_messages"]), result
         assert result["rust_exit"] == (0 if escaped else 1), result
         assert result["rust_codes"] == ([] if escaped else ["pack_external_ref"]), result
-        print(("AGREE " if escaped else "DOCUMENTED DIVERGENCE ") + result["case"])
-    print("PASS: three URI parsing divergences observed. Three escaped controls agree")
+        print(label + result["case"])
+    print("PASS: three Rust URI differences and one Zig unjudged control pinned. Two escaped ID controls agree")
 
 
 if __name__ == "__main__":

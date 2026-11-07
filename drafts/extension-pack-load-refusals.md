@@ -221,20 +221,26 @@ These shapes load and **contribute**, so they are not on the skipped list:
 - `checkAllAllocationFailures` is deliberately not applied to `gather`; the
   freeing test in `validator.zig` covers `Validator.init`, not the loader.
 
-## Rust and Go URI parsing compatibility
+## Three-tree URI parsing compatibility
 
 Rust's staged resource constructor uses `fluent-uri`, while Go resolves through
 `net/url`. Their URI grammars differ. Synthetic public-consumer replay confirms
-that Go loads each of these packs while Rust returns `pack_external_ref`:
+that Go and Zig accept each of these packs with exit 0 while Rust returns
+`pack_external_ref`. Zig retains its existing partial-pack-check status:
 
 - A schema `$ref` with the raw fragment `#/$defs/value|`.
 - A schema `$id` of `alias|.json`.
 - A schema `$id` of `alias space.json`.
 
-Encoding the pipe as `%7C` and the space as `%20` makes both constructors accept
-the corresponding controls. This is a recorded URI-parsing compatibility
+Encoding the pipe as `%7C` and the space as `%20` makes Go and Rust accept the
+corresponding controls. Zig also accepts both escaped `$id` controls. For the
+escaped-fragment control, Zig instead exits 1 and reports `unjudged` with
+`the schema interpreter cannot judge this trace`. That result remains an
+explicit interpreter limitation in this replay. This is a recorded URI-parsing compatibility
 difference. The reference-ownership agreement replay covers the shared fixtures;
 this boundary is pinned separately by `rust-pack-uri-compat.py`, which explicitly
-reports the three asymmetric results and three agreeing controls. The current
+reports all three Rust URI differences, Zig's unjudged control and the two
+three-tree agreeing controls. The current
 Rust URI requirement is retained. [Go resolver](../go/validation/pack.go),
-[Rust resolver](../rust/validation/src/pack/references.rs).
+[Rust resolver](../rust/validation/src/pack/references.rs),
+[Zig loader](../zig/src/validation/packs.zig).

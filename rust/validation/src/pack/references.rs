@@ -50,10 +50,14 @@ pub(super) fn check(resources: &PackResources) -> Result<(), PackLoadError> {
                 Err(_) => false,
             };
             if !accepted {
+                let message = match target {
+                    Ok(uri) => format!("unowned schema resource {uri:?}"),
+                    Err(error) => format!("unresolvable schema reference ({error})"),
+                };
                 found.push(refusal(
                     "pack_external_ref",
                     text(descriptor, "id"),
-                    &format!("unowned schema resource {target:?}"),
+                    &message,
                 ));
             }
         }

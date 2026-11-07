@@ -76,7 +76,9 @@ compilation and typed corpus validation are added in separate following slices.
 python3 .claude/skills/verify/scripts/rust-pack-uri-compat.py --output-dir /tmp/oap-pack-uri-compat-<unique>
 ```
 
-Inspect `results.json` and retained raw outputs. Go currently accepts three raw
+Inspect `results.json` and retained raw outputs. Go and Zig accept three raw
 pipe/space URI cases that Rust refuses with `pack_external_ref`. Their percent-
-encoded controls pass both. The helper labels the asymmetries as documented
-divergences, as recorded in `drafts/extension-pack-load-refusals.md`.
+encoded controls pass Go and Rust. Zig accepts the two escaped ID controls and
+reports the escaped-fragment control unjudged with exit 1. The helper labels
+these outcomes separately, as recorded in `drafts/extension-pack-load-refusals.md`,
+and checks that Rust's refusal messages render the URI or parse error directly.
