@@ -372,6 +372,7 @@ pub const Session = struct {
     loop: *local_loop.LocalLoop,
     jobs: *local_tools.shell.Jobs,
     task_origins: std.StringHashMapUnmanaged(TaskOrigin) = .empty,
+    pending_tasks: usize = 0,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
     recovered: bool = false,
@@ -1530,6 +1531,7 @@ pub const Session = struct {
     }
 
     fn publishTasks(self: *Session) !bool {
+        if (self.pending_tasks == 0) return false;
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -1558,6 +1560,7 @@ pub const Session = struct {
                     try payload.put("cause", .{ .string = @tagName(task.cause.?) });
                     try self.emitSession(a, "session.task.ended", payload.value());
                     origin.ended = true;
+                    self.pending_tasks -= 1;
                     moved = true;
                 }
             }
@@ -1597,9 +1600,10 @@ pub const Session = struct {
                 if (!payload.is_error and std.mem.eql(u8, payload.tool_name.slice(), "Shell")) {
                     const details = try jsonOrString(a, payload.result_json.slice());
                     if (details == .object) if (details.object.get("task_id")) |task_id| {
-                        if (task_id == .string) {
+                        if (task_id == .string and !self.task_origins.contains(task_id.string)) {
                             const keep = self.keep.allocator();
                             try self.task_origins.put(keep, try keep.dupe(u8, task_id.string), .{ .run_id = run.id, .tool_call_id = try keep.dupe(u8, payload.tool_call_id.slice()) });
+                            self.pending_tasks += 1;
                         }
                     };
                 }
@@ -1856,9 +1860,7 @@ pub const Session = struct {
 
     fn liveWork(ptr: *anyopaque) bool {
         const self = cast(ptr);
-        var origins = self.task_origins.valueIterator();
-        while (origins.next()) |origin| if (!origin.ended) return true;
-        return self.outbox.items.len > 0 or self.jobs.anyRunning() or self.jobs.noticeWaiting();
+        return self.pending_tasks > 0 or self.outbox.items.len > 0 or self.jobs.anyRunning() or self.jobs.noticeWaiting();
     }
 
     fn activity(ptr: *anyopaque) contract.Activity {
@@ -5149,6 +5151,12 @@ test "a shell background job is visible as a session task before its run ends" {
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
     }
     try testing.expectEqual(@as(usize, 1), harness.count("session.task.ended"));
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    const original_allocator = session.gpa;
+    session.gpa = failing.allocator();
+    const idle = session.publishTasks();
+    session.gpa = original_allocator;
+    try testing.expect(!try idle);
     for (harness.seen.items) |parsed| {
         const event = parsed.value.object;
         if (!std.mem.eql(u8, event.get("type").?.string, "session.task.ended")) continue;
