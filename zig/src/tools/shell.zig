@@ -1605,6 +1605,22 @@ test "a line with bytes an ASCII pattern cannot read still matches" {
     notice.deinit(std.testing.allocator);
 }
 
+test "a rule set after a job's last look at its output is refused" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "sleep 30", "call-bg");
+    const job = jobs.list.items[0];
+
+    jobs.scan(job, true);
+
+    try std.testing.expect(job.term == null);
+    try std.testing.expect(!(try jobs.setRule(job.output, "ready")));
+    try std.testing.expect(job.rule == null);
+}
+
 test "a pattern that does not compile is refused and a job that ended takes no rule" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
