@@ -104,6 +104,7 @@ def main():
         case("agent-code-" + code, dict(negative, codes=[code]), True)
     for code in sorted({c for f in fixtures if f["kind"] == "load-invalid" for c in f["codes"]}):
         case("load-code-" + code, dict(negative, kind="load-invalid", phase="load", codes=[code]), True)
+    case("fixture-kind-as-load-code", dict(negative, kind="load-invalid", phase="load", codes=["load-invalid"]), False)
     trace_codes = {"sequence_gap", "sequence_regression", "event_after_terminal", "terminal_not_assembly"}
     for code in ["malformed_json", "duplicate_key", "payload_decode", "schema_invalid", "credential_in_trace", "credential_in_headers", *sorted(trace_codes)]:
         entry = dict(provider, kind="semantic-invalid", valid=False, phase="semantic", codes=[code], scope="trace" if code in trace_codes else "frame")

@@ -67,6 +67,10 @@ fn public_corpus_checks_refuse_bad_expectations_and_preserve_null_defaults() {
             false,
         ),
         (
+            serde_json::json!({"kind":"load-invalid", "valid":false, "phase":"load", "codes":["load-invalid"]}),
+            false,
+        ),
+        (
             serde_json::json!({"kind":"semantic-invalid", "valid":null, "phase":"semantic", "codes":["unavailable_capability"]}),
             true,
         ),
