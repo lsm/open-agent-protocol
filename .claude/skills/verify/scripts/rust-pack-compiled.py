@@ -24,25 +24,13 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     };
     let trace: Value = serde_json::from_slice(&std::fs::read(&paths[0])?)?;
-    let envelopes: Vec<_> = trace.as_array().unwrap().iter().map(|e| {
-        let mut projection = e.clone();
-        for (kind, name) in compiled.member_schemas().keys() {
-            if e["type"] == kind.as_str() {
-                if let Some(payload) = projection.get_mut("payload").and_then(Value::as_object_mut) {
-                    payload.remove(name);
-                }
-            }
-        }
-        compiled.schema().is_valid(&projection)
+    let diagnostics: Vec<_> = trace.as_array().unwrap().iter().enumerate().filter_map(|(index, envelope)| {
+        compiled.validate_schema(envelope, "external-schema-consumer").err()
+            .map(|diagnostic| serde_json::json!({"index":index, "diagnostic":diagnostic}))
     }).collect();
-    let members: Vec<_> = trace.as_array().unwrap().iter().map(|e| {
-        compiled.member_schemas().iter().all(|((kind, name), schema)| {
-            e["type"] != kind.as_str() || e["payload"].get(name).is_none_or(|value| schema.is_valid(value))
-        })
-    }).collect();
-    let valid = envelopes.iter().chain(&members).all(|valid| *valid);
+    let valid = diagnostics.is_empty();
     let ids: Vec<_> = compiled.resources().descriptors().map(|(_, d)| d["id"].as_str().unwrap()).collect();
-    println!("{}", serde_json::json!({"stage":"compiled-schemas", "schema_valid":valid, "envelopes":envelopes, "members":members, "pack_ids":ids}));
+    println!("{}", serde_json::json!({"stage":"compiled-schemas", "schema_valid":valid, "diagnostics":diagnostics, "pack_ids":ids}));
     Ok(if valid { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 '''
@@ -123,6 +111,31 @@ def main():
                 "type": "com.example.compiled.event", "id": "synthetic", "payload": {"ok": valid},
             }]))
             cases.append((label + ("-valid" if valid else "-invalid"), trace, [directory], valid, None))
+    directory = output / "escaped-member-pointer"
+    directory.mkdir()
+    member = "com.example.pointer.a/b~c"
+    (directory / "types.json").write_text("{}")
+    (directory / "pack.json").write_text(json.dumps({
+        "id":"com.example.pointer", "version":"1", "schemas":["types.json"],
+        "payload_members":[{"payload_type":"run.completed", "member":member, "schema":{"type":"object", "required":["ok"], "properties":{"ok":{"const":True}}}}],
+        "gates":[{"payload_type":"run.completed", "member":member, "ungated":True}],
+    }))
+    for valid in [True, False]:
+        trace = json.loads(core.read_text())
+        terminal = next(envelope for envelope in trace if envelope["type"] == "run.completed")
+        terminal["payload"][member] = {"ok":valid}
+        path = directory / ("valid.json" if valid else "invalid.json")
+        path.write_text(json.dumps(trace))
+        cases.append(("escaped-member-pointer-" + str(valid).lower(), path, [directory], valid, None))
+    descriptor = json.loads((directory / "pack.json").read_text())
+    second = "com.example.pointer.ab"
+    descriptor["payload_members"].append(dict(descriptor["payload_members"][0], member=second))
+    descriptor["gates"].append({"payload_type":"run.completed", "member":second, "ungated":True})
+    (directory / "pack.json").write_text(json.dumps(descriptor))
+    terminal["payload"][second] = {"ok":False}
+    path = directory / "two-invalid-members.json"
+    path.write_text(json.dumps(trace))
+    cases.append(("escaped-member-order", path, [directory], False, None))
     results = []
     for label, trace, directories, valid, codes in cases:
         rust = run([str(consumer), str(trace), *map(str, directories)], label + ".rust")
@@ -139,10 +152,19 @@ def main():
             reports = json.loads(go.stdout)
             assert len(reports) == 1 and reports[0]["valid"] == valid, (label, reports)
             assert data["stage"] == "compiled-schemas" and data["schema_valid"] == valid, (label, data)
+            go_diagnostics = reports[0].get("diagnostics") or []
+            expected = {(d["index"], d.get("pointer", ""), d["code"]) for d in go_diagnostics}
+            actual = {(d["index"], d["diagnostic"].get("pointer", ""), d["diagnostic"]["code"]) for d in data["diagnostics"]}
+            assert actual <= expected, (label, data, go_diagnostics)
+            assert {d[0] for d in actual} == {d[0] for d in expected}, (label, data, go_diagnostics)
+            if label == "escaped-member-order":
+                assert actual and all(d[1] == "/payload/com.example.pointer.ab/ok" for d in actual), actual
+            if label == "escaped-member-pointer-false":
+                assert any(d[1] == "/payload/com.example.pointer.a~1b~0c/ok" for d in actual), actual
         results.append({"id":label, "valid":valid, "codes":codes, "rust":data})
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public compiled-schema/load cases agree with Go")
-    print("STAGED: corpus checks and complete loader construction follow in the next slice")
+    print("STAGED: parsed-envelope schema validation; native packed trace semantics and tolerant mode follow")
 
 
 if __name__ == "__main__":
