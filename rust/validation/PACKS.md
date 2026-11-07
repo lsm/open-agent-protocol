@@ -14,8 +14,8 @@ declared dependencies. Schema identifiers stay within their own pack namespace.
 `documents` exposes immutable schema values indexed by resource URI,
 and `manifests` exposes the contained manifest paths indexed by the pack base URI.
 
-These are staged construction contracts. Complete trace validation follows the
-remaining loader and validator integration slices.
+These are staged construction contracts. Complete trace validation follows in the
+validator integration slices.
 
 `PackResources::compile` pins every contributed branch to its declared type,
 prepares the core and pack schema registry, and returns `CompiledPacks`. Its
@@ -46,3 +46,17 @@ The staged operation can accept an entry the complete Go loader refuses for any
 of these deferred policies. The public verification journey records representative
 controls separately from agreeing expectation cases. Corpus trace execution follows
 with validator integration.
+
+## Complete construction
+
+`PackLoader::load` performs declaration, resource, reference, compilation and
+corpus checks and returns `CompiledPacks` only after they succeed. Agent corpus
+entries require IDs, contained paths, units and consistent mode/provenance values.
+They cannot load additional packs and must claim their own loaded extension term.
+Duplicate IDs and paths are refused. Provider entries retain their profile's
+manifest rules, including normalized path uniqueness.
+
+Every declared capability needs a manifest with a negative gate fixture and a
+negative honour fixture under the owning extension term. Construction validates
+the corpus declarations. Executing their traces follows with validator integration.
+The earlier `check_corpus_entries` method retains its narrower staged contract.

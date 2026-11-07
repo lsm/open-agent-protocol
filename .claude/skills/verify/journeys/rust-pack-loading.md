@@ -134,3 +134,28 @@ Inspect each retained Go refusal against its expected reason. These are explicit
 staged differences. The sixth slice enforces these policies plus identity
 uniqueness and capability completeness through the full constructor. Corpus trace
 execution follows with validator integration.
+
+## Complete constructor and corpus policy
+
+The sixth slice adds `PackLoader::load`. It composes all loader phases, checks
+agent entry identity/path, mode/provenance, nested pack declarations, required
+units and exact owner claims, then negative gate/honour completeness for every
+pack capability. Provider entries retain their profile-specific manifest rules.
+It preserves the narrower staged operation for existing consumers.
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_corpus
+python3 .claude/skills/verify/scripts/rust-pack-corpus-entries.py --complete --output-dir /tmp/oap-pack-loader-complete-<unique>
+```
+
+The complete consumer must agree with Go on every prior typed expectation case,
+all twelve recorded staged policy cases and all shared load-invalid fixtures.
+Additional controls cover missing manifests, empty corpora, gate-only/honour-only
+coverage and their complete positive control, nested packs and absent units on
+load-invalid entries, duplicate identity/path, normalized paths and first-entry
+owner errors before later expectation errors. Inspect `results.json`, the empty
+`staged-differences.json` and raw refusal outputs. In particular, the complete
+constructor must refuse both `deferred-nested-packs` and `deferred-empty-units`.
+Run the earlier staged replay as well to preserve that public method's contract.
+Construction checks manifest declarations. Packed trace execution remains in the
+following validator-integration slice.

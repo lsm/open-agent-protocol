@@ -1,5 +1,6 @@
 mod compiled;
 mod corpus;
+mod policy;
 mod references;
 mod resources;
 
