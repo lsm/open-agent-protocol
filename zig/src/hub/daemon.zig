@@ -625,6 +625,7 @@ pub const Connection = struct {
     peer_closed: bool = false,
     subscription: ?*hubmod.Subscription = null,
     stream_ended: bool = false,
+    needs_feed: bool = false,
     awaiting: ?Deferred = null,
     chunks: ?hub_http.Chunked = null,
     decoded: std.ArrayList(u8) = .empty,
@@ -688,6 +689,29 @@ pub const Connection = struct {
 
     fn pending(self: *const Connection) bool {
         return self.sent < self.out.items.len;
+    }
+
+    fn waitBudget(self: *const Connection, now: u64) u64 {
+        var deadline: u64 = std.math.maxInt(u64);
+        switch (self.phase) {
+            .head => deadline = self.started_ms +| @as(u64, @intCast(hub_http.header_read_ms)),
+            .body, .chunked => deadline = self.progress_ms +| @as(u64, @intCast(hub_http.idle_read_ms)),
+            .flushing => if (!self.pending()) {
+                return 0;
+            },
+            .refusing => if (!self.pending()) {
+                if (self.drain_left == 0 or self.peer_closed) return 0;
+                deadline = self.drain_started_ms +| @as(u64, @intCast(hub_http.drain_total_ms));
+            },
+            .streaming => if (!self.pending()) {
+                if (self.stream_ended or self.needs_feed) return 0;
+                deadline = self.progress_ms +| self.daemon.quiet_limit_ms;
+            },
+            .awaiting => {},
+            .done => return 0,
+        }
+        if (self.pending()) deadline = @min(deadline, self.progress_ms +| @as(u64, @intCast(hub_http.idle_read_ms)));
+        return if (deadline == std.math.maxInt(u64)) deadline else deadline -| now;
     }
 
     fn events(self: *const Connection) i16 {
@@ -893,6 +917,7 @@ pub const Connection = struct {
             self.phase = .done;
             return;
         };
+        self.needs_feed = self.out.items.len >= self.sent + stream_buffer_bytes;
         if (filled == .ended) self.stream_ended = true;
     }
 
@@ -929,8 +954,7 @@ pub const Connection = struct {
                 if (!self.pending()) self.phase = .done;
             },
             .refusing => {
-                if (self.pending()) return;
-                if (self.drain_left == 0 or self.peer_closed or now -| self.drain_started_ms >= @as(u64, @intCast(hub_http.drain_total_ms))) self.phase = .done;
+                if (!self.pending() and (self.drain_left == 0 or self.peer_closed or now -| self.drain_started_ms >= @as(u64, @intCast(hub_http.drain_total_ms)))) self.phase = .done;
             },
             .streaming => {
                 if (self.stream_ended and !self.pending()) self.phase = .done;
@@ -1077,14 +1101,24 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
         for (connections.items) |connection| {
             watched.append(daemon.allocator, .{ .fd = connection.handle(), .events = connection.events(), .revents = 0 }) catch return null;
         }
-        const children = daemon.frontend.hub.readableHandles(scratch.allocator()) catch &.{};
+        const children = daemon.frontend.hub.readableHandles(scratch.allocator()) catch return null;
         for (children) |child| {
             watched.append(daemon.allocator, .{ .fd = child, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
         if (daemon.signal_readable) |handle| {
             watched.append(daemon.allocator, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
-        const limit_ns = if (poll_ms < 0) std.math.maxInt(u64) else @as(u64, @intCast(poll_ms)) * std.time.ns_per_ms;
+        const polling = daemon.frontend.hub.needsPolling() or
+            daemon.outer.check != hub_http.always_going.check or
+            (daemon.signals != null and daemon.signal_readable == null);
+        var budget_ms: u64 = std.math.maxInt(u64);
+        if (poll_ms >= 0) {
+            budget_ms = @intCast(poll_ms);
+        } else if (polling) budget_ms = 10;
+        const before_wait = nowMs();
+        for (connections.items) |connection| budget_ms = @min(budget_ms, connection.waitBudget(before_wait));
+        if (daemon.drained_at_ms) |drained| budget_ms = @min(budget_ms, shutdown_flush_ms -| (before_wait -| drained));
+        const limit_ns = budget_ms *| std.time.ns_per_ms;
         const wait_ns = daemon.frontend.hub.waitBudget(limit_ns);
         const wait_ms = if (wait_ns == std.math.maxInt(u64)) -1 else hubmod.pollMillis(wait_ns);
         _ = std.posix.poll(watched.items, wait_ms) catch 0;
@@ -1923,6 +1957,52 @@ test "a refused chunked body leaves its connection draining what the client may 
     connection.takeChunks("zz\r\n");
     try testing.expectEqual(Phase.refusing, connection.phase);
     try testing.expectEqual(hub_http.drain_total_cap_bytes, connection.drain_left);
+}
+
+test "a backpressured refusal closes its peer at the write-idle deadline" {
+    if (comptime !hub_http.pollable) return error.SkipZigTest;
+    var served: Served = undefined;
+    try served.prepare();
+    defer {
+        compat.net.closeServer(&served.listener);
+        served.fixture.deinit();
+    }
+    var client = try served.dial();
+    defer client.close();
+    var connection: ?*Connection = try Connection.create(&served.fixture.daemon, try compat.net.acceptStream(&served.listener));
+    defer if (connection) |owned| owned.destroy();
+    const owned = connection.?;
+    try testing.expect(prepare(owned.handle()));
+    const small: c_int = 1024;
+    try std.posix.setsockopt(owned.handle(), std.posix.SOL.SOCKET, std.posix.SO.SNDBUF, std.mem.asBytes(&small));
+    const body = try served.fixture.scratch.allocator().alloc(u8, 1024 * 1024);
+    @memset(body, 'x');
+    const reply = try render(served.fixture.scratch.allocator(), .{ .status = "403 Forbidden", .content_type = text_plain, .body = body }, true);
+    owned.refuse(reply, 0);
+    owned.writable();
+    const overdue = owned.progress_ms + @as(u64, @intCast(hub_http.idle_read_ms));
+    if (owned.waitBudget(overdue) == 0) owned.settle(overdue);
+    if (owned.phase == .done) {
+        owned.destroy();
+        connection = null;
+    }
+    var received = std.ArrayList(u8).empty;
+    defer received.deinit(testing.allocator);
+    var buffer: [4096]u8 = undefined;
+    var ended = false;
+    const until = nowMs() + 3000;
+    while (nowMs() < until) {
+        if (!try readableSoon(&client, 20)) continue;
+        const count = try client.readSome(&buffer);
+        if (count == 0) {
+            ended = true;
+            break;
+        }
+        try received.appendSlice(testing.allocator, buffer[0..count]);
+    }
+    try testing.expect(std.mem.startsWith(u8, received.items, "HTTP/1.1 403 Forbidden\r\n"));
+    try testing.expect(received.items.len < reply.len);
+    try testing.expectEqual(true, ended);
 }
 
 test "a media refusal reaches the client though the body outruns the drain" {

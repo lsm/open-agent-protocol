@@ -598,7 +598,7 @@ fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOpti
     compat.stdio.writeAll(stderr, "\n") catch {};
     return error.InvalidHubOption;
 }
-const hub_accept_poll_ms: i32 = 10;
+const hub_accept_poll_ms: i32 = if (hub_http.pollable) -1 else 10;
 
 fn runHubHttp(
     allocator: std.mem.Allocator,
