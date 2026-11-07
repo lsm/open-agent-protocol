@@ -85,6 +85,8 @@ must be declared for their request. An event's `replies_to` field has no effect
 on response selection. A request with no declared success type can be refused.
 
 Declared packed run events share core run sequencing and terminal checks.
+They can precede `run.started` without claiming a core event type. Available
+string scope fields are checked independently when another field is non-string.
 Packed scope falls back from payload IDs to envelope IDs, and declared members
 retain core schema and semantic checks. Every validation call starts fresh trace
 state while sharing immutable compiled packs. `Validator::new` retains ordinary

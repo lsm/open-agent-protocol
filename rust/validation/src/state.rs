@@ -52,6 +52,7 @@ struct Request {
 pub(crate) struct State {
     fixture: String,
     pub(crate) packs: Option<std::sync::Arc<CompiledPacks>>,
+    pub(crate) tolerant: bool,
     pub diagnostics: Vec<Diagnostic>,
     ids: HashMap<String, usize>,
     requests: HashMap<String, Request>,
@@ -336,6 +337,7 @@ impl State {
         Self {
             fixture: fixture.to_owned(),
             packs: None,
+            tolerant: false,
             diagnostics: Vec::new(),
             ids: HashMap::new(),
             requests: HashMap::new(),
@@ -448,13 +450,12 @@ impl State {
         self.ids.insert(id.clone(), i);
         let revision = e.capability_revision.clone().unwrap_or_default();
         if self.packed_role(&e.envelope_type, "request") {
-            let (session, run) =
-                if packed::declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some() {
-                    packed::scope(e)
-                } else {
-                    request_scope(e)
-                };
-            if !self.packed_run_event(e) {
+            let (session, run) = if self.extension_scoped(&e.envelope_type) {
+                packed::scope(e)
+            } else {
+                request_scope(e)
+            };
+            if !self.extension_run_event(e) {
                 self.check_scope(at, e, &session, &run);
             }
             let request = Request {
@@ -571,8 +572,8 @@ impl State {
                 "request occurred before the refreshed capabilities capabilities.updated owes",
             );
         }
-        if packed::declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some()
-            && !self.packed_run_event(e)
+        if self.extension_scoped(&e.envelope_type)
+            && !self.extension_run_event(e)
             && !self.packed_role(&e.envelope_type, "request")
         {
             let (session, run) = packed::scope(e);
@@ -685,12 +686,11 @@ impl State {
         let (session, run, prefix) = if error {
             (os(&e.session_id), os(&e.run_id), "")
         } else {
-            let (session, run) =
-                if packed::declared(self.packs.as_deref(), e.envelope_type.as_str()).is_some() {
-                    packed::scope(e)
-                } else {
-                    response_scope(e)
-                };
+            let (session, run) = if self.extension_scoped(&e.envelope_type) {
+                packed::scope(e)
+            } else {
+                response_scope(e)
+            };
             (session, run, "/payload")
         };
         let kind = if error { "error response" } else { "response" };

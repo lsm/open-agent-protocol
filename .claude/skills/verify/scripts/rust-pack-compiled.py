@@ -178,7 +178,7 @@ def main():
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public compiled-schema/load cases agree with Go")
     print(f"RECORDED: {len(diagnostic_differences)} packed-branch primary diagnostics differ from Go; member pointers and ordering agree")
-    print("STAGED: parsed-envelope schema validation; native packed trace semantics and tolerant mode follow")
+    print("SCHEMA: parsed-envelope operation verified; native strict traces are checked by rust-packed-traces.py; tolerant mode follows separately")
 
 
 if __name__ == "__main__":

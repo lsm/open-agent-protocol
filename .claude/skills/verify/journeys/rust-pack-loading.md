@@ -1,12 +1,13 @@
-# Rust staged pack loading
+# Rust pack loading and validation
 
 The declaration constructor checks descriptor shape, declared namespaces,
 prefix freedom, roles, reply targets, refusals and admitted gates, including
 payload-member declarations. `read_resources` adds contained resource loading,
 exact dependencies and reference ownership. Each surface states its staged
-contract. Branch compilation and corpus checks follow in the remaining slices.
-Shared trace parity includes load-invalid fixtures once the complete loader is
-connected.
+contract. `PackResources::compile` builds the schema operation, and
+`PackLoader::load` completes corpus policy. `Validator::with_packs` executes
+strict traces. Shared trace parity includes load refusals; tolerant construction
+follows in the successor.
 
 Run from the repository root:
 
@@ -201,6 +202,10 @@ tool-result image must additionally report its own `unavailable_capability` at
 index 4 when `content.image` is unadvertised. The replay retains both gate and
 image diagnostics and pins multiplicity, with a signed failure before moving the
 image check ahead of the stale-descriptor return.
+The native replay also retains a declared packed prelude before `run.started`
+and a mixed-type scope payload. The prelude must preserve the run cursor, and a
+non-string ID must leave the other available string ID checks intact. The
+vocabulary foundation journey documents their signed regressions.
 The public replay found two Rust reply-selection bugs. Go correctly refuses a
 suffix-matched success response without a declared mapping and ignores an event's
 `replies_to` when selecting the real response declaration. Signed failing public

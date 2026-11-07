@@ -155,7 +155,7 @@ impl Validator {
             return None;
         }
         let list = serde_json::to_value(schema.evaluate(value).list()).unwrap_or_default();
-        let selected = branch_index.map(|index| format!("/oneOf/{index}"));
+        let selected = branch_index.map(|index| index.to_string());
         let details: Vec<&Value> = list
             .get("details")
             .and_then(Value::as_array)
@@ -165,10 +165,9 @@ impl Validator {
             .filter(|detail| {
                 selected.as_ref().is_none_or(|selected| {
                     let path = detail["evaluationPath"].as_str().unwrap_or_default();
-                    !path.starts_with("/oneOf/")
-                        || path
-                            .strip_prefix(selected)
-                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                    path.strip_prefix("/oneOf/")
+                        .or_else(|| path.strip_prefix("/anyOf/"))
+                        .is_none_or(|path| path.split('/').next() == Some(selected.as_str()))
                 })
             })
             .collect();
@@ -295,7 +294,37 @@ pub(crate) fn envelope_branches() -> &'static BTreeMap<String, String> {
 }
 
 fn branch_of(schema_location: &str) -> Option<&'static str> {
-    let rest = schema_location.strip_prefix("/oneOf/")?;
+    let rest = schema_location
+        .strip_prefix("/oneOf/")
+        .or_else(|| schema_location.strip_prefix("/anyOf/"))?;
     let index: usize = rest.split('/').next()?.parse().ok()?;
     branches().by_index.get(index)?.as_deref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Validator;
+    use serde_json::json;
+
+    #[test]
+    fn diagnostics_select_the_declared_root_alternative_for_either_union() {
+        for union in ["oneOf", "anyOf"] {
+            let mut schema = json!({"type":"object"});
+            schema[union] = json!([
+                {"required":["unrelated"]},
+                {"properties":{"payload":{"const":true}}}
+            ]);
+            let compiled = jsonschema::validator_for(&schema).unwrap();
+            let diagnostic = Validator::diagnose_schema(
+                &compiled,
+                &json!({"payload":false}),
+                "synthetic",
+                None,
+                Some(1),
+            )
+            .unwrap();
+            assert_eq!(diagnostic.code, "schema_invalid");
+            assert_eq!(diagnostic.pointer, "/payload", "{union}");
+        }
+    }
 }

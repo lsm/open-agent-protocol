@@ -795,7 +795,9 @@ impl State {
     }
 
     pub(super) fn feature_for(&mut self, at: (usize, usize), e: &Envelope) {
-        if super::runs::RUN_EVENTS.contains(&e.envelope_type) {
+        if self.extension_scoped(&e.envelope_type)
+            || super::runs::RUN_EVENTS.contains(&e.envelope_type)
+        {
             return;
         }
         let t = e.envelope_type.as_str();
@@ -807,7 +809,9 @@ impl State {
             "user_input"
         } else if *t == *EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST.as_str() {
             let delivery = payload::<MessageSubmitRequest>(e).delivery;
-            if ["auto", "queue", "steer"].contains(&delivery.as_str()) {
+            if ["auto", "queue", "steer"].contains(&delivery.as_str())
+                || (self.tolerant && crate::tolerant::foreign_delivery(&delivery))
+            {
                 return;
             }
             let key = format!("delivery.{}", delivery.as_str());
