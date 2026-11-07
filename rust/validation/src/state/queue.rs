@@ -218,7 +218,10 @@ impl State {
             p.model_id.is_some() && session_scoped,
         );
         let mut expectations = Vec::new();
-        if p.delivery.is_empty() || p.delivery == RequestedDeliveryMode::AUTO {
+        if p.delivery.is_empty()
+            || p.delivery == RequestedDeliveryMode::AUTO
+            || (self.tolerant && crate::tolerant::foreign_delivery(&p.delivery))
+        {
             return (window, expectations);
         }
         let key = format!("session.message.delivery.{}", p.delivery.as_str());

@@ -28,6 +28,7 @@ pub(super) struct Run {
     pub(super) last: (usize, usize),
     pub(super) completed_messages: HashSet<String>,
     pub(super) prior_unknown: bool,
+    pub(super) opaque_admission: bool,
     pub(super) tools: HashMap<String, ToolTrack>,
     pub(super) interactions: HashMap<String, Interaction>,
     pub(super) controls: Controls,
@@ -104,20 +105,35 @@ fn shape(value: &str, started: &str, queued: &str) -> &'static str {
     }
 }
 
-fn admission_shape(p: &MessageSubmitResponse) -> bool {
+fn admission_shape(tolerant: bool, p: &MessageSubmitResponse) -> bool {
     let votes = [
-        shape(p.admission.as_str(), "started", "queued"),
-        shape(p.effective_delivery.as_str(), "start", "queue"),
-        shape(p.status.as_str(), "running", "queued"),
+        (
+            shape(p.admission.as_str(), "started", "queued"),
+            crate::tolerant::foreign_admission(&p.admission),
+        ),
+        (
+            shape(p.effective_delivery.as_str(), "start", "queue"),
+            !matches!(
+                p.effective_delivery.as_str(),
+                "" | "start" | "queue" | "steer" | "btw"
+            ),
+        ),
+        (
+            shape(p.status.as_str(), "running", "queued"),
+            crate::tolerant::foreign_status(&p.status),
+        ),
     ];
-    !votes[0].is_empty() && votes.iter().all(|vote| *vote == votes[0])
-}
-
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct RunScope {
-    session_id: Option<String>,
-    run_id: Option<String>,
+    let mut named = "";
+    for (vote, foreign) in votes {
+        if tolerant && foreign {
+            continue;
+        }
+        if vote.is_empty() || (!named.is_empty() && named != vote) {
+            return false;
+        }
+        named = vote;
+    }
+    true
 }
 
 type Finding = (&'static str, &'static str, &'static str, String, String);
@@ -163,10 +179,13 @@ impl State {
                 Some(run) if !run.terminal => {
                     run.cancel_accepted = true;
                     run.status = RunStatus::CANCELLING;
+                    if self.tolerant && crate::tolerant::foreign_status(&p.status) {
+                        run.status = p.status;
+                    }
                 }
                 Some(_) => {}
             }
-        } else if RUN_EVENTS.contains(t) || self.packed_run_event(e) {
+        } else if RUN_EVENTS.contains(t) || self.extension_run_event(e) {
             self.run_event(at, e);
         }
     }
@@ -228,15 +247,33 @@ impl State {
                 "/payload/run_id",
                 "accepted submission must reserve a run identity",
             ))
-        } else if !admission_shape(&p) {
+        } else if !admission_shape(self.tolerant, &p) {
             Some(("/payload/admission", "v0.1 admission must resolve auto to one started (status running) or queued (status queued) run (decision 0002)"))
-        } else if self.runs.contains_key(&run_id) {
+        } else if self.runs.contains_key(&run_id)
+            && !(self.tolerant && crate::tolerant::foreign_admission(&p.admission))
+        {
             Some(("/payload/run_id", "run was admitted more than once"))
         } else {
             None
         };
         if let Some((pointer, message)) = refusal {
             self.add(codes::ILLEGAL_RUN_TRANSITION, at, e, pointer, message);
+            return;
+        }
+        if let Some(existing) = self.runs.get(&run_id) {
+            let owner = existing.session.clone();
+            if owner != p.session_id.as_str() {
+                self.add_expected(
+                    codes::SCOPE_MISMATCH,
+                    at,
+                    e,
+                    "/payload/run_id",
+                    "submit response names a run owned by another session",
+                    &owner,
+                    p.session_id.as_str(),
+                    &[&run_id],
+                );
+            }
             return;
         }
         if !self.queue_overlap(at, e, &p) {
@@ -249,13 +286,19 @@ impl State {
             self.apply_model_control(&session, &controls);
         }
         let deferred_model = queued && controls.model_control().is_some();
+        let opaque_admission = self.tolerant && crate::tolerant::foreign_admission(&p.admission);
         let run = Run {
             session: session.clone(),
             next: 1,
             admitted: true,
             admitted_at: at.0,
             submit_request: reply,
-            status: RunStatus::QUEUED,
+            status: if opaque_admission {
+                p.status
+            } else {
+                RunStatus::QUEUED
+            },
+            opaque_admission,
             last: at,
             controls,
             deferred_model,
@@ -319,13 +362,8 @@ impl State {
     }
 
     fn run_event(&mut self, at: (usize, usize), e: &Envelope) {
-        let scope: RunScope = payload(e);
-        self.check_scope(
-            at,
-            e,
-            &scope.session_id.unwrap_or_default(),
-            &scope.run_id.unwrap_or_default(),
-        );
+        let (session_scope, run_scope) = super::packed::scope(e);
+        self.check_scope(at, e, &session_scope, &run_scope);
         let run_id = os(&e.run_id);
         let triggered = e.envelope_type == EnvelopeType::RUN_STARTED
             && payload::<RunStartedPayload>(e).trigger.is_some();
@@ -525,7 +563,12 @@ impl State {
             }
             return (found, plain);
         }
-        if !run.started && *t != EnvelopeType::RUN_FAILED && *t != EnvelopeType::RUN_CANCELLED {
+        if !run.started
+            && *t != EnvelopeType::RUN_FAILED
+            && *t != EnvelopeType::RUN_CANCELLED
+            && t.is_known()
+            && !run.opaque_admission
+        {
             plain.push((
                 codes::MISSING_RUN_STARTED,
                 "/type",
@@ -534,7 +577,11 @@ impl State {
         }
         if *t == EnvelopeType::RUN_STATUS_UPDATED {
             let p: RunStatusUpdatedPayload = payload(e);
-            if legal_transition(&run.status, &p.status) {
+            if legal_transition(&run.status, &p.status)
+                || (self.tolerant
+                    && (crate::tolerant::foreign_status(&run.status)
+                        || crate::tolerant::foreign_status(&p.status)))
+            {
                 run.status = p.status;
             } else {
                 found.push((
@@ -590,7 +637,7 @@ impl State {
                 session_id: Some(SessionId::from(run.session.as_str())),
                 ..Envelope::default()
             };
-            if run.admitted && !run.started && !run.terminal {
+            if run.admitted && !run.started && !run.terminal && !run.opaque_admission {
                 let started = Envelope {
                     envelope_type: EnvelopeType::RUN_STARTED,
                     ..stub.clone()

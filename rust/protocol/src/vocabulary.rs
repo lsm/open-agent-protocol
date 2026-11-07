@@ -21,6 +21,11 @@ macro_rules! vocabulary {
             pub fn is_empty(&self) -> bool {
                 self.0.is_empty()
             }
+
+            #[doc = include_str!("../../../docs/rust-vocabulary.md")]
+            pub fn is_known(&self) -> bool {
+                matches!(self.as_str(), $($value)|*)
+            }
         }
 
         impl From<String> for $name {

@@ -155,7 +155,7 @@ impl Validator {
             return None;
         }
         let list = serde_json::to_value(schema.evaluate(value).list()).unwrap_or_default();
-        let selected = branch_index.map(|index| format!("/oneOf/{index}"));
+        let selected = branch_index.map(|index| index.to_string());
         let details: Vec<&Value> = list
             .get("details")
             .and_then(Value::as_array)
@@ -165,10 +165,9 @@ impl Validator {
             .filter(|detail| {
                 selected.as_ref().is_none_or(|selected| {
                     let path = detail["evaluationPath"].as_str().unwrap_or_default();
-                    !path.starts_with("/oneOf/")
-                        || path
-                            .strip_prefix(selected)
-                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                    path.strip_prefix("/oneOf/")
+                        .or_else(|| path.strip_prefix("/anyOf/"))
+                        .is_none_or(|path| path.split('/').next() == Some(selected.as_str()))
                 })
             })
             .collect();
@@ -295,7 +294,9 @@ pub(crate) fn envelope_branches() -> &'static BTreeMap<String, String> {
 }
 
 fn branch_of(schema_location: &str) -> Option<&'static str> {
-    let rest = schema_location.strip_prefix("/oneOf/")?;
+    let rest = schema_location
+        .strip_prefix("/oneOf/")
+        .or_else(|| schema_location.strip_prefix("/anyOf/"))?;
     let index: usize = rest.split('/').next()?.parse().ok()?;
     branches().by_index.get(index)?.as_deref()
 }

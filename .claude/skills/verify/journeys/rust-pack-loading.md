@@ -201,6 +201,10 @@ tool-result image must additionally report its own `unavailable_capability` at
 index 4 when `content.image` is unadvertised. The replay retains both gate and
 image diagnostics and pins multiplicity, with a signed failure before moving the
 image check ahead of the stale-descriptor return.
+The native replay also retains a declared packed prelude before `run.started`
+and a mixed-type scope payload. The prelude must preserve the run cursor, and a
+non-string ID must leave the other available string ID checks intact. The
+vocabulary foundation journey documents their signed regressions.
 The public replay found two Rust reply-selection bugs. Go correctly refuses a
 suffix-matched success response without a declared mapping and ignores an event's
 `replies_to` when selecting the real response declaration. Signed failing public

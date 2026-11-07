@@ -6,6 +6,7 @@ pub mod pack;
 mod provider;
 mod schema;
 mod state;
+mod tolerant;
 mod trace;
 mod usage;
 mod validator;
