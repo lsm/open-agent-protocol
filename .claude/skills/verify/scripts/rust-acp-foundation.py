@@ -71,6 +71,8 @@ def main():
                         'protocol.initialize': 'emulated', 'capabilities': 'emulated',
                         'session.open': 'native', 'session.state': 'emulated',
                         'models.list': 'degraded', 'session.model.switch': 'degraded',
+                        'session.message.submit': 'degraded', 'run.streaming': 'degraded',
+                        'session.message.delivery.auto': 'emulated', 'run.status': 'emulated',
                     }.get(key, 'unavailable')
                     assert support['level'] == level, (key, support)
                 observed = result
