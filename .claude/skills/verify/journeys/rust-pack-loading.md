@@ -193,6 +193,10 @@ validity, phase, code and diagnostic index with Go. Inspect `results.json` and
 raw outputs for shared load refusals, packed schemas, exact feature keys,
 request-time gate captures across refreshes, typed refusals, scope fallback,
 member gates, declared roles, image handling and run sequencing/terminal checks.
+The descriptor-member corpus control must retain `unavailable_capability` at
+index 4 on a stale response, plus stale-revision diagnostics at indices 4 and 5.
+That response must preserve the refresh window. Its signed regression fails
+before the early-return gate check.
 The public replay found two Rust reply-selection bugs. Go correctly refuses a
 suffix-matched success response without a declared mapping and ignores an event's
 `replies_to` when selecting the real response declaration. Signed failing public

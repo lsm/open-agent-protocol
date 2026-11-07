@@ -29,9 +29,10 @@ report `unavailable_capability` for the packed member at index 4, alongside
 with the pack explicitly loaded in tolerant mode. Zig's existing strict CLI
 does not widen core payload schemas for packed members and stops at
 `schema_invalid` before these semantic checks; that limitation is unchanged.
-Go's strict manifest suite also pins the pack case. Rust's existing lack of
-pack loading is unchanged. Together the helper checks 12 core judgments across all three trees
-and two pack judgments across Go and Zig, with zero disagreements.
+Go's strict manifest suite also pins the pack case. Rust's native strict pack
+path now checks this same corpus control in `rust-pack-loading.md` through
+`rust-packed-traces.py`. The refresh helper checks 12 core judgments across all
+three trees and two pack judgments across Go and Zig, with zero disagreements.
 
 Also observe acceptance of the permission and user-input traces that settle
 under the previous revision while the window remains open. Require zero

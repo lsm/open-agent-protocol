@@ -500,6 +500,7 @@ impl State {
             && !self.current_capability.is_empty()
             && revision != self.current_capability
         {
+            self.pack_envelope(at, e);
             return;
         }
         self.payload_scope(at, e);
