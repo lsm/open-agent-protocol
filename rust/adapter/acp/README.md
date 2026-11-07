@@ -196,8 +196,8 @@ The engine emits contiguous sequences, text deltas, a complete assistant
 message, observed completion/refusal errors and explicitly inferred transport
 failures. Once settled, late updates and repeated settlement preserve the first
 terminal. A slow consumer receives its bounded prefix and an explicit overflow;
-the native projection can still settle. `close()` finishes the retained prefix
-when the owner abandons a run.
+the native projection can still settle. `close()` or dropping the engine
+finishes the retained prefix when the owner abandons a run.
 
 This slice handles one native message identity. Multiple identities, tool
 updates and cancellation requiring host evidence produce explicit unavailable

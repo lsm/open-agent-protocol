@@ -18,13 +18,15 @@ Cases cover Unicode and empty text, completion stop reasons, refusal and remote
 errors, malformed/foreign/unknown updates, invalid assistant chunks, bounded
 subscriber overflow and abandonment while an agent ignores EOF. The overflow
 case consumes after settlement and must receive the same bounded prefix and
-explicit error on both peers. Abandonment retains the observed prefix.
+explicit error on both peers. Abandonment retains the observed prefix. Focused
+tests also drop the text-run producer, consume its retained prefix and require
+the subscriber to finish immediately. Keep that ownership regression passing.
 
 Multiple native message identities, tool updates and cancellation without host
 evidence are explicitly unavailable in this staged Rust engine. The consumer
-retains both peers' outputs and verifies the declared Rust failures. It does
-not claim parity for those future mappings. The later approved identity, tool
-and cancellation slices still own them. In particular, `run.cancelled` requires
+retains both peers' outputs and verifies the declared Rust failures. Full parity
+for these mappings belongs to the later approved identity, tool and cancellation
+slices. In particular, `run.cancelled` requires
 accepted host cancellation evidence.
 
 Go, Rust and Zig validate each complete Rust engine event trace with a test-host

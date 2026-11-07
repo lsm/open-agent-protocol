@@ -282,3 +282,9 @@ impl TextRun {
         self.subscriber.close();
     }
 }
+
+impl Drop for TextRun {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
