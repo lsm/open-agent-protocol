@@ -262,14 +262,14 @@ pub const Jobs = struct {
         self.lock();
         while (index < self.list.items.len) : (index += 1) {
             const job = self.list.items[index];
-            if (job.term != null or job.limited) continue;
+            if (job.term != null or job.cause != null) continue;
             const now = common.nowMs();
             if (job.deadline_ms > now) {
                 nearest = @min(nearest orelse job.deadline_ms, job.deadline_ms);
                 continue;
             }
             job.limited = true;
-            if (job.cause == null) job.cause = .expired;
+            job.cause = .expired;
             self.mutex.unlock();
             process_runner.endGroup(job.leader);
             self.lock();
