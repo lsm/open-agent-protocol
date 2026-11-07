@@ -123,6 +123,9 @@ def mid_turn(hub, session):
     began = submit(hub, session, [{"command": "sleep 7; echo finished"}, {"command": "sleep 4"}])
     hub.until(is_type("action.call.completed"), 30)
     returned = time.monotonic()
+    limit = time.monotonic() + 3
+    while len(requests) < 2 and time.monotonic() < limit:
+        time.sleep(0.005)
     second = requests[1]["at"] - began
     settled, _ = hub.until(is_type("run.completed"), 30)
     assert 4.5 < returned - began < 6.5, returned - began
