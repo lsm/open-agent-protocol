@@ -82,3 +82,29 @@ encoded controls pass Go and Rust. Zig accepts the two escaped ID controls and
 reports the escaped-fragment control unjudged with exit 1. The helper labels
 these outcomes separately, as recorded in `drafts/extension-pack-load-refusals.md`,
 and checks that Rust's refusal messages render the URI or parse error directly.
+
+## Compiled resources
+
+The fourth slice adds `PackResources::compile` and `CompiledPacks`. Contributed
+branches resolve only to object nodes and pin their declared type. Registry
+preparation and compilation use the existing refusing core retriever. The
+composed envelope schema and separate member schemas remain available with
+immutable construction data.
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_compilation
+python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-pack-compiled-<unique>
+```
+
+The external consumer exercises shared load refusals and packed schema fixtures,
+including cross-pack references, descriptor members, malformed packed payloads,
+core-invalid frames, whole-document branches, missing resources and invalid
+schema keywords. Escaped URI controls exercise their own event payloads with
+matching and conflicting const values. Inspect the raw outputs and `results.json`.
+
+For a core envelope, the consumer projects declared member values out before
+validating the composed schema and validates those values separately. This is
+the compiler boundary used by Go. The initial replay compared the unprojected
+schema to Go's full validation result and was inconclusive for descriptor members.
+The corrected replay must agree on all declared schema/load outcomes. Corpus
+checks and complete loader construction follow separately.

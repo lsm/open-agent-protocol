@@ -58,3 +58,30 @@ fn compiled_resources_validate_real_envelope_and_member_values() {
     assert!(member.is_valid(&serde_json::json!(42)));
     assert!(!member.is_valid(&serde_json::json!(-1)));
 }
+
+#[test]
+fn descriptor_members_use_a_core_projection_and_a_separate_member_schema() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let compiled = PackLoader::read(&[root.join("packs/descriptor-member")])
+        .unwrap()
+        .read_resources()
+        .unwrap()
+        .compile()
+        .unwrap();
+    let trace: Value = serde_json::from_slice(
+        &std::fs::read(root.join("valid/ext-descriptor-member-advertised.json")).unwrap(),
+    )
+    .unwrap();
+    let mut projection = trace[1].clone();
+    let member = projection["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("com.example.descriptor.region")
+        .unwrap();
+    assert!(compiled.schema().is_valid(&projection));
+    assert!(compiled.member_schemas()[&(
+        "capabilities.response".to_owned(),
+        "com.example.descriptor.region".to_owned()
+    )]
+        .is_valid(&member));
+}

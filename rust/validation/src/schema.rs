@@ -83,7 +83,7 @@ fn document(name: &str) -> Result<Value, SchemaError> {
     })
 }
 
-struct Bundle;
+pub(crate) struct Bundle;
 
 impl Retrieve for Bundle {
     fn retrieve(

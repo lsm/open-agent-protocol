@@ -14,5 +14,14 @@ declared dependencies. Schema identifiers stay within their own pack namespace.
 `documents` exposes immutable schema values indexed by resource URI,
 and `manifests` exposes the contained manifest paths indexed by the pack base URI.
 
-These are staged construction contracts. Branch compilation and fixture corpus checks belong to the following loader slices. Trace validation
-becomes available once the complete loader is connected.
+These are staged construction contracts. Complete trace validation follows the
+remaining loader and validator integration slices.
+
+`PackResources::compile` pins every contributed branch to its declared type,
+prepares the core and pack schema registry, and returns `CompiledPacks`. Its
+`schema` accessor provides the composed envelope schema, `member_schemas` provides
+the separately compiled member schemas, and `resources` retains the construction
+data. For a core envelope carrying declared members, callers validate its core
+projection and validate the removed values against their member schemas.
+
+Corpus checks and complete loader construction follow in the final loader slice.
