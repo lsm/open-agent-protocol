@@ -35,6 +35,14 @@ while (frame := read()) is not None:
         for index in range(data.get('history', 320)):
             send({'method': 'session/update', 'params': {'sessionId': 'bound-native', 'update': {
                 'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'old history'}}}})
+        if data.get('blocked_reply'):
+            send({'id': 'r' * (2 * 1024 * 1024), 'method': 'fixture/unsupported', 'params': {}})
+            partial = b''
+            while len(partial) < 64:
+                partial += os.read(sys.stdin.fileno(), 64 - len(partial))
+            (out / 'partial.bin').write_bytes(partial)
+            while True:
+                time.sleep(1)
         if data.get('reverse', True):
             send({'id': 'reload-query', 'method': 'fixture/unsupported', 'params': {}})
             answer = read()
