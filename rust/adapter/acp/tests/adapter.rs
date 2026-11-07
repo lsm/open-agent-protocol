@@ -89,6 +89,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
     assert!(!descriptor.interactive_gates);
+    assert_eq!(descriptor.max_active_runs_per_session, 1);
     for (key, support) in descriptor.capabilities.features {
         let expected = match key.as_str() {
             "protocol.initialize"
