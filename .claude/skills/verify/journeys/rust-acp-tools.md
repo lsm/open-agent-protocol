@@ -35,7 +35,7 @@ implementation commit.
 The staged revision is `-rust-cancel`. Tool feature rows are degraded observed
 lifecycle claims with no catalog. Host execution APIs remain
 unavailable. Normal permissions use the owned Session integration. Session close/drop retains its existing prefix/cleanup behavior.
-Native cancellation is covered by rust-acp-cancel.md. Reopen/config, full byte corpus and C8 served
+Native cancellation is covered by rust-acp-cancel.md. Live config is covered by `rust-acp-live-config.md`. Reload, opening config, full byte corpus and C8 served
 parity retain their approved later slices. Usage semantics retain the ambiguity
 recorded in the results journey. Shared process-helper grandchild-held-pipe
 limits remain applicable.

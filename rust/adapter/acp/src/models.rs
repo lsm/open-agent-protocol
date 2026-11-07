@@ -5,10 +5,11 @@ use oap_protocol::{
 };
 
 use crate::native::{
-    decode, ConfigOption, SetConfigOptionParams, SetConfigOptionResult, CATEGORY_THOUGHT_LEVEL,
-    METHOD_SESSION_SET_CONFIG_OPTION,
+    decode, ConfigOption, ConfigOptionUpdate, SessionUpdateParams, SetConfigOptionParams,
+    SetConfigOptionResult, CATEGORY_THOUGHT_LEVEL, METHOD_SESSION_SET_CONFIG_OPTION,
+    METHOD_SESSION_UPDATE,
 };
-use crate::session::{now_ms, Session};
+use crate::session::{now_ms, Inner, Session};
 
 fn refusal(detail: impl Into<String>) -> Error {
     Error::UnsupportedControl(Box::new(UnsupportedControl {
@@ -62,6 +63,61 @@ fn reasoning(options: &[ConfigOption]) -> ReasoningLevel {
     result
 }
 
+impl Inner {
+    pub(crate) fn observe_config(
+        &mut self,
+        notification: &oap_adapter::jsonrpc::NotificationMessage,
+        native_id: &str,
+    ) -> bool {
+        if self.process.is_none() || notification.method != METHOD_SESSION_UPDATE {
+            return false;
+        }
+        let Some(params) = notification.params.as_deref() else {
+            return false;
+        };
+        let Ok(params) = decode::<SessionUpdateParams>(params.get().as_bytes()) else {
+            return false;
+        };
+        let Some(update) = params.update.as_deref() else {
+            return false;
+        };
+        let Ok(update) = decode::<ConfigOptionUpdate>(update.get().as_bytes()) else {
+            return false;
+        };
+        if params.session_id != native_id || update.session_update != "config_option_update" {
+            return false;
+        }
+        self.refresh();
+        let previous = (
+            self.state.current_model_id.clone(),
+            self.state.reasoning_level.clone(),
+        );
+        self.model_option = update
+            .config_options
+            .iter()
+            .find(|option| option.category == "model")
+            .cloned();
+        if let Some(option) = update.config_options.iter().rev().find(|option| {
+            option.category == "model"
+                && !matches!(option.current_value.as_str(), "" | "default" | "current")
+        }) {
+            self.state
+                .current_model_id
+                .clone_from(&option.current_value);
+        }
+        self.state.reasoning_level = reasoning(&update.config_options);
+        if previous
+            != (
+                self.state.current_model_id.clone(),
+                self.state.reasoning_level.clone(),
+            )
+        {
+            self.state.updated_at_ms = now_ms();
+        }
+        true
+    }
+}
+
 impl ModelSwitcher for Session {
     fn switch_model(
         &self,
@@ -78,7 +134,7 @@ impl ModelSwitcher for Session {
                 if request.session_id != inner.state.session_id {
                     return Err(Error::InvalidSubmission);
                 }
-                let option = self
+                let option = inner
                     .model_option
                     .as_ref()
                     .ok_or_else(|| missing_model(FEATURE_SESSION_MODEL_SWITCH))?;

@@ -51,7 +51,7 @@ all three validators. It normalizes wall clocks and the declared staged revision
 Byte-for-byte corpus replay retains its final approved ACP slice.
 
 The degraded tool rows describe observed native execution. Permission
-publication/resolution uses the native support described below. Native host cancellation is described below. Reopen and live config retain their following slices. Closing or abandoning an active session
+publication/resolution uses the native support described below. Native host cancellation and live config are described below. Reload and opening configuration retain their following slices. Closing or abandoning an active session
 retains its existing bounded prefix and owned process cleanup contract.
 
 ## Typed Rust permission projection
@@ -107,4 +107,22 @@ Go/Rust events and parsed host frames are compared after clock/revision
 normalization, and all three validators judge actual Rust events with the
 accepted host exchange. A controlled clock pauses accepted-write commit to
 prove confirmation waits. Quiet peers prove queued control drop/close reap
-and join. Resume/reopen, live config, full byte corpus and C8 remain later gates.
+and join. Resume/reopen, opening config, full byte corpus and C8 remain later gates.
+
+## Rust live config projection
+
+The normal Session now applies an agent's `config_option_update` inline in its
+ordered dispatcher, outside and during a run. The full list replaces the model
+catalog and option used by later switches. Recorded model/reasoning follow the
+existing mapping in the v1.11.0 ledger: model placeholders preserve the previous
+value, missing/unreadable reasoning clears it, and the state timestamp changes
+only when those recorded settings change. No session or run event is invented.
+Malformed active updates retain `acp_invalid_update`; malformed idle or foreign
+session updates leave recorded settings alone.
+
+The synthetic public Go/Rust comparison retains both directions of native wire,
+snapshots and run events, normalizing only clocks and the staged revision. All
+three validators judge wrapped Rust exchanges. This adds no capability support
+level, so the staged revision remains `-rust-cancel`. Reload and confirmed
+opening config/reasoning remain separate approved slices, followed by full ACP
+byte corpus replay. No served-parity or live-agent claim is made.

@@ -35,8 +35,8 @@ and keep native I/O outside the projection mutex. The clock is read at commit.
 Run all existing ACP journeys, full baseline and Rust all-features under the
 same mutex. Read the actual PTY reply and `/quit` exit. Normal Session permission
 publication/resolve/admission/close are covered by
-`rust-acp-session-permissions.md`. Cancel, reopen/config and corpus retain
-following slices. The shared process helper's existing
+`rust-acp-session-permissions.md`. Cancel is covered by `rust-acp-cancel.md` and live config by
+`rust-acp-live-config.md`. Reload, opening config and corpus retain following slices. The shared process helper's existing
 grandchild-held-pipe limitation applies.
 
 Review regressions drive actual native peers for malformed asks before run

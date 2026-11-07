@@ -63,7 +63,8 @@ unadvertised controls without starting a process. `Adapter::open()` applies
 the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Reopen and replay have approved follow-on slices. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
 appends `-rust-cancel` to the catalog revision because this descriptor has
-fewer capabilities than the completed adapter. Remaining event mappings and live configuration updates are later slices of #1439.
+fewer capabilities than the completed adapter. Reload, opening configuration
+and full corpus replay remain later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
@@ -97,25 +98,26 @@ state plus the opaque native session id. An omitted OAP session id is generated
 per adapter. Missing or malformed native session ids fail and close the process.
 
 `model_lister().models(request)` requires explicit `models.list` degradation
-opt-in. It reports the opening response's model config-option snapshot, flattening
+opt-in. It reports the latest model config-option snapshot, flattening
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
-error. Native configuration-update handling belongs to the later event/config
-slice. The descriptor discloses the opening snapshot and uses a `-rust-cancel`
+error. Live snapshots replace the opening snapshot as described below.
+The descriptor uses a `-rust-cancel`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
 state/catalog access report closed. Repeated close succeeds. Native children
 that remain alive after EOF are killed and reaped at the configured shutdown
 timeout. Dropping an opening or closing future uses the owning cancellation
-bridge. The permission resolver uses the owned controller described below. Cancellation and replay expose their staged unavailable results.
+bridge. The permission resolver and native cancellation use the owned controller
+described below. Replay remains unavailable.
 
 After `session/new`, the session owns a `PromptBridge` that drains native
 inbound messages in order. Idle notifications therefore cannot fill an
 undrained queue while a model switch waits for its result. Unknown reverse
 RPCs receive the native method-not-supported error. Explicit close, cancelled
 close and dropping the final session owner release the child and dispatcher.
-Normal permission handling is described below. Live configuration projection belongs to a later slice.
+Normal permission handling and live configuration projection are described below.
 
 Run `.claude/skills/verify/journeys/rust-acp-session.md` for real synthetic
 stdio, public state/catalog output, cleanup and three-validator wire proof.
@@ -128,7 +130,7 @@ alive, and requires all threads to return to the initial count.
 
 `model_switcher().switch_model(request)` requires explicit
 `session.model.switch` degradation opt-in, the matching OAP session id and a
-model id in the opening catalog. It writes `session/set_config_option` using
+model id in the latest catalog. It writes `session/set_config_option` using
 the native session/option ids. The returned list must contain exactly one
 matching option with an allowed kind and the requested current value before
 recorded state changes. Refused or unconfirmed switches preserve the previous
@@ -140,11 +142,12 @@ dropping its shared RPC future cancels and reaps the process for all holders.
 The shared operation helpers retain their process in an `Arc`, and join their
 workers. Returned reasoning metadata follows the agent's confirmed thought-level
 value or label, including Go's simple lowercase handling of dotted capital I.
-Missing or unrecognized reasoning clears the previous level. Catalog values stay
-the opening snapshot while their current/default flags follow recorded state.
+Missing or unrecognized reasoning clears the previous level. Catalog values
+follow the latest unsolicited config snapshot, while current/default flags
+follow recorded state.
 
 The feature remains degraded because model identity is the agent's word.
-Unsolicited config-option projection retains its later slice.
+Unsolicited config-option projection is described below.
 Run `.claude/skills/verify/journeys/rust-acp-model-switch.md` for public Go/Rust
 consumer comparisons, captured native frames and wire validation.
 
@@ -204,8 +207,9 @@ Native message identities map to separate OAP message ids and accumulated text.
 Repeated native ids reuse their OAP ids, and an omitted id continues the current
 message. The terminal response contains the last message's own text. Cancellation without an accepted controller intent produces an explicit failure. OAP
 `run.cancelled` requires accepted host cancellation evidence. Configuration-update
-bodies are decoded structurally and malformed bodies fail the run. Live config
-projection retains its approved later slice.
+bodies are decoded structurally and malformed bodies fail the run. Session-owned
+live config projection is described below; the standalone text engine does not
+own the session model catalog.
 
 Run `.claude/skills/verify/journeys/rust-acp-text.md` for native wire, Go/Rust
 event comparison, bounded overflow, cleanup and three-validator event proof.
@@ -283,7 +287,7 @@ retained prefix under the documented ownership contract.
 
 `action.tools` and `action.tools.execute` are degraded observed-lifecycle claims.
 They expose no tool catalog or host execution API. Native cancellation is
-described below; reopen/config projection and full byte corpus retain later
+described below; reload, opening configuration and full byte corpus retain later
 slices. Run the synthetic `rust-acp-tools.md` verification journey.
 
 ## Owned native outbound operations
@@ -404,7 +408,8 @@ The descriptor advertises native action.permissions and interactive gates,
 under the staged -rust-cancel revision. Run
 `rust-acp-session-permissions.md` for normal Session event/wire comparisons,
 immediate resolution, idle replies, across-run history, state and cleanup.
-Native cancellation is described below. Reopen/config and full corpus retain later slices.
+Native cancellation is described below. Reload, opening configuration and full
+corpus retain later slices.
 
 ## Run-targeted cancellation
 
@@ -435,5 +440,26 @@ is invented when the native notification was never written.
 Run rust-acp-cancel.md for public Go/Rust event and parsed-wire comparisons,
 three-validator traces, controlled confirmation ordering and quiet-child/thread
 ownership. The staged revision is -rust-cancel and run.cancel is native. Submit
-and streaming retain their degradation opt-ins; live config, resume/reopen,
+and streaming retain their degradation opt-ins; resume/reopen, opening config,
 full byte corpus and C8 served parity remain later slices.
+
+## Live config state and model catalog
+
+The ordered session dispatcher applies a valid native `config_option_update`
+inline, whether idle or running. It replaces the model option and catalog and
+derives recorded model/reasoning from the full list, using the same mapping as
+Go. Later model switches validate against and write that replacement option.
+Missing model options remove the catalog and make switches unsatisfiable.
+Empty/default/current model values retain the previous model; missing or
+unreadable thought levels clear recorded reasoning. Only changes to recorded
+model or reasoning advance the state timestamp.
+
+Config-only updates emit no stream event. Wrong-session and malformed idle
+updates leave state unchanged; malformed active updates retain the existing
+`acp_invalid_update` failure. No native I/O worker is started for this local
+projection. Capability fidelity stays staged under `-rust-cancel`, as no
+optional feature's support level changes.
+
+Run `.claude/skills/verify/journeys/rust-acp-live-config.md` for actual native
+wire, public Go/Rust snapshots, streams and three-validator proof. Reload and
+confirmed opening config/reasoning are the next two approved slices.
