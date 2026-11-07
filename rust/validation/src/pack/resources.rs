@@ -67,15 +67,9 @@ impl PackLoader {
                     .and_then(|data| serde_json::from_slice(&data).map_err(|e| e.to_string()))
                 {
                     Ok(document) => {
-                        let relative = clean_path(path).unwrap();
-                        let relative = relative
-                            .iter()
-                            .map(|part| part.to_string_lossy())
-                            .collect::<Vec<_>>()
-                            .join("/");
                         resources
                             .documents
-                            .insert(format!("{}{}", base(descriptor), relative), document);
+                            .insert(document_uri(descriptor, path).unwrap(), document);
                     }
                     Err(message) => found.push(refusal("", id, &message)),
                 }
@@ -242,4 +236,14 @@ pub(super) fn object_pointer<'a>(document: &'a Value, pointer: &str) -> Option<&
         node = node.as_object()?.get(&key)?;
     }
     Some(node)
+}
+
+pub(super) fn document_uri(descriptor: &Value, path: &str) -> Result<String, String> {
+    let path = clean_path(path)?;
+    let relative = path
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(format!("{}{}", base(descriptor), relative))
 }

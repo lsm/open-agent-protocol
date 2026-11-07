@@ -2,7 +2,7 @@
 
 Decision 0004, which makes good 0003's extension seam: the load refusals a pack set can draw, and the gate diagnostics packed content draws on the wire. A load refusal is not a diagnostic (0004 L174–182): it comes from the loader before any trace is read, and `load-invalid` fixtures judge it. Format: [README](README.md).
 
-Rust entries marked staged describe the `PackLoader` constructor. They cover descriptor and payload-member declarations, contained resource loading and exact dependencies. Reference ownership is checked by the third slice; branch compilation and corpus checks follow.
+Rust entries marked staged describe the `PackLoader` constructor. They cover descriptor and payload-member declarations, contained resource loading and exact dependencies. Reference ownership and branch compilation are checked by their staged slices. Corpus checks follow in the final loader slice.
 
 ## Load refusals
 
@@ -46,8 +46,8 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 | `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/1` | A declared payload member MUST target a core payload type. | L90–91, L132–136 | `pack_member_target_unknown` | `pack.go:LoadPacks` | `packs.zig` | `pack/resources.rs:members (staged)` |
 | `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/2` | A pack MUST declare each payload member at most once. | L90–95, as amended by Decision 0058 | `pack_member_duplicate` | `pack.go:LoadPacks` | `packs.zig` | `pack/resources.rs:members (staged)` |
 | `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/3` | A pack MUST NOT declare a member the core payload already defines. | L143–147 | `pack_restates_core_member` | `pack.go:LoadPacks` | `packs.zig` | `pack/resources.rs:members (staged)` |
-| `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/4` | Every schema branch a pack contributes MUST be for an envelope type it declares. | L149–155 | `pack_branch_undeclared_type` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/5` | Every contributed branch MUST pin `type` to a `const` naming its own declared type. | L149–155 | `pack_branch_unpinned` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/4` | Every schema branch a pack contributes MUST be for an envelope type it declares. | L149–155 | `pack_branch_undeclared_type` | `pack.go:LoadPacks` | `packs.zig` | `pack/compiled.rs:branches (staged)` |
+| `0004#a-pack-adds-vocabulary-it-does-not-amend-the-protocol/5` | Every contributed branch MUST pin `type` to a `const` naming its own declared type. | L149–155 | `pack_branch_unpinned` | `pack.go:LoadPacks` | `packs.zig` | `pack/compiled.rs:branches (staged)` |
 
 ### [0004] A pack is a document someone else wrote
 
