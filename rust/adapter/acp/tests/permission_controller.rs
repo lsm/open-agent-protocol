@@ -300,8 +300,7 @@ fn controller_run(id: &str) -> Arc<Mutex<TextRun>> {
     )))
 }
 
-#[test]
-fn malformed_request_is_answered_before_a_run_starts() {
+fn malformed_request_is_answered(closed: bool) {
     let (fixture, bridge, received, permissions) = controller_peer(
         r#"
 send(dict(id='ask',method='session/request_permission',params=dict(toolCall=7)))
@@ -311,13 +310,27 @@ sys.stdin.read()
 "#,
     );
     let request = received.recv_timeout(Duration::from_secs(3)).unwrap();
-    let outcome = block_on(permissions.request(controller_run("unstarted"), request));
+    let run = controller_run("unstarted");
+    if closed {
+        run.lock().unwrap().close();
+    }
+    let outcome = block_on(permissions.request(run, request));
     block_on(bridge.close()).unwrap();
     assert!(outcome.is_err());
     let reply: serde_json::Value =
         serde_json::from_slice(&std::fs::read(fixture.0.join("reply.json")).unwrap()).unwrap();
     assert_eq!(reply["id"], "ask");
     assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[test]
+fn malformed_request_is_answered_before_a_run_starts() {
+    malformed_request_is_answered(false);
+}
+
+#[test]
+fn malformed_request_is_answered_after_its_projection_closes() {
+    malformed_request_is_answered(true);
 }
 
 #[test]
