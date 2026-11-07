@@ -160,6 +160,30 @@ fn closing_a_text_run_finishes_its_observed_prefix() {
 }
 
 #[test]
+fn dropping_the_text_run_owner_finishes_its_subscriber() {
+    use std::future::Future;
+    use std::task::{Context, Poll};
+    let mut run = engine();
+    let mut stream = run.start(10).unwrap();
+    run.observe(chunk("prefix", ""), 20).unwrap();
+    drop(run);
+    assert_eq!(
+        block_on(stream.next()).unwrap().unwrap().envelope_type,
+        EnvelopeType::RUN_STARTED
+    );
+    assert_eq!(
+        block_on(stream.next()).unwrap().unwrap().envelope_type,
+        EnvelopeType::CONTENT_DELTA
+    );
+    let mut next = Box::pin(stream.next());
+    let waker = futures::task::noop_waker();
+    assert!(matches!(
+        next.as_mut().poll(&mut Context::from_waker(&waker)),
+        Poll::Ready(None)
+    ));
+}
+
+#[test]
 fn known_stop_reasons_and_failures_keep_their_observed_payloads() {
     for (stop, status, kind) in [
         (
