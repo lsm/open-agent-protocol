@@ -7,12 +7,14 @@ use serde_json::{json, Value};
 use super::resources::{base, document_uri, object_pointer};
 use super::{entries, refusal, text, PackLoadError, PackResources};
 use crate::schema::{Bundle, SCHEMAS, SCHEMA_BASE};
+use crate::{Diagnostic, Validator as TraceValidator};
 
 #[doc = include_str!("../../PACKS.md")]
 pub struct CompiledPacks {
     resources: PackResources,
     schema: Validator,
     members: BTreeMap<(String, String), Validator>,
+    branch_indices: BTreeMap<String, usize>,
 }
 
 impl CompiledPacks {
@@ -26,6 +28,58 @@ impl CompiledPacks {
 
     pub fn member_schemas(&self) -> &BTreeMap<(String, String), Validator> {
         &self.members
+    }
+
+    pub fn validate_schema(&self, value: &Value, fixture: &str) -> Result<(), Box<Diagnostic>> {
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut projection = value.clone();
+        let mut members = Vec::new();
+        for ((target, name), schema) in &self.members {
+            if target != kind {
+                continue;
+            }
+            if let Some(value) = projection
+                .get_mut("payload")
+                .and_then(Value::as_object_mut)
+                .and_then(|payload| payload.remove(name))
+            {
+                let token = name.replace('~', "~0").replace('/', "~1");
+                members.push((format!("/payload/{token}"), schema, value));
+            }
+        }
+        let mut diagnostic = TraceValidator::diagnose_schema(
+            &self.schema,
+            &projection,
+            fixture,
+            Some(kind),
+            self.branch_indices.get(kind).copied(),
+        );
+        if diagnostic.is_none() {
+            members.sort_by(|left, right| left.0.cmp(&right.0));
+            diagnostic = members.into_iter().find_map(|(prefix, schema, value)| {
+                TraceValidator::diagnose_schema(schema, &value, fixture, None, None).map(
+                    |mut diagnostic| {
+                        diagnostic.pointer = format!("{prefix}{}", diagnostic.pointer);
+                        diagnostic
+                    },
+                )
+            });
+        }
+        match diagnostic {
+            None => Ok(()),
+            Some(mut diagnostic) => {
+                if crate::validator::contains_auth_reply(&value.to_string()) {
+                    diagnostic.message =
+                        "invalid auth reply (sensitive answer redacted)".to_owned();
+                    diagnostic.expected.clear();
+                    diagnostic.actual.clear();
+                }
+                Err(Box::new(diagnostic))
+            }
+        }
     }
 }
 
@@ -74,6 +128,11 @@ impl PackResources {
                 known.extend(branches.keys().cloned().map(Value::String));
             }
         }
+        let branch_indices = branches
+            .keys()
+            .enumerate()
+            .map(|(index, kind)| (kind.clone(), union.len() + index))
+            .collect();
         union.extend(branches.values().map(|uri| json!({"$ref": uri})));
         let mut registry = Registry::new().draft(Draft::Draft202012).retriever(Bundle);
         for (uri, document) in &documents {
@@ -126,6 +185,7 @@ impl PackResources {
             resources: self,
             schema,
             members,
+            branch_indices,
         })
     }
 }

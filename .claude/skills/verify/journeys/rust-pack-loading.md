@@ -159,3 +159,24 @@ constructor must refuse both `deferred-nested-packs` and `deferred-empty-units`.
 Run the earlier staged replay as well to preserve that public method's contract.
 Construction checks manifest declarations. Packed trace execution remains in the
 following validator-integration slice.
+
+## Parsed-envelope schema operation
+
+`CompiledPacks::validate_schema` performs projection and schema diagnostics inside
+the library. The external consumer now calls this operation for each envelope.
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_schema_validation
+python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-pack-schema-operation-<unique>
+```
+
+All schema/load verdicts must agree with Go. Member errors must point into the
+original payload with escaped tokens, and two invalid members must select the
+first escaped pointer. The signed ordering regression fails before the sort.
+Four controls retain a primary-diagnostic difference in `diagnostic-differences.json`.
+Rust identifies the declared packed branch's missing key or conflicting payload
+constant; Go selects unrelated core-branch required-property errors. The ledger
+in `drafts/extension-pack-load-refusals.md` records this diagnostic-only difference.
+Inspect raw outputs and the new operation's unit controls for input preservation
+and auth-answer redaction. Native strict trace semantics and tolerant mode follow
+in their separate integration slices.

@@ -60,3 +60,18 @@ Every declared capability needs a manifest with a negative gate fixture and a
 negative honour fixture under the owning extension term. Construction validates
 the corpus declarations. Executing their traces follows with validator integration.
 The earlier `check_corpus_entries` method retains its narrower staged contract.
+
+## Parsed-envelope schema validation
+
+`CompiledPacks::validate_schema(value, fixture)` checks one parsed JSON envelope
+and returns its primary schema diagnostic on failure. It projects declared
+members out of the core payload, validates the composed envelope, then validates
+the removed member values. The caller's value remains intact. Diagnostics refer
+to the original payload with escaped JSON Pointer tokens and deterministic
+pointer order. Auth-reply diagnostics retain sensitive-answer redaction.
+
+Packed envelope errors select the branch declared for that type. Four public
+controls record Go's existing selection of unrelated core-branch errors while
+Rust points at the declared packed payload. Their schema verdicts agree.
+This operation covers parsed-envelope schemas. Native strict trace semantics and
+tolerant mode follow in separate integration slices.
