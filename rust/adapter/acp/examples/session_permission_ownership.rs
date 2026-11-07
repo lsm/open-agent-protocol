@@ -3,7 +3,7 @@ use std::task::Context;
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
+use oap_adapter::{Adapter as _, Error, InteractionResolution, OpenRequest, SubmitRequest};
 use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
 use oap_protocol::{
     Message, MessageContent, MessageSubmitRequest, Participant, PermissionRequestedPayload,
@@ -77,7 +77,9 @@ fn main() {
         .unwrap()
         .decode_payload::<PermissionRequestedPayload>()
         .unwrap();
-    let mut resolution = if mode.starts_with("resolve") {
+    let mut resolution = if mode.starts_with("resolve")
+        || (mode.starts_with("cancel") && !mode.starts_with("cancel-gate"))
+    {
         let mut future = session.resolve(InteractionResolution {
             run_id: permission.run_id.clone(),
             responded_by: permission.responded_by.clone(),
@@ -107,6 +109,60 @@ fn main() {
     };
     report(json!({"gate":true,"writing":resolution.is_some()}));
     command();
+    if mode.starts_with("cancel") {
+        let mut cancel = session.cancel(admission.run_id.clone().unwrap());
+        let waker = noop_waker();
+        let began = Instant::now();
+        assert!(cancel
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending());
+        let poll_us = began.elapsed().as_micros();
+        report(json!({"cancelling":true,"poll_us":poll_us}));
+        command();
+        let began = Instant::now();
+        if mode.ends_with("-drop") {
+            drop(cancel);
+        } else {
+            let _ = block_on(session.close());
+            assert_eq!(block_on(cancel), Err(Error::SessionClosed));
+        }
+        if let Some((future, _)) = resolution.take() {
+            assert!(block_on(future).is_err());
+        }
+        let _ = block_on(session.close());
+        drop(resolution);
+        drop(session);
+        events.extend(
+            block_on(stream.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        );
+        assert!(!events
+            .iter()
+            .any(|event| event.envelope_type.as_str() == "run.cancelled"));
+        if !mode.starts_with("cancel-gate") {
+            assert!(!events
+                .iter()
+                .any(|event| event.envelope_type.as_str() == "run.status.updated"));
+        }
+        if mode.ends_with("-close") {
+            assert_eq!(
+                events.len(),
+                if mode.starts_with("cancel-gate") {
+                    4
+                } else {
+                    3
+                }
+            );
+        }
+        report(
+            json!({"cleanup_ms":began.elapsed().as_millis(),"poll_us":poll_us,"events":events,"admission":admission,"descriptor":adapter.describe().capabilities}),
+        );
+        command();
+        return;
+    }
     let began = Instant::now();
     let mut poll_us = 0;
     if mode == "resolve-cancel" {

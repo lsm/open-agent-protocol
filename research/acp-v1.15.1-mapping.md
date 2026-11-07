@@ -42,7 +42,7 @@ Rust corpus parity.
 
 ## Staged Rust tool and permission projection
 
-The Rust `-rust-permissions` stage projects observed native tool calls and sparse
+The Rust `-rust-cancel` stage projects observed native tool calls and sparse
 patches through the normal session submit stream. Tool identity is session-wide,
 terminal events synthesize a missing start, and unfinished children settle in
 creation order before the parent. The synthetic tools journey compares public
@@ -51,8 +51,7 @@ all three validators. It normalizes wall clocks and the declared staged revision
 Byte-for-byte corpus replay retains its final approved ACP slice.
 
 The degraded tool rows describe observed native execution. Permission
-publication/resolution uses the native support described below. Accepted host
-cancellation, reopen and live config retain their following slices. Closing or abandoning an active session
+publication/resolution uses the native support described below. Native host cancellation is described below. Reopen and live config retain their following slices. Closing or abandoning an active session
 retains its existing bounded prefix and owned process cleanup contract.
 
 ## Typed Rust permission projection
@@ -70,8 +69,9 @@ replay retains its separate approved slice.
 
 The standalone Permissions component binds requests to their actual bridge,
 serializes response writes with correlated commits and parent settlement.
-Pure local projection runs inline under the run lock without waiting for native
-writes; settlement uses bindings-before-run ordering and owned I/O cancellation.
+Ordinary notification projection runs inline under the run lock without waiting
+for native writes. Parent results and settlement use bindings-before-run ordering,
+serializing accepted cancel intent with native confirmation. Native I/O is owned.
 The native consumer
 compares fourteen Go/Rust event and parsed-wire cases, including trailing
 notifications. Blocked selected and settlement replies, queued cancellation
@@ -83,7 +83,7 @@ described below. The byte-for-byte corpus remains a later gate.
 
 Normal Session publication, resolution, admission and close now use the owned
 controller. The descriptor exposes native action.permissions and interactive
-gates under -rust-permissions. Immediate control answers serialize behind
+gates under -rust-cancel. Immediate control answers serialize behind
 publication, and state reads reflect the current projection. Live permission routes are pruned
 at commit or settlement. A bounded cache of 64 resolved ids preserves recent
 late-answer refusals across subsequent admissions. Idle native asks receive
@@ -95,3 +95,16 @@ frames. It normalizes wall-clock values and the declared staged revision for
 event comparison. Actual Rust traces use the actual Rust descriptor/admission
 and pass all three validators. Close/drop proof uses native quiet peers and
 OS thread inventories. Full byte-for-byte corpus replay remains a later gate.
+
+## Rust native cancellation
+
+The -rust-cancel stage accepts run-targeted native session/cancel intent,
+preserves cancelling through streamed events and waits for a cancelled stop
+or remote -32800 confirmation. Completion or another error may win. Pending
+permissions settle with native cancellation and correlated local resolutions;
+late asks receive cancellation without another OAP permission prompt. Public
+Go/Rust events and parsed host frames are compared after clock/revision
+normalization, and all three validators judge actual Rust events with the
+accepted host exchange. A controlled clock pauses accepted-write commit to
+prove confirmation waits. Quiet peers prove queued control drop/close reap
+and join. Resume/reopen, live config, full byte corpus and C8 remain later gates.

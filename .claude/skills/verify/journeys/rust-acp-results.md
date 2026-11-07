@@ -55,7 +55,8 @@ snapshots and success/error first-turn behavior over real stdio.
 
 Run the remaining ACP journeys, full baseline and Rust all-features suite under
 the same mutex. Observe the baseline PTY reply and `/quit` exit. Tool lifecycle
-is covered by `rust-acp-tools.md`. Accepted host cancellation evidence,
-permissions, reopen/live configuration,
+is covered by `rust-acp-tools.md`, normal permissions by
+`rust-acp-session-permissions.md`, and native cancellation by rust-acp-cancel.md.
+Reopen/live configuration,
 full ACP corpus and C8 served parity retain their approved later slices.
 Shared process-helper grandchild-held-pipe limitations remain applicable.

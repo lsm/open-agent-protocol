@@ -84,7 +84,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-permissions", pin().capability_revision)
+        format!("{}-rust-cancel", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
@@ -97,7 +97,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "session.state"
             | "session.message.delivery.auto"
             | "run.status" => SupportLevel::EMULATED,
-            "session.open" | "action.permissions" => SupportLevel::NATIVE,
+            "session.open" | "action.permissions" | "run.cancel" => SupportLevel::NATIVE,
             "models.list"
             | "session.model.switch"
             | "session.message.submit"

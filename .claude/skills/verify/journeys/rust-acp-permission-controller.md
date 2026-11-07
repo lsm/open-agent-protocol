@@ -49,8 +49,9 @@ Retained live request objects keep weak duplicate-publication guards until
 they are released and the next native operation prunes them. Keep signed
 native failing regressions before both review fixes.
 
-Local observe/completion/error projection executes inline on the polling caller
-using only the run lock. When settlement needs both locks, acquire bindings
+Ordinary observe projection executes inline using only the run lock. Parent
+completion/error first waits for bindings, then projects inline under the run
+lock, serializing confirmation with the native cancel write/intent commit. When settlement needs both locks, acquire bindings
 before the run. An owned Operation is created when native settlement replies
 need I/O or must wait behind an existing native write. The queued-cancel proof
 therefore queues a native resolution behind a blocked response. The consumer

@@ -210,11 +210,7 @@ impl Session {
             let result = futures::executor::block_on(call);
             let work = match result {
                 Ok(result) => permissions.complete(run.text.clone(), result),
-                Err(error) => permissions.prompt_error(
-                    run.text.clone(),
-                    error.to_string(),
-                    !matches!(error.fault, oap_adapter::jsonrpc::Fault::Remote { .. }),
-                ),
+                Err(error) => permissions.prompt_failure(run.text.clone(), error),
             };
             let _ = futures::executor::block_on(work);
             shared.lock().unwrap_or_else(|p| p.into_inner()).refresh();

@@ -3,9 +3,12 @@ use std::sync::{Arc, Mutex, Weak};
 use futures_util::lock::Mutex as AsyncMutex;
 use oap_adapter::jsonrpc::{IncomingRequest, NotificationMessage};
 use oap_adapter::{BoxFuture, Error, InteractionResolution};
-use oap_protocol::{InteractionId, ParticipantId};
+use oap_protocol::{InteractionId, ParticipantId, RunCancelResponse, RunStatus};
 
-use crate::native::{decode, PermissionRequest, PromptResult, METHOD_SESSION_REQUEST_PERMISSION};
+use crate::native::{
+    decode, CancelParams, PermissionOutcome, PermissionRequest, PermissionResponse, PromptResult,
+    METHOD_SESSION_CANCEL, METHOD_SESSION_REQUEST_PERMISSION,
+};
 use crate::{Operation, PromptBridge, TextRun};
 
 struct Binding {
@@ -110,6 +113,17 @@ impl Permissions {
                     });
                     Ok(id)
                 }
+                Err(Error::InteractionResolved) => {
+                    request
+                        .respond(&PermissionResponse {
+                            outcome: PermissionOutcome {
+                                outcome: "cancelled".into(),
+                                ..PermissionOutcome::default()
+                            },
+                        })
+                        .map_err(Error::harness)?;
+                    Err(Error::InteractionResolved)
+                }
                 Err(error) => {
                     let _ = request.respond_error(-32602, &error.to_string());
                     owner.settle(&run, bindings)?;
@@ -154,7 +168,7 @@ impl Permissions {
         run: Arc<Mutex<TextRun>>,
         notification: NotificationMessage,
     ) -> BoxFuture<'static, ()> {
-        self.transition(run, move |text, now| text.observe(notification, now))
+        self.transition(run, false, move |text, now| text.observe(notification, now))
     }
 
     pub fn complete(
@@ -162,7 +176,7 @@ impl Permissions {
         run: Arc<Mutex<TextRun>>,
         result: PromptResult,
     ) -> BoxFuture<'static, ()> {
-        self.transition(run, move |text, now| text.complete(result, now))
+        self.transition(run, true, move |text, now| text.complete(result, now))
     }
 
     pub fn prompt_error(
@@ -171,17 +185,77 @@ impl Permissions {
         message: String,
         inferred: bool,
     ) -> BoxFuture<'static, ()> {
-        self.transition(run, move |text, now| {
+        self.transition(run, true, move |text, now| {
             text.prompt_error(&message, inferred, now)
+        })
+    }
+
+    pub(crate) fn prompt_failure(
+        self: Arc<Self>,
+        run: Arc<Mutex<TextRun>>,
+        error: oap_adapter::jsonrpc::Error,
+    ) -> BoxFuture<'static, ()> {
+        self.transition(run, true, move |text, now| {
+            if error.remote_code() == Some(-32800) && text.state().status == RunStatus::CANCELLING {
+                text.settle_usage(None);
+                text.cancelled("ACP prompt cancellation confirmed", now)
+            } else {
+                text.prompt_error(&error.to_string(), error.remote_code().is_none(), now)
+            }
+        })
+    }
+
+    pub fn cancel(
+        self: Arc<Self>,
+        run: Arc<Mutex<TextRun>>,
+    ) -> BoxFuture<'static, RunCancelResponse> {
+        let state = run.lock().unwrap().cancel_state();
+        if !matches!(&state, Ok(response) if response.status == RunStatus::RUNNING) {
+            return Box::pin(async move {
+                let _owner = self;
+                state
+            });
+        }
+        self.operation(move |owner, bindings| {
+            let response = run.lock().unwrap().cancel_state()?;
+            if response.status != RunStatus::RUNNING {
+                return Ok(response);
+            }
+            if owner.bridge.is_closed() {
+                return Err(Error::SessionClosed);
+            }
+            let params = serde_json::value::to_raw_value(&CancelParams {
+                session_id: run.lock().unwrap().context.native_id.clone(),
+            })
+            .map_err(Error::harness)?;
+            futures::executor::block_on(owner.bridge.notify(
+                METHOD_SESSION_CANCEL.into(),
+                Some(params),
+                None,
+            ))
+            .map_err(Error::harness)?;
+            let now = (owner.clock)();
+            run.lock().unwrap().request_cancel(now)?;
+            owner.settle(&run, bindings)?;
+            Ok(RunCancelResponse {
+                status: RunStatus::CANCELLING,
+                ..response
+            })
         })
     }
 
     fn transition(
         self: Arc<Self>,
         run: Arc<Mutex<TextRun>>,
+        parent: bool,
         update: impl FnOnce(&mut TextRun, i64) -> Result<(), Error> + Send + 'static,
     ) -> BoxFuture<'static, ()> {
         Box::pin(async move {
+            let held = if parent {
+                Some(self.bindings.lock().await)
+            } else {
+                None
+            };
             {
                 let mut text = run.lock().unwrap();
                 update(&mut text, (self.clock)())?;
@@ -189,7 +263,7 @@ impl Permissions {
                     return Ok(());
                 }
             }
-            if let Some(mut bindings) = self.bindings.try_lock() {
+            if let Some(mut bindings) = held.or_else(|| self.bindings.try_lock()) {
                 bindings.retain(|binding| binding.source.strong_count() > 0);
                 let native_reply = bindings.iter().any(|binding| {
                     Weak::ptr_eq(&binding.run, &Arc::downgrade(&run)) && binding.request.is_some()
