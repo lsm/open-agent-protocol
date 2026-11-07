@@ -34,9 +34,11 @@ for line in sys.stdin:
  if mode=='reordered': replay[0],replay[1]=replay[1],replay[0]
  if mode=='missing': replay.pop(1)
  if mode=='extra': replay.insert(1,dict(replay[0]))
- if mode=='foreign-flood':
+ if mode in ['foreign-flood','unsequenced-flood']:
   for i in range(400):
-   emit(dict(events[-1],id='foreign-'+str(i),run_id='foreign'))
+   event=dict(events[-1],id='noise-'+str(i),run_id='foreign' if mode=='foreign-flood' else 'r')
+   if mode=='unsequenced-flood': event.pop('sequence')
+   emit(event)
    time.sleep(.005)
  else:
   emit(dict(events[-1],id='foreign',run_id='foreign'))
@@ -117,14 +119,16 @@ fn changed_identity_type_sequence_order_and_membership_fail_replay() {
 }
 
 #[test]
-fn foreign_events_cannot_satisfy_or_renew_replay_collection() {
-    let mut client = seeded("foreign-flood");
-    let mut runner = Runner::new(&mut client, "s");
-    let start = Instant::now();
-    runner.replay_run(&"r".into());
-    assert!(!runner.checks().last().unwrap().passed);
-    assert!(start.elapsed() >= Duration::from_millis(500));
-    assert!(start.elapsed() < Duration::from_secs(2));
+fn foreign_or_unsequenced_events_cannot_satisfy_or_renew_replay_collection() {
+    for mode in ["foreign-flood", "unsequenced-flood"] {
+        let mut client = seeded(mode);
+        let mut runner = Runner::new(&mut client, "s");
+        let start = Instant::now();
+        runner.replay_run(&"r".into());
+        assert!(!runner.checks().last().unwrap().passed);
+        assert!(start.elapsed() >= Duration::from_millis(500));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
 }
 
 #[test]
