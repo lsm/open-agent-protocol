@@ -62,3 +62,21 @@ fn tolerant_packed_validation_retains_declared_schemas() {
     );
     assert_eq!(result.diagnostics[0].code, "schema_invalid");
 }
+
+#[test]
+fn unknown_types_under_core_roots_do_not_claim_a_core_feature() {
+    let validator = Validator::tolerant().unwrap();
+    for kind in [
+        "action.call.future",
+        "action.permission.future",
+        "user.input.future",
+    ] {
+        let event = json!({
+            "protocol":"open-agent-protocol", "version":"0.1",
+            "profile":"open-agent-protocol.agent-control-core",
+            "type":kind, "id":"future", "payload":{},
+        });
+        let result = validator.validate(&serde_json::to_vec(&event).unwrap(), "unknown-root");
+        assert!(result.valid(), "{kind}: {:?}", result.diagnostics);
+    }
+}

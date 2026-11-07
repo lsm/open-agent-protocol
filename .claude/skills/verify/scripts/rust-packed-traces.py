@@ -79,12 +79,12 @@ def run(command, output, label):
     return result
 
 
-def load_refusal(goap, rust, fixture, output):
+def load_refusal(goap, rust, fixture, output, tolerant=False):
     directories = [ROOT / "fixtures" / p for p in [fixture["path"], *fixture.get("packs", [])]]
     flags = [argument for directory in directories for argument in ["--pack", directory]]
     core = ROOT / "fixtures/valid/core-completed.json"
-    go = run([goap, "validate", "--format", "json", *flags, core], output, fixture["id"] + ".go")
-    rs = run([rust, *flags, core], output, fixture["id"] + ".rust")
+    go = run([goap, "validate", "--format", "json", "--mode", "tolerant" if tolerant else "strict", *flags, core], output, fixture["id"] + ".go")
+    rs = run([rust, *(["--tolerant"] if tolerant else []), *flags, core], output, fixture["id"] + ".rust")
     go_codes = sorted(set(re.findall(r"\b(?:pack_[a-z_]+|ext_claim_without_pack)\b", go.stderr)))
     rust_codes = json.loads(rs.stdout)["load_codes"]
     assert go.returncode == rs.returncode == 1, (fixture["id"], go.stderr, rs.stdout)
