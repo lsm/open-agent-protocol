@@ -2053,6 +2053,7 @@ enter or leave it after a ready visit observes a change in live work. Parking
 removes membership and reopening restores it when needed. Removing an entry
 updates both fallback references and ready tokens before the next pass. Idle
 notifying sessions consume no fallback visits and leave no unfinished pass.
+Fallback removal preserves the order of the remaining visits in an active pass.
 Tests in the readiness journey
 observe the shared handle and a cancellation across parking, retry refused
 parking, and check allocation failures during open.

@@ -2320,12 +2320,12 @@ pub const Hub = struct {
 
     fn removeFallback(self: *Hub, entry: *Entry) void {
         const index = entry.fallback_index orelse return;
-        _ = self.fallbacks.swapRemove(index);
-        if (index < self.fallbacks.items.len) {
-            self.entries.items[self.fallbacks.items[index]].fallback_index = index;
+        _ = self.fallbacks.orderedRemove(index);
+        for (self.fallbacks.items[index..], index..) |remaining, at| {
+            self.entries.items[remaining].fallback_index = at;
         }
         entry.fallback_index = null;
-        self.next_fallback = @min(self.next_fallback, index);
+        if (index < self.next_fallback) self.next_fallback -= 1;
         self.pass_remaining = @min(self.pass_remaining, self.fallbacks.items.len);
     }
 

@@ -42,6 +42,8 @@ The mixed-adapter test keeps unnotified live-work output readable while closing
 neighboring fallback sessions. It then removes that session's live-work
 obligation, parks it, and observes a new run after reopening. Require both
 sessions' subscription events to carry their admitted run IDs.
+The large-batch test removes a visited fallback session between passes and
+requires the next pass to reach every remaining unvisited subscription.
 
 This slice exposes the observer for the Hub ready queue. Whole-stage resource
 acceptance uses the working and idle measurements in the Hub journey after the
