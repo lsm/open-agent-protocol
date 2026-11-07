@@ -1166,6 +1166,27 @@ test "a background job reaches its limit too, and a run's cancel leaves it alone
     try expectTask(&jobs, .failed, .expired);
 }
 
+test "a limit reached by a job already being cancelled leaves the cancel as its reason" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "sleep 30", "call-cancelled");
+    const job = jobs.list.items[0];
+    jobs.lock();
+    job.killed = true;
+    job.cause = .cancelled_by_model;
+    job.deadline_ms = 0;
+    jobs.mutex.unlock();
+
+    _ = jobs.endExpired();
+
+    const reported = try jobs.report(job.output, false);
+    try std.testing.expectEqual(@as(?[]const u8, null), reported.reason);
+    try std.testing.expectEqual(Jobs.Cause.cancelled_by_model, job.cause.?);
+}
+
 test "cancelling the run ends the command it moved and reports nothing" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
