@@ -6624,6 +6624,13 @@ test "a large batch leaves time between slices and eventually delivers every ses
     try testing.expect(first > 0);
     try testing.expect(first <= 64);
     var last_seen = subscriptions[79].next() != null;
+    hub.discardSession("slice-0");
+    try hub.pump(testing.allocator, 0);
+    for (subscriptions[64..79]) |subscription| {
+        try testing.expect(subscription.next() != null);
+    }
+    while (subscriptions[79].next()) |_| last_seen = true;
+    try testing.expectEqual(true, last_seen);
     for (0..8) |_| {
         try hub.pump(testing.allocator, 0);
         while (subscriptions[79].next()) |_| last_seen = true;
