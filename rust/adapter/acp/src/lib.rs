@@ -28,3 +28,6 @@ mod tools;
 
 mod permissions;
 pub use permissions::PermissionReply;
+
+mod permission_controller;
+pub use permission_controller::Permissions;

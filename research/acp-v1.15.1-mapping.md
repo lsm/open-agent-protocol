@@ -66,3 +66,14 @@ events under a synthetic host prefix. This is component evidence. Normal Rust
 Session permission support is unavailable pending its controller/integration
 layers. Native async reply ownership and full corpus replay have separate
 approved slices.
+
+## Owned Rust permission controller
+
+The standalone Permissions component binds requests to their actual bridge,
+serializes response writes with correlated commits and parent transitions, and
+owns cancellation through the existing Operation worker. The native consumer
+compares fourteen Go/Rust event and parsed-wire cases, including trailing
+notifications. Blocked selected and settlement replies, queued cancellation
+and bridge close use synthetic native children and return OS threads to their
+starting inventory after child reap. Normal Session permission support remains
+unavailable pending integration. The byte-for-byte corpus remains a later gate.

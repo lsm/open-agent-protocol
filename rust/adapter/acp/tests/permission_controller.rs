@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::Inbound;
+use oap_adapter::jsonrpc::{Inbound, IncomingRequest, Message, Responder};
 use oap_adapter::InteractionResolution;
 use oap_adapter_acp::{
     native::PromptParams,
@@ -42,7 +42,7 @@ fn permission_case(mode: &str) {
                 script.into(),
                 "fixture".into(),
                 fixture.0.join("reply").to_string_lossy().into(),
-                mode.into(),
+                if mode == "parent" { "parent" } else { "grant" }.into(),
             ],
             env: Some(Vec::new()),
             queue_capacity: 1,
@@ -90,7 +90,30 @@ fn permission_case(mode: &str) {
     block_on(call.admitted()).unwrap();
     let mut stream = run.lock().unwrap().start(10).unwrap();
     let request = receive.recv_timeout(Duration::from_secs(3)).unwrap();
-    block_on(scope.clone().request(run.clone(), request)).unwrap();
+    if mode == "foreign" {
+        struct RefusedSource;
+        impl Responder for RefusedSource {
+            fn send(&self, _: Message) -> Result<(), oap_adapter::jsonrpc::Error> {
+                panic!("foreign source received a reply")
+            }
+        }
+        let foreign = Arc::new(IncomingRequest::new(
+            oap_adapter_acp::process::DIALECT,
+            request.id.clone(),
+            request.method.clone(),
+            request.params.clone(),
+            Arc::new(RefusedSource),
+        ));
+        assert_eq!(
+            block_on(scope.clone().request(run.clone(), foreign)).unwrap_err(),
+            oap_adapter::Error::InvalidResolution
+        );
+    }
+    block_on(scope.clone().request(run.clone(), request.clone())).unwrap();
+    assert_eq!(
+        block_on(scope.clone().request(run.clone(), request)).unwrap_err(),
+        oap_adapter::Error::InvalidResolution
+    );
     let mut events = Vec::new();
     for _ in 0..3 {
         events.push(block_on(stream.next()).unwrap().unwrap());
@@ -100,26 +123,34 @@ fn permission_case(mode: &str) {
         .unwrap()
         .decode_payload::<PermissionRequestedPayload>()
         .unwrap();
-    if mode == "grant" {
-        block_on(scope.clone().resolve(
-            run.clone(),
-            InteractionResolution {
-                run_id: permission.run_id.clone(),
-                responded_by: permission.responded_by.clone(),
-                permission: Some(PermissionResolveRequest {
-                    interaction_id: permission.interaction_id,
-                    requested_by: permission.requested_by,
-                    responded_by: permission.responded_by,
-                    session_id: permission.session_id,
-                    run_id: permission.run_id,
-                    choice_id: "allow".into(),
-                    granted: true,
-                    ..PermissionResolveRequest::default()
-                }),
-                ..InteractionResolution::default()
-            },
-        ))
-        .unwrap();
+    if mode != "parent" {
+        let resolution = InteractionResolution {
+            run_id: permission.run_id.clone(),
+            responded_by: permission.responded_by.clone(),
+            permission: Some(PermissionResolveRequest {
+                interaction_id: permission.interaction_id,
+                requested_by: permission.requested_by,
+                responded_by: permission.responded_by,
+                session_id: permission.session_id,
+                run_id: permission.run_id,
+                choice_id: "allow".into(),
+                granted: true,
+                ..PermissionResolveRequest::default()
+            }),
+            ..InteractionResolution::default()
+        };
+        if mode == "concurrent" {
+            let first = scope.clone().resolve(run.clone(), resolution.clone());
+            let second = scope.clone().resolve(run.clone(), resolution);
+            let (first, second) = block_on(futures::future::join(first, second));
+            assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+            assert_eq!(
+                first.err().or(second.err()),
+                Some(oap_adapter::Error::InteractionResolved)
+            );
+        } else {
+            block_on(scope.clone().resolve(run.clone(), resolution)).unwrap();
+        }
     }
     block_on(scope.clone().complete(run.clone(), block_on(call).unwrap())).unwrap();
     events.extend(
@@ -140,7 +171,7 @@ fn permission_case(mode: &str) {
     assert_eq!(resolved["in_reply_to"], values[2]["id"]);
     assert_eq!(
         resolved["payload"]["outcome"],
-        if mode == "grant" {
+        if mode != "parent" {
             "resolved"
         } else {
             "cancelled"
@@ -161,7 +192,7 @@ fn permission_case(mode: &str) {
         serde_json::from_str(&std::fs::read_to_string(fixture.0.join("reply")).unwrap()).unwrap();
     assert_eq!(
         reply["result"]["outcome"]["outcome"],
-        if mode == "grant" {
+        if mode != "parent" {
             "selected"
         } else {
             "cancelled"
@@ -176,4 +207,14 @@ fn native_permission_resolves_through_the_public_engine() {
 #[test]
 fn parent_completion_settles_permission_before_tool_and_run() {
     permission_case("parent");
+}
+
+#[test]
+fn foreign_source_with_the_same_wire_id_is_refused_before_publication() {
+    permission_case("foreign");
+}
+
+#[test]
+fn concurrent_answers_publish_and_write_exactly_once() {
+    permission_case("concurrent");
 }
