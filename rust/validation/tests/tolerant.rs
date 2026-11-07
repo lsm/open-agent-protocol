@@ -80,3 +80,23 @@ fn unknown_types_under_core_roots_do_not_claim_a_core_feature() {
         assert!(result.valid(), "{kind}: {:?}", result.diagnostics);
     }
 }
+
+#[test]
+fn an_unknown_run_event_checks_each_available_string_scope_field() {
+    let validator = Validator::tolerant().unwrap();
+    let mut trace: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    let mut event = trace[2].clone();
+    event["type"] = json!("com.example.future.event");
+    event["id"] = json!("mixed-scope");
+    event["sequence"] = json!(2);
+    event["payload"] = json!({"session_id":42, "run_id":"r-other"});
+    trace[3]["sequence"] = json!(3);
+    trace.as_array_mut().unwrap().insert(3, event);
+    let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), "mixed-scope");
+    let observed: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.index))
+        .collect();
+    assert_eq!(observed, [("scope_mismatch", 3)]);
+}

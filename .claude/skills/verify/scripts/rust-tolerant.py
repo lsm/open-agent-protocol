@@ -76,6 +76,22 @@ def main():
     trace = deepcopy(base[:2])
     trace[1]["payload"]["admission"] = "merged"
     judge("opaque-admission-still-owes-terminal", trace, [], False, False)
+    for status, valid in [("waiting_for_input", True), ("queued", False)]:
+        trace = deepcopy(base)
+        trace[1]["payload"]["admission"] = "merged"
+        update = dict(deepcopy(base[2]), type="run.status.updated", id="before-start", sequence=1)
+        update["payload"]["status"] = status
+        trace[2]["sequence"], trace[3]["sequence"] = 2, 3
+        trace.insert(2, update)
+        judge("opaque-prestart-" + status, trace, [], False, valid)
+    for session, valid in [("s1", True), ("s-other", False)]:
+        trace = deepcopy(base)
+        request = dict(deepcopy(base[0]), id="submit-again", session_id=session)
+        request["payload"]["session_id"] = session
+        response = dict(deepcopy(base[1]), id="response-again", in_reply_to="submit-again", session_id=session)
+        response["payload"].update(session_id=session, admission="merged", effective_delivery="merge", submission_id="sub-again")
+        trace[3:3] = [request, response]
+        judge("opaque-tracked-run-" + session, trace, [], False, valid)
     for status, valid in [("draining", True), ("cancelling", False)]:
         trace = json.loads((ROOT / "fixtures/valid/core-cancelled.json").read_text())
         next(e for e in trace if e["type"] == "run.cancel.response")["payload"]["status"] = status
@@ -89,6 +105,15 @@ def main():
         for index, envelope in enumerate(trace[2:], 1):
             envelope["sequence"] = index
         judge("unknown-event-position-" + str(position), trace, [], False, position != 4)
+    trace = deepcopy(base)
+    event = dict(deepcopy(base[2]), type="com.example.future.event", id="mixed-scope", sequence=2,
+                 payload={"session_id":42, "run_id":"r-other"})
+    trace[-1]["sequence"] = 3
+    trace.insert(3, event)
+    judge("unknown-scope-partial-decode", trace, [], False, False)
+    trace[3]["type"] = "com.example.replyroles.notice"
+    judge("declared-scope-partial-decode", trace, [ROOT / "fixtures/packs/reply-roles"], False, False)
+    assert all(r["go"] == [("semantic", "scope_mismatch", 3)] for r in results[-2:]), results[-2:]
     for conflict in [False, True]:
         request = dict(deepcopy(base[0]), type="com.example.pause.request", payload={}, run_id="rA")
         response = dict(deepcopy(base[1]), type="com.example.pause.response", payload={}, run_id="rB" if conflict else "rA")
