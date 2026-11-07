@@ -1,3 +1,4 @@
+mod references;
 mod resources;
 
 pub use resources::PackResources;

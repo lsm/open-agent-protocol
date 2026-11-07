@@ -8,6 +8,7 @@ license = "CC0-1.0"
 publish = false
 
 [dependencies]
+fluent-uri = "=0.4.1"
 jsonschema = { version = "=0.59.0", default-features = false, features = ["arbitrary-precision"] }
 oap-protocol = { path = "../protocol" }
 regex = "=1.13.1"

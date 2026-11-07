@@ -1172,6 +1172,7 @@ dependencies = [
 name = "oap-validation"
 version = "0.1.0"
 dependencies = [
+ "fluent-uri",
  "jsonschema",
  "oap-protocol",
  "regex",

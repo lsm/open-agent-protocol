@@ -35,7 +35,10 @@ fn main() -> ExitCode {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
-    output = Path(parser.parse_args().output_dir).resolve()
+    parser.add_argument("--references", action="store_true")
+    args = parser.parse_args()
+    codes_to_judge = CODES | ({"pack_external_ref"} if args.references else set())
+    output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     run = lambda command, label: PREVIOUS["run"](command, output, label)
     project = output / "consumer"
@@ -52,7 +55,7 @@ def main():
     consumer = ROOT / "rust/target/debug/pack-resource-consumer"
     fixtures = json.loads((ROOT / "fixtures/manifest.json").read_text())["fixtures"]
     cases = [(f["id"], [ROOT / "fixtures" / p for p in [f["path"], *f.get("packs", [])]], f["codes"])
-             for f in fixtures if f["kind"] == "load-invalid" and set(f["codes"]) <= CODES]
+             for f in fixtures if f["kind"] == "load-invalid" and set(f["codes"]) <= codes_to_judge]
     base = {"id": "com.example.resources", "version": "1", "schemas": ["types.json"]}
     outside = output / "outside.json"
     outside.write_text("{}")
@@ -129,7 +132,7 @@ def main():
     assert data["documents"][storage]["$defs"]["objectsRead"]["properties"]["type"]["const"] == "com.example.storage.objects.read", data
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public Rust/Go cases agree, with shared positive resources retained")
-    print("STAGED: reference ownership, branch compilation and corpus checks follow in loader stage three")
+    print("STAGED: branch compilation and corpus checks follow in later loader slices")
 
 
 if __name__ == "__main__":

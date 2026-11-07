@@ -2,7 +2,7 @@
 
 Decision 0004, which makes good 0003's extension seam: the load refusals a pack set can draw, and the gate diagnostics packed content draws on the wire. A load refusal is not a diagnostic (0004 L174–182): it comes from the loader before any trace is read, and `load-invalid` fixtures judge it. Format: [README](README.md).
 
-Rust entries marked staged describe the `PackLoader` constructor. They cover descriptor and payload-member declarations, contained resource loading and exact dependencies. Reference, branch and corpus checks follow in the final loader stage.
+Rust entries marked staged describe the `PackLoader` constructor. They cover descriptor and payload-member declarations, contained resource loading and exact dependencies. Reference ownership is checked by the third slice; branch compilation and corpus checks follow.
 
 ## Load refusals
 
@@ -55,7 +55,7 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#a-pack-is-a-document-someone-else-wrote/1` | A pack's schemas MUST resolve references only to the core bundle, its own documents and the packs it names in `depends_on`. | L159–161 | `pack_external_ref` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#a-pack-is-a-document-someone-else-wrote/1` | A pack's schemas MUST resolve references only to the core bundle, its own documents and the packs it names in `depends_on`. | L159–161 | `pack_external_ref` | `pack.go:LoadPacks` | `packs.zig` | `pack/references.rs:check (staged)` |
 | `0004#a-pack-is-a-document-someone-else-wrote/2` | Each `depends_on` entry MUST be satisfied by a loaded pack of that exact id and version. | L161–164 | `pack_dependency_missing` | `pack.go:LoadPacks` | `packs.zig` | `pack/resources.rs:PackLoader::read_resources (staged)` |
 | `0004#a-pack-is-a-document-someone-else-wrote/3` | Every `schemas` entry, and the pack's fixture manifest, MUST resolve beneath the pack root after symlinks are followed. | L166–172 | `pack_schema_path_escape` | `pack.go:LoadPacks` | `packs.zig` | `pack/resources.rs:contained_path (staged)` |
 

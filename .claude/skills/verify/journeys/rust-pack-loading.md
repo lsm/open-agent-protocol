@@ -1,11 +1,12 @@
 # Rust staged pack loading
 
-Stage one constructs `pack::PackLoader` with descriptor shape, capability/error/type namespaces,
-prefix-freedom, envelope roles, reply targets, refusal declarations and gates
-checked, including payload-member declarations after the resource slice. This is explicitly a staged constructor. It does not load schema
-documents, payload members, dependencies, references, branches or fixture corpora,
-and cannot produce a trace validator. Shared trace parity still skips load-invalid
-fixtures until the complete loader is connected.
+The declaration constructor checks descriptor shape, declared namespaces,
+prefix freedom, roles, reply targets, refusals and admitted gates, including
+payload-member declarations. `read_resources` adds contained resource loading,
+exact dependencies and reference ownership. Each surface states its staged
+contract. Branch compilation and corpus checks follow in the remaining slices.
+Shared trace parity includes load-invalid fixtures once the complete loader is
+connected.
 
 Run from the repository root:
 
@@ -37,7 +38,7 @@ The second slice extends declaration checks to payload members, then
 paths resolve beneath the canonical pack root after lexical cleanup and symlink
 resolution. Dependencies name a loaded pack at their exact version. Returned
 `PackResources` exposes immutable schema documents and contained manifest paths.
-Reference ownership, branch compilation and corpus validation remain for stage three.
+Reference ownership is checked by the third slice. Compilation and corpus validation follow separately.
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_resources
@@ -50,3 +51,34 @@ raw outputs and `results.json`; resource-stage success is explicitly labelled.
 An escaping schema or manifest symlink must yield `pack_schema_path_escape`.
 An internal link and a normalized path remain usable, and the shared positive
 packs retain their real schema content and manifest locations.
+
+## Reference ownership
+
+The third slice checks `$ref`, `$dynamicRef` and nested `$id` scopes before
+publishing `PackResources`. Own schema documents, member schemas and their
+identifiers are available, along with exact declared dependencies and the core
+bundle. A globally loaded pack supplies no authority without a dependency.
+Identifiers stay in the owning pack namespace.
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_references
+python3 .claude/skills/verify/scripts/rust-pack-resources.py --references --output-dir /tmp/oap-pack-references-<unique>
+```
+
+The external consumer includes the shared external-reference and escaping-ID
+refusals, both of which must yield `pack_external_ref` and exit 1. It retains the
+same positive schema resources. This constructor remains staged while branch
+compilation and typed corpus validation are added in separate following slices.
+
+### URI parsing compatibility
+
+```sh
+python3 .claude/skills/verify/scripts/rust-pack-uri-compat.py --output-dir /tmp/oap-pack-uri-compat-<unique>
+```
+
+Inspect `results.json` and retained raw outputs. Go and Zig accept three raw
+pipe/space URI cases that Rust refuses with `pack_external_ref`. Their percent-
+encoded controls pass Go and Rust. Zig accepts the two escaped ID controls and
+reports the escaped-fragment control unjudged with exit 1. The helper labels
+these outcomes separately, as recorded in `drafts/extension-pack-load-refusals.md`,
+and checks that Rust's refusal messages render the URI or parse error directly.
