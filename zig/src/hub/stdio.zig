@@ -2099,11 +2099,21 @@ pub const Frontend = struct {
 
     pub fn cancelControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
         var run_id: ?[]const u8 = null;
-        const gated = try gateEnvelope(arena, value, &.{.run_cancel_request}, "the request envelope is not a run.cancel.request");
+        const gated = try gateEnvelope(arena, value, &.{ .run_cancel_request, .task_cancel_request }, "the request envelope is not a cancellation request");
         const envelope = switch (gated) {
             .refused => |refused| return .{ .refused = .{ .refusal = refused, .run_id = run_id } },
             .envelope => |envelope| envelope,
         };
+        if (envelope.payload == .task_cancel_request) {
+            const request = envelope.payload.task_cancel_request;
+            if (!self.hub.knows(id)) return .{ .refused = .{ .refusal = .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) }, .run_id = null } };
+            if (!std.mem.eql(u8, request.session_id, id) or !std.mem.eql(u8, envelope.session_id orelse "", id)) return .{ .refused = .{ .refusal = .{ .code = "scope_mismatch", .message = "session_id does not match the addressed session" }, .run_id = null } };
+            var reported = contract.Refusal{};
+            const result = self.hub.cancelTask(arena, id, request.task_id, &reported) catch |err| {
+                return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = null } };
+            };
+            return .{ .envelope = .{ .id = try self.responseId(arena), .in_reply_to = envelope.id, .session_id = id, .capability_revision = envelope.capability_revision, .payload = .{ .task_cancel_response = result } } };
+        }
         const request = envelope.payload.run_cancel_request;
         if (!self.hub.knows(id)) {
             return .{ .refused = .{ .refusal = .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) }, .run_id = run_id } };
@@ -3099,6 +3109,7 @@ const ReferenceState = struct {
     saw_tool_sources_json: []const u8 = "",
     running: bool = false,
     submit_refuses: bool = false,
+    task_enabled: bool = false,
     native_fails: bool = false,
     state_fails: bool = false,
     lister_closed: bool = false,
@@ -3186,6 +3197,7 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
         .submit = referenceSubmit,
         .resolve = referenceResolve,
         .cancel = referenceCancel,
+        .cancel_task = referenceTaskCancel,
         .pump = referencePump,
         .drain = referenceDrain,
         .drain_mixed = referenceDrain,
@@ -3281,6 +3293,13 @@ fn referenceCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8
     const session_id = try arena.dupe(u8, referenceId(state));
     const named = try arena.dupe(u8, run_id);
     return .{ .session_id = session_id, .run_id = named, .accepted = true, .status = .cancelling };
+}
+
+fn referenceTaskCancel(ptr: *anyopaque, task_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.TaskCancelResponse {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    if (!state.task_enabled) return refusal.unsupported("session.task.cancel", contract.reason_unadvertised);
+    if (!std.mem.eql(u8, task_id, "job-1")) return error.InvalidSubmission;
+    return .{ .outcome = .requested };
 }
 
 fn referencePump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
@@ -5668,4 +5687,21 @@ test "unsubscribe answers the same for an id with no subscription and refuses a 
         try testing.expectEqualStrings("invalid_request", try harness.code());
     }
     try testing.expectError(Error.MalformedLine, harness.send("{\"id\":5,\"op\":\"unsubscribe\",\"subscription\":\"two\"}"));
+}
+
+test "cancel accepts a task cancellation envelope and reports unavailable adapters" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send(try controlLine(harness.arena(), 2, op_cancel, "s1", "{" ++ control_head ++ ",\"type\":\"session.task.cancel.request\",\"id\":\"task-cancel\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}"));
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    try harness.send(try controlLine(harness.arena(), 3, op_cancel, "s1", "{" ++ control_head ++ ",\"type\":\"session.task.cancel.request\",\"id\":\"wrong-scope\",\"session_id\":\"other\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}"));
+    try testing.expectEqualStrings("scope_mismatch", try harness.code());
+    reference_holder.task_enabled = true;
+    defer reference_holder.task_enabled = false;
+    try harness.send(try controlLine(harness.arena(), 4, op_cancel, "s1", "{" ++ control_head ++ ",\"type\":\"session.task.cancel.request\",\"id\":\"task-ok\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}"));
+    const answer = try openResult(harness);
+    try testing.expectEqualStrings("session.task.cancel.response", answer.get("type").?.string);
+    try testing.expectEqualStrings("task-ok", answer.get("in_reply_to").?.string);
+    try testing.expectEqualStrings("requested", answer.get("payload").?.object.get("outcome").?.string);
 }
