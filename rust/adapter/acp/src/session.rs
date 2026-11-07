@@ -19,7 +19,7 @@ use oap_protocol::{
 use crate::adapter::{unavailable, Config};
 use crate::native::{
     decode, ConfigOption, PermissionOutcome, PermissionRequest, PermissionResponse,
-    SessionNewResult, METHOD_SESSION_REQUEST_PERMISSION,
+    SessionNewParams, SessionNewResult, METHOD_SESSION_NEW, METHOD_SESSION_REQUEST_PERMISSION,
 };
 use crate::process::{Implementation, Process};
 use crate::submit::Run;
@@ -86,6 +86,11 @@ impl Session {
         descriptor: Descriptor,
         next: &Arc<AtomicU64>,
     ) -> Result<Box<dyn SessionContract>, Error> {
+        let params = serde_json::value::to_raw_value(&SessionNewParams {
+            cwd: config.process.dir.clone(),
+            mcp_servers: config.mcp_servers.clone(),
+        })
+        .map_err(native_error)?;
         let mut process_config = config.process.clone();
         process_config
             .client_info
@@ -97,7 +102,14 @@ impl Session {
         let process = Process::start_async(process_config, None)
             .await
             .map_err(|error| Error::Harness(error.to_string()))?;
-        let (process, raw) = crate::reload::call(process, &request, config).await?;
+        let (process, raw) = if request.reopen {
+            crate::reload::call(process, &request, config).await?
+        } else {
+            process
+                .call_async(METHOD_SESSION_NEW.into(), Some(params), None)
+                .await
+                .map_err(native_error)?
+        };
         let opened = decode::<SessionNewResult>(raw.get().as_bytes())
             .map_err(|error| {
                 if request.reopen {

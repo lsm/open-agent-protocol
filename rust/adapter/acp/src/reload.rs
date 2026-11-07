@@ -4,12 +4,8 @@ use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE}
 use oap_protocol::FEATURE_OPEN_REOPEN;
 use serde_json::value::RawValue;
 
-use crate::native::{
-    SessionNewParams, SessionReopenParams, METHOD_SESSION_LOAD, METHOD_SESSION_NEW,
-    METHOD_SESSION_RESUME,
-};
-use crate::process::Process;
-use crate::Config;
+use crate::native::{SessionReopenParams, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME};
+use crate::{process::Process, Config};
 
 pub(crate) const REASON: &str = "ACP restored the bound conversation; configOptions reports the agent's current settings, and omitted settings remain the loader's configuration";
 
@@ -27,17 +23,6 @@ pub(crate) async fn call(
     request: &OpenRequest,
     config: &Config,
 ) -> Result<(Process, Box<RawValue>), Error> {
-    if !request.reopen {
-        let params = serde_json::value::to_raw_value(&SessionNewParams {
-            cwd: config.process.dir.clone(),
-            mcp_servers: config.mcp_servers.clone(),
-        })
-        .map_err(|error| Error::Harness(error.to_string()))?;
-        return process
-            .call_async(METHOD_SESSION_NEW.into(), Some(params), None)
-            .await
-            .map_err(|error| Error::Harness(format!("create ACP session: {error}")));
-    }
     let caps = process
         .initialize
         .agent_capabilities
@@ -47,21 +32,14 @@ pub(crate) async fn call(
         .get("loadSession")
         .is_some_and(|raw| serde_json::from_str::<bool>(raw.get()).unwrap_or(false))
     {
-        Some(METHOD_SESSION_LOAD)
+        METHOD_SESSION_LOAD
     } else if caps
         .get("sessionCapabilities")
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
-        .is_some_and(|value| {
-            value
-                .get("resume")
-                .is_some_and(serde_json::Value::is_object)
-        })
+        .is_some_and(|value| matches!(value.get("resume"), Some(serde_json::Value::Object(_))))
     {
-        Some(METHOD_SESSION_RESUME)
+        METHOD_SESSION_RESUME
     } else {
-        None
-    };
-    let Some(method) = method else {
         let _ = process.close_async().await;
         return Err(refusal(
             "the ACP agent advertises neither loadSession nor sessionCapabilities.resume",
