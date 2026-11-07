@@ -23,13 +23,16 @@ pub(super) fn declared<'a>(packs: Option<&'a CompiledPacks>, kind: &str) -> Opti
 }
 
 pub(super) fn expected(packs: Option<&CompiledPacks>, kind: &EnvelopeType) -> EnvelopeType {
+    if declared(packs, kind.as_str()).is_none() {
+        return super::expected_response(kind);
+    }
     packs
         .into_iter()
         .flat_map(|p| p.resources().descriptors())
         .flat_map(|(_, d)| entries(d, "envelope_types"))
-        .find(|entry| text(entry, "replies_to") == kind.as_str())
+        .find(|entry| entry["role"] == "response" && text(entry, "replies_to") == kind.as_str())
         .map(|entry| EnvelopeType::from(text(entry, "type")))
-        .unwrap_or_else(|| super::expected_response(kind))
+        .unwrap_or_default()
 }
 
 pub(super) fn scope(e: &Envelope) -> (String, String) {

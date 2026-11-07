@@ -212,6 +212,13 @@ def main():
     path = output / "nonresponse-replies-to-is-ignored.json"
     path.write_text(json.dumps([envelope(request,"request",{}), envelope(response,"response",{},in_reply_to="request")]))
     results.append(compare(goap, rust, path, [misleading], [], output, "nonresponse-replies-to-is-ignored"))
+    core_target = output / "core-reply-field"
+    core_target.mkdir()
+    descriptor = json.loads((misleading / "pack.json").read_text())
+    descriptor["envelope_types"][0]["replies_to"] = "capabilities.request"
+    (core_target / "pack.json").write_text(json.dumps(descriptor))
+    (core_target / "types.json").write_text((roles / "types.json").read_text())
+    results.append(compare(goap, rust, ROOT / "fixtures/valid/core-completed.json", [core_target], [], output, "core-reply-target-is-preserved"))
     no_result = output / "no-result"
     no_result.mkdir()
     request_a = "com.example.noresult.read"
