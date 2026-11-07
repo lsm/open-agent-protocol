@@ -74,3 +74,68 @@ fn schema_checks_leave_the_callers_value_unchanged_and_redact_auth_answers() {
         .unwrap()
         .contains("SENSITIVE_TEST_CODE"));
 }
+
+#[test]
+fn primary_member_errors_follow_escaped_pointer_order() {
+    struct Temporary(std::path::PathBuf);
+    impl Drop for Temporary {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    let directory = Temporary(std::env::temp_dir().join(format!(
+        "oap-schema-pointers-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir(&directory.0).unwrap();
+    let names = ["com.example.pointer.a/b~c", "com.example.pointer.ab"];
+    let members: Vec<_> = names
+        .iter()
+        .map(|name| {
+            serde_json::json!({
+                "payload_type":"run.completed", "member":name,
+                "schema":{"type":"object", "properties":{"ok":{"const":true}}}
+            })
+        })
+        .collect();
+    let gates: Vec<_> = names
+        .iter()
+        .map(|name| {
+            serde_json::json!({
+                "payload_type":"run.completed", "member":name, "ungated":true
+            })
+        })
+        .collect();
+    std::fs::write(directory.0.join("types.json"), "{}").unwrap();
+    std::fs::write(
+        directory.0.join("pack.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "id":"com.example.pointer", "version":"1", "schemas":["types.json"],
+            "payload_members":members, "gates":gates
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let compiled = PackLoader::load(std::slice::from_ref(&directory.0)).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let mut trace: Value =
+        serde_json::from_slice(&std::fs::read(root.join("valid/core-completed.json")).unwrap())
+            .unwrap();
+    let terminal = trace
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|envelope| envelope["type"] == "run.completed")
+        .unwrap();
+    for name in names {
+        terminal["payload"][name] = serde_json::json!({"ok":false});
+    }
+    let diagnostic = compiled
+        .validate_schema(terminal, "ordered-members")
+        .unwrap_err();
+    assert_eq!(diagnostic.pointer, "/payload/com.example.pointer.ab/ok");
+}
