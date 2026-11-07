@@ -637,6 +637,7 @@ fn runHubHttp(
     defer daemon.deinit();
     var notices = StdoutSink{ .file = stderr, .io = hubIo() };
     daemon.signals = endpoint_signals.count;
+    daemon.signal_readable = endpoint_signals.readable();
     daemon.frontend.notices = .{ .context = &notices, .write = StdoutSink.write };
     const failed = hub_daemon.serveListener(&daemon, &listener, hub_accept_poll_ms);
     if (failed) |failure| {
@@ -823,6 +824,7 @@ fn runHub(
         .context = &input,
         .readable = input.handle,
         .signals = endpoint_signals.count,
+        .signal_readable = endpoint_signals.readable(),
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StdinFailed, error.FrameLimitTooSmall => {

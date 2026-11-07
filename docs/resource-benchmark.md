@@ -20,6 +20,12 @@ macOS and Linux.
 so a `history` run with and without it shows what parking saves per idle agent.
 Go and Rust ignore it until they can park.
 
+After `empty` sessions settle, `--idle-window` samples process CPU and context
+switches over five seconds by default. `idle_cpu_s`, `idle_switches` and
+`idle_wall_s` retain the deltas and observed duration in `results.json`. The
+Markdown report includes idle CPU milliseconds and the context-switch delta.
+Use alternating baseline and candidate runs in one window to check idle waits.
+
 ## In the benchmark report
 
 `--report scaling.jsonl` also writes one JSON line per target and scenario in
