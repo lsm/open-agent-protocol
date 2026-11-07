@@ -703,7 +703,7 @@ test "a response is refused the way the oracle's client refuses it" {
     const bodiless = try createSessionResult(scratch, .{ .status = 204 }, 0);
     try testing.expectEqualStrings("opencode httpapi: unexpected 204 for /api/session", bodiless.failed.message);
 
-    const located = try createSessionResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"ses_a\",\"projectID\":\"p\",\"outcome\":\"succeeded\",\"time\":{\"created\":1,\"updated\":1,\"idle\":2},\"location\":{\"directory\":\"/w\"}}}" }, 0);
+    const located = try createSessionResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"ses_a\",\"projectID\":\"p\",\"outcome\":\"succeeded\",\"time\":{\"created\":1,\"updated\":1,\"busy\":2,\"idle\":2},\"location\":{\"directory\":\"/w\"}}}" }, 0);
     try testing.expectEqualStrings("/w", located.ok.directory);
 
     const foreign = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"msg_a\",\"sessionID\":\"ses_b\",\"time\":{\"created\":1},\"type\":\"user\",\"payload\":{\"text\":\"x\"},\"delivery\":\"steer\"}}" }, "ses_a", 0);
@@ -733,7 +733,7 @@ test "interrupt says whether it interrupted, an inbox cancel accepts no content,
     try testing.expectEqualStrings("ses_a", listed.ok[0]);
     const strict = try activeResult(scratch, .{ .status = 200, .body = "{\"data\":{\"ses_a\":{\"type\":\"running\",\"since\":1}}}" }, 0);
     try testing.expectEqualStrings("opencode httpapi: decode /api/session/active response: json: unknown field \"since\"", strict.failed.message);
-    try testing.expectEqual(@as(?Failure, null), try infoResult(scratch, .{ .status = 200, .body = "{\"version\":\"2.0.24\",\"pid\":1,\"urls\":[],\"paths\":{},\"capabilities\":{}}" }, 0));
+    try testing.expectEqual(@as(?Failure, null), try infoResult(scratch, .{ .status = 200, .body = "{\"version\":\"2.0.24\",\"pid\":1,\"hostname\":\"synthetic\",\"urls\":[],\"paths\":{},\"capabilities\":{}}" }, 0));
 }
 
 fn streamEveryShape(allocator: std.mem.Allocator) !void {
