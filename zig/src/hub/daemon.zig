@@ -76,6 +76,7 @@ pub const Daemon = struct {
     stopping: std.atomic.Value(bool) = .init(false),
     drained_at_ms: ?u64 = null,
     signals: ?*const fn () u32 = null,
+    signal_readable: ?std.Io.File.Handle = null,
     streams: std.atomic.Value(usize) = .init(0),
     quiet_limit_ms: u64 = keepalive_ms,
 
@@ -91,6 +92,7 @@ pub const Daemon = struct {
 
     pub fn stop(self: *Daemon) void {
         self.stopping.store(true, .release);
+        self.frontend.wake.notify(self.frontend.wake.ctx);
     }
 
     fn goingCheck(context: *const anyopaque) bool {
@@ -1078,6 +1080,9 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
         const children = daemon.frontend.hub.readableHandles(scratch.allocator()) catch &.{};
         for (children) |child| {
             watched.append(daemon.allocator, .{ .fd = child, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
+        }
+        if (daemon.signal_readable) |handle| {
+            watched.append(daemon.allocator, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
         }
         const limit_ns = if (poll_ms < 0) std.math.maxInt(u64) else @as(u64, @intCast(poll_ms)) * std.time.ns_per_ms;
         const wait_ns = daemon.frontend.hub.waitBudget(limit_ns);

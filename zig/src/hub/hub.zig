@@ -551,6 +551,7 @@ const Entry = struct {
     parked_state: ?ParkedState = null,
     parked_runs: usize = 0,
     active_ns: u64 = 0,
+    park_check_ns: u64 = 0,
     last_outcome: ?LastOutcome = null,
     created_at_ms: i64,
     run_id: []u8,
@@ -626,6 +627,7 @@ pub const Hub = struct {
     next_fallback: usize = 0,
     pass_remaining: usize = 0,
     ready_queue: ?*ready.Queue = null,
+    wake_token: ?*ready.Token = null,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -654,6 +656,10 @@ pub const Hub = struct {
         for (self.entries.items) |*entry| entry.deinit(self.allocator);
         self.entries.deinit(self.allocator);
         self.fallbacks.deinit(self.allocator);
+        if (self.wake_token) |token| {
+            token.queue.remove(token);
+            self.allocator.destroy(token);
+        }
         if (self.ready_queue) |queue| {
             queue.deinit();
             self.allocator.destroy(queue);
@@ -1688,8 +1694,21 @@ pub const Hub = struct {
 
     pub fn waitBudget(self: *const Hub, limit_ns: u64) u64 {
         if (self.hasPendingPass() or self.reclaim_head != null) return 0;
-        const next = self.holds.peek() orelse return limit_ns;
-        return @min(limit_ns, next.expires_ns -| self.clock());
+        const now = self.clock();
+        var budget = limit_ns;
+        if (self.holds.peek()) |next| budget = @min(budget, next.expires_ns -| now);
+        if (self.park_after_ns > 0) {
+            for (self.entries.items) |*entry| {
+                if (!self.eligibleForIdlePark(entry)) continue;
+                const deadline = @max(entry.active_ns, entry.park_check_ns) +| self.park_after_ns;
+                budget = @min(budget, deadline -| now);
+            }
+        }
+        return budget;
+    }
+
+    pub fn needsPolling(self: *const Hub) bool {
+        return self.fallbacks.items.len > 0;
     }
 
     fn handleOf(entry: *const Entry) ?std.Io.File.Handle {
@@ -1865,13 +1884,19 @@ pub const Hub = struct {
         if (self.park_after_ns == 0) return;
         const now = self.clock();
         for (self.entries.items) |*entry| {
-            if (entry.parked or !entry.reopenable) continue;
-            if (now -| entry.active_ns < self.park_after_ns) continue;
-            _ = self.park(arena, entry.session_id) catch |err| switch (err) {
+            if (!self.eligibleForIdlePark(entry)) continue;
+            if (now -| @max(entry.active_ns, entry.park_check_ns) < self.park_after_ns) continue;
+            const parked = self.park(arena, entry.session_id) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
-                else => {},
+                else => false,
             };
+            if (!parked) entry.park_check_ns = now;
         }
+    }
+
+    fn eligibleForIdlePark(self: *const Hub, entry: *const Entry) bool {
+        return !entry.parked and entry.reopenable and self.heldFor(entry) == null and
+            entry.session.holdsNoLiveWork() and entry.session.activity() == .idle;
     }
 
     pub fn closeSessions(self: *Hub) Sweep {
@@ -2329,19 +2354,34 @@ pub const Hub = struct {
             if (candidate == entry) break index;
         } else unreachable;
         if (entry.session.vtable.set_ready == null) return self.refreshFallback(entry, index);
+        const queue = try self.readyQueue();
+        const token = try self.allocator.create(ready.Token);
+        errdefer self.allocator.destroy(token);
+        token.* = .{ .queue = queue, .index = index };
+        entry.ready_token = token;
+        errdefer entry.ready_token = null;
+        try self.refreshFallback(entry, index);
+        entry.observe(true);
+    }
+
+    fn readyQueue(self: *Hub) Failure!*ready.Queue {
         if (self.ready_queue == null) {
             const queue = try self.allocator.create(ready.Queue);
             errdefer self.allocator.destroy(queue);
             queue.* = ready.Queue.init(if (builtin.is_test) testing.io else std.Io.Threaded.global_single_threaded.io()) catch return error.BackendFailed;
             self.ready_queue = queue;
         }
-        const token = try self.allocator.create(ready.Token);
-        errdefer self.allocator.destroy(token);
-        token.* = .{ .queue = self.ready_queue.?, .index = index };
-        entry.ready_token = token;
-        errdefer entry.ready_token = null;
-        try self.refreshFallback(entry, index);
-        entry.observe(true);
+        return self.ready_queue.?;
+    }
+
+    pub fn wakeSignal(self: *Hub) Failure!contract.Session.Ready {
+        if (self.wake_token == null) {
+            const queue = try self.readyQueue();
+            const token = try self.allocator.create(ready.Token);
+            token.* = .{ .queue = queue, .index = null };
+            self.wake_token = token;
+        }
+        return .{ .ctx = self.wake_token.?, .notify = ready.Token.notify };
     }
 
     fn refreshFallback(self: *Hub, entry: *Entry, index: usize) std.mem.Allocator.Error!void {
@@ -2462,7 +2502,7 @@ pub const Hub = struct {
         }
     }
 
-    fn heldFor(self: *Hub, entry: *const Entry) ?*Subscription {
+    fn heldFor(self: *const Hub, entry: *const Entry) ?*Subscription {
         for (self.holds.items) |held| {
             if (std.mem.eql(u8, held.subscription.session_id, entry.session_id)) return held.subscription;
         }
@@ -2824,6 +2864,57 @@ test "mixed fallback sessions survive removal and observed live work can become 
     try testing.expectEqual(true, found);
     _ = try hub.cancel(arena, observed.session_id, reopened.run_id.?);
     try hub.close(arena, observed.session_id);
+}
+
+test "an owner wake survives the last observed session closing and drains without entries" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    const wake = try hub.wakeSignal();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const opened = try hub.open(scratch.allocator(), "signalling", .{ .session_id = "last-ready" });
+    const handles = try hub.readableHandles(scratch.allocator());
+    wake.notify(wake.ctx);
+    try hub.close(scratch.allocator(), opened.session_id);
+    var watched = [_]std.posix.pollfd{.{ .fd = handles[0], .events = std.posix.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(@as(usize, 1), try std.posix.poll(&watched, 0));
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(false, hub.hasPendingPass());
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+}
+
+test "automatic parking retries a refused close at the next idle deadline" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    const interval = std.time.ns_per_s;
+    var hub = Hub.init(testing.allocator, testClock, .{ .park_after_ns = interval });
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const opened = try hub.open(scratch.allocator(), "signalling", .{ .session_id = "retry-park" });
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(u64, interval), hub.waitBudget(std.math.maxInt(u64)));
+    adapter.sessions.items[0].refuse_close = true;
+    tick(interval);
+    try hub.pump(testing.allocator, 0);
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(u64, interval), hub.waitBudget(std.math.maxInt(u64)));
+    tick(interval);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(std.math.maxInt(u64), hub.waitBudget(std.math.maxInt(u64)));
+    const request = try submitFor(scratch.allocator(), opened.session_id);
+    const admitted = try hub.submit(scratch.allocator(), opened.session_id, &request, "after-timer-park");
+    _ = try hub.cancel(scratch.allocator(), opened.session_id, admitted.run_id.?);
+    try hub.close(scratch.allocator(), opened.session_id);
 }
 
 fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {

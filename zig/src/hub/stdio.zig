@@ -585,6 +585,7 @@ pub const Frontend = struct {
     signals_seen: u32 = 0,
     jobs: std.ArrayList(*Job) = .empty,
     next_ticket: u64 = 0,
+    wake: contract.Session.Ready,
 
     pub const Job = struct {
         ticket: u64,
@@ -595,6 +596,7 @@ pub const Frontend = struct {
         abandoned: bool = false,
         out_of_memory: bool = false,
         kind: Kind,
+        wake: contract.Session.Ready,
 
         pub const Kind = union(enum) {
             list: struct { options: ListOptions, targets: []const hubmod.NativeTarget, listed: []const hubmod.NativeListing = &.{} },
@@ -625,6 +627,7 @@ pub const Frontend = struct {
                 },
             }
             job.done.store(true, .release);
+            job.wake.notify(job.wake.ctx);
         }
     };
 
@@ -649,7 +652,7 @@ pub const Frontend = struct {
     fn newJob(self: *Frontend) Error!*Job {
         const job = try self.allocator.create(Job);
         self.next_ticket += 1;
-        job.* = .{ .ticket = self.next_ticket, .arena = std.heap.ArenaAllocator.init(self.allocator), .kind = undefined };
+        job.* = .{ .ticket = self.next_ticket, .arena = std.heap.ArenaAllocator.init(self.allocator), .kind = undefined, .wake = self.wake };
         return job;
     }
 
@@ -738,6 +741,7 @@ pub const Frontend = struct {
         if (options.frame_limit < minimum_frame_limit) return Error.FrameLimitTooSmall;
         return .{
             .hub = hub,
+            .wake = try hub.wakeSignal(),
             .sink = sink,
             .allocator = allocator,
             .frame_limit = options.frame_limit,
@@ -2818,6 +2822,7 @@ pub const Stream = struct {
     readable: ?std.Io.File.Handle = null,
     stop: ?*const fn () bool = null,
     signals: ?*const fn () u32 = null,
+    signal_readable: ?std.Io.File.Handle = null,
 };
 
 const ReadFailure = error{InputFailed};
@@ -2892,6 +2897,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         _ = scratch.reset(.retain_capacity);
         const arena = scratch.allocator();
         const input_ready = try waitOn(frontend, stream, arena, cycle_budget_ns);
+        if (stream.signals) |count| try frontend.takeSignals(count());
         var more = false;
         if (input_ready) {
             more = try readAvailable(allocator, stream, &pending);
@@ -2957,14 +2963,17 @@ fn pending_bound(limit: usize) usize {
 
 const pollable = @import("builtin").os.tag != .windows;
 fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
-    const budget_ns = frontend.hub.waitBudget(wait_ns);
-    if (comptime !pollable) return waitByPeeking(frontend, stream, budget_ns);
+    if (try frontend.shutdownComplete(arena)) return false;
+    if (comptime !pollable) return waitByPeeking(frontend, stream, frontend.hub.waitBudget(wait_ns));
+    const polling = frontend.hub.needsPolling() or stream.stop != null or (stream.signals != null and stream.signal_readable == null);
+    const budget_ns = frontend.hub.waitBudget(if (polling) wait_ns else std.math.maxInt(u64));
     const input = stream.readable orelse return true;
     const children = try frontend.hub.readableHandles(arena);
     var watched: std.ArrayList(std.posix.pollfd) = .empty;
     for (children) |handle| try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
+    if (stream.signal_readable) |handle| try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
     try watched.append(arena, .{ .fd = input, .events = std.posix.POLL.IN, .revents = 0 });
-    const budget = hubmod.pollMillis(budget_ns);
+    const budget = if (budget_ns == std.math.maxInt(u64)) -1 else hubmod.pollMillis(budget_ns);
     const awoken = std.posix.poll(watched.items, budget) catch 0;
     if (awoken == 0) return false;
     const input_events = watched.items[watched.items.len - 1].revents;
@@ -4393,6 +4402,27 @@ test "a native list runs off the loop: another request is answered while it list
         }
     }
     try testing.expect(found);
+}
+
+test "a completed native list wakes an otherwise quiet frontend" {
+    if (comptime !pollable) return error.SkipZigTest;
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var gated_state: u8 = 0;
+    try harness.hub.register("gated", .{ .ptr = &gated_state, .vtable = &.{ .probe = referenceProbe, .open = gatedOpen, .native_list = gatedNativeList } });
+    list_gate.store(true, .release);
+    defer list_gate.store(false, .release);
+    try harness.frontend.handleLine("{\"id\":1,\"op\":\"work.list\",\"request\":{\"include_native\":true}}");
+    const handles = try harness.hub.readableHandles(harness.arena());
+    try testing.expectEqual(@as(usize, 1), handles.len);
+    var watched = [_]std.posix.pollfd{.{ .fd = handles[0], .events = std.posix.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
+    list_gate.store(false, .release);
+    try testing.expectEqual(@as(usize, 1), try std.posix.poll(&watched, 5000));
+    try harness.frontend.answerJobs();
+    try testing.expectEqual(@as(i64, 1), (try harness.lastValue()).object.get("id").?.integer);
+    try harness.hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
 }
 
 test "work.status names an idle session that never ran done, a running one running, and an absent one unknown_session" {

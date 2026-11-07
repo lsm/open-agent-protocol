@@ -700,11 +700,20 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             timeline.halt.set()
             timeline.join(timeout=5)
         if result["status"] == "ok":
-            time.sleep(1.0 + (options.park_after + 1 if park else 0))
+            settle = options.idle_settle if scenario == "empty" else 1.0
+            settle += options.park_after + 1 if park else 0
+            time.sleep(settle)
         sampler.stop()
         result.update(peak_rss=sampler.peak["rss"], peak_threads=sampler.peak["threads"])
         if hub.process.poll() is None:
             settled = probe.sample()
+            if result["status"] == "ok" and scenario == "empty":
+                idle_started = time.perf_counter()
+                time.sleep(options.idle_window)
+                idle = probe.sample()
+                result.update(idle_settle_s=settle, idle_wall_s=time.perf_counter() - idle_started,
+                              idle_cpu_s=idle["cpu"] - settled["cpu"],
+                              idle_switches=idle["switches"] - settled["switches"])
             result.update(settled_rss=settled["rss"], threads=settled["threads"], fds=settled["fds"],
                           written=settled["written"] - base["written"],
                           stored=stored_bytes(data) + stored_bytes(home) + stored_bytes(work) - stored_before)
@@ -758,7 +767,9 @@ COLUMNS = (("peak RSS MiB", "peak_rss", 1 / 2**20, "KiB", 1 / 2**10),
            ("written KiB", "written", 1 / 2**10, "B", 1),
            ("stored KiB", "stored", 1 / 2**10, "B", 1),
            ("step p50 ms", "p50_ms", 1, "µs", 1e3),
-           ("step p99 ms", "p99_ms", 1, "µs", 1e3))
+           ("step p99 ms", "p99_ms", 1, "µs", 1e3),
+           ("idle CPU ms", "idle_cpu_s", 1e3, "ms", 1e3),
+           ("idle switches", "idle_switches", 1, "", 1))
 
 
 FLIGHT_COLUMNS = (("peak threads", "peak_threads", 1), ("hold threads", "hold_threads", 1), ("peak footprint MiB", "peak_rss", 1 / 2**20),
@@ -796,7 +807,7 @@ def render(results, targets):
             if len(fitted) >= 2:
                 cells = []
                 for _, key, _, unit, scale in COLUMNS:
-                    value = slope([(r["n"], r[key]) for r in fitted])
+                    value = slope([(r["n"], r[key]) for r in fitted if key in r])
                     cells.append("–" if value is None else f"{value * scale:.2f}{(' ' + unit) if unit else ''}")
                 lines.append(f"| {scenario} | per agent | " + " | ".join(cells) + " | | slope over ok rows |")
         lines.append("")
@@ -885,6 +896,8 @@ def main():
     parser.add_argument("--max-time-wait", type=int, default=12000, help="stop a flight when this many sockets on the machine are in TIME_WAIT")
     parser.add_argument("--max-hub-cores", type=float, default=12, help="stop a flight whose hub holds this many cores for 5 s")
     parser.add_argument("--park-after", type=int, default=0, help="serve the Zig targets with --park-after, and settle past it")
+    parser.add_argument("--idle-window", type=float, default=5, help="seconds to sample CPU and context switches after empty sessions settle")
+    parser.add_argument("--idle-settle", type=float, default=10, help="seconds for empty-session startup work and thread retirement to settle")
     parser.add_argument("--out", help="directory for results.json and results.md")
     parser.add_argument("--no-build", action="store_true", help="use existing zig-out and rust/target/release binaries")
     parser.add_argument("--go", help="a prebuilt goap binary")
@@ -900,6 +913,10 @@ def main():
     targets = [t for t in arguments.targets.split(",") if t]
     scenarios = [s for s in arguments.scenarios.split(",") if s]
     counts = sorted({int(n) for n in arguments.n.split(",")})
+    if arguments.idle_window <= 0:
+        parser.error("--idle-window must be positive")
+    if arguments.idle_settle < 0:
+        parser.error("--idle-settle must be nonnegative")
     unknown = set(targets) - set(TARGETS) | set(scenarios) - set(SCENARIOS) - set(FLIGHTS)
     if unknown:
         parser.error("unknown target or scenario: " + ", ".join(sorted(unknown)))

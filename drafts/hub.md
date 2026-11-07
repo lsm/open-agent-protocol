@@ -2056,6 +2056,21 @@ removes membership and reopening restores it when needed. Removing an entry
 updates both fallback references and ready tokens before the next pass. Idle
 notifying sessions consume no fallback visits and leave no unfinished pass.
 Fallback removal preserves the order of the remaining visits in an active pass.
+The Hub owner also has a coalesced wake on the same queue. Native list, read
+and transcript commands publish completion before notifying it. The frontend
+joins these workers before the Hub releases that wake. Closing the last session
+preserves a pending owner wake, and an empty Hub can consume it.
+
+POSIX stdio waits on stdin, backend descriptors, the shared queue and a separate
+process-lifetime signal pipe. Its timeout is the next hold or idle-parking
+deadline. A backend with fallback obligations, a custom stop
+callback, or a signal counter without a readable handle requires bounded
+polling. A signal increments its counter before writing the nonblocking pipe,
+and counting drains the pipe while retaining the total for graceful and forced
+shutdown. The handler preserves libc errno. Automatic parking excludes held
+subscriptions and live work from its timer candidates. A refused close is
+retried after the configured idle interval, and releasing a hold permits an
+already-due idle session to park immediately.
 Tests in the readiness journey
 observe the shared handle and a cancellation across parking, retry refused
 parking, and check allocation failures during open.
