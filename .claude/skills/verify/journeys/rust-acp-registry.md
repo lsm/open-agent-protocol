@@ -35,6 +35,6 @@ HOME, config and workspace are temporary; inputs are synthetic and no ports are 
 
 Only explicitly configured fixed-directory ACP entries are enabled. This journey does not exercise
 cancellation or live config projection; their native proofs are in
-`rust-acp-cancel.md` and `rust-acp-live-config.md`. Reload remains unavailable.
+`rust-acp-cancel.md` and `rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`.
 This does not claim C8 served parity or complete issue #1438. Read the current descriptor rather than
 inferring support from the adapter name.

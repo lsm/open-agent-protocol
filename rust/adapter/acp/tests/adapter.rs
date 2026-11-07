@@ -84,7 +84,7 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-cancel", pin().capability_revision)
+        format!("{}-rust-reload", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
@@ -97,7 +97,9 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "session.state"
             | "session.message.delivery.auto"
             | "run.status" => SupportLevel::EMULATED,
-            "session.open" | "action.permissions" | "run.cancel" => SupportLevel::NATIVE,
+            "session.open" | "session.open.reopen" | "action.permissions" | "run.cancel" => {
+                SupportLevel::NATIVE
+            }
             "models.list"
             | "session.model.switch"
             | "session.message.submit"
@@ -153,7 +155,14 @@ fn public_open_and_admission_return_typed_control_refusals() {
             panic!("unexpected {opened}")
         };
         assert_eq!(control.feature, feature);
-        assert_eq!(control.reason, "unadvertised");
+        assert_eq!(
+            control.reason,
+            if feature == "session.open.reopen" {
+                "unsatisfiable"
+            } else {
+                "unadvertised"
+            }
+        );
     }
     assert_eq!(
         block_on(adapter.open(OpenRequest::default()))

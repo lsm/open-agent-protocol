@@ -112,6 +112,60 @@ impl<T> Drop for Operation<T> {
 }
 
 impl Process {
+    pub fn call_draining_async(
+        self,
+        method: String,
+        params: Option<Box<RawValue>>,
+        deadline: Option<Instant>,
+    ) -> Operation<(Self, Box<RawValue>)> {
+        Operation::spawn(move |control| {
+            control.arm(&self.child, &self.client);
+            let inbound = self.client.inbound();
+            let result = std::thread::scope(|scope| {
+                let (send, response) = crossbeam_channel::bounded(1);
+                let client = &self.client;
+                let child = &self.child;
+                scope.spawn(move || {
+                    let result = client.call(&method, params, deadline);
+                    if result.is_err() {
+                        child.kill();
+                        client.close();
+                    }
+                    let _ = send.send(result);
+                });
+                let result = loop {
+                    crossbeam_channel::select! {
+                        recv(response) -> result => break result.unwrap_or_else(|_| Err(worker_error())),
+                        recv(inbound) -> message => match message {
+                            Ok(oap_adapter::jsonrpc::Inbound::Request(request)) => {
+                                if let Err(error) = request.respond_error(
+                                    -32601,
+                                    "method not supported during session reload",
+                                ) {
+                                    break Err(error);
+                                }
+                            }
+                            Ok(oap_adapter::jsonrpc::Inbound::Barrier(ack)) => drop(ack),
+                            Ok(oap_adapter::jsonrpc::Inbound::Notification(_)) => (),
+                            Err(_) => break Err(DIALECT.error(Fault::Closed)),
+                        }
+                    }
+                };
+                if result.is_err() {
+                    self.child.kill();
+                    self.client.close();
+                    if let Ok(Err(error)) = response.recv() {
+                        if matches!(&error.fault, Fault::DeadlineExceeded) {
+                            return Err(error);
+                        }
+                    }
+                }
+                result
+            })?;
+            Ok((self, result))
+        })
+    }
+
     pub fn call_shared_async(
         self: Arc<Self>,
         method: String,

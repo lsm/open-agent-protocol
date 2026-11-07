@@ -88,16 +88,20 @@ impl Inner {
             return false;
         }
         self.refresh();
+        self.apply_config(&update.config_options);
+        true
+    }
+
+    pub(crate) fn apply_config(&mut self, options: &[ConfigOption]) {
         let previous = (
             self.state.current_model_id.clone(),
             self.state.reasoning_level.clone(),
         );
-        self.model_option = update
-            .config_options
+        self.model_option = options
             .iter()
             .find(|option| option.category == "model")
             .cloned();
-        if let Some(option) = update.config_options.iter().rev().find(|option| {
+        if let Some(option) = options.iter().rev().find(|option| {
             option.category == "model"
                 && !matches!(option.current_value.as_str(), "" | "default" | "current")
         }) {
@@ -105,7 +109,7 @@ impl Inner {
                 .current_model_id
                 .clone_from(&option.current_value);
         }
-        self.state.reasoning_level = reasoning(&update.config_options);
+        self.state.reasoning_level = reasoning(options);
         if previous
             != (
                 self.state.current_model_id.clone(),
@@ -114,7 +118,6 @@ impl Inner {
         {
             self.state.updated_at_ms = now_ms();
         }
-        true
     }
 }
 
