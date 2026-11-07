@@ -37,7 +37,13 @@ Its library resource regressions retain resource-checks.log and resources.json.
 Require zero Operation workers for 100 streamed notifications, local completion
 and local prompt failure. A test-only counter records the actual Operation
 spawn path while the native peer is held at a file barrier; all peers are reaped
-before assertions. Resolved and parent-settled runs must retain zero permission
+before assertions. A peer that reads exactly 64 native reply bytes then stops
+reading must still deliver its text chunk to the public stream while the
+resolution future remains pending, without creating another Operation worker.
+The script retains this blocked_reply metric alongside the other resources.
+Native control and settlement writes retain bounded writer/inbound backpressure;
+pure projection adds no deferred queue. Keep signed blocked-reply reproduction
+6bfbdf6edf before the fix. Resolved and parent-settled runs must retain zero permission
 routes. Eighty resolved runs keep at most 64 recent refusal ids. An evicted id
 from an older run returns InteractionNotFound; the latest resolved id returns
 InteractionResolved. Keep signed human-review regression 359b955247 before

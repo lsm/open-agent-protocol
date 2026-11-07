@@ -69,8 +69,10 @@ replay retains its separate approved slice.
 ## Owned Rust permission controller
 
 The standalone Permissions component binds requests to their actual bridge,
-serializes response writes with correlated commits and parent transitions.
-Local transitions run inline; native I/O owns cancellation through Operation. The native consumer
+serializes response writes with correlated commits and parent settlement.
+Pure local projection runs inline under the run lock without waiting for native
+writes; settlement uses bindings-before-run ordering and owned I/O cancellation.
+The native consumer
 compares fourteen Go/Rust event and parsed-wire cases, including trailing
 notifications. Blocked selected and settlement replies, queued cancellation
 and bridge close use synthetic native children and return OS threads to their

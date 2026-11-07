@@ -110,6 +110,7 @@ def main():
     (output/'resource-checks.log').write_text(resources.stdout+resources.stderr)
     assert resources.returncode==0,resources.stdout+resources.stderr
     patterns={
+        'blocked_reply':r'blocked-reply-proof partial_bytes=(\d+) content=(\d+) operation_workers=(\d+)',
         'chunks':r'hot-path-proof chunks=(\d+) notification_workers=(\d+) total_workers=(\d+)',
         'prompt_error':r'prompt-error-proof operation_workers=(\d+)',
         'resolved_routes':r'permission-route-proof retained=(\d+)',
@@ -117,9 +118,9 @@ def main():
         'cache':r'permission-cache-proof runs=(\d+) routes=(\d+) recent=(\d+)',
     }
     proof={name:[int(value) for value in re.search(pattern,resources.stdout).groups()] for name,pattern in patterns.items()}
-    assert proof==dict(chunks=[100,0,0],prompt_error=[0],resolved_routes=[0],parent_routes=[0],cache=[80,0,64]),proof
+    assert proof==dict(blocked_reply=[64,1,0],chunks=[100,0,0],prompt_error=[0],resolved_routes=[0],parent_routes=[0],cache=[80,0,64]),proof
     (output/'resources.json').write_text(json.dumps(proof,indent=2))
-    print('PASS resources: 100 chunks plus completion/error use zero operation workers; resolved and parent-settled routes empty; 80 runs retain 64 refusal IDs',flush=True)
+    print('PASS resources: blocked native reply still permits public text with zero workers; 100 chunks plus completion/error use zero operation workers; resolved and parent-settled routes empty; 80 runs retain 64 refusal IDs',flush=True)
     print(f'PASS normal Session permission ownership. Synthetic native inputs only. Evidence {output}',flush=True)
 
 

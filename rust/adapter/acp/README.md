@@ -350,8 +350,9 @@ registered by that bridge. Reusing a request object is refused. The controller
 retains the source binding through native reply and correlated commit.
 
 `request` and `resolve` own native I/O workers. `observe`, `complete` and
-`prompt_error` run local projection transitions inline when polled, with the
-bindings lock acquired before the run lock. Pending native cancellation replies
+`prompt_error` run local projection transitions inline when polled using only
+the run lock, so ordinary text can progress during a blocked native reply.
+Settlement acquires the bindings lock before the run lock. Pending native cancellation replies
 use an owned I/O operation. Use these methods for a controller-managed run. Prepare and validate under the TextRun mutex, release
 it for native I/O, then read the clock and commit. A successful selected write
 and its commit belong to the same worker, so abandoning the future cannot
@@ -360,8 +361,8 @@ cancellations even when the native transport has failed.
 
 Native I/O operations begin work when constructed. Await joins their worker.
 Dropping one aborts and reaps its native child and joins its worker, including
-a native reply operation waiting for the controller lock. Local transitions
-wait asynchronously for that lock and run on the polling caller. The bridge owns the dispatcher,
+a native reply operation waiting for the controller lock. Pure local updates
+run on the polling caller without waiting for native writes. The bridge owns the dispatcher,
 and close joins it. Futures remain caller-owned through bridge shutdown.
 
 Run `rust-acp-permission-controller.md` for the standalone native comparison,

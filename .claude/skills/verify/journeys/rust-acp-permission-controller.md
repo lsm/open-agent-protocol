@@ -46,11 +46,12 @@ run must cancel its own native ask and finish while the first request object
 is retained. Bindings match both the run object and interaction id. Completed
 bindings are pruned once their native request object has no external owner.
 Retained live request objects keep weak duplicate-publication guards until
-they are released and the next controller operation prunes them. Keep signed
+they are released and the next native operation prunes them. Keep signed
 native failing regressions before both review fixes.
 
-Local observe/completion/error transitions execute inline on the polling caller
-under an asynchronous bindings lock, then the run lock. An owned Operation is
-created when native settlement replies require I/O. The queued-cancel proof
+Local observe/completion/error projection executes inline on the polling caller
+using only the run lock. When settlement needs both locks, acquire bindings
+before the run. An owned Operation is created when native settlement replies
+need I/O or must wait behind an existing native write. The queued-cancel proof
 therefore queues a native resolution behind a blocked response. The consumer
 polls pending settlement before waiting for the native partial-write marker.

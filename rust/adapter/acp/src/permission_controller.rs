@@ -182,26 +182,25 @@ impl Permissions {
         update: impl FnOnce(&mut TextRun, i64) -> Result<(), Error> + Send + 'static,
     ) -> BoxFuture<'static, ()> {
         Box::pin(async move {
-            let native_reply = {
-                let mut bindings = self.bindings.lock().await;
-                let outcome = update(&mut run.lock().unwrap(), (self.clock)());
-                bindings.retain(|binding| binding.source.strong_count() > 0);
-                outcome?;
-                if run.lock().unwrap().permission_settlements().is_empty() {
+            {
+                let mut text = run.lock().unwrap();
+                update(&mut text, (self.clock)())?;
+                if text.permission_settlements().is_empty() {
                     return Ok(());
                 }
+            }
+            if let Some(mut bindings) = self.bindings.try_lock() {
+                bindings.retain(|binding| binding.source.strong_count() > 0);
                 let native_reply = bindings.iter().any(|binding| {
                     Weak::ptr_eq(&binding.run, &Arc::downgrade(&run)) && binding.request.is_some()
                 });
                 if !native_reply {
                     self.settle(&run, &mut bindings)?;
+                    return Ok(());
                 }
-                native_reply
-            };
-            if native_reply {
-                self.operation(move |owner, bindings| owner.settle(&run, bindings))
-                    .await?;
             }
+            self.operation(move |owner, bindings| owner.settle(&run, bindings))
+                .await?;
             Ok(())
         })
     }

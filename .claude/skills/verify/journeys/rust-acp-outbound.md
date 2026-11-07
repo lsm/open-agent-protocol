@@ -34,8 +34,9 @@ API. The native quiet-child proof runs against the implemented API. The script
 retains native frames, partial-write evidence, public operation results,
 consumer stderr, timings and OS thread inventories.
 
-This layer exposes native operation ownership. Session permission and cancel
-capabilities remain unavailable. Follow the existing ACP session, submit,
+This layer exposes native operation ownership. Normal Session permissions are
+covered by rust-acp-session-permissions.md; accepted cancellation remains a
+following slice. Follow the existing ACP session, submit,
 results, tools, model and bridge journeys too, then run the full baseline and
 Rust all-features under the same mutex. Read the real PTY reply and `/quit`
 exit. Shared process-helper grandchild-held-pipe limitations remain applicable.
