@@ -179,7 +179,7 @@ constant; Go selects unrelated core-branch required-property errors. The ledger
 in `drafts/extension-pack-load-refusals.md` records this diagnostic-only difference.
 Inspect raw outputs and the new operation's unit controls for input preservation
 and auth-answer redaction. Native strict trace semantics are exercised below.
-Tolerant mode follows separately.
+Tolerant mode is exercised in `rust-tolerant.md`.
 
 ## Native strict packed traces
 
