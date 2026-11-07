@@ -799,6 +799,23 @@ func (s *Session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	return resolver.ResolveCall(ctx, resolution)
 }
 
+func (s *Session) TaskOutput(ctx context.Context, taskID protocol.TaskID, from *uint64) (protocol.SessionTaskOutputResponse, error) {
+	s.mu.Lock()
+	closed := s.closed || s.closing
+	s.mu.Unlock()
+	if closed {
+		return protocol.SessionTaskOutputResponse{}, base.ErrSessionClosed
+	}
+	if taskID == "" {
+		return protocol.SessionTaskOutputResponse{}, base.ErrInvalidSubmission
+	}
+	reader, ok := s.session.(base.TaskOutputReader)
+	if !ok {
+		return protocol.SessionTaskOutputResponse{}, &base.UnsupportedControlError{Feature: "session.task.output", Reason: base.ControlUnadvertised}
+	}
+	return reader.TaskOutput(ctx, taskID, from)
+}
+
 func (s *Session) CancelTask(ctx context.Context, taskID protocol.TaskID) (protocol.SessionTaskCancelResponse, error) {
 	s.mu.Lock()
 	closed := s.closed || s.closing

@@ -37,6 +37,10 @@ type TaskCanceller interface {
 	CancelTask(context.Context, protocol.TaskID) (protocol.SessionTaskCancelResponse, error)
 }
 
+type TaskOutputReader interface {
+	TaskOutput(context.Context, protocol.TaskID, *uint64) (protocol.SessionTaskOutputResponse, error)
+}
+
 type SessionEventSource interface {
 	SessionEvents() EventStream
 }
@@ -237,6 +241,7 @@ var (
 	ErrUnsupportedInput    = errors.New("adapter: unsupported input")
 	ErrRunActive           = errors.New("adapter: a run is already active")
 	ErrInvalidSubmission   = errors.New("adapter: invalid submission")
+	ErrInvalidRequest      = errors.New("adapter: invalid request")
 	ErrRunNotFound         = errors.New("adapter: run not found")
 	ErrReplayCursorFuture  = errors.New("adapter: replay cursor is newer than the run")
 	ErrRunAlreadyTerminal  = errors.New("adapter: run already completed or failed")

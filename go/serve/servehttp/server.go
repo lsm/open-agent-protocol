@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/submit", s.handleSubmit)
 	mux.HandleFunc("POST /sessions/{id}/resolve", s.handleResolve)
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
+	mux.HandleFunc("POST /sessions/{id}/task-output", s.handleTaskOutput)
 	mux.HandleFunc("POST /sessions/{id}/settings", s.handleSettings)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
 	mux.HandleFunc("POST /shutdown", s.handleShutdown)
@@ -574,6 +575,51 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	response.SessionID = ack.SessionID
 	response.RunID = ack.RunID
 	response.CapabilityRevision = envelope.CapabilityRevision
+	writeEnvelope(w, http.StatusOK, response)
+}
+
+func (s *Server) handleTaskOutput(w http.ResponseWriter, r *http.Request) {
+	envelope, ok := s.readRequest(w, r, protocol.TypeSessionTaskOutputRequest)
+	if !ok {
+		return
+	}
+	var payload protocol.SessionTaskOutputRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_payload", err.Error(), envelope)
+		return
+	}
+	entry, ok := s.lookupSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if payload.SessionID != entry.ID() || (envelope.SessionID != "" && envelope.SessionID != entry.ID()) {
+		s.writeError(w, http.StatusBadRequest, "scope_mismatch", "request session does not match the addressed session", envelope)
+		return
+	}
+	result, err := entry.TaskOutput(r.Context(), payload.TaskID, payload.From)
+	if err != nil {
+		status, code := http.StatusInternalServerError, "internal"
+		switch {
+		case errors.Is(err, base.ErrInvalidRequest):
+			status, code = http.StatusBadRequest, "invalid_request"
+		case errors.Is(err, base.ErrInvalidSubmission):
+			status, code = http.StatusBadRequest, "invalid_submission"
+		case errors.Is(err, base.ErrUnsupportedInput):
+			status, code = http.StatusBadRequest, "unsupported_feature"
+		case errors.Is(err, base.ErrSessionClosed):
+			status, code = http.StatusConflict, "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			status, code = http.StatusBadRequest, "request_cancelled"
+		}
+		s.writeError(w, status, code, adapterMessage(err), envelope)
+		return
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionTaskOutputResponse, s.nextID("response"), result)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
+		return
+	}
+	response.InReplyTo, response.SessionID, response.CapabilityRevision = envelope.ID, entry.ID(), envelope.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 }
 

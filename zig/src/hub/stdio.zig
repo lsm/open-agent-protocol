@@ -27,6 +27,7 @@ pub const op_open = "open";
 pub const op_submit = "submit";
 pub const op_resolve = "resolve";
 pub const op_cancel = "cancel";
+pub const op_task_output = "task_output";
 pub const op_close = "close";
 pub const op_settings = "settings";
 pub const op_events = "events";
@@ -1064,7 +1065,7 @@ pub const Frontend = struct {
         }
         if (std.mem.eql(u8, request.op, op_events)) return self.events(arena, request);
         if (std.mem.eql(u8, request.op, op_unsubscribe)) return self.unsubscribe(arena, request);
-        if (std.mem.eql(u8, request.op, op_submit) or std.mem.eql(u8, request.op, op_resolve) or std.mem.eql(u8, request.op, op_cancel) or std.mem.eql(u8, request.op, op_settings)) {
+        if (std.mem.eql(u8, request.op, op_submit) or std.mem.eql(u8, request.op, op_resolve) or std.mem.eql(u8, request.op, op_cancel) or std.mem.eql(u8, request.op, op_task_output) or std.mem.eql(u8, request.op, op_settings)) {
             if (try request.only(arena, session_request_parameters)) |refusal| return .{ .refused = refusal };
             if (request.envelopeSizeRefusal()) |refusal| return .{ .refused = refusal };
             const session_id = request.session_id orelse "";
@@ -1075,6 +1076,8 @@ pub const Frontend = struct {
                 try self.resolveControl(arena, session_id, value)
             else if (std.mem.eql(u8, request.op, op_cancel))
                 try self.cancelControl(arena, session_id, value)
+            else if (std.mem.eql(u8, request.op, op_task_output))
+                try self.taskOutputControl(arena, session_id, value)
             else
                 try self.settingsControl(arena, session_id, value);
             return switch (controlled) {
@@ -2101,6 +2104,22 @@ pub const Frontend = struct {
             },
             else => unreachable,
         }
+    }
+
+    pub fn taskOutputControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
+        const gated = try gateEnvelope(arena, value, &.{.task_output_request}, "the request envelope is not a task output request");
+        const envelope = switch (gated) {
+            .refused => |refused| return .{ .refused = .{ .refusal = refused, .run_id = null } },
+            .envelope => |envelope| envelope,
+        };
+        const request = envelope.payload.task_output_request;
+        if (!self.hub.knows(id)) return .{ .refused = .{ .refusal = .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) }, .run_id = null } };
+        if (!std.mem.eql(u8, request.session_id, id) or !std.mem.eql(u8, envelope.session_id orelse "", id)) return .{ .refused = .{ .refusal = .{ .code = "scope_mismatch", .message = "session_id does not match the addressed session" }, .run_id = null } };
+        var reported = contract.Refusal{};
+        const result = self.hub.taskOutput(arena, id, request.task_id, request.from, &reported) catch |err| {
+            return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = null } };
+        };
+        return .{ .envelope = .{ .id = try self.responseId(arena), .in_reply_to = envelope.id, .session_id = id, .capability_revision = envelope.capability_revision, .payload = .{ .task_output_response = result } } };
     }
 
     pub fn cancelControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
@@ -3230,6 +3249,7 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
         .resolve = referenceResolve,
         .cancel = referenceCancel,
         .cancel_task = referenceTaskCancel,
+        .task_output = referenceTaskOutput,
         .pump = referencePump,
         .drain = referenceDrain,
         .drain_mixed = referenceDrain,
@@ -3325,6 +3345,13 @@ fn referenceCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8
     const session_id = try arena.dupe(u8, referenceId(state));
     const named = try arena.dupe(u8, run_id);
     return .{ .session_id = session_id, .run_id = named, .accepted = true, .status = .cancelling };
+}
+
+fn referenceTaskOutput(ptr: *anyopaque, arena: std.mem.Allocator, task_id: []const u8, from: ?u64, refusal: *contract.Refusal) contract.Failure!oap_types.TaskOutputResponse {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    if (!state.task_enabled) return refusal.unsupported(contract.feature_task_output, contract.reason_unadvertised);
+    if (!std.mem.eql(u8, task_id, "job-1") or from == null or from.? != 2) return error.InvalidRequest;
+    return .{ .output = try arena.dupe(u8, "é"), .next = 4, .truncated = false, .ended = true };
 }
 
 fn referenceTaskCancel(ptr: *anyopaque, task_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.TaskCancelResponse {
@@ -5736,4 +5763,39 @@ test "cancel accepts a task cancellation envelope and reports unavailable adapte
     try testing.expectEqualStrings("session.task.cancel.response", answer.get("type").?.string);
     try testing.expectEqualStrings("task-ok", answer.get("in_reply_to").?.string);
     try testing.expectEqualStrings("requested", answer.get("payload").?.object.get("outcome").?.string);
+}
+
+test "task output op correlates responses and validates scope" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const request = "{" ++ control_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"out-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\",\"from\":2}}";
+    try harness.send(try controlLine(harness.arena(), 2, "task_output", "s1", request));
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    reference_holder.task_enabled = true;
+    defer reference_holder.task_enabled = false;
+    try harness.send(try controlLine(harness.arena(), 3, "task_output", "s1", request));
+    const answer = try openResult(harness);
+    try testing.expectEqualStrings("session.task.output.response", answer.get("type").?.string);
+    try testing.expectEqualStrings("out-1", answer.get("in_reply_to").?.string);
+    try testing.expectEqualStrings("é", answer.get("payload").?.object.get("output").?.string);
+    try testing.expectEqual(@as(i64, 4), answer.get("payload").?.object.get("next").?.integer);
+    const bad_offset = "{" ++ control_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"offset\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\",\"from\":1}}";
+    try harness.send(try controlLine(harness.arena(), 5, "task_output", "s1", bad_offset));
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    const wrong = "{" ++ control_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"bad\",\"session_id\":\"other\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}";
+    try harness.send(try controlLine(harness.arena(), 4, "task_output", "s1", wrong));
+    try testing.expectEqualStrings("scope_mismatch", try harness.code());
+}
+
+test "task controls reject envelopes that omit session scope at the schema gate" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const output = "{" ++ control_head ++ ",\"type\":\"session.task.output.request\",\"id\":\"out\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}";
+    try harness.send(try controlLine(harness.arena(), 2, "task_output", "s1", output));
+    try testing.expectEqualStrings("schema_invalid", try harness.code());
+    const cancel = "{" ++ control_head ++ ",\"type\":\"session.task.cancel.request\",\"id\":\"cancel\",\"payload\":{\"session_id\":\"s1\",\"task_id\":\"job-1\"}}";
+    try harness.send(try controlLine(harness.arena(), 3, "cancel", "s1", cancel));
+    try testing.expectEqualStrings("schema_invalid", try harness.code());
 }
