@@ -86,6 +86,10 @@ if mode == 'delayed-exit':
             .unwrap();
         assert!(selected.status.success());
         let path = String::from_utf8(selected.stdout).unwrap();
+        let shutdown_timeout = match mode {
+            "quiet" | "blocked" | "blocked-abort" => Duration::from_millis(100),
+            _ => Duration::from_secs(1),
+        };
         Config {
             process: ProcessConfig {
                 path: path.trim().into(),
@@ -98,7 +102,7 @@ if mode == 'delayed-exit':
                 dir: "/".into(),
                 env: Some(Vec::new()),
                 queue_capacity: 1,
-                shutdown_timeout: Some(Duration::from_millis(100)),
+                shutdown_timeout: Some(shutdown_timeout),
                 ..ProcessConfig::default()
             },
             abort_active_on_close: mode == "blocked-abort",
