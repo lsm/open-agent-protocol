@@ -1444,12 +1444,13 @@ Each row gives the request line's parameters, the answer, and the errors. A
 refusal the row does not name is `internal` on both, with the
 exceptions stated once here rather than repeated per row:
 
-- **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
+- **Four codes have stdio-only transport meanings.** `unknown_op` for
   an op it does not serve, `invalid_request` for a parameter an op does not
   define, `busy` for the admission and subscription bounds, and
-  `response_too_large` for a result its frame limit cannot carry. All four
-  exist because a pipe gives no back pressure and has one shape a socket does
-  not; a port must not produce any of them over HTTP.
+  `response_too_large` for a result its frame limit cannot carry. These transport
+  refusals are stdio only. An `open` that cannot restore its recorded directory
+  also uses `invalid_request` (`400` over HTTP), pinned by
+  `TestAReopenDirectoryConflictIsABadRequest` and `TestHubOpenDirectory`.
 - **`shutting_down` answers `submit`, `open`, `work.start` and `work.send`**
   once a `shutdown` is accepted, `503` over HTTP, as
   [Shutdown and exit on stdio](#shutdown-and-exit-on-stdio) says. No row below
@@ -1564,13 +1565,14 @@ nowhere to put a reason (D12).
 
 ### `open`
 
-- **params:** `adapter` (required), `request` and optional `directory` (string or null).
+- **params:** `adapter` (required), `request` and optional `directory`
+  (string or null, **stdio only**).
   A non-null directory selects placement for this session through an
   `any_directory` adapter. It must be an absolute path to an existing directory.
   A fixed-directory adapter refuses this election even when the given path
   equals its configured directory. Empty, relative, missing and file paths are
   `invalid_request`. Omission or null uses the adapter's configured directory.
-  This member belongs to the hub transport object. The open payload can still
+  This member belongs to the stdio hub transport object. The open payload can still
   name its own `session_id`, including when it also elects a message or subscription.
   Pinned by `TestHubOpenDirectory`.
 - **answer:** a `session.open.response` envelope carrying the whole state
@@ -1600,7 +1602,7 @@ nowhere to put a reason (D12).
   not from the adapter's reply. A successful reopen's state declares
   `recovery.recovered`, and a binding store records it as `reopened`. The binding
   retains its selected directory across a restart, and a reopen uses that recorded
-  directory. An explicit different directory, or a registry that can no longer
+  directory. An explicit different directory on a stdio reopen, or a registry that can no longer
   place the session there, is refused `invalid_request` before opening the
   adapter. Close is an ordinary close of the adapter's session in both trees,
   so an adapter that keeps what it closed can be asked to reopen it. Pinned by
