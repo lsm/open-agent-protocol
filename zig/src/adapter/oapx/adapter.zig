@@ -5113,7 +5113,7 @@ test "a shell background job is visible as a session task before its run ends" {
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(root);
-    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"sleep 2\",\"run_in_background\":true}}", .{root});
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"while [ ! -e task-finish ]; do sleep 0.05; done\",\"run_in_background\":true}}", .{root});
     defer testing.allocator.free(args);
     var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
     var harness: Harness = undefined;
@@ -5144,7 +5144,8 @@ test "a shell background job is visible as a session task before its run ends" {
     const tasks = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena.allocator(), state.tasks_json.?, .{});
     try testing.expectEqualStrings(task_id, tasks.array.items[0].object.get("task_id").?.string);
     try testing.expectEqualStrings(admitted.run_id.?, tasks.array.items[0].object.get("run_id").?.string);
-    const deadline = compat.time.nowMillis() + 5000;
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "task-finish", .data = "" });
+    const deadline = compat.time.nowMillis() + 15_000;
     while (harness.count("session.task.ended") == 0 and compat.time.nowMillis() < deadline) {
         _ = try harness.session.pump(0);
         try harness.collect();
