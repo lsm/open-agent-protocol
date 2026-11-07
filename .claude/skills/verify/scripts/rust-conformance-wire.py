@@ -166,15 +166,24 @@ for line in sys.stdin:
         assert!(runner.consume_run(&run));
         assert_eq!(runner.checks().len(), 20);
         assert!(runner.checks().iter().all(|check| check.passed));
-        println!("admitted run {run} resolved permission and user input, reached its terminal; checks {}", serde_json::to_string(&runner.into_checks()).unwrap());
+        println!("admitted run {run} resolved permission and user input, reached its terminal; checks {}", serde_json::to_string(runner.checks()).unwrap());
+        runner.check_state();
+        runner.refuse_stale_revision();
+        runner.answer_cancel(&descriptor, Some(&run));
+        runner.refuse_addressable_envelope();
+        runner.refuse_unknown_reopen(&descriptor);
+        assert_eq!(runner.checks().len(), 25);
+        assert!(runner.checks().iter().all(|check| check.passed));
+        println!("state and refusal checks {}", serde_json::to_string(&runner.into_checks()).unwrap());
         let trace = client.transcript();
+        assert!(trace.iter().all(|envelope| envelope.envelope_type != EnvelopeType::RUN_CANCEL_REQUEST && envelope.envelope_type.as_str() != "conformance.not.a.real.request" && !envelope.capability_revision.as_deref().unwrap_or("").ends_with("-stale")));
         for kind in [EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST, EnvelopeType::USER_INPUT_RESOLVE_REQUEST, EnvelopeType::RUN_COMPLETED] {
             assert_eq!(trace.iter().filter(|envelope| envelope.envelope_type == kind).count(), 1);
         }
         assert!(client.transcript().iter().all(|envelope| !envelope.envelope_type.as_str().starts_with("session.list.")));
         client.close_input();
         assert!(client.wait().unwrap().success());
-        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list/run checks; streamed gates and terminal; malformed-object rejection; trace ordering; exact cursors");
+        println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list/run/refusal checks; streamed gates and terminal; malformed-object rejection; trace ordering; exact cursors");
 }
 '''
 

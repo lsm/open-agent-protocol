@@ -11,8 +11,9 @@ Require `consumer.txt` to show the real Rust memory endpoint admitting a run
 with the switched model, resolving its permission and user-input gates from
 the stream and reaching `run.completed`. The consumer checks twenty named
 results, one permission resolution, one input resolution, one completion and
-EOF exit 0. This is the staged runner API. The complete conformance report
-will follow after the remaining refusal, replay and validation slices.
+EOF exit 0. The consumer then performs five state/refusal checks. This is the
+staged runner API. The complete conformance report will follow after the
+remaining replay and validation slices.
 
 Public API tests check the first offered permission choice, text and selected
 input answers, preserved interaction participants and session/run addressing,

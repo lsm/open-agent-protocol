@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::Client;
 
 mod models;
+mod probes;
 mod runs;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -36,6 +37,15 @@ impl Check {
             name: name.into(),
             detail: detail.into(),
             ..Self::default()
+        }
+    }
+
+    pub fn skipped(name: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            detail: detail.into(),
+            passed: true,
+            skipped: true,
         }
     }
 }
