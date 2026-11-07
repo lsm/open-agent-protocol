@@ -144,7 +144,8 @@ def send(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
 request=read()
 send(dict(id=request['id'],result=dict(protocolVersion=1,agentCapabilities={})))
 request=read()
-send(dict(id=request['id'],result=dict(sessionId='native')))
+model=dict(id='model',category='model',type='select',currentValue='sol',options=[dict(value='sol',name='Sol'),dict(value='luna',name='Luna')])
+send(dict(id=request['id'],result=dict(sessionId='native',configOptions=[model])))
 def ask(index):
  params=dict(sessionId='native',toolCall=dict(toolCallId='tool-'+str(index),title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])
  if mode=='idle-malformed': params=dict(toolCall=7)
@@ -160,6 +161,11 @@ else:
   reply=read()
   (out/('reply-'+str(index)+'.json')).write_text(json.dumps(reply))
   send(dict(id=prompt['id'],result=dict(stopReason='end_turn')))
+ request=read()
+ if request is not None:
+  assert request['method']=='session/set_config_option'
+  model['currentValue']=request['params']['value']
+  send(dict(id=request['id'],result=dict(configOptions=[model])))
  sys.stdin.read()
 "#).unwrap();
     let python = std::process::Command::new("python3")
@@ -287,7 +293,29 @@ fn settled_permission_stays_known_after_the_next_run_is_admitted() {
             events.last().unwrap().sequence.unwrap().to_string()
         );
     }
+    let before = block_on(session.state()).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    let (_, switched) = block_on(session.model_switcher().unwrap().switch_model(
+        oap_protocol::SessionModelSwitchRequest {
+            session_id: "session".into(),
+            model_id: "luna".into(),
+            allow_degraded_features: vec!["session.model.switch".into()],
+            ..oap_protocol::SessionModelSwitchRequest::default()
+        },
+    ))
+    .unwrap();
+    let sampled = block_on(session.state()).unwrap();
     block_on(session.close()).unwrap();
+    assert_eq!(sampled.current_model_id, "luna");
+    assert!(switched.updated_at_ms > before.updated_at_ms);
+    println!(
+        "model-metadata-proof {}",
+        serde_json::json!({"run_timestamp":before.updated_at_ms,"switched_timestamp":switched.updated_at_ms,"sampled_timestamp":sampled.updated_at_ms})
+    );
+    assert_eq!(
+        sampled.updated_at_ms, switched.updated_at_ms,
+        "state refresh replaced a newer model-switch timestamp"
+    );
     for index in 0..2 {
         let reply: serde_json::Value = serde_json::from_slice(
             &std::fs::read(fixture.0.join(format!("reply-{index}.json"))).unwrap(),
