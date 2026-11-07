@@ -70,7 +70,7 @@ def main():
                     level = {
                         'protocol.initialize': 'emulated', 'capabilities': 'emulated',
                         'session.open': 'native', 'session.state': 'emulated',
-                        'action.permissions': 'native',
+                        'action.permissions': 'native', 'run.cancel': 'native',
                         'models.list': 'degraded', 'session.model.switch': 'degraded',
                         'session.message.submit': 'degraded', 'run.streaming': 'degraded',
                         'session.message.delivery.auto': 'emulated', 'run.status': 'emulated',
