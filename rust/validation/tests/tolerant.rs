@@ -25,9 +25,8 @@ fn tolerant_validation_accepts_unknown_envelopes_but_keeps_known_payload_shapes(
     assert!(!strict.validate(&data, "additive-member").valid());
     assert!(tolerant.validate(&data, "additive-member").valid());
     trace[2]["payload"]["status"] = json!("failed");
-    assert!(!tolerant
-        .validate(&serde_json::to_vec(&trace).unwrap(), "known-const")
-        .valid());
+    let result = tolerant.validate(&serde_json::to_vec(&trace).unwrap(), "known-const");
+    assert_eq!(result.diagnostics[0].pointer, "/payload/status");
 }
 
 #[test]
@@ -61,4 +60,72 @@ fn tolerant_packed_validation_retains_declared_schemas() {
         "packed-negative",
     );
     assert_eq!(result.diagnostics[0].code, "schema_invalid");
+    assert_eq!(result.diagnostics[0].pointer, "/payload");
+}
+
+#[test]
+fn unknown_types_under_core_roots_do_not_claim_a_core_feature() {
+    let validator = Validator::tolerant().unwrap();
+    for kind in [
+        "action.call.future",
+        "action.permission.future",
+        "user.input.future",
+    ] {
+        let event = json!({
+            "protocol":"open-agent-protocol", "version":"0.1",
+            "profile":"open-agent-protocol.agent-control-core",
+            "type":kind, "id":"future", "payload":{},
+        });
+        let result = validator.validate(&serde_json::to_vec(&event).unwrap(), "unknown-root");
+        assert!(result.valid(), "{kind}: {:?}", result.diagnostics);
+    }
+}
+
+#[test]
+fn an_unknown_run_event_checks_each_available_string_scope_field() {
+    let validator = Validator::tolerant().unwrap();
+    let mut trace: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    let mut event = trace[2].clone();
+    event["type"] = json!("com.example.future.event");
+    event["id"] = json!("mixed-scope");
+    event["sequence"] = json!(2);
+    event["payload"] = json!({"session_id":42, "run_id":"r-other"});
+    trace[3]["sequence"] = json!(3);
+    trace.as_array_mut().unwrap().insert(3, event);
+    let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), "mixed-scope");
+    let observed: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.index))
+        .collect();
+    assert_eq!(observed, [("scope_mismatch", 3)]);
+}
+
+#[test]
+fn schema_only_task_types_keep_generic_tolerant_scope_and_run_checks() {
+    let validator = Validator::tolerant().unwrap();
+    let mut trace: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    let mut event = trace[2].clone();
+    event["type"] = json!("session.task.updated");
+    event["id"] = json!("task-event");
+    event["payload"] = json!({"task_id":"task", "status":"running"});
+    let result = validator.validate(&serde_json::to_vec(&event).unwrap(), "task-admission");
+    assert!(result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "illegal_run_transition"));
+    trace[2]["sequence"] = json!(2);
+    trace[3]["sequence"] = json!(3);
+    trace.as_array_mut().unwrap().insert(2, event);
+    assert!(validator
+        .validate(&serde_json::to_vec(&trace).unwrap(), "task-prelude")
+        .valid());
+    let mut request = trace[0].clone();
+    request["type"] = json!("session.task.output.request");
+    request["payload"] = json!({"session_id":"s-other", "task_id":"task"});
+    let result = validator.validate(&serde_json::to_vec(&request).unwrap(), "task-scope");
+    assert!(result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "scope_mismatch"));
 }
