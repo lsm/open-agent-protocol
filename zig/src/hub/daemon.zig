@@ -625,6 +625,7 @@ pub const Connection = struct {
     peer_closed: bool = false,
     subscription: ?*hubmod.Subscription = null,
     stream_ended: bool = false,
+    needs_feed: bool = false,
     awaiting: ?Deferred = null,
     chunks: ?hub_http.Chunked = null,
     decoded: std.ArrayList(u8) = .empty,
@@ -704,7 +705,7 @@ pub const Connection = struct {
                 deadline = self.drain_started_ms +| @as(u64, @intCast(hub_http.drain_total_ms));
             },
             .streaming => if (!self.pending()) {
-                if (self.stream_ended) return 0;
+                if (self.stream_ended or self.needs_feed) return 0;
                 deadline = self.progress_ms +| self.daemon.quiet_limit_ms;
             },
             .awaiting => {},
@@ -917,6 +918,7 @@ pub const Connection = struct {
             self.phase = .done;
             return;
         };
+        self.needs_feed = self.out.items.len >= self.sent + stream_buffer_bytes;
         if (filled == .ended) self.stream_ended = true;
     }
 
