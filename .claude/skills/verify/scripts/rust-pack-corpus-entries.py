@@ -55,6 +55,7 @@ def main():
     (output / "compiled-packs.html").write_text(page)
     words = html.unescape(re.sub(r"<[^>]+>", "", page))
     assert "Agent mode and provenance validation" in words, words
+    assert "Nested pack declarations and empty agent units" in words, words
     goap = output / "goap"
     build = run(["go", "build", "-o", str(goap), "./go/cmd/goap"], "go-build")
     assert build.returncode == 0, build.stderr
@@ -143,21 +144,35 @@ def main():
             assert data["codes"] == [], (label, data)
         results.append({"id": label, "accepted": accepted})
     differences = []
-    for label, patch in [("deferred-agent-mode", {"mode": "other"}), ("deferred-empty-provenance", {"provenance": [""]})]:
+    deferred = [
+        ("deferred-agent-mode", dict(positive, mode="other"), "unsupported validation mode"),
+        ("deferred-empty-provenance", dict(positive, provenance=[""]), "empty provenance"),
+        ("deferred-nested-packs", dict(positive, packs=["other"]), "cannot load further packs"),
+        ("deferred-empty-units", dict(positive, units=[]), "no conformance units"),
+        ("deferred-empty-id", dict(positive, id=""), "lacks id or path"),
+        ("deferred-empty-path", dict(positive, path=""), "lacks id or path"),
+        ("deferred-escaping-path", dict(positive, path="../outside.json"), "path outside fixture root"),
+        ("deferred-core-unit", dict(positive, units=["core"]), "pack_fixture_claims_core_unit"),
+        ("deferred-unloaded-unit", dict(positive, units=["ext:com.example.absent/1"]), "ext_claim_without_pack"),
+        ("deferred-empty-capability", dict(negative, covers=[{"capability":"", "aspect":"gate"}]), "empty capability"),
+        ("deferred-coverage-aspect", dict(negative, covers=[{"capability":"com.example.corpus.key", "aspect":"other"}]), "unknown aspect"),
+        ("deferred-positive-coverage", dict(positive, covers=[{"capability":"com.example.corpus.key", "aspect":"gate"}]), "coverage is asserted by semantic-invalid fixtures"),
+    ]
+    for label, entry, reason in deferred:
         directory = output / label
         directory.mkdir()
         (directory / "pack.json").write_text(json.dumps({"id": "com.example.corpus", "version": "1", "schemas": ["types.json"], "fixtures": "manifest.json"}))
         (directory / "types.json").write_text("{}")
-        (directory / "manifest.json").write_text(json.dumps({"version": 1, "fixtures": [dict(positive, **patch)]}))
+        (directory / "manifest.json").write_text(json.dumps({"version": 1, "fixtures": [entry]}))
         rust = run([str(consumer), str(directory)], label + ".rust")
         go = run([str(goap), "validate", "--format", "json", "--pack", str(directory), str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
         assert rust.returncode == 0 and json.loads(rust.stdout)["accepted"], (label, rust.stdout)
-        assert go.returncode == 1 and "fixture manifest" in go.stderr, (label, go.stdout, go.stderr)
-        differences.append({"id": label, "rust": "accepted at staged boundary", "go": "refused by complete loader", "deferred_to": "full constructor"})
+        assert go.returncode == 1 and reason in go.stderr, (label, go.stdout, go.stderr)
+        differences.append({"id": label, "rust": "accepted at staged boundary", "go": "refused by complete loader", "reason": reason, "deferred_to": "full constructor"})
     (output / "staged-differences.json").write_text(json.dumps(differences, indent=2) + "\n")
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public typed corpus expectation/profile/code cases agree with Go")
-    print("STAGED: two explicit mode/provenance differences recorded; identity, path, owner and completeness checks follow in the full constructor")
+    print("STAGED: 12 explicit context/ownership/coverage differences recorded; full constructor follows")
 
 
 if __name__ == "__main__":
