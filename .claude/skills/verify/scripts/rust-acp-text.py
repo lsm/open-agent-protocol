@@ -265,6 +265,8 @@ def text(value, message='native-message'):
     update(dict(sessionUpdate='agent_message_chunk',messageId=message,content=dict(type='text',text=value)))
 if mode == 'malformed':
     send(dict(method='session/update',params=[]))
+elif mode == 'bad-config':
+    update(dict(sessionUpdate='config_option_update',configOptions='malformed'))
 elif mode == 'foreign':
     update(dict(sessionUpdate='agent_message_chunk',content=dict(type='text',text='foreign')), 'other')
 elif mode == 'unknown-update':
@@ -343,7 +345,7 @@ def main():
     (output/'reference.go').write_text(GO)
     run(['go','build','-o',str(output/'go-reference'),str(output/'reference.go')], output/'go-build.log')
     run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'], output/'goap-build.log')
-    cases=['complete','empty','max-tokens','max-requests','refusal','unknown-stop','remote-error','malformed','foreign','unknown-update','bad-chunk','overflow','abandon','multi-message','tool','cancelled']
+    cases=['complete','bad-config','empty','max-tokens','max-requests','refusal','unknown-stop','remote-error','malformed','foreign','unknown-update','bad-chunk','overflow','abandon','multi-message','tool','cancelled']
     unavailable={'multi-message':'acp_unavailable_message_identity','tool':'acp_unavailable_update','cancelled':'acp_unavailable_cancellation'}
     with tempfile.TemporaryDirectory(prefix='oap-text-engine-') as temporary:
         fake = Path(temporary)/'agent.py'

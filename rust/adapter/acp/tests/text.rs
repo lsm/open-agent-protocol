@@ -83,6 +83,10 @@ fn text_runs_emit_scoped_ordered_events_and_a_single_completed_message() {
 fn malformed_or_foreign_updates_select_one_failure_before_late_completion() {
     let cases = [
         (
+            json!({"sessionId":"native", "update":{"sessionUpdate":"config_option_update", "configOptions":"malformed"}}),
+            "acp_invalid_update",
+        ),
+        (
             json!({"sessionId":"foreign", "update":{}}),
             "acp_invalid_update",
         ),
