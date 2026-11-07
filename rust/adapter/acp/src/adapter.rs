@@ -116,6 +116,7 @@ impl Adapter {
         }
         for (key, level, reason) in [
             ("session.open", SupportLevel::NATIVE, "session/new opens an ACP session"),
+            (FEATURE_OPEN_REOPEN, SupportLevel::NATIVE, "session/load when loadSession is advertised, otherwise session/resume when advertised; agents offering neither refuse the binding"),
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
             (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the agent's model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
             (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
@@ -154,7 +155,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-cancel", pin().capability_revision),
+            capability_revision: format!("{}-rust-reload", pin().capability_revision),
             max_active_runs_per_session: 1,
             interactive_gates: true,
             journal: JournalDescriptor {
@@ -169,8 +170,8 @@ impl Adapter {
         if request.participant.id.as_str().is_empty() {
             return Err(Error::InvalidParticipant);
         }
-        if request.reopen {
-            return Err(unavailable(FEATURE_OPEN_REOPEN));
+        if request.reopen && request.native_session_id.is_empty() {
+            return Err(crate::reload::refusal("the binding names no ACP session"));
         }
         refuse_unadvertised_tool_sources(request, &[])?;
         refuse_unadvertised_tools(request, &[])?;

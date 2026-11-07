@@ -23,16 +23,15 @@ fn options() -> Value {
 
 fn run(mut native: Value, mut input: Value) -> Value {
     let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-    let fixture = Fixture(
-        std::env::temp_dir().join(format!(
-            "oap-acp-reload-{}-{}-{serial}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )),
-    );
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "oap-acp-reload-{}-{suffix}-{serial}",
+        std::process::id()
+    ));
+    let fixture = Fixture(path);
     std::fs::create_dir(&fixture.0).unwrap();
     if native.get("result").is_none() {
         native["result"] = json!({"configOptions":options()});

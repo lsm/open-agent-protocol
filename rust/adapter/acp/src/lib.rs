@@ -11,6 +11,8 @@ pub use operation::Operation;
 
 mod session;
 
+mod reload;
+
 mod models;
 
 mod prompt;

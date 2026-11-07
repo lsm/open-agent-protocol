@@ -12,13 +12,14 @@ use oap_adapter::{
 };
 use oap_protocol::{
     InteractionId, MessageSubmitResponse, ModelDescriptor, ModelsRequest, ModelsResponse,
-    RunCancelResponse, RunId, SessionState, SessionStatus, FEATURE_MODELS_LIST, VERSION,
+    RecoveryMetadata, RunCancelResponse, RunId, SessionState, SessionStatus, FEATURE_MODELS_LIST,
+    VERSION,
 };
 
 use crate::adapter::{unavailable, Config};
 use crate::native::{
     decode, ConfigOption, PermissionOutcome, PermissionRequest, PermissionResponse,
-    SessionNewParams, SessionNewResult, METHOD_SESSION_NEW, METHOD_SESSION_REQUEST_PERMISSION,
+    SessionNewResult, METHOD_SESSION_REQUEST_PERMISSION,
 };
 use crate::process::{Implementation, Process};
 use crate::submit::Run;
@@ -85,11 +86,6 @@ impl Session {
         descriptor: Descriptor,
         next: &Arc<AtomicU64>,
     ) -> Result<Box<dyn SessionContract>, Error> {
-        let params = serde_json::value::to_raw_value(&SessionNewParams {
-            cwd: config.process.dir.clone(),
-            mcp_servers: config.mcp_servers.clone(),
-        })
-        .map_err(native_error)?;
         let mut process_config = config.process.clone();
         process_config
             .client_info
@@ -101,13 +97,26 @@ impl Session {
         let process = Process::start_async(process_config, None)
             .await
             .map_err(|error| Error::Harness(error.to_string()))?;
-        let (process, raw) = process
-            .call_async(METHOD_SESSION_NEW.into(), Some(params), None)
-            .await
-            .map_err(native_error)?;
+        let (process, raw) = crate::reload::call(process, &request, config).await?;
         let opened = decode::<SessionNewResult>(raw.get().as_bytes())
-            .map_err(|error| native_error(format!("decode session/new response: {error}")))
-            .and_then(|opened| {
+            .map_err(|error| {
+                if request.reopen {
+                    crate::reload::refusal(format!("the ACP agent could not load the bound session: {error}"))
+                } else {
+                    native_error(format!("decode session/new response: {error}"))
+                }
+            })
+            .and_then(|mut opened| {
+                if request.reopen {
+                    let value: serde_json::Value = serde_json::from_str(raw.get())
+                        .expect("decoded session response");
+                    if value.get("sessionId").is_none_or(serde_json::Value::is_null) {
+                        opened.session_id.clone_from(&request.native_session_id);
+                    }
+                    if opened.session_id != request.native_session_id {
+                        return Err(crate::reload::refusal("the ACP agent returned a different session id"));
+                    }
+                }
                 if opened.session_id.is_empty() {
                     Err(Error::Harness("acp adapter: invalid native protocol observation: session/new returned no session id".into()))
                 } else {
@@ -121,10 +130,15 @@ impl Session {
                 return Err(error);
             }
         };
+        let mut usage = UsageScope::default();
+        if request.reopen {
+            usage.consume_prompt();
+        }
         let model_option = opened
             .config_options
-            .into_iter()
-            .find(|option| option.category == "model");
+            .iter()
+            .find(|option| option.category == "model")
+            .cloned();
         let current_model_id = model_option
             .as_ref()
             .map(|option| option.current_value.clone())
@@ -142,18 +156,29 @@ impl Session {
             resolved_permissions: VecDeque::new(),
             active: None,
             workers: Vec::new(),
-            usage: Arc::default(),
+            usage: Arc::new(Mutex::new(usage)),
             tool_history: Arc::default(),
             model_option,
             state: SessionState {
                 session_id,
                 status: SessionStatus::IDLE,
                 current_model_id,
+                recovery: request.reopen.then(|| RecoveryMetadata {
+                    recovered: true,
+                    reason: crate::reload::REASON.into(),
+                    ..RecoveryMetadata::default()
+                }),
                 updated_at_ms: now_ms(),
                 sources: descriptor.capabilities.sources,
                 ..SessionState::default()
             },
         }));
+        if request.reopen {
+            inner
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .apply_config(&opened.config_options);
+        }
         #[cfg(test)]
         tests::LAST_SESSION.with(|slot| *slot.borrow_mut() = Some(Arc::downgrade(&inner)));
         let weak = Arc::downgrade(&inner);

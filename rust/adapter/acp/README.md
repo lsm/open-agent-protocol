@@ -60,11 +60,11 @@ and configured source descriptors.
 
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
-the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Reopen and replay have approved follow-on slices. Text submission and
+the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Native reload is described below; replay remains unavailable. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-cancel` to the catalog revision because this descriptor has
-fewer capabilities than the completed adapter. Reload, opening configuration
-and full corpus replay remain later slices of #1439.
+appends `-rust-reload` to the catalog revision because this descriptor has
+fewer capabilities than the completed adapter. Opening configuration and full
+corpus replay remain later slices of #1439.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
@@ -102,7 +102,7 @@ opt-in. It reports the latest model config-option snapshot, flattening
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Live snapshots replace the opening snapshot as described below.
-The descriptor uses a `-rust-cancel`
+The descriptor uses a `-rust-reload`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -219,7 +219,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-cancel`
+opt-in. The staged descriptor records these limits under its `-rust-reload`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -287,7 +287,7 @@ retained prefix under the documented ownership contract.
 
 `action.tools` and `action.tools.execute` are degraded observed-lifecycle claims.
 They expose no tool catalog or host execution API. Native cancellation is
-described below; reload, opening configuration and full byte corpus retain later
+described below; opening configuration and full byte corpus retain later
 slices. Run the synthetic `rust-acp-tools.md` verification journey.
 
 ## Owned native outbound operations
@@ -405,11 +405,11 @@ request binding before local commit, including a projection closed during the
 write. Parent settlement consumes the binding before committing cancellation.
 
 The descriptor advertises native action.permissions and interactive gates,
-under the staged -rust-cancel revision. Run
+under the staged -rust-reload revision. Run
 `rust-acp-session-permissions.md` for normal Session event/wire comparisons,
 immediate resolution, idle replies, across-run history, state and cleanup.
-Native cancellation is described below. Reload, opening configuration and full
-corpus retain later slices.
+Native cancellation and reload are described below. Opening configuration and
+full corpus retain later slices.
 
 ## Run-targeted cancellation
 
@@ -439,8 +439,8 @@ is invented when the native notification was never written.
 
 Run rust-acp-cancel.md for public Go/Rust event and parsed-wire comparisons,
 three-validator traces, controlled confirmation ordering and quiet-child/thread
-ownership. The staged revision is -rust-cancel and run.cancel is native. Submit
-and streaming retain their degradation opt-ins; resume/reopen, opening config,
+ownership. The staged revision is -rust-reload and run.cancel is native. Submit
+and streaming retain their degradation opt-ins; run replay/resume, opening config,
 full byte corpus and C8 served parity remain later slices.
 
 ## Live config state and model catalog
@@ -457,9 +457,37 @@ model or reasoning advance the state timestamp.
 Config-only updates emit no stream event. Wrong-session and malformed idle
 updates leave state unchanged; malformed active updates retain the existing
 `acp_invalid_update` failure. No native I/O worker is started for this local
-projection. Capability fidelity stays staged under `-rust-cancel`, as no
+projection. Capability fidelity stays staged under `-rust-reload`, as no
 optional feature's support level changes.
 
 Run `.claude/skills/verify/journeys/rust-acp-live-config.md` for actual native
-wire, public Go/Rust snapshots, streams and three-validator proof. Reload and
-confirmed opening config/reasoning are the next two approved slices.
+wire, public Go/Rust snapshots, streams and three-validator proof. Native
+reload is described below; confirmed opening config/reasoning is the next slice.
+
+## Native conversational reload
+
+A reopen needs an existing native session id. After initialize, the adapter
+uses session/load when loadSession is true, otherwise session/resume when its
+capability is an object. Missing bindings or unsupported agents refuse with
+an unsatisfiable session.open.reopen control. The descriptor advertises native
+reopen under the -rust-reload revision; no journal/replay support is implied.
+
+The public Process.call_draining_async operation consumes ordered inbound
+messages while its scoped RPC worker waits. Historical notifications are
+discarded and reverse requests receive -32601. The fixed-size RPC queue remains
+the bound; no history buffer or detached worker is added. A 60-second reload
+deadline closes the owned process. Dropping the pending future kills/reaps
+the child and joins both operation and RPC workers, including a reverse reply
+blocked mid-write. The initiating RPC deadline is preserved when its shutdown
+also makes the reverse reply fail with a broken pipe.
+
+A successful reload preserves the bound id when the response omits it or sends
+null, refuses a changed/empty id, and reports recovery plus returned model and
+reasoning through the existing config projection. A subsequent prompt starts a
+fresh OAP run at sequence 1. Reopened cumulative usage stays in ACP extensions;
+it is not attributed to that run's core usage. Opening config/reasoning remains
+unavailable until its separate slice, and the full byte corpus remains later.
+
+Run `.claude/skills/verify/journeys/rust-acp-reload.md` for normal public Go/Rust
+state/catalog/event and parsed-wire comparisons, three-validator exchanges,
+partial native bytes, child absence and OS-thread cleanup before consumer exit.

@@ -32,8 +32,8 @@ exchange from the actual returned descriptor, state and catalog. All three
 validators must accept it. Native wire, public consumer JSON and validator
 outputs remain in the requested evidence directory. This is session-opening
 proof. Public text submission is covered by `rust-acp-submit.md`, and permissions
-by `rust-acp-session-permissions.md`. Native cancellation is covered by rust-acp-cancel.md. Reopen and full corpus parity
-retain their approved later slices. The staged descriptor revision is `-rust-cancel` until the
+by `rust-acp-session-permissions.md`. Native cancellation is covered by rust-acp-cancel.md. Reopen is covered by `rust-acp-reload.md`; opening settings and full corpus
+parity retain their approved later slices. The staged descriptor revision is `-rust-reload` until the
 completed adapter can use the catalog's full revision.
 
 Keep the complete baseline and Rust all-features/format/clippy/comment checks.

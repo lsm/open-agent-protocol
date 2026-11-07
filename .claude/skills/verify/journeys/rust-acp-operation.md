@@ -29,3 +29,8 @@ The session-opening path uses this bridge for session/new and asynchronous
 close; its integration proof is in rust-acp-session.md. No live native harness, provider, credentials or network are used.
 Run the complete SKILL.md baseline, Rust all-features tests and guardrails too,
 and inspect the retained credential-isolated PTY reply and quit proof.
+
+The public `call_draining_async` opening operation discards ordered native
+notifications, rejects reverse RPCs and joins its scoped call worker before
+handing process ownership back. `rust-acp-reload.md` covers native history,
+quiet cancellation and blocked reverse-write deadline cleanup.
