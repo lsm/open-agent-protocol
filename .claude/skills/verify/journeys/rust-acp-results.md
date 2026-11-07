@@ -27,8 +27,10 @@ unknown stop reasons. The synthetic agent waits for an explicit public terminal
 observation before sending between-turn metadata. The next submit waits for a
 native reverse-RPC acknowledgement of those idle observations.
 
-Core run usage is emitted only for the first answered prompt of a fresh native
-session. Turn counts remain in their ACP extension on later prompts. Thought
+Core run usage is emitted only for the first completed native prompt call of a
+fresh native session. A failed write admission consumes that scope and finishes
+the unaccepted attempt at sequence zero. Turn counts remain in their ACP
+extension on later prompts. Thought
 and cache counts keep their native meaning in extensions. The ACP v1.12.0
 mapping ledger records their unresolved accounting semantics. Input/output
 counts remain lossy and unverified against Decision 0063. Context is replaced
@@ -43,10 +45,13 @@ response contains the last current message's text.
 
 Focused public engine tests also cover Go floating-point JSON spelling, Unicode
 case-fold aliases, malformed optional fields and late answers after a run was
-already failed by an observation. A shared opaque UsageScope keeps answered-turn
-attribution across those engine instances. Its first-turn flag advances on
-native prompt errors too. The normal session tests exercise idle snapshots and
-success/error first-turn behavior over real stdio.
+already failed by an observation. A shared opaque UsageScope keeps settled-call
+attribution across those engine instances. Its first-call scope advances on
+native prompt errors and failed admission too. The public failed-admission
+regression follows it with another projected answer and requires core usage to
+stay omitted. Normal stdio admission cleanup is exercised separately by the
+public submit ownership journey. The normal session tests exercise idle
+snapshots and success/error first-turn behavior over real stdio.
 
 Run the remaining ACP journeys, full baseline and Rust all-features suite under
 the same mutex. Observe the baseline PTY reply and `/quit` exit. Tool lifecycle,

@@ -61,7 +61,10 @@ impl Drop for Admission<'_> {
     fn drop(&mut self) {
         if self.pending {
             let mut inner = self.session.lock();
-            self.run.lock().close();
+            let _ =
+                self.run
+                    .lock()
+                    .prompt_error("ACP prompt ended before acceptance", true, now_ms());
             if inner.process.is_some() {
                 inner.active = None;
                 inner.state.status = SessionStatus::IDLE;

@@ -343,6 +343,14 @@ impl TextRun {
         inferred: bool,
         now_ms: i64,
     ) -> Result<(), Error> {
+        if self.state.status.is_empty() {
+            self.usage_scope
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .consume_prompt();
+            self.close();
+            return Ok(());
+        }
         self.settle_usage(None);
         self.fail("acp_prompt_error", message, inferred, now_ms)
     }

@@ -17,6 +17,10 @@ pub struct UsageScope {
 }
 
 impl UsageScope {
+    pub(crate) fn consume_prompt(&mut self) -> bool {
+        !std::mem::replace(&mut self.prompted, true)
+    }
+
     pub fn observe(&mut self, notification: &NotificationMessage, native_id: &str) -> bool {
         if notification.method != METHOD_SESSION_UPDATE {
             return false;
@@ -61,7 +65,7 @@ impl UsageScope {
     }
 
     pub(crate) fn settle(&mut self, raw: Option<&RawValue>) -> (Option<Usage>, Extensions) {
-        let first = !std::mem::replace(&mut self.prompted, true);
+        let first = self.consume_prompt();
         let turn = raw.and_then(|raw| turn(raw.get()));
         let core = turn.as_ref().filter(|_| first).map(|turn| Usage {
             input_tokens: turn.get("input_tokens").copied(),

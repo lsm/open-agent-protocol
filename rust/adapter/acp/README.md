@@ -237,12 +237,16 @@ bounded overflow, child/thread ownership and three-validator proof.
 Each fresh native session owns one `UsageScope`. `TextRun::new_in_scope` lets
 native bridge consumers share an `Arc<Mutex<UsageScope>>` across their runs.
 `UsageScope::observe` consumes usage observations during idle periods too. Forward
-unconsumed notifications to the active run. `TextRun::new` creates a fresh scope. Use `prompt_error` for an answered prompt's native RPC error.
+unconsumed notifications to the active run. `TextRun::new` creates a fresh scope.
+Use `prompt_error` for native RPC errors, including failed write admission.
+Before start, it closes that attempt at sequence zero.
 A late answer after an observation already failed the run still consumes that
-session's first answered turn without publishing another terminal.
+session's first-call scope while preserving the published terminal.
 
-The first answered prompt of a new session can report core input, output and
-total counts. Later prompts retain the agent's turn counts in
+The first completed native prompt call of a new session can report core input,
+output and total counts. A failed native write consumes that scope even though
+its run never starts, matching Go's accounting transition. Later prompts retain
+the agent's turn counts in
 `com.agentclientprotocol.turn_usage`. Thought and cache counts stay in that
 extension. The ACP v1.12.0 mapping ledger records their unresolved accounting
 semantics, and core input/output meanings remain lossy and unverified against
