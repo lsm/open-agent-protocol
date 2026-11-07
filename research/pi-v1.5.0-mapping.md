@@ -25,6 +25,10 @@ but not the AgentEvent union. `packages/ai/src/types.ts` adds optional boolean
 projected. Other changes to this file concern request or model types rather
 than message event members. The session manager and agent session changed; the
 source comparison does not prove all possible runtime behavior is unchanged.
+`packages/coding-agent/src/cli/args.ts` changes help text for MCP, session,
+export and self-update options; its argument parsing code is unchanged,
+including the `--mode` and `--no-extensions` flags used by the adapter.
+This is source evidence only, not a v1.5.0 process check.
 
 Pi now parses streaming tool arguments incrementally, retaining a final full
 parse. The RPC serializer still sends deltas rather than cumulative snapshots.
