@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Merged pull requests
 
+- **conformance: compare Rust replay and fatal framing** ([#1673](https://github.com/lsm/open-agent-protocol/pull/1673))
+- **copilot: Pin CLI 1.0.107 synthetic corpus** ([#1672](https://github.com/lsm/open-agent-protocol/pull/1672))
+- **hub: Schedule native sessions through a shared ready queue** ([#1671](https://github.com/lsm/open-agent-protocol/pull/1671))
+- **oapx: project background jobs as session tasks** ([#1670](https://github.com/lsm/open-agent-protocol/pull/1670))
+- **release: refresh alpha.31 notes** ([#1667](https://github.com/lsm/open-agent-protocol/pull/1667))
+- **validation: Stage Rust pack members and contained resources** ([#1665](https://github.com/lsm/open-agent-protocol/pull/1665))
+- **deepseek: Pin the dsh 0.2.2 release candidate** ([#1664](https://github.com/lsm/open-agent-protocol/pull/1664))
+- **adapter: own the Rust ACP session inbound dispatcher** ([#1663](https://github.com/lsm/open-agent-protocol/pull/1663))
+- **conformance: check Rust refusal probes and recovery** ([#1662](https://github.com/lsm/open-agent-protocol/pull/1662))
+- **serve: forward session events on raw endpoint** ([#1660](https://github.com/lsm/open-agent-protocol/pull/1660))
 - **codex: Upgrade app-server pin to 0.167.0** ([#1661](https://github.com/lsm/open-agent-protocol/pull/1661))
 - **release: ship alpha.31 binaries without npm** ([#1659](https://github.com/lsm/open-agent-protocol/pull/1659))
 - **adapter: Expose native session readiness notifications** ([#1658](https://github.com/lsm/open-agent-protocol/pull/1658))
