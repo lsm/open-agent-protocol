@@ -118,7 +118,7 @@ pub(super) fn base(descriptor: &Value) -> String {
     )
 }
 
-fn clean_path(relative: &str) -> Result<PathBuf, String> {
+pub(super) fn clean_path(relative: &str) -> Result<PathBuf, String> {
     if relative.is_empty() {
         return Err("an empty path is outside the pack root".to_owned());
     }

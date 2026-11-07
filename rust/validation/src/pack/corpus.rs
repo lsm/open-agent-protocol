@@ -17,7 +17,7 @@ pub(super) struct Manifest {
 #[serde(default)]
 pub(super) struct Entry {
     #[serde(deserialize_with = "null_default")]
-    id: String,
+    pub(super) id: String,
     #[serde(deserialize_with = "null_default")]
     pub(super) path: String,
     #[serde(deserialize_with = "null_default")]
@@ -30,8 +30,8 @@ pub(super) struct Entry {
     codes: Vec<String>,
     #[serde(deserialize_with = "strings_default")]
     pub(super) units: Vec<String>,
-    #[serde(rename = "provenance", deserialize_with = "strings_default")]
-    pub(super) _provenance: Vec<String>,
+    #[serde(deserialize_with = "strings_default")]
+    pub(super) provenance: Vec<String>,
     #[serde(deserialize_with = "null_default")]
     pub(super) covers: Vec<Coverage>,
     #[serde(deserialize_with = "null_default")]
@@ -71,43 +71,46 @@ fn strings_default<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Str
 
 impl CompiledPacks {
     pub fn check_corpus_entries(&self) -> Result<(), PackLoadError> {
-        read(self).map(|_| ())
+        check(self, |descriptor, manifest| {
+            for entry in manifest.into_iter().flat_map(|m| &m.fixtures) {
+                check_entry(entry, text(descriptor, "id"))?;
+            }
+            Ok(())
+        })
     }
 }
 
-pub(super) fn read(compiled: &CompiledPacks) -> Result<Vec<(&Value, Manifest)>, PackLoadError> {
-    let mut manifests = Vec::new();
+pub(super) fn check(
+    compiled: &CompiledPacks,
+    policy: impl Fn(&Value, Option<&Manifest>) -> Result<(), PackLoadError>,
+) -> Result<(), PackLoadError> {
     let mut refusals = Vec::new();
     for (_, descriptor) in compiled.resources().descriptors() {
-        let Some(path) = compiled.resources().manifests().get(&base(descriptor)) else {
-            continue;
-        };
-        let id = text(descriptor, "id");
-        let parsed = (|| {
+        let checked = (|| {
+            let Some(path) = compiled.resources().manifests().get(&base(descriptor)) else {
+                return policy(descriptor, None);
+            };
+            let id = text(descriptor, "id");
             let data = std::fs::read(path).map_err(|e| failure(id, e.to_string()))?;
             let manifest: Manifest =
                 serde_json::from_slice(&data).map_err(|e| failure(id, e.to_string()))?;
             if manifest.version != 1 {
                 return Err(failure(id, "manifest version must be 1".to_owned()));
             }
-            for entry in &manifest.fixtures {
-                check_entry(entry, id)?;
-            }
-            Ok(manifest)
+            policy(descriptor, Some(&manifest))
         })();
-        match parsed {
-            Ok(manifest) => manifests.push((descriptor, manifest)),
-            Err(error) => refusals.extend(error.refusals),
+        if let Err(error) = checked {
+            refusals.extend(error.refusals);
         }
     }
     if refusals.is_empty() {
-        Ok(manifests)
+        Ok(())
     } else {
         Err(PackLoadError { refusals })
     }
 }
 
-fn check_entry(entry: &Entry, owner: &str) -> Result<(), PackLoadError> {
+pub(super) fn check_entry(entry: &Entry, owner: &str) -> Result<(), PackLoadError> {
     let invalid = |reason| failure(owner, format!("fixture {:?}: {reason}", entry.id));
     if !matches!(
         entry.kind.as_str(),

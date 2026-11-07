@@ -34,7 +34,10 @@ fn main() -> ExitCode {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
-    output = Path(parser.parse_args().output_dir).resolve()
+    parser.add_argument("--complete", action="store_true")
+    options = parser.parse_args()
+    output = Path(options.output_dir).resolve()
+    stage = "complete-loader" if options.complete else "corpus-expectations"
     output.mkdir(parents=True, exist_ok=False)
 
     def run(command, label):
@@ -45,7 +48,12 @@ def main():
     (project / "Cargo.toml").write_text(
         '[package]\nname="pack-corpus-entries-consumer"\nversion="0.0.0"\nedition="2021"\n'
         f'[dependencies]\noap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
-    (project / "src/main.rs").write_text(CONSUMER)
+    source = CONSUMER
+    if options.complete:
+        source = source.replace(
+            "PackLoader::read(&paths).and_then(PackLoader::read_resources)\n        .and_then(|p| p.compile()).and_then(|p| p.check_corpus_entries())",
+            "PackLoader::load(&paths).map(|_| ())")
+    (project / "src/main.rs").write_text(source.replace("corpus-expectations", stage))
     build = run(["cargo", "build", "--offline", "--manifest-path", str(project / "Cargo.toml"),
                  "--target-dir", str(ROOT / "rust/target")], "consumer-build")
     assert build.returncode == 0, build.stderr
@@ -137,7 +145,7 @@ def main():
         rust = run([str(consumer), str(directory)], label + ".rust")
         go = run([str(goap), "validate", "--format", "json", "--pack", str(directory), str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
         data = json.loads(rust.stdout)
-        assert data["stage"] == "corpus-expectations", data
+        assert data["stage"] == stage, data
         assert data["accepted"] == accepted, (label, data)
         assert rust.returncode == go.returncode == (0 if accepted else 1), (label, rust.stdout, go.stdout, go.stderr)
         if not accepted:
@@ -166,13 +174,75 @@ def main():
         (directory / "manifest.json").write_text(json.dumps({"version": 1, "fixtures": [entry]}))
         rust = run([str(consumer), str(directory)], label + ".rust")
         go = run([str(goap), "validate", "--format", "json", "--pack", str(directory), str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
-        assert rust.returncode == 0 and json.loads(rust.stdout)["accepted"], (label, rust.stdout)
+        data = json.loads(rust.stdout)
         assert go.returncode == 1 and reason in go.stderr, (label, go.stdout, go.stderr)
+        if options.complete:
+            assert rust.returncode == 1 and not data["accepted"], (label, data)
+            go_codes = sorted(set(re.findall(r"\b(?:pack_[a-z_]+|ext_claim_without_pack)\b", go.stderr)))
+            assert data["codes"] == go_codes, (label, data, go.stderr)
+            results.append({"id": label, "accepted": False, "codes": data["codes"]})
+            continue
+        assert rust.returncode == 0 and data["accepted"], (label, data)
         differences.append({"id": label, "rust": "accepted at staged boundary", "go": "refused by complete loader", "reason": reason, "deferred_to": "full constructor"})
+    if options.complete:
+        for fixture in fixtures:
+            if fixture["kind"] != "load-invalid":
+                continue
+            label = fixture["id"]
+            directories = [ROOT / "fixtures" / path for path in [fixture["path"], *fixture.get("packs", [])]]
+            rust = run([str(consumer), *map(str, directories)], label + ".rust")
+            command = [str(goap), "validate", "--format", "json"]
+            for directory in directories:
+                command += ["--pack", str(directory)]
+            go = run(command + [str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
+            data = json.loads(rust.stdout)
+            go_codes = sorted(set(re.findall(r"\b(?:pack_[a-z_]+|ext_claim_without_pack)\b", go.stderr)))
+            assert rust.returncode == go.returncode == 1, (label, data, go.stderr)
+            assert data["codes"] == go_codes == sorted(set(fixture["codes"])), (label, data, go.stderr)
+            results.append({"id": label, "accepted": False, "codes": data["codes"]})
+        policy_cases = [
+            ("missing-manifest", None, ["com.example.corpus.key"], False),
+            ("no-manifest-no-keys", None, [], True),
+            ("empty-corpus-with-keys", [], ["com.example.corpus.key"], False),
+            ("duplicate-id", [positive, dict(positive, path="other.json")], [], False),
+            ("duplicate-path", [positive, dict(positive, id="other")], [], False),
+            ("agent-normalized-paths-remain-distinct", [dict(positive, path="a/../positive.json"), dict(positive, id="other")], [], True),
+            ("provider-normalized-paths-collide", [dict(provider, path="a/../positive.json"), dict(provider, id="other")], [], False),
+            ("contained-normalized-path", [dict(positive, path="a/../positive.json")], [], True),
+            ("absolute-path", [dict(positive, path="/outside.json")], [], False),
+            ("null-units", [dict(positive, units=None)], [], False),
+            ("load-entry-nested-packs", [dict(negative, kind="load-invalid", phase="load", codes=["pack_external_ref"], packs=["other"])], [], False),
+            ("load-entry-no-units", [dict(negative, kind="load-invalid", phase="load", codes=["pack_external_ref"], units=[])], [], False),
+            ("earlier-owner-error-before-later-expectation", [dict(positive, units=["core"]), dict(negative, id="second", path="second.json", codes=["unknown"])], [], False),
+        ]
+        for aspects in [["gate"], ["honour"], ["gate", "honour"]]:
+            entries = [dict(negative, id=aspect, path=aspect + ".json", covers=[{"capability":"com.example.corpus.key", "aspect":aspect}]) for aspect in aspects]
+            policy_cases.append(("coverage-" + "-".join(aspects), entries, ["com.example.corpus.key"], len(aspects) == 2))
+        for label, entries, keys, accepted in policy_cases:
+            directory = output / label
+            directory.mkdir()
+            descriptor = {"id":"com.example.corpus", "version":"1", "schemas":["types.json"], "capability_keys":keys}
+            if entries is not None:
+                descriptor["fixtures"] = "manifest.json"
+                (directory / "manifest.json").write_text(json.dumps({"version":1, "fixtures":entries}))
+            (directory / "pack.json").write_text(json.dumps(descriptor))
+            (directory / "types.json").write_text("{}")
+            rust = run([str(consumer), str(directory)], label + ".rust")
+            go = run([str(goap), "validate", "--format", "json", "--pack", str(directory), str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
+            data = json.loads(rust.stdout)
+            assert rust.returncode == go.returncode == (0 if accepted else 1), (label, data, go.stdout, go.stderr)
+            if not accepted:
+                go_codes = sorted(set(re.findall(r"\b(?:pack_[a-z_]+|ext_claim_without_pack)\b", go.stderr)))
+                assert data["codes"] == go_codes, (label, data, go.stderr)
+            results.append({"id":label, "accepted":accepted})
     (output / "staged-differences.json").write_text(json.dumps(differences, indent=2) + "\n")
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"PASS: {len(results)} public typed corpus expectation/profile/code cases agree with Go")
-    print("STAGED: 12 explicit context/ownership/coverage differences recorded; full constructor follows")
+    if options.complete:
+        assert not differences, differences
+        print("PASS: all 12 staged policy differences close through the complete constructor; all shared load refusals judged")
+    else:
+        print("STAGED: 12 explicit context/ownership/coverage differences recorded; full constructor follows")
 
 
 if __name__ == "__main__":
