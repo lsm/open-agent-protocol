@@ -2501,9 +2501,11 @@ const SignallingMemory = struct {
         name: []u8,
         observer: ?contract.Session.Ready = null,
         closed: bool = false,
+        refuse_close: bool = false,
 
         const vtable = contract.Session.VTable{
             .id = id,
+            .native_id = id,
             .state = state,
             .submit = submit,
             .resolve = resolve,
@@ -2568,6 +2570,10 @@ const SignallingMemory = struct {
             const self = cast(ptr);
             if (self.observer != null) return error.BackendFailed;
             if (self.closed) return;
+            if (self.refuse_close) {
+                self.refuse_close = false;
+                return error.BackendFailed;
+            }
             try self.inner.vtable.close(self.inner.ptr, force);
             self.closed = true;
         }
@@ -2644,15 +2650,19 @@ test "notified sessions share one readable wake, coalesce, and survive a queued 
     defer scratch.deinit();
     const arena = scratch.allocator();
     const first = try hub.open(arena, "signalling", .{ .session_id = "ready-first", .subscribe = true });
+    const middle = try hub.open(arena, "signalling", .{ .session_id = "ready-middle", .subscribe = true });
     const last = try hub.open(arena, "signalling", .{ .session_id = "ready-last", .subscribe = true });
     while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
     const handles = try hub.readableHandles(arena);
     try testing.expectEqual(@as(usize, 1), handles.len);
     var watched = [_]std.posix.pollfd{.{ .fd = handles[0], .events = std.posix.POLL.IN, .revents = 0 }};
     try testing.expectEqual(@as(usize, 0), try std.posix.poll(&watched, 0));
-    const worker = try std.Thread.spawn(.{}, SignallingMemory.Session.repeatedlySignal, .{adapter.sessions.items[1]});
+    adapter.sessions.items[0].signal();
+    adapter.sessions.items[1].signal();
+    const worker = try std.Thread.spawn(.{}, SignallingMemory.Session.repeatedlySignal, .{adapter.sessions.items[2]});
     worker.join();
     try testing.expectEqual(@as(usize, 1), try std.posix.poll(&watched, 0));
+    try hub.close(arena, middle.session_id);
     try hub.close(arena, first.session_id);
     const request = try submitFor(arena, last.session_id);
     const admitted = try hub.submit(arena, last.session_id, &request, "ready-submit");
@@ -2685,6 +2695,42 @@ fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
 
 test "a failed observed open leaves no visible session or callback behind" {
     try testing.checkAllAllocationFailures(testing.allocator, failedOpenLeavesNoSession, .{});
+}
+
+test "observed sessions resume after a refused park and keep a pending terminal through parking" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "signalling", .{ .session_id = "park-ready", .subscribe = true });
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    adapter.sessions.items[0].refuse_close = true;
+    try testing.expect(!try hub.park(arena, opened.session_id));
+    try testing.expect(hub.hasPendingPass());
+    const request = try submitFor(arena, opened.session_id);
+    const first = try hub.submit(arena, opened.session_id, &request, "before-park");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, opened.session_id, first.run_id.?);
+    try testing.expect(try hub.park(arena, opened.session_id));
+    var cancelled = false;
+    while (opened.subscription.?.next()) |event| {
+        cancelled = cancelled or std.mem.indexOf(u8, event.line, "run.cancelled") != null;
+    }
+    try testing.expectEqual(true, cancelled);
+    const next = try hub.submit(arena, opened.session_id, &request, "after-park");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings(next.run_id.?, opened.subscription.?.next().?.run_id);
+    _ = try hub.cancel(arena, opened.session_id, next.run_id.?);
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try hub.close(arena, opened.session_id);
+    for (adapter.sessions.items) |session| session.signal();
+    try testing.expect(!hub.hasPendingPass());
 }
 
 var now_ns: u64 = 1_000_000_000;
