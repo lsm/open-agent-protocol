@@ -99,6 +99,9 @@ the cancelled run's events from the moment it asks the adapter to cancel until
 its answer to the cancel is written, the way it holds a steered run behind its
 submit response
 (`TestAnAcceptedCancelResponseIsWrittenBeforeTheRunCancelledItConfirms`).
+An accepted `session.task.cancel.response` also precedes the
+`session.task.ended` it confirms; Go holds session events through the response
+(`TestTaskCancelAcknowledgesBeforeEnding`).
 
 ## Streaming is implicit
 
