@@ -299,9 +299,9 @@ framing and does not count, so a line whose payload is exactly the limit is
 served and one byte more is a defect. A host computes its own line against the
 same number.
 
-The eleven members a request line may carry are `id`, `op`, `adapter`,
+The twelve members a request line may carry are `id`, `op`, `adapter`,
 `session_id`, `run_id`, `after`, `request`, `cursor`, `limit`, `subscription` and
-`allow_degraded_features`. An op
+`allow_degraded_features` and `directory`. An op
 that takes a parameter it does not define is refused `invalid_request`, and the
 check is on **presence**, so a supplied-but-null parameter still counts as
 supplied.
@@ -1564,7 +1564,14 @@ nowhere to put a reason (D12).
 
 ### `open`
 
-- **params:** `adapter` (required) and `request`, and nothing else.
+- **params:** `adapter` (required), `request` and optional `directory` (string or null).
+  A non-null directory selects placement for this session through an
+  `any_directory` adapter. It must be an absolute path to an existing directory.
+  A fixed-directory adapter refuses this election even when the given path
+  equals its configured directory. Empty, relative, missing and file paths are
+  `invalid_request`. Omission or null uses the adapter's configured directory.
+  This member belongs to the hub transport object. The open payload can still
+  name its own `session_id`, including when it also elects a message or subscription.
 - **answer:** a `session.open.response` envelope carrying the whole state
   document, with `in_reply_to` set to the request envelope's `id` and
   `capability_revision` set to the revision the open was gated under.
@@ -1590,9 +1597,12 @@ nowhere to put a reason (D12).
   the adapter can no longer load is `unsupported_feature` (400) naming
   `session.open.reopen`, because the code comes from the record's existence and
   not from the adapter's reply. A successful reopen's state declares
-  `recovery.recovered`, and a binding store records it as `reopened`. Close is an
-  ordinary close of the adapter's session in both trees, so an adapter that keeps
-  what it closed can be asked to reopen it. Pinned by
+  `recovery.recovered`, and a binding store records it as `reopened`. The binding
+  retains its selected directory across a restart, and a reopen uses that recorded
+  directory. An explicit different directory, or a registry that can no longer
+  place the session there, is refused `invalid_request` before opening the
+  adapter. Close is an ordinary close of the adapter's session in both trees,
+  so an adapter that keeps what it closed can be asked to reopen it. Pinned by
   `TestAReopenIsRecordedAsReopenedAfterTheClose`,
   `TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked`,
   `TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise`,

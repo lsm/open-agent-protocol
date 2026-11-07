@@ -21,7 +21,8 @@ for line in sys.stdin:
  if method=='initialize': result={'userAgent':'synthetic','codexHome':'synthetic','platformFamily':'unix','platformOs':'synthetic'}
  elif method in ['thread/start','thread/resume']:
   thread=request.get('params',{}).get('threadId','native-'+os.path.basename(os.getcwd()))
-  result={'thread':{'id':thread},'model':'synthetic-model'}
+  result={'thread':{'id':thread},'model':'synthetic-model','cwd':os.getcwd(),'approvalPolicy':'on-request',
+          'sandbox':{'type':'workspaceWrite','writableRoots':[],'networkAccess':False}}
  elif method=='turn/start': result={'turn':{'id':'turn-1','status':'inProgress'}}
  else: result={}
  emit({'id':request['id'],'result':result})
@@ -60,13 +61,13 @@ class Hub:
             if answer.get('id') == self.serial and 'event' not in answer:
                 return answer
 
-    def close(self):
+    def close(self, expect_failure=False):
         try:
             self.process.stdin.close()
             self.process.stdin = None
             remaining, _ = self.process.communicate(timeout=10)
             self.output.write(remaining.decode())
-            assert self.process.returncode == 0, 'hub exit was nonzero'
+            assert (self.process.returncode != 0) == expect_failure, f'unexpected hub exit {self.process.returncode}'
         finally:
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
@@ -109,7 +110,7 @@ def main():
             (root / name).mkdir()
         peer = root / 'peer.py'
         peer.write_text(PEER)
-        log = root / 'native.jsonl'
+        log = out / 'native.jsonl'
         config = root / 'registry.json'
 
         def configure(base='base', any_directory=True):
@@ -118,7 +119,8 @@ def main():
                      'working_directory': str(root / base), 'model': 'synthetic-model',
                      'approval_policy': 'on-request', 'sandbox': 'workspace-write'}
             config.write_text(json.dumps({'adapters': {
-                'placed': {**entry, 'any_directory': any_directory}, 'fixed': entry}}))
+                'placed': {**entry, 'any_directory': any_directory}, 'fixed': entry,
+                'scripted': {'type': 'memory', 'working_directory': str(root / base), 'any_directory': True}}}))
 
         configure()
         hub = Hub(binary, root, config, 'initial', out)
@@ -129,15 +131,21 @@ def main():
                 state = hub.call('work.status', session_id=session)['result']
                 assert state['directory'] == str(root / place), state
             opened(hub.call('open', adapter='placed', directory=str(root / 'c'),
-                            request=envelope('compound', subscribe=True,
-                                             message={'role': 'user', 'content': 'synthetic'})), 'compound')
+                            request=envelope('compound',
+                                             message={'messages': [{'role': 'user', 'content': 'synthetic'}], 'delivery': 'auto'})), 'compound')
+            opened(hub.call('open', adapter='scripted', directory=str(root / 'c'),
+                            request=envelope('subscribed', subscribe=True)), 'subscribed')
+            assert hub.call('work.status', session_id='subscribed')['result']['directory'] == str(root / 'c')
             opened(hub.call('open', adapter='placed', directory=None,
                             request=envelope('default')), 'default')
+            opened(hub.call('open', adapter='fixed', request=envelope('fixed-default')), 'fixed-default')
             for index, directory in enumerate(['relative', '', str(root / 'missing'), str(peer)]):
                 refused(hub.call('open', adapter='placed', directory=directory,
                                  request=envelope(f'refused-{index}')))
             refused(hub.call('open', adapter='fixed', directory=str(root / 'base'),
                              request=envelope('refused-fixed')))
+            refused(hub.call('open', adapter='absent', directory=str(root / 'a'),
+                             request=envelope('refused-adapter')), 'unknown_adapter')
             refused(hub.call('sessions', directory=None))
             sessions = hub.call('sessions')['result']['sessions']
             assert not any(row['session_id'].startswith('refused-') for row in sessions)
@@ -167,15 +175,24 @@ def main():
             assert not hub.call('sessions')['result']['sessions']
         finally:
             hub.close()
+        hub = Hub(binary, root, config, 'malformed', out)
+        request = {'id': 1, 'op': 'open', 'adapter': 'placed', 'directory': 7,
+                   'request': envelope('wrong-type')}
+        try:
+            hub.process.stdin.write((json.dumps(request) + '\n').encode())
+            hub.process.stdin.flush()
+        finally:
+            hub.close(expect_failure=True)
+        assert not (out / 'malformed-wire.jsonl').read_text()
         native = [json.loads(line) for line in log.read_text().splitlines()]
         starts = [row for row in native if row['request'].get('method') == 'thread/start']
+        assert len(starts) == 5, starts
         assert {row['cwd'] for row in starts} == {str(root / name) for name in ['a', 'b', 'c', 'base']}, starts
         for row in starts:
             assert row['request']['params']['cwd'] == row['cwd'], row
         resumed = [row for row in native if row['request'].get('method') == 'thread/resume']
         assert len(resumed) == 2 and all(row['cwd'] == str(root / 'a') for row in resumed), resumed
         assert all(row['request']['params']['threadId'] == 'native-a' for row in resumed), resumed
-        (out / 'native.jsonl').write_text(log.read_text())
         (out / 'history.jsonl').write_text((root / 'history.jsonl').read_text())
     print('PASS: host-named open placed real synthetic children in selected directories, refused invalid placement, and reopened from history after restart')
 

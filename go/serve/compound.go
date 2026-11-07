@@ -10,6 +10,7 @@ import (
 )
 
 type CompoundOpen struct {
+	Directory string
 	Subscribe bool
 	Stream    context.Context
 	Message   *protocol.OpenMessage
@@ -59,7 +60,7 @@ func ElectionGate(ctx context.Context, hub *Hub, name string, revision string, r
 }
 
 func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequest, compound CompoundOpen) (CompoundResult, error) {
-	entry, state, err := hub.Open(ctx, name, open)
+	entry, state, err := hub.OpenIn(ctx, name, compound.Directory, open)
 	if err != nil {
 		return CompoundResult{}, err
 	}
