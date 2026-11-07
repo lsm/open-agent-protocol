@@ -73,6 +73,8 @@ for line in sys.stdin:
         (out / 'ready').write_text('quiet')
         while True:
             time.sleep(1)
+if mode == 'delayed-exit':
+    time.sleep(.2)
 "#).unwrap();
         Self(path)
     }
@@ -449,4 +451,21 @@ fn usage_scope_keeps_idle_context_and_limits_core_counts_to_the_first_answer() {
         block_on(session.close()).unwrap();
         fixture.reaped();
     }
+}
+
+#[test]
+fn graceful_close_accepts_cooperative_interpreter_exit_delay() {
+    let fixture = Fixture::new();
+    let session = fixture.open("delayed-exit");
+    let (_, stream) = block_on(session.submit(submit("hi"))).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        events.last().unwrap().envelope_type.as_str(),
+        "run.completed"
+    );
+    block_on(session.close()).unwrap();
+    fixture.reaped();
 }
