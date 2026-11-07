@@ -3,12 +3,24 @@
   "name": "Codex app-server",
   "versions": [
     {
-      "label": "rust-v0.163.0",
+      "label": "rust-v0.167.0",
       "status": "current",
-      "endpoint_version": "83086188ae0614bd882818ff1aa23f3194962012",
-      "capability_revision": "codex-appserver-0.163.0-oap-v2",
+      "endpoint_version": "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a",
+      "capability_revision": "codex-appserver-0.167.0-oap-v1",
+      "ledgers": ["research/codex-app-server-0.167.0-mapping.md", "research/codex-app-server-0.163.0-mapping.md", "research/codex-app-server-0.162.1-mapping.md"],
+      "corpus": "fixtures/adapters/codex-appserver-0.167.0",
+      "components": [{ "name": "codex", "version": "0.167.0", "repository": "https://github.com/openai/codex" }],
+      "artifacts": [
+        { "component": "codex", "platform": "any", "kind": "source-tree", "name": "codex-rs/app-server-protocol/schema", "sha256": "15a28c10689057d59a02fc041bd2841a1b733b7021e8256857ca7627b9cde956" },
+        { "component": "codex", "platform": "darwin-arm64", "kind": "archive", "name": "codex-aarch64-apple-darwin.tar.gz", "sha256": "4b22a2a971be2791c3e31f912f3e77a88ebd64a65812a7289ccba65dd6425fe9", "bytes": 108379331 },
+        { "component": "codex", "platform": "linux-x64", "kind": "archive", "name": "codex-x86_64-unknown-linux-musl.tar.gz", "sha256": "9d64836106d5b374e90ee4454c7ebcde7ca7106558bd7e41a34b9f26ebda251a", "bytes": 122587028 }
+      ],
+      "sources": [{ "component": "codex", "tag": "rust-v0.167.0", "commit": "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a", "tree": "930790b05c58ba0be420a4abe240d206f5dfd48e" }]
+    },
+    {
+      "label": "rust-v0.163.0",
+      "status": "retired",
       "ledgers": ["research/codex-app-server-0.163.0-mapping.md", "research/codex-app-server-0.162.1-mapping.md"],
-      "corpus": "fixtures/adapters/codex-appserver-0.163.0",
       "components": [
         { "name": "codex", "version": "0.163.0", "repository": "https://github.com/openai/codex" }
       ],

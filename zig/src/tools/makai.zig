@@ -308,16 +308,31 @@ const ServedSessions = struct {
     }
 
     fn writeQueued(self: *ServedSessions) void {
-        var batch: [64]Queued = undefined;
+        var queued: [64]Queued = undefined;
+        var batch = session_store.Batch{ .allocator = self.allocator };
+        defer batch.deinit();
+        var store = self.store;
+        store.batch = &batch;
         while (true) {
-            const count = self.queue.getUncancelable(hubIo(), &batch, 1) catch break;
-            for (batch[0..count]) |*item| switch (item.*) {
+            const count = self.queue.getUncancelable(hubIo(), &queued, 1) catch break;
+            self.recorders_mutex.lockUncancelable(hubIo());
+            defer self.recorders_mutex.unlock(hubIo());
+            for (queued[0..count]) |*item| switch (item.*) {
                 .event => |*captured| {
-                    self.write(captured.metadata, &captured.event);
+                    self.writeTo(store, captured.metadata, &captured.event);
                     captured.deinit(self.allocator);
                 },
-                .barrier => |done| done.set(hubIo()),
+                .barrier => |done| {
+                    batch.flush(self.store);
+                    done.set(hubIo());
+                },
             };
+            batch.flush(self.store);
+            if (batch.failed) {
+                var recorders = self.recorders.valueIterator();
+                while (recorders.next()) |recorder| recorder.written = false;
+                batch.failed = false;
+            }
         }
     }
 
@@ -415,9 +430,27 @@ const ServedSessions = struct {
     fn write(self: *ServedSessions, meta: session_store.SessionMetadata, event: *const tui_app.SessionEvent) void {
         self.recorders_mutex.lockUncancelable(hubIo());
         defer self.recorders_mutex.unlock(hubIo());
+        self.writeTo(self.store, meta, event);
+    }
+
+    fn writeTo(self: *ServedSessions, store: session_store.Store, meta: session_store.SessionMetadata, event: *const tui_app.SessionEvent) void {
         const recorder = self.recorderFor(meta.session_id) catch return;
-        const saved = recorder.record(self.allocator, self.store, meta, event.*) orelse return;
-        if (saved.metadata or event.* == .agent_end) self.store.saveIndex(meta) catch {};
+        const saved = recorder.record(self.allocator, store, meta, event.*) orelse return;
+        if (!saved.metadata and event.* != .agent_end) return;
+        var previous: ?session_store.SessionMetadata = store.loadIndex(meta.session_id) catch |err| switch (err) {
+            error.OutOfMemory => return,
+            else => null,
+        };
+        defer if (previous) |*metadata| metadata.deinit(self.allocator);
+        var next = previous orelse meta;
+        next.model = meta.model;
+        next.provider = meta.provider;
+        next.last_active = meta.last_active;
+        if (saved.compaction_offset) |offset| {
+            next.compaction_offset = offset;
+            next.compactions +|= 1;
+        }
+        store.saveIndex(next) catch {};
     }
 };
 
@@ -6161,6 +6194,7 @@ fn serveFatalMessage(err: anyerror) ?[]const u8 {
         error.MalformedLine => SERVE_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => SERVE_FRAME_TOO_LARGE_MESSAGE,
+        error.EventStreamFailed => "oapx serve agent: the adapter event stream failed; the endpoint is closing\n",
         else => null,
     };
 }
@@ -6171,6 +6205,7 @@ fn backendFatalMessage(err: anyerror) ?[]const u8 {
         error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
+        error.EventStreamFailed => "oapx serve agent --backend: the adapter event stream failed; the endpoint is closing\n",
         else => null,
     };
 }
@@ -8170,6 +8205,26 @@ test "a served oapx session's events are saved, read back without adopting it, a
         const current = (try ServedSessions.read(&saved, live.allocator(), "session-1")).?;
         try std.testing.expectEqual(@as(usize, 2), current.len);
         try std.testing.expectEqualStrings("general kenobi", current[1].assistant.content[0].text.text);
+        for (&events) |*event| ServedSessions.record(&saved, "compacted-session", model, event);
+        saved.flush();
+        const compacted_bytes = try saved.store.conversationBytes("compacted-session");
+        const compacted = tui_app.SessionEvent{ .compaction_end = .{
+            .outcome = .completed,
+            .text = OwnedText.initBorrowed("This conversation was compacted.\n\n<summary>kept state</summary>"),
+        } };
+        ServedSessions.record(&saved, "compacted-session", model, &compacted);
+        ServedSessions.record(&saved, "compacted-session", model, &events[events.len - 1]);
+        saved.flush();
+        var compacted_index = try saved.store.loadIndex("compacted-session");
+        defer compacted_index.deinit(allocator);
+        try std.testing.expectEqual(compacted_bytes, compacted_index.compaction_offset);
+        try std.testing.expectEqual(@as(u32, 1), compacted_index.compactions);
+        for (&events) |*event| ServedSessions.record(&saved, "compacted-session", model, event);
+        saved.flush();
+        var later_index = try saved.store.loadIndex("compacted-session");
+        defer later_index.deinit(allocator);
+        try std.testing.expectEqual(compacted_bytes, later_index.compaction_offset);
+        try std.testing.expectEqual(@as(u32, 1), later_index.compactions);
         const Producer = struct {
             saved: *ServedSessions,
             events: []const tui_app.SessionEvent,
@@ -8203,6 +8258,20 @@ test "a served oapx session's events are saved, read back without adopting it, a
             try std.testing.expectEqualStrings(text, queued[index * 2].user.content.text);
             try std.testing.expectEqualStrings("general kenobi", queued[index * 2 + 1].assistant.content[0].text.text);
         }
+        try tmp.dir.createDir(std.testing.io, "blocked.jsonl", .default_dir);
+        ServedSessions.record(&saved, "blocked", model, &events[0]);
+        saved.flush();
+        try tmp.dir.deleteDir(std.testing.io, "blocked.jsonl");
+        for (&events) |*event| ServedSessions.record(&saved, "blocked", model, event);
+        saved.flush();
+        var recovered = try saved.store.load("blocked");
+        defer recovered.deinit(allocator);
+        try std.testing.expectEqualStrings("served-model", recovered.metadata.model);
+        try std.testing.expectEqualStrings("served-provider", recovered.metadata.provider);
+        try std.testing.expectEqual(@as(usize, 2), recovered.messages.items.len);
+        const recovered_entries = try saved.store.readEntries(live.allocator(), "blocked");
+        try std.testing.expectEqualStrings("served-model", recovered_entries[1].item.message.assistant.model);
+        try std.testing.expectEqualStrings("served-provider", recovered_entries[1].item.message.assistant.provider);
         for (&events) |*event| ServedSessions.record(&saved, "session-2", model, event);
     }
     var reopened = ServedSessions.init(allocator, try session_store.Store.init(allocator, base));

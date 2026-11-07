@@ -180,6 +180,11 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
         }
         try w.endArray();
     }
+    if (state.tasks_json) |tasks| {
+        try w.writeKey("tasks");
+        try writeJsonValueOrString(w, tasks);
+    }
+    if (state.tasks_truncated) try w.writeBoolField("tasks_truncated", true);
     if (state.current_model_id) |value| try w.writeStringField("current_model_id", value);
     if (state.transcript_cursor) |value| try w.writeStringField("transcript_cursor", value);
     if (state.updated_at_ms) |value| try w.writeIntField("updated_at_ms", value);
@@ -839,6 +844,11 @@ pub fn deserializeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_
     var envelope = try decodeEnvelope(line, allocator);
     errdefer envelope.deinit(allocator);
     switch (envelope.payload) {
+        .session_open_response, .session_state_response, .session_state_updated => |*payload| if (payload.tasks_json) |loose| {
+            const written = try writtenTasks(line, allocator);
+            allocator.free(loose);
+            payload.tasks_json = written;
+        },
         .call_resolve_request => |*payload| if (payload.result_json) |loose| {
             const written = try writtenResult(line, allocator);
             allocator.free(loose);
@@ -847,6 +857,14 @@ pub fn deserializeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_
         else => {},
     }
     return envelope;
+}
+
+fn writtenTasks(line: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), line, .{ .parse_numbers = false });
+    const tasks = root.object.get("payload").?.object.get("tasks").?;
+    return json_encode.valueAlloc(allocator, tasks);
 }
 
 fn writtenResult(line: []const u8, allocator: std.mem.Allocator) ![]const u8 {
@@ -1400,6 +1418,7 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
     errdefer {
         for (state.active_runs) |*entry| entry.deinit(allocator);
         allocator.free(state.active_runs);
+        if (state.tasks_json) |owned| allocator.free(owned);
         if (state.transcript_cursor) |owned| allocator.free(owned);
         if (state.metadata_json) |owned| allocator.free(owned);
         for (state.sources) |*entry| entry.deinit(allocator);
@@ -1411,6 +1430,11 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
     state.reasoning_level = try optionalOwnedString(obj, "reasoning_level", allocator);
     state.compaction_policy_json = try optionalObjectJson(obj, "compaction_policy", allocator);
     if (obj.get("active_runs")) |value| state.active_runs = try deserializeActiveRuns(value, allocator);
+    if (obj.get("tasks")) |value| {
+        if (value != .array) return DecodeError.InvalidField;
+        state.tasks_json = try optionalRawJson(obj, "tasks", allocator);
+    }
+    state.tasks_truncated = (try optionalBool(obj, "tasks_truncated")) orelse false;
     state.transcript_cursor = try optionalOwnedString(obj, "transcript_cursor", allocator);
     state.metadata_json = try optionalObjectJson(obj, "metadata", allocator);
     if (obj.get("sources")) |value| state.sources = try deserializeSources(value, allocator);
@@ -3304,6 +3328,7 @@ test "every new payload decoder frees what it built when an allocation fails" {
             "ds\":[\"o\"]},{\"question_id\":\"r\",\"text\":\"t\"}]}}",
         prefix ++ "user.input.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_" ++
             "id\":\"s\",\"run_id\":\"r\",\"status\":\"cancelled\",\"answers\":[{\"question_id\":\"q\",\"text\":\"t\"}]}}",
+        prefix ++ "session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"idle\",\"tasks\":[{\"task_id\":\"t\",\"kind\":\"command\",\"status\":\"completed\",\"cancellable\":false,\"cause\":\"finished\"}],\"tasks_truncated\":true}}",
         prefix ++ "capabilities.updated\",\"payload\":{\"previous_revision\":\"r0\",\"reason\":\"why\"}}",
     };
     for (lines) |line| {
@@ -3316,17 +3341,23 @@ test "session state, models and capabilities round trip the members goap serves"
     const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
         "\",\"id\":\"e-1\",\"type\":\"session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"waiting_for_input\",\"active_run_id\":\"r\"," ++
         "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]," ++
+        "\"tasks\":[{\"task_id\":\"t\",\"kind\":\"command\",\"status\":\"running\",\"cancellable\":false,\"extensions\":{\"wide\":18446744073709551615,\"fraction\":1.234567890123456789}}],\"tasks_truncated\":true," ++
         "\"transcript_cursor\":\"4\",\"updated_at_ms\":7,\"metadata\":{\"claude_native_session_id\":\"n-1\"},\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}}}";
     var decoded = try deserializeEnvelope(line, allocator);
     defer decoded.deinit(allocator);
     const state = decoded.payload.session_state_response;
     try std.testing.expectEqual(@as(?u64, 4), state.active_runs[0].as_of_sequence);
     try std.testing.expectEqualStrings("p", state.active_runs[0].pending_interactions[0]);
+    try std.testing.expect(state.tasks_truncated);
+    try std.testing.expect(std.mem.indexOf(u8, state.tasks_json.?, "\"task_id\":\"t\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.tasks_json.?, "18446744073709551615") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.tasks_json.?, "1.234567890123456789") != null);
     try std.testing.expectEqualStrings("4", state.transcript_cursor.?);
     try std.testing.expectEqual(@as(u64, 12), state.as_of.?.settled[0].sequence);
     const encoded = try serializeEnvelope(decoded, allocator);
     defer allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"tasks_truncated\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"updated_at_ms\":7,\"metadata\":{\"claude_native_session_id\":\"n-1\"},") != null);
 

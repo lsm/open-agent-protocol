@@ -1,12 +1,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::lock::Mutex as AsyncMutex;
+use oap_adapter::jsonrpc::Inbound;
 use oap_adapter::{
     BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution, ModelLister,
-    OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
-    UnsupportedControl,
+    ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
 };
 use oap_protocol::{
     MessageSubmitResponse, ModelDescriptor, ModelsRequest, ModelsResponse, RunCancelResponse,
@@ -16,21 +16,23 @@ use oap_protocol::{
 use crate::adapter::{unavailable, Config};
 use crate::native::{decode, ConfigOption, SessionNewParams, SessionNewResult, METHOD_SESSION_NEW};
 use crate::process::{Implementation, Process};
+use crate::PromptBridge;
 
-struct Inner {
-    process: Option<Process>,
-    state: SessionState,
+pub(crate) struct Inner {
+    pub(crate) process: Option<Arc<PromptBridge>>,
+    pub(crate) state: SessionState,
 }
 
 pub(crate) struct Session {
     inner: Mutex<Inner>,
     closing: AsyncMutex<()>,
-    native_id: String,
-    model_option: Option<ConfigOption>,
+    pub(crate) native_id: String,
+    pub(crate) model_option: Option<ConfigOption>,
+    pub(crate) switching: AsyncMutex<()>,
     revision: String,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_millis() as i64)
@@ -99,7 +101,11 @@ impl Session {
         };
         Ok(Box::new(Self {
             inner: Mutex::new(Inner {
-                process: Some(process),
+                process: Some(Arc::new(PromptBridge::new(process, |message| {
+                    if let Inbound::Request(request) = message {
+                        let _ = request.respond_error(-32601, "method not supported");
+                    }
+                }))),
                 state: SessionState {
                     session_id,
                     status: SessionStatus::IDLE,
@@ -110,13 +116,14 @@ impl Session {
                 },
             }),
             closing: AsyncMutex::new(()),
+            switching: AsyncMutex::new(()),
             native_id: opened.session_id,
             model_option,
             revision: descriptor.capability_revision,
         }))
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -147,7 +154,7 @@ impl SessionContract for Session {
                 process
             };
             process
-                .close_async()
+                .close()
                 .await
                 .map_err(|error| Error::Harness(error.to_string()))
         })
@@ -157,6 +164,9 @@ impl SessionContract for Session {
         Some(self.native_id.clone())
     }
     fn model_lister(&self) -> Option<&dyn ModelLister> {
+        Some(self)
+    }
+    fn model_switcher(&self) -> Option<&dyn ModelSwitcher> {
         Some(self)
     }
 
@@ -189,14 +199,10 @@ impl ModelLister for Session {
             {
                 return Err(Error::RunNotFound);
             }
-            let option = self.model_option.as_ref().ok_or_else(|| {
-                Error::UnsupportedControl(Box::new(UnsupportedControl {
-                    feature: FEATURE_MODELS_LIST.into(),
-                    reason: oap_adapter::CONTROL_UNSATISFIABLE,
-                    detail: "the ACP agent reports no configOption whose category is model".into(),
-                    ..UnsupportedControl::default()
-                }))
-            })?;
+            let option = self
+                .model_option
+                .as_ref()
+                .ok_or_else(|| crate::models::missing_model(FEATURE_MODELS_LIST))?;
             Ok(Catalog {
                 revision: self.revision.clone(),
                 models: ModelsResponse {

@@ -51,7 +51,7 @@ var dshCarriedSources = dshCorpusSources{
 	CoreSessionSurface:   "5d8ce74fe2461cb2f777a7bc7556795f337f0c03",
 }
 
-var dshCurrentSources = dshCorpusSources{
+var dshPreviousSources = dshCorpusSources{
 	SDKProtocolTypes:     "25891197e26f9b6360acf20bc070f2b4b8b8e222",
 	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
 	SDKServer:            "726f430f155190922bdce21807da26b6e1a7b127",
@@ -67,8 +67,28 @@ var dshCurrentSources = dshCorpusSources{
 	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
 }
 
+var dshCurrentSources = dshCorpusSources{
+	SDKProtocolTypes:     "6bcd2de7045e58c0fab0e5bacf956724d1ff6e68",
+	SDKProtocolTransport: "4ee65555c0342b276e43b03186659acb623cb6fe",
+	SDKServer:            "1879b23e2eeb57d080f2d38401ab5a0a81ba03d7",
+	CoreSessionTypes:     "7787dd9bd073217825356b9c6b419d2e153d2537",
+	CoreKnownEvents:      "a0f5c17795be074e3c521c525a0eb59ee25248d6",
+	CoreAgentTypes:       "06d2c88ab1e5ada455214555aaae542077caa571",
+	CoreAgentInbox:       "affe0c6b2f653888dc2177fd2987c6082a93f758",
+	CoreAgentRuntime:     "2b1698e39c663f4d8d7760ebdaef647bed693257",
+	CoreAgentLoop:        "c4daa50c47c13fb86b94466774dfcac32b214076",
+	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
+	LLMTypes:             "8a48b89895db0ddb8908ec6359eb67af60fe0f54",
+	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
+	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
+}
+
 func dshCurrentProvenance() dshCorpusProvenance {
 	return dshCorpusProvenance{Repository: dshCorpusRepository, Tag: dshCurrentSource.Tag, Commit: dshCurrentSource.Commit, CommitTree: dshCurrentSource.Tree, Sources: dshCurrentSources}
+}
+
+func dshPreviousProvenance() dshCorpusProvenance {
+	return dshCorpusProvenance{Repository: dshCorpusRepository, Tag: "dsh-v0.2.1-rc.2", Commit: "687f282e8625c6b8d11ff58211a90524be2e4317", CommitTree: "f127f0f96a815eac4dea336a2ae0d9cd0f2aa82d", Sources: dshPreviousSources}
 }
 
 func dshCarriedProvenance() dshCorpusProvenance {
@@ -214,7 +234,7 @@ func runDSHCorpusCase(t *testing.T, root string, entry dshCorpusManifestCase) {
 	dir := filepath.Join(root, entry.Path)
 	definition := dshLoadJSON[dshCorpusCase](t, filepath.Join(dir, "case.json"))
 	p := definition.Provenance
-	if definition.Version != 1 || definition.ID != entry.ID || (p != dshCurrentProvenance() && p != dshCarriedProvenance()) || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
+	if definition.Version != 1 || definition.ID != entry.ID || (p != dshCurrentProvenance() && p != dshPreviousProvenance() && p != dshCarriedProvenance()) || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
 	}
 	dshAssertCapabilities(t, definition, descriptorFromProbe(t))
@@ -1139,12 +1159,29 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 			ok = hasDSHTurnEndKind(decoded, "max-tokens") && failed && code == "deepseek_max-tokens"
 		case "turn-end-reasons":
 			failedRuns := 0
+			activationFailure := false
+			for _, frame := range decoded {
+				if frame.Event == nil || frame.Event.Type != "turn/end" {
+					continue
+				}
+				var turn native.TurnEnd
+				var reason struct {
+					Kind  string `json:"kind"`
+					Error struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if native.DecodeStrict(frame.Event.Data, &turn) == nil && native.DecodeStrict(turn.Reason, &reason) == nil && reason.Kind == "error" && reason.Error.Code == "TOOL_ACTIVATION_FAILED" {
+					activationFailure = true
+				}
+			}
 			for _, envelope := range execution.envelopes {
 				if envelope.Type == protocol.TypeRunFailed {
 					failedRuns++
 				}
 			}
-			ok = hasDSHTurnEndKind(decoded, "error") && hasDSHTurnEndKind(decoded, "aborted") && failedRuns >= 2
+			ok = hasDSHTurnEndKind(decoded, "error") && hasDSHTurnEndKind(decoded, "aborted") && failedRuns >= 2 && activationFailure
 		case "streaming-chunks":
 
 			records, mapped := 0, true

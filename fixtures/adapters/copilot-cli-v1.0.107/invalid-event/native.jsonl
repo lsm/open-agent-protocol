@@ -1,0 +1,1 @@
+{"direction":"copilot-to-host","action":"reject-event","classification":"refused","fidelity":"observed-only","raw":{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"ses","event":{"type":"session.idle","data":[]}}}}

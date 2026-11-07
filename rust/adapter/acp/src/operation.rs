@@ -42,6 +42,7 @@ impl Cancellation {
         if let Some((child, client)) = target {
             child.kill();
             client.close();
+            let _ = child.exited().recv();
         }
     }
 }
@@ -57,7 +58,9 @@ fn worker_error() -> Error {
 }
 
 impl<T: Send + 'static> Operation<T> {
-    fn spawn(work: impl FnOnce(&Cancellation) -> Result<T, Error> + Send + 'static) -> Self {
+    pub(crate) fn spawn(
+        work: impl FnOnce(&Cancellation) -> Result<T, Error> + Send + 'static,
+    ) -> Self {
         let (reply, response) = oneshot::channel();
         let cancellation = Arc::new(Cancellation::default());
         let control = cancellation.clone();
@@ -104,6 +107,26 @@ impl<T> Drop for Operation<T> {
 }
 
 impl Process {
+    pub fn call_shared_async(
+        self: Arc<Self>,
+        method: String,
+        params: Option<Box<RawValue>>,
+        deadline: Option<Instant>,
+    ) -> Operation<Box<RawValue>> {
+        Operation::spawn(move |control| {
+            control.arm(&self.child, &self.client);
+            self.client.call(&method, params, deadline)
+        })
+    }
+
+    pub fn close_shared_async(self: Arc<Self>) -> Operation<()> {
+        Operation::spawn(move |control| {
+            control.arm(&self.child, &self.client);
+            self.close()
+                .map_err(|reason| DIALECT.error(Fault::Transport(reason)))
+        })
+    }
+
     pub fn close_async(self) -> Operation<()> {
         Operation::spawn(move |control| {
             control.arm(&self.child, &self.client);

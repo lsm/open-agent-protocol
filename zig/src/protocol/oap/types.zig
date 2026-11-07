@@ -936,6 +936,8 @@ pub const SessionState = struct {
     status: SessionStatus,
     active_run_id: ?[]const u8 = null,
     active_runs: []ActiveRun = &.{},
+    tasks_json: ?[]const u8 = null,
+    tasks_truncated: bool = false,
     current_model_id: ?[]const u8 = null,
     transcript_cursor: ?[]const u8 = null,
     updated_at_ms: ?i64 = null,
@@ -955,6 +957,7 @@ pub const SessionState = struct {
         if (self.active_run_id) |value| allocator.free(value);
         for (self.active_runs) |*entry| entry.deinit(allocator);
         allocator.free(self.active_runs);
+        if (self.tasks_json) |value| allocator.free(value);
         if (self.current_model_id) |value| allocator.free(value);
         if (self.transcript_cursor) |value| allocator.free(value);
         if (self.metadata_json) |value| allocator.free(value);

@@ -61,7 +61,7 @@ pub const Options = struct {
     tool_sources: []const contract.ConfiguredSource = &.{},
 };
 
-const Served = (contract.Failure || error{ Denied, FrameTooLarge });
+const Served = (contract.Failure || error{ Denied, FrameTooLarge, EventStreamFailed });
 
 pub const ShutdownMode = enum { graceful, force };
 
@@ -155,6 +155,11 @@ pub const Endpoint = struct {
             _ = try self.pump(10 * std.time.ns_per_ms);
         }
         try self.drainAll();
+        for (self.entries.items) |*entry| {
+            if (entry.session.vtable.prepare_close == null) continue;
+            try entry.session.prepareClose(true);
+            try self.drainEntry(entry);
+        }
         self.closeSessions();
     }
 
@@ -168,6 +173,10 @@ pub const Endpoint = struct {
     pub fn closeSession(self: *Endpoint, session_id: []const u8) bool {
         for (self.entries.items, 0..) |*entry, index| {
             if (!std.mem.eql(u8, entry.session.id(), session_id)) continue;
+            if (entry.session.vtable.prepare_close != null) {
+                entry.session.prepareClose(true) catch return false;
+                self.drainEntry(entry) catch return false;
+            }
             entry.deinit(self.allocator);
             _ = self.entries.orderedRemove(index);
             return true;
@@ -211,7 +220,7 @@ pub const Endpoint = struct {
     fn serve(self: *Endpoint, arena: std.mem.Allocator, root: std.json.ObjectMap, line: []const u8) Served!void {
         var refusal = contract.Refusal{};
         self.dispatch(arena, root, line, &refusal) catch |err| switch (err) {
-            error.Denied, error.OutOfMemory, error.FrameTooLarge => |passed| return passed,
+            error.Denied, error.OutOfMemory, error.FrameTooLarge, error.EventStreamFailed => |passed| return passed,
             else => |failure| return self.refuse(arena, failure, refusal),
         };
     }
@@ -635,7 +644,8 @@ pub const Endpoint = struct {
         });
         self.drainEntry(entry) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => {},
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
         };
         const previous = switched.response.previous_model_id orelse "";
         if (std.mem.eql(u8, previous, switched.response.model_id)) return;
@@ -670,6 +680,11 @@ pub const Endpoint = struct {
             .capability_revision = request.capability_revision,
             .payload = .{ .session_settings_update_response = updated.response },
         });
+        self.drainEntry(entry) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
+        };
         entry.state_sequence += 1;
         const published = oap_types.Envelope{
             .id = try self.nextId(arena, "event"),
@@ -725,7 +740,8 @@ pub const Endpoint = struct {
         });
         self.drainEntry(entry) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => {},
+            error.FrameTooLarge => return error.FrameTooLarge,
+            else => return error.EventStreamFailed,
         };
     }
 
@@ -1013,8 +1029,18 @@ pub const Endpoint = struct {
         var events = std.ArrayList(contract.Event).empty;
         try entry.session.drain(scratch.allocator(), &events);
         for (events.items) |event| {
-            try self.remember(entry, event);
-            try self.pushEvent(entry, event);
+            if (event.run_id.len == 0) {
+                if (entry.session.vtable.drain_mixed == null) return error.BackendFailed;
+                const sequence = entry.state_sequence + 1;
+                const line = try contract.sequenceSessionEvent(self.allocator, event.line, entry.session.id(), sequence);
+                errdefer self.allocator.free(line);
+                if (line.len + 1 > self.frame_limit) return error.FrameTooLarge;
+                try self.outbound.append(self.allocator, @constCast(line));
+                entry.state_sequence = sequence;
+            } else {
+                try self.remember(entry, event);
+                try self.pushEvent(entry, event);
+            }
         }
     }
 
@@ -1341,6 +1367,9 @@ const Fake = struct {
     offers_switch: bool = false,
     offers_tools: bool = false,
     oversized_event: bool = false,
+    oversized_session_event_on_switch: bool = false,
+    oversized_session_event_on_cancel: bool = false,
+    invalid_session_event_on_switch: bool = false,
 
     fn adapter(self: *Fake) contract.Adapter {
         return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
@@ -1463,6 +1492,10 @@ const FakeSession = struct {
         _ = refusal;
         const self = cast(ptr);
         if (!self.active) return error.RunNotFound;
+        if (self.fake.oversized_session_event_on_cancel) {
+            const text: [1024]u8 = @splat('x');
+            try self.queue("{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.ended\",\"session_id\":\"s1\",\"payload\":{{\"summary\":\"{s}\"}}}}", .{&text});
+        }
         self.active = false;
         try self.queue("{{\"type\":\"run.cancelled\",\"run_id\":\"{s}\",\"sequence\":2}}", .{run_id});
         return .{ .session_id = self.id_text, .run_id = run_id, .accepted = true, .status = .cancelling };
@@ -1524,6 +1557,13 @@ const FakeSession = struct {
         _ = arena;
         _ = refusal;
         const self = cast(ptr);
+        if (self.fake.invalid_session_event_on_switch) {
+            try self.queue("{{\"type\":\"session.task.started\",\"session_id\":\"s1\",\"payload\":{{}}}}", .{});
+        }
+        if (self.fake.oversized_session_event_on_switch) {
+            const text: [1024]u8 = @splat('x');
+            try self.queue("{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s1\",\"payload\":{{\"label\":\"{s}\"}}}}", .{&text});
+        }
         if (self.active) {
             self.active = false;
             try self.queue("{{\"type\":\"run.completed\",\"run_id\":\"run-{d}\",\"sequence\":2}}", .{self.runs});
@@ -1549,6 +1589,7 @@ const FakeSession = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .drain_mixed = drain,
         .activity = activityOf,
         .close = close,
     };
@@ -1561,6 +1602,7 @@ const FakeSession = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .drain_mixed = drain,
         .activity = activityOf,
         .close = close,
         .models = models,
@@ -2161,6 +2203,67 @@ test "a backend that offers models, switching and tools is answered through them
     const listed_tools = try harness.send(framed("action.tools.list.request", "tools-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"allow_degraded_features\":[\"action.tools.list\"]}"));
     try testing.expectEqualStrings("action.tools.list.response", field(listed_tools[0], &.{"type"}));
     try testing.expectEqualStrings("fake-lister-v2", field(listed_tools[0], &.{"capability_revision"}));
+}
+
+test "session events and state updates share a sequence without entering the run journal" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    const switched = try harness.send(framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}"));
+    try testing.expectEqual(@as(i64, 1), switched[1].object.get("sequence").?.integer);
+    const entry = &harness.endpoint.entries.items[0];
+    const fake = FakeSession.cast(entry.session.ptr);
+    try fake.queue("{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"id\":\"e\",\"type\":\"session.task.started\",\"session_id\":\"s1\",\"payload\":{{}}}}", .{});
+    const state = try harness.send(framed("session.state.request", "state-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
+    try testing.expectEqual(@as(usize, 2), state.len);
+    try testing.expectEqualStrings("session.task.started", field(state[0], &.{"type"}));
+    try testing.expectEqual(@as(i64, 2), state[0].object.get("sequence").?.integer);
+    try testing.expectEqual(@as(usize, 0), entry.cursors.items.len);
+    try testing.expectEqual(@as(usize, 0), entry.journal.items.len);
+}
+
+test "an oversized session event during a model switch fails the endpoint out loud" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{ .frame_limit = 800 });
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    harness.fake.oversized_session_event_on_switch = true;
+    const request = framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}");
+    try testing.expectError(error.FrameTooLarge, harness.endpoint.handleLine(request));
+    const outbound = try harness.collect();
+    try testing.expectEqual(@as(usize, 1), outbound.len);
+    try testing.expectEqualStrings("session.model.switch.response", field(outbound[0], &.{"type"}));
+}
+
+test "an invalid session event during a model switch fails the endpoint out loud" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    harness.fake.invalid_session_event_on_switch = true;
+    const request = framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}");
+    try testing.expectError(error.EventStreamFailed, harness.endpoint.handleLine(request));
+    const outbound = try harness.collect();
+    try testing.expectEqual(@as(usize, 1), outbound.len);
+    try testing.expectEqualStrings("session.model.switch.response", field(outbound[0], &.{"type"}));
+}
+
+test "an oversized session event during cancel fails the endpoint out loud" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{ .frame_limit = 800 });
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    _ = try harness.send(submit_line);
+    harness.fake.oversized_session_event_on_cancel = true;
+    const request = framed("run.cancel.request", "cancel-1", ",\"session_id\":\"s1\",\"run_id\":\"run-1\"", "{\"session_id\":\"s1\",\"run_id\":\"run-1\"}");
+    try testing.expectError(error.FrameTooLarge, harness.endpoint.handleLine(request));
+    const outbound = try harness.collect();
+    try testing.expectEqual(@as(usize, 1), outbound.len);
+    try testing.expectEqualStrings("run.cancel.response", field(outbound[0], &.{"type"}));
 }
 
 test "a run that ends while a model switch waits on its backend settles before the switched state" {

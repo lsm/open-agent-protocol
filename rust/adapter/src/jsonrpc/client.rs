@@ -226,10 +226,41 @@ impl RpcClient {
         deadline: Option<Instant>,
         started: Option<Started>,
     ) -> CallResult {
-        let mut started = started;
-        let mut report = |error: Option<String>| {
-            if let Some(started) = started.take() {
+        self.call_id_reported(id, method, params, deadline, move |error| {
+            if let Some(started) = started {
                 let _ = started.send(error);
+            }
+        })
+    }
+
+    pub fn call_reported(
+        &self,
+        method: &str,
+        params: Option<Box<RawValue>>,
+        deadline: Option<Instant>,
+        report: impl FnOnce(Option<String>),
+    ) -> CallResult {
+        let id = RequestId::Integer(
+            self.0
+                .next_id
+                .fetch_add(1, Ordering::SeqCst)
+                .wrapping_add(1),
+        );
+        self.call_id_reported(id, method, params, deadline, report)
+    }
+
+    fn call_id_reported(
+        &self,
+        id: RequestId,
+        method: &str,
+        params: Option<Box<RawValue>>,
+        deadline: Option<Instant>,
+        report: impl FnOnce(Option<String>),
+    ) -> CallResult {
+        let mut reporter = Some(report);
+        let mut report = |error: Option<String>| {
+            if let Some(reporter) = reporter.take() {
+                reporter(error);
             }
         };
         if method.is_empty() {

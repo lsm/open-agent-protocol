@@ -169,10 +169,7 @@ model calls one, the server sends the client the request `item/tool/call`
 The client answers `DynamicToolCallResponse { contentItems, success }`, each
 item `inputText`, `inputImage` or `inputAudio` (`v2/item.rs:1663`). The turn
 records the call as `ThreadItem::DynamicToolCall`, with status `inProgress`,
-`completed` or `failed`. The specs are kept in the session's metadata, and a
-compatibility deserializer exists "so new builds can resume sessions written
-before explicit namespaces". That suggests a resumed thread keeps its tools,
-though it has not been checked.
+`completed` or `failed`. The specs and resume behavior are checked below.
 
 Experimental means the client must set `experimentalApi: true` in
 `initialize` (`v1.rs:53`). Neither adapter sets it today. Setting it opts the
@@ -185,7 +182,7 @@ What `action.tools.provide` would map to:
 | OAP | Codex |
 |---|---|
 | `tools` on `session.open.request` | `dynamicTools` on `thread/start`, one function spec per `ToolDefinition` (`name`, `description`, `input_schema` as `inputSchema`) |
-| a provided tool at reopen | the specs the thread recorded, restored by `thread/resume` (to be checked) |
+| a provided tool at reopen | the specs the thread recorded, restored by `thread/resume` (subject to persisted history) |
 | `action.call.requested` | the server request `item/tool/call`; its `callId` is the `tool_call_id`, its `arguments` the input |
 | `action.call.resolve.request` | the JSON-RPC response to that request: a result as `contentItems` with `inputText`, `success: true`; a failure as `success: false` with the error text |
 | the five refusal reasons | the adapter's own, as for any provided tool; Codex sees only the one response it gets |
@@ -193,6 +190,17 @@ What `action.tools.provide` would map to:
 
 **Recommendation.** Feasible, and the call shape matches Decision 0011 one to
 one. Whether to take on `experimentalApi` for it is the decision.
+
+
+### Resume evidence (static source review, 2026-11-06)
+
+**Finding: yes, the registered definitions survive a normal persisted resume; pending calls are a separate matter.** This is source evidence, not a live-process proof. Upstream references below are pinned to [Codex commit 83086188ae0614bd882818ff1aa23f3194962012](https://github.com/openai/codex/tree/83086188ae0614bd882818ff1aa23f3194962012), the commit in `fixtures/adapters/codex-appserver-0.163.0/manifest.json:3-5`.
+
+- `thread/start` validates the supplied definitions and passes them to the new thread ([thread_processor.rs:1464-1467](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/request_processors/thread_processor.rs#L1464-L1467), [1522](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/request_processors/thread_processor.rs#L1522)); rollout metadata stores nonempty definitions ([recorder.rs:969-973](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/rollout/src/recorder.rs#L969-L973)). Session construction falls back to history when no definitions are supplied ([session/mod.rs:834-839](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/session/mod.rs#L834-L839)); resumed history reads the session metadata ([history/src/lib.rs:448-459](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/history/src/lib.rs#L448-L459)). Thus this depends on that metadata being available; it is not evidence for ephemeral or damaged history.
+- A live dynamic call creates an `item/tool/call` request and waits for its response ([bespoke_event_handling.rs:1089-1119](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/bespoke_event_handling.rs#L1089-L1119)). For a loaded thread, resume sends its response before replaying outstanding server requests to the joining connection ([thread_lifecycle.rs:935-964](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L935-L964)); the replay selects the in-memory pending requests for that thread and preserves their request IDs ([outgoing_message.rs:452-468](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/outgoing_message.rs#L452-L468), [588-603](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/outgoing_message.rs#L588-L603)). This includes pending dynamic calls, but is not proof that a process restart reconstructs an outstanding request. A cancelled call without a response becomes failed ([dynamic.rs:234-265](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/tools/handlers/dynamic.rs#L234-L265)). Clients must deduplicate replay and must not assume side effects are safe to repeat.
+- The current Go adapter refuses unadvertised tools and sends no definitions in start or resume (`go/adapter/codex/appserver/adapter.go:179-184,216-230`); unsupported server requests receive `-32601` (`go/adapter/codex/appserver/session.go:657-658`, `zig/src/adapter/codex/session.zig:1146-1147`). The pinned corpus manifest lists neither a dynamic call nor resume case (`fixtures/adapters/codex-appserver-0.163.0/manifest.json:6-23`). This finding does not establish current OAP support.
+
+An official CLI experiment can check registration and persisted metadata without a model turn: run the installed `codex-cli 0.160.1` app-server with an isolated temporary HOME and CODEX_HOME, scrub credentials and network access, initialize with `experimentalApi`, start a thread with a synthetic definition, ensure its rollout is persisted, restart and resume it, then inspect metadata. This tests a different version, not 0.163.0. Proving call delivery and warm replay needs a scripted local mock model endpoint and two client connections (see upstream [dynamic_tools.rs:342-448](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/tests/suite/v2/dynamic_tools.rs#L342-L448) and [thread_resume.rs:5577](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/tests/suite/v2/thread_resume.rs#L5577)); no real account or network model call is needed. Neither experiment was run here.
 
 ## Command process outcome on the normalized wire
 

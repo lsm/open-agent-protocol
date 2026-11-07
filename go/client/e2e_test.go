@@ -843,6 +843,36 @@ func TestClientRejectsAFrameIDNamingAnotherRun(t *testing.T) {
 	}
 }
 
+func TestClientKeepsRunCursorAcrossSessionEvents(t *testing.T) {
+	event, err := protocol.NewEnvelope(protocol.TypeSessionTaskEnded, "task-event", protocol.SessionTaskEnded{TaskID: "t", Status: protocol.SessionTaskEndCompleted, Cause: protocol.SessionTaskFinished})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.SessionID = "wire"
+	sequence := uint64(9)
+	event.Sequence = &sequence
+	task, err := event.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("id: wire-run:1\ndata: %s\n\ndata: %s\n\nid: wire-run:2\ndata: %s\n\n", validRunEnvelope(t, protocol.TypeRunStatusUpdated, "wire-run", 1), task, validRunEnvelope(t, protocol.TypeRunStatusUpdated, "wire-run", 2))
+	stream := openDefectSession(t, defectServer(t, body)).Events(context.Background())
+	for _, want := range []protocol.EnvelopeType{protocol.TypeRunStatusUpdated, protocol.TypeSessionTaskEnded, protocol.TypeRunStatusUpdated} {
+		got, err := stream.Next()
+		if err != nil || got.Type != want {
+			t.Fatalf("event %s: %+v %v", want, got, err)
+		}
+	}
+	resumed := fmt.Sprintf("data: %s\n\nid: wire-run:5\ndata: %s\n\n", task, validRunEnvelope(t, protocol.TypeRunStatusUpdated, "wire-run", 5))
+	after := openDefectSession(t, defectServer(t, resumed)).EventsAfter(context.Background(), "wire-run", 4)
+	if _, err := after.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := after.Next(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientRejectsDuplicateSequence(t *testing.T) {
 	envelope := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 2)
 	c := defectServer(t, fmt.Sprintf("id: 2\ndata: %s\n\nid: 2\ndata: %s\n\n", envelope, envelope))

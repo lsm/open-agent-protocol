@@ -1,9 +1,12 @@
 use std::io::Read;
 
 use futures::executor::block_on;
-use oap_adapter::{Adapter as AdapterContract, OpenRequest};
+use oap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
 use oap_adapter_acp::{native::McpServer, pin, process::ProcessConfig, Adapter, Config};
-use oap_protocol::{ModelsRequest, Participant, FEATURE_MODELS_LIST};
+use oap_protocol::{
+    ModelsRequest, Participant, SessionModelSwitchRequest, FEATURE_MODELS_LIST,
+    FEATURE_SESSION_MODEL_SWITCH,
+};
 use serde::Deserialize;
 
 #[derive(Default, Deserialize)]
@@ -15,6 +18,25 @@ struct Input {
     participant: String,
     reasoning_level: String,
     open: bool,
+    model: Option<String>,
+    allow_switch: bool,
+    switch_session: Option<String>,
+}
+
+fn switch_details(error: &Error) -> serde_json::Value {
+    match error {
+        Error::UnsupportedControl(control) => serde_json::json!({
+            "kind":"unsupported_control", "feature":control.feature, "reason":control.reason,
+            "field":control.field, "detail":control.detail,
+        }),
+        Error::DegradedControl(feature) => {
+            serde_json::json!({"kind":"degraded", "feature":feature})
+        }
+        Error::ModelNotFound(id) => serde_json::json!({"kind":"model_not_found", "id":id}),
+        Error::InvalidSubmission => serde_json::json!({"kind":"invalid_submission"}),
+        Error::SessionClosed => serde_json::json!({"kind":"session_closed"}),
+        _ => serde_json::json!({"kind":"other"}),
+    }
 }
 
 fn main() {
@@ -55,7 +77,40 @@ fn main() {
                 return;
             }
         };
-        let state = block_on(session.state()).unwrap();
+        let mut state = block_on(session.state()).unwrap();
+        let initial = state.clone();
+        let mut switched = None;
+        let mut switch_error = None;
+        if let Some(model_id) = input.model {
+            match block_on(
+                session
+                    .model_switcher()
+                    .unwrap()
+                    .switch_model(SessionModelSwitchRequest {
+                        session_id: input
+                            .switch_session
+                            .map(Into::into)
+                            .unwrap_or_else(|| state.session_id.clone()),
+                        model_id,
+                        allow_degraded_features: if input.allow_switch {
+                            vec![FEATURE_SESSION_MODEL_SWITCH.into()]
+                        } else {
+                            Vec::new()
+                        },
+                    }),
+            ) {
+                Ok((response, updated)) => {
+                    switched = Some(response);
+                    state = updated;
+                }
+                Err(error) => switch_error = Some(error),
+            }
+        }
+        let observed = block_on(session.state()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            serde_json::to_value(observed).unwrap()
+        );
         let catalog = block_on(session.model_lister().unwrap().models(ModelsRequest {
             session_id: state.session_id.clone(),
             allow_degraded_features: vec![FEATURE_MODELS_LIST.into()],
@@ -64,7 +119,10 @@ fn main() {
         println!(
             "{}",
             serde_json::json!({
-                "state": state, "nativeId": session.native_session_id(),
+                "state": state, "initialState": initial, "nativeId": session.native_session_id(),
+                "switchResponse": switched,
+                "switchError": switch_error.as_ref().map(|error| error.to_string()),
+                "switchDetails": switch_error.as_ref().map(switch_details),
                 "models": catalog.as_ref().ok().map(|catalog| &catalog.models),
                 "modelError": catalog.err().map(|error| error.to_string()),
                 "revision": descriptor.capability_revision,

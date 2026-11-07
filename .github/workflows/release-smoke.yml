@@ -177,6 +177,7 @@ jobs:
   npm:
     name: Published npm package
     needs: resolve
+    if: needs.resolve.outputs.tag != 'v0.1.0-alpha.31'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

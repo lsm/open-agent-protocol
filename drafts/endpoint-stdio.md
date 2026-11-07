@@ -318,6 +318,10 @@ could not be framed, or `stream_failed` for anything else. `after` is a cursor:
 the host replays from it to continue. A clean end needs no such frame, because
 the run's terminal envelope is already the marker.
 
+Session-scoped events have no run cursor and are not replayed. If one cannot be
+framed, or its adapter stream fails while an update is being published, the
+endpoint fails the stdio connection rather than silently discarding the event.
+
 A replay here is one run's and ends at that run's terminal, as does the stream a
 submit starts. [Decision 0066](../decisions/0066-a-subscription-lasts-as-long-as-its-connection.md)
 is about hub subscriptions and does not reach this binding: each run already has
@@ -335,6 +339,10 @@ host that wants the first should not be handed the third.
 session over this binding, assembles every envelope it sent and received into a
 trace, and runs that trace through the same validator `goap validate` uses. It
 then asserts the exit contract above.
+
+The Rust `oap_conformance::run` API drives the same process contract and uses
+`oap_validation::Validator` to judge its trace. The repository's
+`endpoint_conformance` Cargo example prints the resulting report.
 
 The point of assembling a trace is that the verdict does not come from the
 runner's own opinion. The runner drives; the validator judges; they are
@@ -355,8 +363,9 @@ and conformance does not require credentials or a reachable model server.
 Naming a model is the one place the script cannot guess. An endpoint is
 entitled to have no default model and to refuse a submission that names none.
 So the script takes `--model`, and failing that reads the endpoint's own
-`models.list` when it advertises one, preferring the entry that declares
-itself default. An endpoint that advertises no catalog and holds no default
+`models.list` when it advertises one. The Go and Rust runners first elect an
+entry different from the current model to exercise switching, then fall back
+to the declared default or first entry. An endpoint that advertises no catalog and holds no default
 cannot be driven past submit by any host, which is worth knowing about that
 endpoint rather than something the harness should paper over.
 
@@ -405,9 +414,8 @@ either tree: a write blocks until the child reads it. That is preexisting rather
 than something this bound introduced, and it is recorded here because a budget
 that covers reads and not writes is easy to over-read as complete.
 
-That bound is `oapx`'s alone for now. `goap conformance` still re-arms
-`--timeout` for every line it pulls, so a chatty endpoint holds its
-correlations open there indefinitely, and it does not yet report a spent budget
-as distinct from silence. Both sides are held to this section, so that
-divergence is a gap in the Go runner rather than a difference between the
-bindings, and it is closed by the Go runner adopting the same budget.
+The Go `--timeout` and Rust `Options::line_deadline` also give each response
+or event wait one absolute budget, defaulting to 300s. Control waits are capped
+at 10s. Both retain already-buffered matching answers and report exhausted
+budgets. Rust's EOF drain shares one total budget. Go currently renews its
+allowance as EOF-drain lines arrive.

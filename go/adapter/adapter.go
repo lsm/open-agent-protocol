@@ -33,6 +33,10 @@ type Session interface {
 	Close(context.Context) error
 }
 
+type SessionEventSource interface {
+	SessionEvents() EventStream
+}
+
 type Catalog struct {
 	Revision string
 

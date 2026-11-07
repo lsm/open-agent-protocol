@@ -1,0 +1,37 @@
+[
+  {
+    "index": 1,
+    "direction": "host-to-copilot",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 2,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 3,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  },
+  {
+    "index": 4,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  },
+  {
+    "index": 5,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "event projection or explicit omission"
+  }
+]

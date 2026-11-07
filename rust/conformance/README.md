@@ -45,6 +45,14 @@ decoder, and malformed payload diagnostics retain type/category information.
 
 The full-suite entry point follows the remaining check ports.
 
+`select_model` respects an explicit selection, then looks for an alternative
+in an advertised catalog, keeping the current model when discovery supplies
+none. `switch_model` checks the acknowledgment, canonical state update and
+reconciled model, then checks a missing-model refusal. Its boolean reports
+whether the requested model was confirmed. The missing-model refusal has its
+own named result. `list_sessions` probes the advertised live-session listing
+or its unavailable refusal, keeping that probe out of the assembled trace.
+
 The public consumer journey is
 `.claude/skills/verify/journeys/rust-conformance-wire.md`.
 Process lifecycle coverage is in
@@ -53,3 +61,5 @@ Correlated-wait coverage is in
 `.claude/skills/verify/journeys/rust-conformance-client.md`.
 Bootstrap coverage is in
 `.claude/skills/verify/journeys/rust-conformance-bootstrap.md`.
+Model and listing coverage is in
+`.claude/skills/verify/journeys/rust-conformance-models.md`.

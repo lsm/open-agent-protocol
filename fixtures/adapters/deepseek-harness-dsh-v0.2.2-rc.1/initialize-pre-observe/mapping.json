@@ -1,0 +1,1 @@
+[{"index":1,"type":"request:initialize","direction":"host-to-dsh","classification":"mapped","fidelity":"normalized","oap":"adapter-owned one-shot initialize"},{"index":2,"type":"session.status","direction":"dsh-to-host","classification":"observed-only","fidelity":"native"}]

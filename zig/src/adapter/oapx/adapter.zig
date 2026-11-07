@@ -24,6 +24,7 @@ const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source,
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
+const ended_task_capacity: usize = 256;
 
 const max_provided_tools = 64;
 const provided_name_pattern = "^[a-zA-Z0-9_-]{1,64}$";
@@ -353,6 +354,7 @@ const PendingInteraction = struct {
 };
 
 const PreparedEvent = struct { line: []u8, kept: []u8 };
+const TaskOrigin = struct { run_id: []const u8, tool_call_id: []const u8, announced: bool = false, ended: bool = false };
 
 const Journaled = struct {
     line: []u8,
@@ -369,6 +371,9 @@ pub const Session = struct {
     runtime: *session_runtime.SessionRuntime,
     loop: *local_loop.LocalLoop,
     jobs: *local_tools.shell.Jobs,
+    task_origins: std.StringHashMapUnmanaged(TaskOrigin) = .empty,
+    shell_calls: std.StringHashMapUnmanaged([]const u8) = .empty,
+    pending_tasks: usize = 0,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
     recovered: bool = false,
@@ -383,6 +388,7 @@ pub const Session = struct {
     outbox: std.ArrayList(Journaled) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
     policy_json: ?[]const u8 = null,
+    ready: ?contract.Session.Ready = null,
 
     fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
@@ -457,10 +463,13 @@ pub const Session = struct {
         .resolve = resolve,
         .cancel = cancel,
         .pump = pump,
+        .set_ready = setReady,
         .drain = drain,
+        .drain_mixed = drain,
         .activity = activity,
         .live_work = liveWork,
         .close = close,
+        .prepare_close = prepareClose,
         .tools = tools,
         .models = models,
         .switch_model = switchModel,
@@ -674,6 +683,13 @@ pub const Session = struct {
         return cast(ptr).id;
     }
 
+    fn setReady(ptr: *anyopaque, ready: ?contract.Session.Ready) void {
+        const self = cast(ptr);
+        self.ready = ready;
+        self.jobs.setReady(if (ready) |held| .{ .ctx = held.ctx, .notify = held.notify } else null);
+        self.runtime.setReady(if (ready) |held| .{ .ctx = held.ctx, .notify = held.notify } else null);
+    }
+
     fn nativeIdOf(ptr: *anyopaque) []const u8 {
         const self = cast(ptr);
         return if (self.owner.readsHistory()) self.id else "";
@@ -766,6 +782,12 @@ pub const Session = struct {
         return count;
     }
 
+    fn taskEarlier(_: void, left: local_tools.shell.Jobs.Task, right: local_tools.shell.Jobs.Task) bool {
+        if (left.status == .running) return false;
+        if (right.status == .running) return true;
+        return left.ended_order < right.ended_order;
+    }
+
     fn snapshot(self: *Session, arena: std.mem.Allocator) contract.Failure!oap_types.SessionState {
         var entries: std.ArrayList(oap_types.ActiveRun) = .empty;
         var admitted: std.ArrayList([]const u8) = .empty;
@@ -804,8 +826,38 @@ pub const Session = struct {
                 .pending_steers = steers,
             });
         }
+        const tasks = try self.jobs.tasks(arena);
+        std.mem.sort(local_tools.shell.Jobs.Task, tasks, {}, taskEarlier);
+        var ended_count: usize = 0;
+        for (tasks) |task| if (task.status != .running) {
+            ended_count += 1;
+        };
+        const truncated = ended_count > ended_task_capacity;
+        var drop = ended_count -| ended_task_capacity;
+        var task_rows: std.ArrayList(std.json.Value) = .empty;
+        for (tasks) |task| {
+            if (task.status != .running and drop > 0) {
+                drop -= 1;
+                continue;
+            }
+            var row = Payload.init(arena);
+            try row.put("task_id", .{ .string = task.task_id });
+            try row.put("kind", .{ .string = "command" });
+            try row.put("status", .{ .string = @tagName(task.status) });
+            try row.put("tool_call_id", .{ .string = task.tool_call_id });
+            try row.put("cancellable", .{ .bool = false });
+            if (task.cause) |cause| try row.put("cause", .{ .string = @tagName(cause) });
+            if (self.task_origins.get(task.task_id)) |origin| {
+                if (origin.run_id.len > 0) try row.put("run_id", .{ .string = origin.run_id });
+            } else if (self.shell_calls.get(task.tool_call_id)) |run_id| {
+                try row.put("run_id", .{ .string = run_id });
+            }
+            try task_rows.append(arena, row.value());
+        }
         var result = oap_types.SessionState{
             .session_id = self.id,
+            .tasks_json = if (tasks.len > 0) try std.json.Stringify.valueAlloc(arena, task_rows.items, .{}) else null,
+            .tasks_truncated = truncated,
             .status = if (entries.items.len > 0) .queued else .idle,
             .active_runs = entries.items,
             .current_model_id = try self.currentModelRef(arena),
@@ -1459,7 +1511,8 @@ pub const Session = struct {
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
         _ = wait_ns;
         const self = cast(ptr);
-        var moved = try self.promote();
+        var moved = try self.publishTasks();
+        moved = (try self.promote()) or moved;
         const stream = self.runtime.streamEvents();
         while (stream.poll()) |event| {
             var owned = event;
@@ -1468,7 +1521,74 @@ pub const Session = struct {
             try self.translate(owned);
             moved = true;
         }
+        moved = (try self.publishTasks()) or moved;
         return try self.pumpInteraction() or moved;
+    }
+
+    fn emitSession(self: *Session, arena: std.mem.Allocator, kind: []const u8, payload: std.json.Value) !void {
+        var envelope = Payload.init(arena);
+        try envelope.put("protocol", .{ .string = protocol_name });
+        try envelope.put("version", .{ .string = protocol_version });
+        try envelope.put("profile", .{ .string = profile });
+        try envelope.put("type", .{ .string = kind });
+        try envelope.put("id", .{ .string = try self.owner.nextID(arena, "event") });
+        try envelope.put("session_id", .{ .string = self.id });
+        try envelope.put("payload", payload);
+        const line = try json_encode.valueAlloc(self.gpa, envelope.value());
+        errdefer self.gpa.free(line);
+        try self.outbox.append(self.gpa, .{ .line = line, .run_id = "", .sequence = 0 });
+    }
+
+    fn captureTasks(self: *Session, call_id: ?[]const u8, fallback_run: ?[]const u8) !void {
+        if (self.shell_calls.count() == 0 and fallback_run == null) return;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const tasks = try self.jobs.tasksForCall(scratch.allocator(), call_id);
+        const keep = self.keep.allocator();
+        for (tasks) |task| {
+            if (self.task_origins.contains(task.task_id)) continue;
+            const run_id = self.shell_calls.get(task.tool_call_id) orelse fallback_run orelse continue;
+            try self.task_origins.put(keep, try keep.dupe(u8, task.task_id), .{ .run_id = run_id, .tool_call_id = try keep.dupe(u8, task.tool_call_id) });
+            self.pending_tasks += 1;
+        }
+    }
+
+    fn publishTasks(self: *Session) !bool {
+        if (self.pending_tasks == 0) return false;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const tasks = try self.jobs.tasks(a);
+        var moved = false;
+        for (tasks) |task| {
+            if (self.task_origins.getPtr(task.task_id)) |origin| {
+                if (!origin.announced) {
+                    var row = Payload.init(a);
+                    try row.put("task_id", .{ .string = task.task_id });
+                    try row.put("kind", .{ .string = "command" });
+                    try row.put("status", .{ .string = "running" });
+                    if (origin.run_id.len > 0) try row.put("run_id", .{ .string = origin.run_id });
+                    try row.put("tool_call_id", .{ .string = origin.tool_call_id });
+                    try row.put("cancellable", .{ .bool = false });
+                    var payload = Payload.init(a);
+                    try payload.put("task", row.value());
+                    try self.emitSession(a, "session.task.started", payload.value());
+                    origin.announced = true;
+                    moved = true;
+                }
+                if (!origin.ended and task.status != .running) {
+                    var payload = Payload.init(a);
+                    try payload.put("task_id", .{ .string = task.task_id });
+                    try payload.put("status", .{ .string = @tagName(task.status) });
+                    try payload.put("cause", .{ .string = @tagName(task.cause.?) });
+                    try self.emitSession(a, "session.task.ended", payload.value());
+                    origin.ended = true;
+                    self.pending_tasks -= 1;
+                    moved = true;
+                }
+            }
+        }
+        return moved;
     }
 
     fn translate(self: *Session, event: session_events.SessionEvent) contract.Failure!void {
@@ -1490,6 +1610,10 @@ pub const Session = struct {
             .thinking_delta => |payload| try self.emitPart(a, run, "reasoning", "reasoning", payload.delta.slice()),
             .tool_execution_start => |payload| {
                 if (self.providedNamed(payload.tool_name.slice()) != null) return self.requestCall(a, run, payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice());
+                if (std.mem.eql(u8, payload.tool_name.slice(), "Shell")) {
+                    const keep = self.keep.allocator();
+                    try self.shell_calls.put(keep, try keep.dupe(u8, payload.tool_call_id.slice()), run.id);
+                }
                 var requested = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 try requested.put("requested_by", .{ .string = endpoint_id });
                 try requested.put("arguments_json", try jsonOrString(a, payload.args_json.slice()));
@@ -1500,6 +1624,10 @@ pub const Session = struct {
             .tool_execution_end => |payload| {
                 run.after_tool = true;
                 if (self.providedNamed(payload.tool_name.slice()) != null) return self.endCall(a, run, payload.tool_call_id.slice());
+                if (std.mem.eql(u8, payload.tool_name.slice(), "Shell")) {
+                    try self.captureTasks(payload.tool_call_id.slice(), null);
+                    _ = self.shell_calls.remove(payload.tool_call_id.slice());
+                }
                 var ended = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 if (payload.is_error) {
                     var failure = Payload.init(a);
@@ -1515,6 +1643,7 @@ pub const Session = struct {
                     try ended.put("result", try jsonOrString(a, if (parts.len > 0) parts else payload.result_json.slice()));
                     try self.emitCallEnd(run, "action.call.completed", ended.value(), CallEnd.of(payload, payload.result_text.slice()));
                 }
+                _ = try self.publishTasks();
             },
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
             .message_end => |payload| {
@@ -1530,7 +1659,12 @@ pub const Session = struct {
                 run.error_text.clearRetainingCapacity();
                 try run.error_text.appendSlice(self.gpa, payload.message.slice());
             },
-            .agent_end => |payload| try self.settle(a, run, payload.reason),
+            .agent_end => |payload| {
+                try self.captureTasks(null, null);
+                self.shell_calls.clearRetainingCapacity();
+                _ = try self.publishTasks();
+                try self.settle(a, run, payload.reason);
+            },
             .compaction_start => if (!run.compaction) try self.compactionStarted(a, run, "threshold"),
             .compaction_end => |payload| if (run.compaction and !payload.in_run) try self.settleCompaction(a, run, payload) else {
                 _ = try self.compactionEnded(a, run, payload);
@@ -1686,6 +1820,7 @@ pub const Session = struct {
     }
 
     fn publishEvent(self: *Session, run: *Run, event: PreparedEvent, kind: []const u8, terminal: bool) void {
+        defer if (self.ready) |ready| ready.notify(ready.ctx);
         const sequence = run.next_sequence;
         self.outbox.appendAssumeCapacity(.{ .line = event.line, .run_id = run.id, .sequence = sequence });
         if (self.journal.items.len == journal_capacity) self.evictOldestHalf();
@@ -1750,13 +1885,33 @@ pub const Session = struct {
     }
 
     fn liveWork(ptr: *anyopaque) bool {
-        const jobs = cast(ptr).jobs;
-        return jobs.anyRunning() or jobs.noticeWaiting();
+        const self = cast(ptr);
+        return self.pending_tasks > 0 or self.outbox.items.len > 0 or self.jobs.anyRunning() or self.jobs.noticeWaiting();
     }
 
     fn activity(ptr: *anyopaque) contract.Activity {
         const self = cast(ptr);
         return if (self.live() != null) (if (self.pending != null) .waiting else .running) else if (self.queuedCount() > 0) .running else .idle;
+    }
+
+    fn prepareClose(ptr: *anyopaque, force: bool) contract.Failure!void {
+        const self = cast(ptr);
+        if (!force and (self.live() != null or self.queuedCount() > 0)) return error.RunActive;
+        const run_id = if (self.live()) |run| run.id else "";
+        if (force) {
+            self.runtime.cancel();
+            self.jobs.seal();
+            const stream = self.runtime.streamEvents();
+            while (stream.poll()) |event| {
+                var owned = event;
+                defer owned.deinit(self.gpa);
+                if (self.owner.recorder) |recorder| recorder.record(recorder.ctx, self.id, self.runtime.currentModel(), &owned);
+                try self.translate(owned);
+            }
+        }
+        try self.captureTasks(null, run_id);
+        self.jobs.endAll();
+        _ = try self.publishTasks();
     }
 
     fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
@@ -2589,7 +2744,9 @@ const Harness = struct {
         for (out.items) |event| {
             defer testing.allocator.free(event.line);
             defer testing.allocator.free(event.run_id);
-            const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, event.line, .{});
+            const line = if (event.run_id.len == 0) try contract.sequenceSessionEvent(testing.allocator, event.line, self.session.id(), 1) else event.line;
+            defer if (event.run_id.len == 0) testing.allocator.free(line);
+            const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, line, .{});
             errdefer parsed.deinit();
             var registry = try @import("jsonschema").Registry.initFromBundled(testing.allocator);
             defer registry.deinit();
@@ -4112,6 +4269,34 @@ test "a live update changes the loop's thinking level between runs and is refuse
     try testing.expectEqualStrings("max", after.reasoning_level.?);
 }
 
+test "a native readiness observer sees a submitted run and can detach before the next" {
+    var script = Script{ .reply = "readiness reply" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const Observer = struct {
+        fn notify(ctx: *anyopaque) void {
+            const ready: *std.Io.Event = @ptrCast(@alignCast(ctx));
+            ready.set(testing.io);
+        }
+    };
+    var ready: std.Io.Event = .unset;
+    try testing.expect(harness.session.setReady(.{ .ctx = &ready, .notify = Observer.notify }));
+    try testing.expect(ready.isSet());
+    ready.reset();
+    _ = try harness.submit("first observed turn");
+    try testing.expect(ready.isSet());
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("run.completed"));
+    try testing.expect(harness.session.setReady(null));
+    ready.reset();
+    harness.reset();
+    _ = try harness.submit("second turn");
+    try harness.untilTerminal();
+    try testing.expect(!ready.isSet());
+    try testing.expectEqual(@as(usize, 1), harness.count("run.completed"));
+}
+
 fn compactRequest(harness: *Harness, focus: ?[]const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
     return harness.session.vtable.compact.?(harness.session.ptr, harness.arena.allocator(), &.{ .session_id = harness.session.id(), .focus = focus }, "compact-envelope", refusal);
 }
@@ -4966,4 +5151,297 @@ test "a steer naming a model is refused as unsatisfiable, since it cannot change
     try testing.expectError(error.UnsupportedFeature, harness.session.submit(harness.arena.allocator(), &.{ .session_id = harness.session.id(), .messages = &messages, .delivery = .steer, .model_id = "scripted/openai-completions@other-model" }, "steer-envelope", &refusal));
     try testing.expectEqualStrings("run.model_selection", refusal.feature);
     try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+}
+
+fn startSleepingJob(session: *Session, arena: std.mem.Allocator, root: []const u8, call_id: []const u8) ![]const u8 {
+    const args = try std.fmt.allocPrint(arena, "{{\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+    const tools = local_tools.shell.sessionTools(session.jobs);
+    var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, call_id, args, null, null, null, testing.allocator);
+    result.deinit(testing.allocator);
+    return (try session.jobs.tasksForCall(arena, call_id))[0].task_id;
+}
+
+test "a shell background job is visible as a session task before its run ends" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"while [ ! -e task-finish ]; do sleep 0.05; done\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const admitted = try harness.submit("start a job");
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("session.task.started"));
+    var task_id: []const u8 = "";
+    var saw_completed = false;
+    var saw_terminal = false;
+    for (harness.seen.items) |parsed| {
+        const event = parsed.value.object;
+        const kind = event.get("type").?.string;
+        if (std.mem.eql(u8, kind, "action.call.completed")) saw_completed = true;
+        if (std.mem.eql(u8, kind, "run.completed")) saw_terminal = true;
+        if (!std.mem.eql(u8, kind, "session.task.started")) continue;
+        try testing.expect(saw_completed and !saw_terminal);
+        try testing.expect(event.get("run_id") == null);
+        const task = event.get("payload").?.object.get("task").?.object;
+        task_id = task.get("task_id").?.string;
+        try testing.expectEqualStrings(admitted.run_id.?, task.get("run_id").?.string);
+        try testing.expectEqualStrings("call-1", task.get("tool_call_id").?.string);
+        try testing.expect(!task.get("cancellable").?.bool);
+    }
+    const session = Session.cast(harness.session.ptr);
+    const state = try session.snapshot(harness.arena.allocator());
+    const tasks = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena.allocator(), state.tasks_json.?, .{});
+    try testing.expectEqualStrings(task_id, tasks.array.items[0].object.get("task_id").?.string);
+    try testing.expectEqualStrings(admitted.run_id.?, tasks.array.items[0].object.get("run_id").?.string);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "task-finish", .data = "" });
+    const deadline = compat.time.nowMillis() + 15_000;
+    while (harness.count("session.task.ended") == 0 and compat.time.nowMillis() < deadline) {
+        _ = try harness.session.pump(0);
+        try harness.collect();
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(usize, 1), harness.count("session.task.ended"));
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    const original_allocator = session.gpa;
+    session.gpa = failing.allocator();
+    const idle = session.publishTasks();
+    session.gpa = original_allocator;
+    try testing.expect(!try idle);
+    for (harness.seen.items) |parsed| {
+        const event = parsed.value.object;
+        if (!std.mem.eql(u8, event.get("type").?.string, "session.task.ended")) continue;
+        const ended = event.get("payload").?.object;
+        try testing.expectEqualStrings(task_id, ended.get("task_id").?.string);
+        try testing.expectEqualStrings("completed", ended.get("status").?.string);
+        try testing.expectEqualStrings("finished", ended.get("cause").?.string);
+    }
+}
+
+test "ended tasks are ordered by settlement before truncation" {
+    const Task = local_tools.shell.Jobs.Task;
+    var tasks = [_]Task{
+        .{ .task_id = "first-started", .tool_call_id = "a", .status = .completed, .cause = .finished, .ended_order = 2 },
+        .{ .task_id = "running", .tool_call_id = "b", .status = .running, .cause = null, .ended_order = 0 },
+        .{ .task_id = "first-ended", .tool_call_id = "c", .status = .failed, .cause = .finished, .ended_order = 1 },
+    };
+    std.mem.sort(Task, &tasks, {}, Session.taskEarlier);
+    try testing.expectEqualStrings("first-ended", tasks[0].task_id);
+    try testing.expectEqualStrings("first-started", tasks[1].task_id);
+    try testing.expectEqualStrings("running", tasks[2].task_id);
+}
+
+test "background jobs keep their own run when tool call ids repeat" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const first = try harness.submit("first job");
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("session.task.started"));
+    harness.reset();
+    script.calls = 0;
+    const second = try harness.submit("second job");
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("session.task.started"));
+    const state = try Session.cast(harness.session.ptr).snapshot(harness.arena.allocator());
+    const tasks = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena.allocator(), state.tasks_json.?, .{});
+    try testing.expectEqual(@as(usize, 2), tasks.array.items.len);
+    var first_seen = false;
+    var second_seen = false;
+    for (tasks.array.items) |task| {
+        const row = task.object;
+        try testing.expectEqualStrings("call-1", row.get("tool_call_id").?.string);
+        const run = row.get("run_id").?.string;
+        const id = row.get("task_id").?.string;
+        const jobs = Session.cast(harness.session.ptr).jobs;
+        if (std.mem.eql(u8, id, jobs.list.items[0].id)) first_seen = std.mem.eql(u8, run, first.run_id.?);
+        if (std.mem.eql(u8, id, jobs.list.items[1].id)) second_seen = std.mem.eql(u8, run, second.run_id.?);
+    }
+    try testing.expect(first_seen and second_seen);
+}
+
+test "the served endpoint sequences background task events with state updates" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    wire.owner.options.permission_mode = .bypass;
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"start a job"}]}
+    ));
+    const started = try wire.wait("session.task.started");
+    try testing.expectEqual(@as(i64, 1), started.object.get("sequence").?.integer);
+    _ = try wire.wait("run.completed");
+    try wire.send("session.settings.update.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","compaction_policy":{"kind":"tokens","tokens":9}}
+    ));
+    const updated = wireLast(&wire, "session.state.updated");
+    try testing.expectEqual(@as(i64, 2), updated.object.get("sequence").?.integer);
+    const session = Session.cast(wire.endpoint.entries.items[0].session.ptr);
+    _ = try session.jobs.report(session.jobs.list.items[0].output, true);
+    const ended = try wire.wait("session.task.ended");
+    try testing.expectEqual(@as(i64, 3), ended.object.get("sequence").?.integer);
+    try testing.expectEqualStrings(started.object.get("payload").?.object.get("task").?.object.get("task_id").?.string, ended.object.get("payload").?.object.get("task_id").?.string);
+}
+
+test "closing a served session publishes the job ending before removing it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Clock = struct {
+        fn now() u64 {
+            return @intCast(@max(0, compat.time.nowMillis()));
+        }
+    };
+    for (0..2) |variant| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(root);
+        const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+        defer testing.allocator.free(args);
+        var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+        var wire: Wire = undefined;
+        wire.init(&script);
+        defer wire.deinit();
+        wire.owner.options.permission_mode = .bypass;
+        try wireOpen(&wire);
+        const a = wire.arena.allocator();
+        try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+            \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"start a job"}]}
+        ));
+        const started = try wire.wait("session.task.started");
+        _ = try wire.wait("run.completed");
+        const calls = script.calls;
+        if (variant == 0) {
+            try testing.expect(wire.endpoint.closeSession("wire-session"));
+        } else {
+            try wire.endpoint.finish(0, Clock.now);
+        }
+        try wire.collect();
+        const ended = wireLast(&wire, "session.task.ended");
+        try testing.expectEqual(@as(i64, 2), ended.object.get("sequence").?.integer);
+        const payload = ended.object.get("payload").?.object;
+        try testing.expectEqualStrings("cancelled", payload.get("status").?.string);
+        try testing.expectEqualStrings("session_closed", payload.get("cause").?.string);
+        try testing.expectEqualStrings(started.object.get("payload").?.object.get("task").?.object.get("task_id").?.string, payload.get("task_id").?.string);
+        try testing.expectEqual(calls, script.calls);
+        try testing.expectEqual(@as(usize, 0), wire.endpoint.sessionCount());
+    }
+}
+
+test "a spawned job is reported even if its shell call fails or the run ends first" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Bytes = @import("owned_slice").OwnedSlice(u8);
+    for (0..2) |variant| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(root);
+        var script = Script{ .wait_for_cancel = true };
+        var harness: Harness = undefined;
+        try harness.init(&script);
+        defer harness.deinit();
+        const admitted = try harness.submit("begin");
+        const session = Session.cast(harness.session.ptr);
+        try session.translate(.{ .tool_execution_start = .{
+            .tool_call_id = Bytes.initBorrowed("call-job"),
+            .tool_name = Bytes.initBorrowed("Shell"),
+            .args_json = Bytes.initBorrowed("{}"),
+        } });
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const task_id = try startSleepingJob(session, arena.allocator(), root, "call-job");
+        if (variant == 0) {
+            try session.translate(.{ .tool_execution_end = .{
+                .tool_call_id = Bytes.initBorrowed("call-job"),
+                .tool_name = Bytes.initBorrowed("Shell"),
+                .result_json = Bytes.initBorrowed("{}"),
+                .is_error = true,
+            } });
+        } else {
+            try session.translate(.{ .agent_end = .{ .reason = .@"error" } });
+        }
+        try harness.collect();
+        try testing.expectEqual(@as(usize, 1), harness.count("session.task.started"));
+        for (harness.seen.items) |event| {
+            const envelope = event.value.object;
+            if (!std.mem.eql(u8, envelope.get("type").?.string, "session.task.started")) continue;
+            const task = envelope.get("payload").?.object.get("task").?.object;
+            try testing.expectEqualStrings(task_id, task.get("task_id").?.string);
+            try testing.expectEqualStrings(admitted.run_id.?, task.get("run_id").?.string);
+        }
+    }
+}
+
+test "a non-forced close refuses an active run without ending its job" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .wait_for_cancel = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("work");
+    const session = Session.cast(harness.session.ptr);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    _ = try startSleepingJob(session, arena.allocator(), root, "call-job");
+    try testing.expectError(error.RunActive, harness.session.prepareClose(false));
+    try testing.expect(session.jobs.anyRunning());
+}
+
+test "forced endpoint finish reports an unannounced job of the active run" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Clock = struct {
+        fn now() u64 {
+            return @intCast(@max(0, compat.time.nowMillis()));
+        }
+    };
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{ .wait_for_cancel = true };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"work"}]}
+    ));
+    const run = try wire.wait("run.started");
+    const run_id = run.object.get("run_id").?.string;
+    const session = Session.cast(wire.endpoint.entries.items[0].session.ptr);
+    const task_id = try startSleepingJob(session, a, root, "call-unannounced");
+    try wire.endpoint.finish(0, Clock.now);
+    try wire.collect();
+    const started = wireLast(&wire, "session.task.started").object.get("payload").?.object.get("task").?.object;
+    try testing.expectEqualStrings(task_id, started.get("task_id").?.string);
+    try testing.expectEqualStrings(run_id, started.get("run_id").?.string);
+    const ended = wireLast(&wire, "session.task.ended").object.get("payload").?.object;
+    try testing.expectEqualStrings(task_id, ended.get("task_id").?.string);
+    try testing.expectEqualStrings("session_closed", ended.get("cause").?.string);
 }

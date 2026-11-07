@@ -2,6 +2,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::task::Context;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -131,4 +132,24 @@ fn async_configuration_errors_return_through_the_future() {
         .err()
         .unwrap();
     assert!(error.to_string().contains("executable path is required"));
+}
+
+#[test]
+fn dropping_a_shared_quiet_call_reaps_its_child_with_an_owner_still_alive() {
+    let fixture = Fixture::new();
+    let process = Arc::new(
+        block_on(Process::start_async(
+            fixture.config("session/new"),
+            Some(Instant::now() + Duration::from_secs(3)),
+        ))
+        .unwrap(),
+    );
+    cancel_pending(
+        process
+            .clone()
+            .call_shared_async("session/new".into(), None, None),
+        &fixture.0.join("ready"),
+    );
+    fixture.assert_reaped();
+    assert!(process.client.is_closed());
 }

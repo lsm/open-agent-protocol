@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-use oap_protocol::{Envelope, EnvelopeId};
+use oap_protocol::{Envelope, EnvelopeId, RunId};
 
 use crate::{ControlFrame, Frame, Process, ProcessError, Transcript};
 
@@ -89,6 +89,21 @@ impl Client {
         })
     }
 
+    pub fn event_for(&mut self, run: &RunId) -> Result<Envelope, ClientError> {
+        self.wait_for(
+            self.deadline,
+            true,
+            &format!("event for run {run}"),
+            |client| {
+                let index = client
+                    .events
+                    .iter()
+                    .position(|event| event.run_id.as_ref() == Some(run))?;
+                client.events.remove(index)
+            },
+        )
+    }
+
     pub fn control(&mut self, id: &str) -> Result<ControlFrame, ClientError> {
         self.wait_for(
             self.deadline.min(CONTROL_ANSWER_BUDGET),
@@ -99,6 +114,24 @@ impl Client {
                 client.controls.remove(index)
             },
         )
+    }
+
+    pub(crate) fn replay_event(&mut self, run: &RunId) -> Result<Envelope, ClientError> {
+        self.wait_for(
+            self.deadline,
+            true,
+            &format!("sequenced replay event for run {run}"),
+            |client| {
+                let index = client.events.iter().position(|event| {
+                    event.run_id.as_ref() == Some(run) && event.sequence.is_some()
+                })?;
+                client.events.remove(index)
+            },
+        )
+    }
+
+    pub(crate) fn send_line(&mut self, line: &str) -> Result<(), ClientError> {
+        Ok(self.process.send_line(line)?)
     }
 
     pub fn close_input(&mut self) {

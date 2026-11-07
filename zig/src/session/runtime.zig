@@ -301,6 +301,7 @@ pub const SessionRuntime = struct {
     backpressure_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backpressure_status_active_emitted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backpressure_mutex: std.atomic.Mutex = .unlocked,
+    ready: ?Ready = null,
     generate_titles: bool = false,
     title_thread: ?std.Thread = null,
     title_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -310,6 +311,11 @@ pub const SessionRuntime = struct {
     loop: ?Loop = null,
     remote_steers_started: u64 = 0,
     remote_mutex: std.atomic.Mutex = .unlocked,
+
+    pub const Ready = struct {
+        ctx: *anyopaque,
+        notify: *const fn (ctx: *anyopaque) void,
+    };
 
     pub fn init(allocator: std.mem.Allocator, options: SessionRuntimeOptions) !SessionRuntime {
         var models = try cloneModels(allocator, options.models);
@@ -388,6 +394,7 @@ pub const SessionRuntime = struct {
     }
 
     pub fn deinit(self: *SessionRuntime) void {
+        self.setReady(null);
         self.title_cancel.store(true, .release);
         self.waitForTitleRequest();
         if (self.title_result) |title| self.allocator.free(title);
@@ -1120,6 +1127,7 @@ pub const SessionRuntime = struct {
         mutable.stamp(compat.time.nowMillis());
         self.pushDroppingOldestCounted(mutable);
         self.flushDroppedWarning();
+        self.notifyReady();
     }
 
     pub fn pushTerminal(self: *SessionRuntime, event: SessionEvent) void {
@@ -1128,6 +1136,20 @@ pub const SessionRuntime = struct {
         mutable.stamp(compat.time.nowMillis());
         self.pushDroppingOldestCounted(mutable);
         self.flushDroppedWarningDroppingOldest();
+        self.notifyReady();
+    }
+
+    pub fn setReady(self: *SessionRuntime, ready: ?Ready) void {
+        while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.backpressure_mutex.unlock();
+        self.ready = ready;
+        if (ready) |held| held.notify(held.ctx);
+    }
+
+    fn notifyReady(self: *SessionRuntime) void {
+        while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.backpressure_mutex.unlock();
+        if (self.ready) |ready| ready.notify(ready.ctx);
     }
 
     fn pushDroppingOldestCounted(self: *SessionRuntime, event: SessionEvent) void {
@@ -1295,7 +1317,6 @@ pub const SessionRuntime = struct {
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });
         self.event_stream.complete(.{ .reason = reason });
     }
-
 };
 
 fn sessionStart(ctx: ?*anyopaque) anyerror!void {
@@ -1876,6 +1897,90 @@ test "the session runtime normalizes hidden minimal thinking level" {
     try std.testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
     try runtime.setThinkingLevel(.minimal);
     try std.testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
+}
+
+test "runtime readiness signals existing events, streaming output and terminal output until detached" {
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .run_async = false });
+    defer runtime.deinit();
+    const Observer = struct {
+        fn notify(ctx: *anyopaque) void {
+            const ready: *std.Io.Event = @ptrCast(@alignCast(ctx));
+            ready.set(std.testing.io);
+        }
+    };
+    var ready: std.Io.Event = .unset;
+    runtime.push(.{ .turn_start = .{} });
+    runtime.setReady(.{ .ctx = &ready, .notify = Observer.notify });
+    try std.testing.expect(ready.isSet());
+    var first = runtime.event_stream.poll().?;
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expect(first == .turn_start);
+    ready.reset();
+    runtime.push(.{ .text_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("visible reply") } });
+    try std.testing.expect(ready.isSet());
+    var delta = runtime.event_stream.poll().?;
+    defer delta.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("visible reply", delta.text_delta.delta.slice());
+    ready.reset();
+    runtime.pushTerminal(.{ .agent_end = .{ .reason = .completed } });
+    try std.testing.expect(ready.isSet());
+    var terminal = runtime.event_stream.poll().?;
+    defer terminal.deinit(std.testing.allocator);
+    try std.testing.expect(terminal == .agent_end);
+    runtime.setReady(null);
+    ready.reset();
+    runtime.push(.{ .turn_end = .{ .stop_reason = .stop } });
+    try std.testing.expect(!ready.isSet());
+    var last = runtime.event_stream.poll().?;
+    defer last.deinit(std.testing.allocator);
+    try std.testing.expect(last == .turn_end);
+}
+
+test "runtime readiness detach waits for an in-flight notification" {
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .run_async = false });
+    defer runtime.deinit();
+    const Observer = struct {
+        runtime: *SessionRuntime,
+        block: std.atomic.Value(bool) = .init(false),
+        entered: std.Io.Event = .unset,
+        release: std.Io.Event = .unset,
+        clearing: std.Io.Event = .unset,
+        cleared: std.Io.Event = .unset,
+
+        fn notify(ctx: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (!self.block.load(.acquire)) return;
+            self.entered.set(std.testing.io);
+            self.release.waitUncancelable(std.testing.io);
+        }
+
+        fn push(self: *@This()) void {
+            self.runtime.push(.{ .turn_start = .{} });
+        }
+
+        fn detach(self: *@This()) void {
+            self.clearing.set(std.testing.io);
+            self.runtime.setReady(null);
+            self.cleared.set(std.testing.io);
+        }
+    };
+    var observer = Observer{ .runtime = &runtime };
+    runtime.setReady(.{ .ctx = &observer, .notify = Observer.notify });
+    observer.block.store(true, .release);
+    const producer = try std.Thread.spawn(.{}, Observer.push, .{&observer});
+    var clearer: ?std.Thread = null;
+    defer {
+        observer.release.set(std.testing.io);
+        if (clearer) |thread| thread.join();
+        producer.join();
+    }
+    observer.entered.waitUncancelable(std.testing.io);
+    clearer = try std.Thread.spawn(.{}, Observer.detach, .{&observer});
+    observer.clearing.waitUncancelable(std.testing.io);
+    compat.time.sleepMs(5);
+    try std.testing.expect(!observer.cleared.isSet());
+    observer.release.set(std.testing.io);
+    observer.cleared.waitUncancelable(std.testing.io);
 }
 
 test "runtime push preserves newest event when a full queue holds nothing it may shed and nobody drains it" {

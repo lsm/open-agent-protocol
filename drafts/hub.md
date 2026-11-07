@@ -332,12 +332,33 @@ subscriptions on one session stay attributable.
 | subscription line | meaning |
 | --- | --- |
 | `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence of that run it missed |
-| `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
+| `"event":"envelope"` | one event; a run event repeats `sequence` outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes, and `run_id` and `session_id` say which — `TestEventsSignalAnOverflowWithItsRunAndCursor` |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available` and `latest_available` bound what is |
 | `"event":"oap-session-closed"` | the session closed under the subscription, named by `session_id` — `TestEventsSignalAClosedSessionByName` |
 | `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
+
+In the Zig hub an adapter may deliver session-scoped events on the same
+ordered channel as runs; in the Go hub an optional session event source feeds
+them into the session's live stream. These have `session_id` without `run_id` and carry their own
+session-domain `sequence` inside the envelope. They go live to subscribers,
+do not advance a run cursor, and are not replayed. After an overflow the host
+reads session state to recover tasks, as well as resuming any run cursor. The
+stdio wrapper leaves out its outer `sequence` for session events. If one is
+unframeable, stdio reports the last delivered run cursor through
+`oap-frame-limit`; when there is no run cursor it uses `oap-stream-failed`
+without a run id. In either case the host reads session state. The Go raw endpoint forwards session events between runs after the open response,
+and its state updates share the same ordered session counter. A failed session
+event stream ends the endpoint so the host can read state. The sequence belongs to the hosted
+session for its lifetime, not to a subscription or a transport connection;
+independent endpoints host distinct sessions and do not share counters. The
+oapx adapter reports background command starts and ends and includes tasks in
+session state. A job completion wakes its session, and close publishes endings
+with `session_closed` before ending its subscriptions. Task controls follow
+separately. The
+Zig hub does not yet publish `session.state.updated`; when it does, those events
+share this counter.
 
 The stdio overflow regression drives one producer run, then drains its queued
 lines. It checks that the overflow names that run and that its cursor is not
@@ -517,6 +538,22 @@ after draining it. If the writer cannot start, saving runs inline. The served
 session test above also reads 80 queued user/reply pairs in order and reopens
 the last conversation after shutdown. `queued session metadata and events
 unwind every failed capture allocation` covers failed payload copies.
+
+Within each drain, the writer groups JSONL appends by session and keeps the
+latest index update. It appends each session's bytes together and syncs the
+transcript file when that batch includes a settled run. Read barriers, shutdown
+and compaction-offset reads flush pending bytes. A failed append allows the
+next batch to write metadata again. The served-session test above and the
+storage-recovery restart journey obstruct a transcript, restore storage, and
+observe the next saved reply with its model and provider.
+Failed appends truncate back to their previous length. The partial-write
+restart journey enforces a child file-size limit, exceeds it with a synthetic
+reply, then observes a later small turn surviving a fresh process.
+The served writer applies completed compaction offsets to the index and carries
+them, the compaction count and prior index fields through later saves. Index
+reads within a batch see its latest pending update. The compaction-offset
+restart journey completes a real compaction and a later turn, then checks that
+the saved offset survives both that turn and a fresh process.
 `goap hub` takes the lock on Unix only: on Windows it opens the lock file
 without locking it, a gap recorded here rather than closed, since `goap` is
 never released and CI runs it on Unix. `goap hub` has no
@@ -714,7 +751,8 @@ text/event-stream` and `Cache-Control: no-cache`, flushed before the first
 frame. An envelope is written `id: <run_id>:<sequence>\ndata: <envelope>\n\n`, so a
 client may reconnect with `Last-Event-ID` and land on the same cursor; the id
 splits at its last colon, and a bare sequence is still read as the current run's.
-A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
+A session-scoped envelope has no SSE `id`: it does not change the last run
+cursor and is not replayed. A run id holding CR, LF or NUL cannot sit on the line, so that envelope is written
 with no `id`: a reconnect then resumes from the last id it saw, which can repeat
 events but never lands on another run. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 `id`, because a signal is not a position in the stream.
@@ -741,7 +779,7 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | SSE rule | pinned by |
 | --- | --- |
 | An envelope arrives in emission order with its sequences | `TestSSEEnvelopeOrderAndSequences`, `TestClientRejectsFrameIDDisagreement` |
-| The `id:` field and the envelope's own `sequence` agree; a frame whose `id` disagrees is refused | `TestClientRejectsFrameIDDisagreement` |
+| A run envelope's `id:` field and its own `sequence` agree; a frame whose `id` disagrees is refused | `TestClientRejectsFrameIDDisagreement` |
 | An `after` cursor replays the journal's retained suffix | `TestSSEReplayAfterCursor` |
 | `Last-Event-ID` reconnects | `TestSSELastEventIDReconnect` |
 | An explicit `?after=` wins over the header | `TestSSEQueryCursorWinsOverHeader` |
@@ -1988,6 +2026,39 @@ one stuck child cannot consume the whole budget and leave the rest orphaned. A
 session whose run is still active is cancelled before it is closed, up to three
 attempts, because a harness that refuses `Close` while a run is in flight must
 first be asked to stop.
+
+The Zig adapter session contract offers an optional `set_ready` observer.
+Registering it immediately notifies the observer so existing output is visited.
+The native oapx adapter forwards runtime stream notifications and signals its
+published OAP output. Runtime pushes signal after publishing their event and
+backpressure warning. The session owner registers or detaches the adapter
+observer, and runtime producers may signal from other threads. Detaching waits for an in-flight runtime notification,
+and runtime teardown detaches before stopping its producers. An observer only
+queues readiness or wakes its owner, and must return promptly without entering
+the runtime. The owner detaches before releasing the observer context.
+`runtime readiness signals existing events, streaming output and terminal
+output until detached`, `runtime readiness detach waits for an in-flight
+notification` and `a native readiness observer sees a submitted run and can
+detach before the next` pin this hook.
+
+The Zig Hub queues each observed session once on a shared ready queue. Its
+nonblocking close-on-exec pipe wakes POSIX hosts when the queue becomes
+nonempty. Queue tokens stay stable while the session array moves. Closing or
+parking detaches the observer before releasing the token, and a refused close
+that keeps a session restores observation. Parking delivers pending OAP output
+before destroying the harness. An open that fails after adoption releases its
+entry and observer. Ready visits and fallback visits share the 64-session,
+4 ms pass budget. Backends with readable handles, background jobs, or no
+observer remain eligible for fallback visits. A separate fallback list contains
+only those sessions, and handle collection also visits only that list. Sessions
+enter or leave it after a ready visit observes a change in live work. Parking
+removes membership and reopening restores it when needed. Removing an entry
+updates both fallback references and ready tokens before the next pass. Idle
+notifying sessions consume no fallback visits and leave no unfinished pass.
+Fallback removal preserves the order of the remaining visits in an active pass.
+Tests in the readiness journey
+observe the shared handle and a cancellation across parking, retry refused
+parking, and check allocation failures during open.
 
 **One rule here is where the trees differ in kind, not in answer.** Go's
 `CloseSessions` can only wait: it holds a context, so a session it is waiting on

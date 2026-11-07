@@ -8,6 +8,10 @@ python3 .claude/skills/verify/scripts/rust-acp-foundation.py --output-dir /tmp/o
 (cd rust && cargo test -p oap-adapter-acp)
 ```
 
+For native-dispatch ownership and concurrent cleanup, also run
+`rust-acp-session-bridge.md`. Session close and final-owner drop close the native
+process and join its `PromptBridge` dispatcher.
+
 The standalone public consumer opens a credential-free synthetic ACP agent,
 observes the initialize/session-new wire with its working directory and configured
 MCP servers, then reads OAP idle state and an opted-in model catalog. Native
@@ -27,8 +31,8 @@ The verifier constructs a complete OAP initialize/capabilities/open/models
 exchange from the actual returned descriptor, state and catalog. All three
 validators must accept it. Native wire, public consumer JSON and validator
 outputs remain in the requested evidence directory. This is session-opening
-proof. Prompt streaming, model switching, gates, reopen and full corpus parity
-remain later slices. The staged descriptor revision is `-rust-open` until the
+proof. Prompt streaming, gates, reopen and full corpus parity
+remain later slices. The staged descriptor revision is `-rust-switch` until the
 completed adapter can use the catalog's full revision.
 
 Keep the complete baseline and Rust all-features/format/clippy/comment checks.

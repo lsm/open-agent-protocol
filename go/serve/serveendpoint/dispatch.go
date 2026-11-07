@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/binding"
@@ -107,7 +108,7 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 	case protocol.TypeCapabilitiesRequest:
 		return plain(s.capabilities(ctx, e))
 	case protocol.TypeSessionOpenRequest:
-		return plain(s.open(ctx, e))
+		return s.open(ctx, streams, e)
 	case protocol.TypeSessionStateRequest:
 		return plain(s.state(ctx, e))
 	case protocol.TypeSessionModelSwitchRequest:
@@ -217,23 +218,23 @@ func (s *Server) capabilities(ctx context.Context, e protocol.Envelope) (protoco
 	return answer, nil
 }
 
-func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
+func (s *Server) open(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
 	var request protocol.SessionOpenRequest
 	if err := e.DecodePayload(&request); err != nil {
-		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
 	}
 	if _, err := serve.ElectionGate(ctx, s.hub, s.adapter, "", request); err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	if _, err := serve.AttachmentGate(ctx, s.hub, s.adapter, "", request); err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	if request.Message != nil {
-		return protocol.Envelope{}, &base.UnsupportedControlError{Feature: "session.message.submit", Reason: base.ControlUnsatisfiable, Field: "message"}
+		return protocol.Envelope{}, nil, &base.UnsupportedControlError{Feature: "session.message.submit", Reason: base.ControlUnsatisfiable, Field: "message"}
 	}
 	attachments, unresolvable := serve.ResolveAttachments(s.hub, request.ToolSources)
 	if unresolvable != nil {
-		return protocol.Envelope{}, &refusal{code: "unsupported_feature", message: unresolvable.Error(), details: map[string]any{
+		return protocol.Envelope{}, nil, &refusal{code: "unsupported_feature", message: unresolvable.Error(), details: map[string]any{
 			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": unresolvable.Source,
 		}}
 	}
@@ -252,23 +253,35 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 		for key, raw := range request.Metadata {
 			var value any
 			if err := json.Unmarshal(raw, &value); err != nil {
-				return protocol.Envelope{}, &refusal{code: "invalid_payload", message: fmt.Sprintf("metadata %q: %v", key, err)}
+				return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: fmt.Sprintf("metadata %q: %v", key, err)}
 			}
 			open.Metadata[key] = value
 		}
 	}
-	entry, state, err := s.hub.Open(ctx, s.adapter, open)
+	entry, state, subscription, err := s.hub.OpenWithSessionEvents(ctx, streams, s.adapter, open)
 	if err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	answer, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), state)
 	if err != nil {
-		return protocol.Envelope{}, err
+		subscription.Close()
+		return protocol.Envelope{}, nil, err
 	}
 	answer.InReplyTo = e.ID
 	answer.SessionID = entry.ID()
 	answer.CapabilityRevision = e.CapabilityRevision
-	return answer, nil
+	ready := make(chan struct{})
+	s.sessionPumps.Add(1)
+	go func() {
+		defer s.sessionPumps.Done()
+		select {
+		case <-ready:
+			s.pumpSession(streams, subscription)
+		case <-streams.Done():
+			subscription.Close()
+		}
+	}()
+	return answer, func() { close(ready) }, nil
 }
 
 func (s *Server) state(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
@@ -319,10 +332,8 @@ func (s *Server) switchModel(ctx context.Context, streams context.Context, e pro
 	}
 	updated.SessionID = entry.ID()
 	updated.CapabilityRevision = e.CapabilityRevision
-	sequence := s.nextStateSequence(entry.ID())
-	updated.Sequence = &sequence
 	return answer, func() {
-		if err := s.write(streams, updated); err != nil {
+		if err := entry.PublishSessionEvent(updated); err != nil {
 			s.logger.Printf("serveendpoint: publishing model switch state: %v", err)
 		}
 	}, nil
@@ -354,10 +365,8 @@ func (s *Server) updateSettings(ctx context.Context, streams context.Context, e 
 	}
 	updated.SessionID = entry.ID()
 	updated.CapabilityRevision = e.CapabilityRevision
-	sequence := s.nextStateSequence(entry.ID())
-	updated.Sequence = &sequence
 	return answer, func() {
-		if err := s.write(streams, updated); err != nil {
+		if err := entry.PublishSessionEvent(updated); err != nil {
 			s.logger.Printf("serveendpoint: publishing settings update state: %v", err)
 		}
 	}, nil
@@ -444,6 +453,35 @@ func (s *Server) compact(ctx context.Context, streams context.Context, e protoco
 	return answer, start, nil
 }
 
+func (s *Server) pumpSession(ctx context.Context, subscription *serve.Subscription) {
+	defer subscription.Close()
+	for {
+		event, err := subscription.NextWithin(10 * time.Millisecond)
+		if errors.Is(err, serve.ErrQuiet) {
+			select {
+			case <-s.sessionStop:
+				return
+			default:
+				continue
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+				s.logger.Printf("serveendpoint: session event stream failed: %v", err)
+				s.failSessionStream(err)
+			}
+			return
+		}
+		if err := s.write(ctx, event); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.Printf("serveendpoint: session event delivery failed: %v", err)
+				s.failSessionStream(err)
+			}
+			return
+		}
+	}
+}
+
 func (s *Server) pump(ctx context.Context, subscription *serve.Subscription, run protocol.RunID) {
 	defer subscription.Close()
 	var delivered uint64
@@ -453,7 +491,7 @@ func (s *Server) pump(ctx context.Context, subscription *serve.Subscription, run
 			s.reportLostStream(ctx, run, delivered, err)
 			return
 		}
-		if run != "" && envelope.RunID != run {
+		if envelope.RunID == "" || (run != "" && envelope.RunID != run) {
 			continue
 		}
 		if writeErr := s.write(ctx, envelope); writeErr != nil {

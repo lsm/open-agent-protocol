@@ -1,5 +1,8 @@
 # Cutting a release
 
+`v0.1.0-alpha.31` is a binaries-only release: its npm packaging, publishing,
+and npm smoke jobs are skipped. Binary release and smoke checks still run.
+
 A release is cut by pushing a `v*` tag: `.github/workflows/release-binaries.yml`
 builds every release target, signs and notarizes the macOS ones, publishes a
 GitHub Release and the `@oap-sdk` npm packages. Nothing in it writes
