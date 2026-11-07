@@ -363,6 +363,12 @@ the run the fire triggers names it in `trigger.task_id`.
     endpoint chooses. Past the bound the oldest ended tasks are dropped, and
     `tasks_truncated: true` says so.
   - The state document is authoritative, as for runs.
+  - Current oapx limitation: when optional `--park-after` parks a session, a
+    later reopen has an empty job table. Task output and cancellation then
+    answer `invalid_submission` (`the task does not exist`) for an ended task
+    from before the park. A task output read
+    also wakes the session and counts as activity. See [parking](hub.md#parking);
+    retaining job records across a park is a later decision.
 - **`session.task.cancel.request {session_id, task_id}`** answers
   `{outcome: "requested" | "already_ended" | "not_cancellable"}`.
   `not_cancellable` answers a task whose `cancellable` is false, and the
