@@ -155,6 +155,11 @@ pub const Endpoint = struct {
             _ = try self.pump(10 * std.time.ns_per_ms);
         }
         try self.drainAll();
+        for (self.entries.items) |*entry| {
+            if (entry.session.vtable.prepare_close == null) continue;
+            try entry.session.prepareClose(true);
+            try self.drainEntry(entry);
+        }
         self.closeSessions();
     }
 
@@ -168,6 +173,10 @@ pub const Endpoint = struct {
     pub fn closeSession(self: *Endpoint, session_id: []const u8) bool {
         for (self.entries.items, 0..) |*entry, index| {
             if (!std.mem.eql(u8, entry.session.id(), session_id)) continue;
+            if (entry.session.vtable.prepare_close != null) {
+                entry.session.prepareClose(true) catch return false;
+                self.drainEntry(entry) catch return false;
+            }
             entry.deinit(self.allocator);
             _ = self.entries.orderedRemove(index);
             return true;

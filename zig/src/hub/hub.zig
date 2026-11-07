@@ -1591,6 +1591,16 @@ pub const Hub = struct {
         };
         if (reported.active_run_id != null or reported.active_runs.len > 0) return error.RunActive;
         entry.observe(false);
+        if (entry.session.vtable.prepare_close != null) {
+            entry.session.prepareClose(false) catch |err| {
+                entry.observe(true);
+                return err;
+            };
+            _ = self.deliver(entry, arena) catch |err| {
+                entry.observe(true);
+                return err;
+            };
+        }
         if (entry.session.close()) |_| {
             entry.session_closed = true;
         } else |err| {
@@ -1902,17 +1912,41 @@ pub const Hub = struct {
         while (attempt < close_attempts) : (attempt += 1) {
             outcome.attempts += 1;
             self.stopRuns(entry, arena);
-            if (entry.session.close()) |_| {
-                entry.session_closed = true;
-                outcome.closed = true;
-                break;
-            } else |err| {
-                if (err == error.OutOfMemory) break;
+            var prepared = true;
+            if (entry.session.vtable.prepare_close != null) {
+                entry.session.prepareClose(false) catch |err| {
+                    if (err == error.OutOfMemory) break;
+                    prepared = false;
+                };
+                if (prepared) {
+                    _ = self.deliver(entry, arena) catch {
+                        self.endSubscriptions(entry, .stream_failed);
+                        break;
+                    };
+                }
+            }
+            if (prepared) {
+                if (entry.session.close()) |_| {
+                    entry.session_closed = true;
+                    outcome.closed = true;
+                    break;
+                } else |err| {
+                    if (err == error.OutOfMemory) break;
+                }
             }
             const now = self.clock();
             if (now >= until_ns) break;
             const wait = @min(close_retry_wait_ns, until_ns - now);
             _ = entry.session.pump(wait) catch {};
+        }
+        if (!outcome.closed and entry.session.vtable.prepare_close != null) {
+            if (entry.session.prepareClose(true)) |_| {
+                _ = self.deliver(entry, arena) catch {
+                    self.endSubscriptions(entry, .stream_failed);
+                };
+            } else |_| {
+                self.endSubscriptions(entry, .stream_failed);
+            }
         }
         self.releaseSession(entry);
         return outcome;
@@ -2526,6 +2560,10 @@ const SignallingMemory = struct {
         closed: bool = false,
         refuse_close: bool = false,
         live_work: bool = false,
+        close_event: bool = false,
+        event_ready: bool = false,
+        fail_prepare: bool = false,
+        refuse_graceful_prepare: bool = false,
 
         const vtable = contract.Session.VTable{
             .id = id,
@@ -2539,6 +2577,7 @@ const SignallingMemory = struct {
             .drain_mixed = drain,
             .activity = activity,
             .close = close,
+            .prepare_close = prepareClose,
             .live_work = liveWork,
             .set_ready = setReady,
         };
@@ -2583,7 +2622,23 @@ const SignallingMemory = struct {
         }
 
         fn drain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
-            try cast(ptr).inner.drain(allocator, out);
+            const self = cast(ptr);
+            try self.inner.drain(allocator, out);
+            if (!self.event_ready) return;
+            const line = try std.fmt.allocPrint(allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.task.ended\",\"id\":\"close-event\",\"session_id\":\"{s}\",\"payload\":{{\"task_id\":\"job\",\"status\":\"cancelled\",\"cause\":\"session_closed\"}}}}", .{self.name});
+            errdefer allocator.free(line);
+            const run_id = try allocator.dupe(u8, "");
+            errdefer allocator.free(run_id);
+            try out.append(allocator, .{ .line = line, .run_id = run_id, .sequence = 0 });
+            self.event_ready = false;
+        }
+
+        fn prepareClose(ptr: *anyopaque, force: bool) contract.Failure!void {
+            const self = cast(ptr);
+            if (self.fail_prepare) return error.BackendFailed;
+            if (!force and self.refuse_graceful_prepare) return error.RunActive;
+            self.event_ready = self.close_event;
+            self.close_event = false;
         }
 
         fn activity(ptr: *anyopaque) contract.Activity {
@@ -6655,4 +6710,92 @@ test "a subscription after its hold deadline starts after the expired backlog" {
     tick(6 * std.time.ns_per_ms);
     const adopted = try hub.subscribe(arena, "deadline", .{});
     try testing.expect(adopted.next() == null);
+}
+
+test "a session close delivers its prepared task endings before subscription closure" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "signalling", .{ .session_id = "task-close", .subscribe = true });
+    const subscription = opened.subscription.?;
+    adapter.sessions.items[0].close_event = true;
+    try hub.close(arena, opened.session_id);
+    const event = subscription.next().?;
+    try testing.expectEqualStrings("", event.run_id);
+    try testing.expect(std.mem.indexOf(u8, event.line, "session.task.ended") != null);
+    try testing.expect(std.mem.indexOf(u8, event.line, "\"cause\":\"session_closed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, event.line, "\"sequence\":1") != null);
+    try testing.expectEqual(Ending.session_closed, subscription.ending);
+    try testing.expect(subscription.next() == null);
+}
+
+test "a failed close preparation keeps the session and its readiness observer" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "signalling", .{ .session_id = "keep-open", .subscribe = true });
+    adapter.sessions.items[0].fail_prepare = true;
+    try testing.expectError(error.BackendFailed, hub.close(arena, opened.session_id));
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+    try testing.expect(adapter.sessions.items[0].observer != null);
+    try testing.expectEqual(Ending.open, opened.subscription.?.ending);
+    adapter.sessions.items[0].fail_prepare = false;
+    try hub.close(arena, opened.session_id);
+}
+
+test "the shutdown sweep delivers prepared task endings before closing subscriptions" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "signalling", .{ .session_id = "task-shutdown", .subscribe = true });
+    adapter.sessions.items[0].close_event = true;
+    const summary = hub.closeSessions();
+    try testing.expectEqual(@as(usize, 1), summary.closed);
+    const event = opened.subscription.?.next().?;
+    try testing.expect(std.mem.indexOf(u8, event.line, "session.task.ended") != null);
+    try testing.expect(std.mem.indexOf(u8, event.line, "\"cause\":\"session_closed\"") != null);
+    try testing.expectEqual(Ending.session_closed, opened.subscription.?.ending);
+}
+
+test "a forced shutdown publishes task endings when graceful preparation cannot settle" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "signalling", .{ .session_id = "forced-tasks", .subscribe = true });
+    adapter.sessions.items[0].close_event = true;
+    adapter.sessions.items[0].refuse_graceful_prepare = true;
+    const summary = hub.closeSessions();
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    const event = opened.subscription.?.next().?;
+    try testing.expect(std.mem.indexOf(u8, event.line, "session.task.ended") != null);
+    try testing.expect(std.mem.indexOf(u8, event.line, "\"cause\":\"session_closed\"") != null);
+    try testing.expectEqual(Ending.session_closed, opened.subscription.?.ending);
 }

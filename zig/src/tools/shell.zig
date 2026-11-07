@@ -22,6 +22,7 @@ pub const Jobs = struct {
     mutex: std.atomic.Mutex = .unlocked,
     next: u64 = 0,
     next_end: u64 = 0,
+    ready: ?Ready = null,
     list: std.ArrayList(*Job) = .empty,
 
     const Job = struct {
@@ -41,6 +42,17 @@ pub const Jobs = struct {
             return self.term != null and !self.killed and !self.noticed;
         }
     };
+
+    pub const Ready = struct {
+        ctx: *anyopaque,
+        notify: *const fn (*anyopaque) void,
+    };
+
+    pub fn setReady(self: *Jobs, ready: ?Ready) void {
+        self.lock();
+        defer self.mutex.unlock();
+        self.ready = ready;
+    }
 
     pub const Cause = enum { finished, cancelled_by_host, cancelled_by_model, session_closed };
     pub const Status = enum { running, completed, failed, cancelled };
@@ -133,6 +145,7 @@ pub const Jobs = struct {
         self.next_end += 1;
         job.ended_order = self.next_end;
         if (job.cause == null) job.cause = .finished;
+        if (self.ready) |ready| ready.notify(ready.ctx);
         self.mutex.unlock();
         process_runner.endGroup(job.leader);
     }
@@ -172,9 +185,18 @@ pub const Jobs = struct {
     }
 
     pub fn tasks(self: *Jobs, allocator: std.mem.Allocator) ![]Task {
+        return self.tasksForCall(allocator, null);
+    }
+
+    pub fn tasksForCall(self: *Jobs, allocator: std.mem.Allocator, call_id: ?[]const u8) ![]Task {
         self.lock();
         defer self.mutex.unlock();
-        const result = try allocator.alloc(Task, self.list.items.len);
+        var count: usize = 0;
+        for (self.list.items) |job| {
+            if (call_id) |named| if (!std.mem.eql(u8, named, job.tool_call_id)) continue;
+            count += 1;
+        }
+        const result = try allocator.alloc(Task, count);
         var filled: usize = 0;
         errdefer {
             for (result[0..filled]) |task| {
@@ -183,7 +205,9 @@ pub const Jobs = struct {
             }
             allocator.free(result);
         }
-        for (self.list.items, result) |job, *task| {
+        for (self.list.items) |job| {
+            if (call_id) |named| if (!std.mem.eql(u8, named, job.tool_call_id)) continue;
+            const task = &result[filled];
             const id = try allocator.dupe(u8, job.id);
             errdefer allocator.free(id);
             task.* = .{
@@ -1262,4 +1286,37 @@ test "a finished job's thread is joined by the next job call, and its status and
     const output = try case.tmp.dir.readFileAlloc(common.defaultIo(), quick_path, std.testing.allocator, .limited(1 << 20));
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings("done\n", output);
+}
+
+test "job completion wakes an attached observer and respects detach" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const Observer = struct {
+        fn notify(ctx: *anyopaque) void {
+            const ready: *std.Io.Event = @ptrCast(@alignCast(ctx));
+            ready.set(std.testing.io);
+        }
+    };
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    var ready: std.Io.Event = .unset;
+    jobs.setReady(.{ .ctx = &ready, .notify = Observer.notify });
+    _ = try jobs.start(std.testing.allocator, case.root, "while [ ! -e finish-one ]; do sleep 0.05; done", "call-one");
+    try case.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "finish-one", .data = "" });
+    const deadline = compat.time.nowMillis() + 10_000;
+    while (!ready.isSet() and compat.time.nowMillis() < deadline) compat.time.sleepMs(5);
+    try std.testing.expect(ready.isSet());
+    jobs.setReady(null);
+    ready.reset();
+    _ = try jobs.start(std.testing.allocator, case.root, "true", "call-two");
+    while (jobs.anyRunning() and compat.time.nowMillis() < deadline) compat.time.sleepMs(5);
+    try std.testing.expect(!jobs.anyRunning());
+    try std.testing.expect(!ready.isSet());
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const selected = try jobs.tasksForCall(arena.allocator(), "call-two");
+    try std.testing.expectEqual(@as(usize, 1), selected.len);
+    try std.testing.expectEqualStrings("call-two", selected[0].tool_call_id);
+    try std.testing.expectEqual(@as(usize, 0), (try jobs.tasksForCall(arena.allocator(), "missing")).len);
 }
