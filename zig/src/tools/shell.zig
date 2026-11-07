@@ -540,7 +540,7 @@ pub const Jobs = struct {
             if (i + seq.length > prefix or (seq.valid and !seq.complete and !ended and i + seq.length == prefix)) return error.InvalidOffset;
         }
         const result = try decodeOutput(allocator, buf[prefix..got], ended and got == prefix + available, output_limit);
-        return .{ .text = result.text, .next = from + result.consumed, .truncated = false, .ended = ended };
+        return .{ .text = result.text, .next = from + result.consumed, .truncated = false, .ended = ended and from + result.consumed == size };
     }
 
     pub fn noticeWaiting(self: *Jobs) bool {
@@ -2047,4 +2047,27 @@ test "task file reads hold split characters until complete or ended" {
     try std.testing.expectEqualStrings("�", last.text);
     try std.testing.expectEqual(@as(u64, 5), last.next);
     try std.testing.expect(last.ended);
+}
+
+test "finished task output ends only after the last bounded page" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    const job = try jobs.start(std.testing.allocator, case.root, "head -c 40000 /dev/zero | tr '\\000' x", "call");
+    const deadline = common.nowMs() + 5000;
+    while (jobs.anyRunning() and common.nowMs() < deadline) compat.time.sleepMs(10);
+    try std.testing.expect(!jobs.anyRunning());
+    const first = try jobs.outputTask(std.testing.allocator, job.task_id, 0);
+    defer std.testing.allocator.free(first.text);
+    try std.testing.expectEqual(@as(usize, 32768), first.text.len);
+    try std.testing.expectEqual(@as(u64, 32768), first.next);
+    try std.testing.expect(!first.ended);
+    const last = try jobs.outputTask(std.testing.allocator, job.task_id, first.next);
+    defer std.testing.allocator.free(last.text);
+    try std.testing.expectEqual(@as(usize, 7232), last.text.len);
+    try std.testing.expectEqual(@as(u64, 40000), last.next);
+    try std.testing.expect(last.ended);
+    try std.testing.expectError(error.InvalidOffset, jobs.outputTask(std.testing.allocator, job.task_id, 40001));
 }
