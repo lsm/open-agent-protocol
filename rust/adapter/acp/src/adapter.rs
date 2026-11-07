@@ -151,6 +151,7 @@ impl Adapter {
                 ..CapabilityDescriptor::default()
             },
             capability_revision: format!("{}-rust-submit", pin().capability_revision),
+            max_active_runs_per_session: 1,
             journal: JournalDescriptor {
                 replay: SupportLevel::UNAVAILABLE,
                 ..JournalDescriptor::default()
