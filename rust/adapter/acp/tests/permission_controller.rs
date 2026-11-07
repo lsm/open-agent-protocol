@@ -222,3 +222,166 @@ fn foreign_source_with_the_same_wire_id_is_refused_before_publication() {
 fn concurrent_answers_publish_and_write_exactly_once() {
     permission_case("concurrent");
 }
+
+fn controller_peer(
+    script: &str,
+) -> (
+    Fixture,
+    Arc<PromptBridge>,
+    mpsc::Receiver<Arc<IncomingRequest>>,
+    Arc<Permissions>,
+) {
+    let path = std::env::temp_dir().join(format!(
+        "oap-permission-review-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let fixture = Fixture(path);
+    let source = r#"import json,sys,os
+from pathlib import Path
+out=Path(sys.argv[1])
+(out/'pid').write_text(str(os.getpid()))
+def read():
+ line=sys.stdin.readline()
+ with (out/'wire').open('a') as wire: wire.write(line)
+ return json.loads(line) if line else None
+def send(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
+request=read()
+send(dict(id=request['id'],result=dict(protocolVersion=1,agentCapabilities={})))
+"#;
+    std::fs::write(fixture.0.join("agent.py"), format!("{source}\n{script}")).unwrap();
+    let selected = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(selected.status.success());
+    let process = block_on(Process::start_async(
+        ProcessConfig {
+            path: String::from_utf8(selected.stdout).unwrap().trim().into(),
+            args: vec![
+                "-u".into(),
+                fixture.0.join("agent.py").to_string_lossy().into(),
+                fixture.0.to_string_lossy().into(),
+            ],
+            env: Some(Vec::new()),
+            queue_capacity: 1,
+            write_queue_capacity: 1,
+            shutdown_timeout: Some(Duration::from_secs(1)),
+            ..ProcessConfig::default()
+        },
+        None,
+    ))
+    .unwrap();
+    let (send, receive) = mpsc::channel();
+    let bridge = Arc::new(PromptBridge::new(process, move |message| {
+        if let Inbound::Request(request) = message {
+            send.send(request).unwrap();
+        }
+    }));
+    let permissions = Permissions::new(bridge.clone(), "user".into(), || 1000).unwrap();
+    (fixture, bridge, receive, permissions)
+}
+
+fn controller_run(id: &str) -> Arc<Mutex<TextRun>> {
+    let mut next = 0;
+    Arc::new(Mutex::new(TextRun::new(
+        TextRunContext {
+            session_id: "session".into(),
+            native_id: "native".into(),
+            run_id: id.into(),
+            message_id: format!("session/{id}-message").into(),
+            capability_revision: None,
+        },
+        move |kind| {
+            next += 1;
+            format!("{kind}-{next}")
+        },
+    )))
+}
+
+#[test]
+fn malformed_request_is_answered_before_a_run_starts() {
+    let (fixture, bridge, received, permissions) = controller_peer(
+        r#"
+send(dict(id='ask',method='session/request_permission',params=dict(toolCall=7)))
+reply=read()
+(out/'reply.json').write_text(json.dumps(reply))
+sys.stdin.read()
+"#,
+    );
+    let request = received.recv_timeout(Duration::from_secs(3)).unwrap();
+    let outcome = block_on(permissions.request(controller_run("unstarted"), request));
+    block_on(bridge.close()).unwrap();
+    assert!(outcome.is_err());
+    let reply: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.0.join("reply.json")).unwrap()).unwrap();
+    assert_eq!(reply["id"], "ask");
+    assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[test]
+fn a_second_run_with_restarted_ids_settles_its_own_native_request() {
+    let (fixture, bridge, received, permissions) = controller_peer(
+        r#"
+for index in range(2):
+ prompt=read()
+ send(dict(id='ask-'+str(index),method='session/request_permission',params=dict(sessionId='native',toolCall=dict(toolCallId='tool-'+str(index),title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])))
+ send(dict(id=prompt['id'],result=dict(stopReason='end_turn')))
+ reply=read()
+ (out/('reply-'+str(index)+'.json')).write_text(json.dumps(reply))
+sys.stdin.read()
+"#,
+    );
+    let mut retained = Vec::new();
+    let mut outcomes = Vec::new();
+    let mut all_events = Vec::new();
+    for index in 0..2 {
+        let run = controller_run(&format!("run-{index}"));
+        let mut call = bridge.prompt(
+            PromptParams {
+                session_id: "native".into(),
+                ..PromptParams::default()
+            },
+            None,
+        );
+        block_on(call.admitted()).unwrap();
+        let stream = run.lock().unwrap().start(1000).unwrap();
+        let request = received.recv_timeout(Duration::from_secs(3)).unwrap();
+        retained.push(request.clone());
+        block_on(permissions.clone().request(run.clone(), request)).unwrap();
+        let result = block_on(call).unwrap();
+        let outcome = block_on(permissions.clone().complete(run.clone(), result));
+        if outcome.is_err() {
+            run.lock().unwrap().close();
+        }
+        outcomes.push(outcome);
+        all_events.push(block_on(stream.collect::<Vec<_>>()));
+    }
+    block_on(bridge.close()).unwrap();
+    for (index, outcome) in outcomes.into_iter().enumerate() {
+        outcome.unwrap();
+        let reply: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.0.join(format!("reply-{index}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reply["id"], format!("ask-{index}"));
+        assert_eq!(reply["result"]["outcome"]["outcome"], "cancelled");
+        let events = all_events[index]
+            .iter()
+            .map(|event| event.as_ref().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.envelope_type.as_str() == "action.permission.resolved")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events.last().unwrap().envelope_type.as_str(),
+            "run.completed"
+        );
+    }
+    drop(retained);
+}
