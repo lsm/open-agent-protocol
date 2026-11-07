@@ -8,8 +8,19 @@ use oap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 fn client(script: &str, within: Duration) -> Client {
+    client_starting(script, within, Duration::ZERO)
+}
+
+fn client_starting(script: &str, within: Duration, startup: Duration) -> Client {
     let mut command = Command::new("python3");
-    command.args(["-u", "-c", script]);
+    command.args([
+        "-u",
+        "-c",
+        &format!(
+            "import time\ntime.sleep({})\n{script}",
+            startup.as_secs_f64()
+        ),
+    ]);
     Client::spawn(&mut command, within).unwrap()
 }
 
@@ -115,14 +126,29 @@ fn a_probe_and_its_answer_are_omitted_from_the_trace() {
 
 #[test]
 fn a_chatty_endpoint_that_ignores_eof_gets_one_drain_budget() {
+    chatty_eof(Duration::ZERO);
+}
+
+#[test]
+fn a_slow_starting_chatty_endpoint_still_gets_one_drain_budget() {
+    chatty_eof(Duration::from_secs(2));
+}
+
+fn chatty_eof(startup: Duration) {
     let script = format!("{PRELUDE}sys.stdin.read()\nend=time.monotonic()+3\ni=0\nwhile time.monotonic()<end:\n emit(str(i))\n i+=1\n time.sleep(.005)\n");
-    let mut client = client(&script, Duration::from_secs(1));
+    let mut client = client_starting(&script, Duration::from_secs(1), startup);
     client.close_input();
     let start = Instant::now();
     assert!(matches!(client.wait(), Err(ClientError::Timeout { .. })));
     assert!(start.elapsed() >= Duration::from_secs(1));
     assert!(start.elapsed() < Duration::from_secs(2));
-    assert!(client.transcript().len() > 2);
+    let frames = client.transcript().len();
+    println!(
+        "chatty EOF: injected_startup_ms={} drain_ms={} frames={frames}",
+        startup.as_millis(),
+        start.elapsed().as_millis()
+    );
+    assert!(frames > 2);
 }
 
 #[test]
