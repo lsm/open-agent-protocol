@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -147,7 +149,7 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 		s.serveUnsubscribe(ctx, run, request, lines)
 		return
 	case opOpen:
-		if werr := request.only(paramAdapter, paramRequest); werr != nil {
+		if werr := request.only(paramAdapter, paramRequest, paramDirectory); werr != nil {
 			s.respond(ctx, lines, request, nil, werr)
 			return
 		}
@@ -298,13 +300,14 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 }
 
 const (
-	paramAdapter = "adapter"
-	paramSession = "session_id"
-	paramRequest = "request"
-	paramAfter   = "after"
-	paramRun     = "run_id"
-	paramCursor  = "cursor"
-	paramLimit   = "limit"
+	paramAdapter   = "adapter"
+	paramSession   = "session_id"
+	paramRequest   = "request"
+	paramDirectory = "directory"
+	paramAfter     = "after"
+	paramRun       = "run_id"
+	paramCursor    = "cursor"
+	paramLimit     = "limit"
 
 	paramSubscription = "subscription"
 
@@ -317,7 +320,7 @@ func (request requestLine) only(fields ...string) *wireError {
 		allowed[field] = true
 	}
 	var extra []string
-	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramCursor, paramLimit, paramAllowDegraded, paramSubscription} {
+	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramCursor, paramLimit, paramAllowDegraded, paramSubscription, paramDirectory} {
 		if !allowed[param] && request.present[param] {
 			extra = append(extra, param)
 		}
@@ -430,6 +433,20 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 	if _, found := s.hub.Registry().Lookup(request.Adapter); !found {
 		return nil, nil, &wireError{Code: "unknown_adapter", Message: fmt.Sprintf("no adapter %q", trimMessage(request.Adapter))}
 	}
+	directory := ""
+	if request.Directory != nil {
+		directory = *request.Directory
+		if !s.hub.Registry().ServesAnyDirectory(request.Adapter) {
+			return nil, nil, &wireError{Code: "invalid_request", Message: "directory requires an any_directory adapter"}
+		}
+		if !filepath.IsAbs(directory) {
+			return nil, nil, &wireError{Code: "invalid_request", Message: "directory must be an absolute path"}
+		}
+		info, err := os.Stat(directory)
+		if err != nil || !info.IsDir() {
+			return nil, nil, &wireError{Code: "invalid_request", Message: "directory must name an existing directory"}
+		}
+	}
 	revision, refusal := serve.AttachmentGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
 	if refusal == nil {
 		var electionRevision string
@@ -480,6 +497,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		}
 	}
 	opened, err := serve.OpenCompound(ctx, s.hub, request.Adapter, open, serve.CompoundOpen{
+		Directory: directory,
 		Subscribe: payload.Subscribe,
 		Stream:    stream,
 		Message:   payload.Message,

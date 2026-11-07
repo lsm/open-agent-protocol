@@ -70,6 +70,7 @@ pub const Refusal = struct {
 
 pub const Supplied = struct {
     adapter: bool = false,
+    directory: bool = false,
     session_id: bool = false,
     run_id: bool = false,
     after: bool = false,
@@ -83,7 +84,7 @@ pub const Supplied = struct {
 const no_parameters: []const []const u8 = &.{};
 const session_and_degraded: []const []const u8 = &.{ "session_id", "allow_degraded_features" };
 const adapter_parameter: []const []const u8 = &.{"adapter"};
-const open_parameters: []const []const u8 = &.{ "adapter", "request" };
+const open_parameters: []const []const u8 = &.{ "adapter", "request", "directory" };
 const max_envelope_bytes: usize = 16 << 20;
 const session_parameter: []const []const u8 = &.{"session_id"};
 const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
@@ -94,7 +95,7 @@ const transcript_parameters: []const []const u8 = &.{ "session_id", "cursor", "l
 const work_start_parameters: []const []const u8 = &.{ "adapter", "request" };
 const request_parameter: []const []const u8 = &.{"request"};
 const work_read_parameters: []const []const u8 = &.{ "session_id", "after", "limit" };
-const all_parameters = [_][]const u8{ "subscription", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
+const all_parameters = [_][]const u8{ "subscription", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features", "directory" };
 
 pub const Request = struct {
     id: i64,
@@ -111,7 +112,7 @@ pub const Request = struct {
     subscription: ?i64 = null,
     supplied: Supplied = .{},
     after_unreadable: bool = false,
-    directory: []const u8 = "",
+    directory: ?[]const u8 = null,
 
     fn envelopeSizeRefusal(self: Request) ?Refusal {
         if (self.payload_bytes > max_envelope_bytes) {
@@ -122,6 +123,7 @@ pub const Request = struct {
 
     fn takes(self: Request, parameter: []const u8) bool {
         if (std.mem.eql(u8, parameter, "adapter")) return self.supplied.adapter;
+        if (std.mem.eql(u8, parameter, "directory")) return self.supplied.directory;
         if (std.mem.eql(u8, parameter, "session_id")) return self.supplied.session_id;
         if (std.mem.eql(u8, parameter, "run_id")) return self.supplied.run_id;
         if (std.mem.eql(u8, parameter, "after")) return self.supplied.after;
@@ -396,6 +398,7 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     if (op.len == 0) return Error.MalformedLine;
     var request = Request{ .id = @intCast(id_value.integer), .op = op };
     request.supplied.adapter = member(root, "adapter") != null;
+    request.supplied.directory = member(root, "directory") != null;
     request.supplied.session_id = member(root, "session_id") != null;
     request.supplied.run_id = member(root, "run_id") != null;
     request.supplied.after = member(root, "after") != null;
@@ -421,6 +424,8 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
         }
     }
     try requireStringOrNull(root, "adapter");
+    try requireStringOrNull(root, "directory");
+    request.directory = stringMember(root, "directory");
     try requireStringOrNull(root, "session_id");
     try requireStringOrNull(root, "run_id");
     request.adapter = stringMember(root, "adapter");
@@ -479,7 +484,7 @@ fn requestBytes(arena: std.mem.Allocator, line: []const u8) !usize {
 }
 
 fn allowed(key: []const u8) bool {
-    const names = [_][]const u8{ "id", "op", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features", "subscription" };
+    const names = [_][]const u8{ "id", "op", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features", "subscription", "directory" };
     for (names) |name| {
         if (std.mem.eql(u8, key, name)) return true;
     }
@@ -2296,6 +2301,31 @@ pub const Frontend = struct {
             .session_open_request => |*payload| payload,
             else => unreachable,
         };
+        if (request.supplied.directory) {
+            if (request.directory) |directory| {
+                if (self.hub.adapterDirectory(adapter) == null) {
+                    envelope.deinit(arena);
+                    return .{ .refused = .{ .code = "unknown_adapter", .message = "no adapter is registered under that name" } };
+                }
+                if (!self.hub.servesAnyDirectory(adapter)) {
+                    envelope.deinit(arena);
+                    return .{ .refused = .{ .code = "invalid_request", .message = "directory requires an any_directory adapter" } };
+                }
+                if (!std.fs.path.isAbsolute(directory)) {
+                    envelope.deinit(arena);
+                    return .{ .refused = .{ .code = "invalid_request", .message = "directory must be an absolute path" } };
+                }
+                const io = compat.fs.defaultIo();
+                const stat = compat.fs.getCwd().statFile(io, directory, .{}) catch {
+                    envelope.deinit(arena);
+                    return .{ .refused = .{ .code = "invalid_request", .message = "directory must name an existing directory" } };
+                };
+                if (stat.kind != .directory) {
+                    envelope.deinit(arena);
+                    return .{ .refused = .{ .code = "invalid_request", .message = "directory must name an existing directory" } };
+                }
+            }
+        }
         var metadata: ?std.json.Value = null;
         if (request.payload) |value| {
             if (value == .object) {
@@ -2336,7 +2366,7 @@ pub const Frontend = struct {
             .tool_sources_json = try substitutedSources(arena, self.hub, open.tool_sources_json),
             .reasoning_level = open.reasoning_level,
             .compaction_policy_json = open.compaction_policy_json,
-            .directory = request.directory,
+            .directory = request.directory orelse "",
         }, &refused) catch |err| {
             try ownRevisions(arena, &refused);
             envelope.deinit(arena);
@@ -2465,6 +2495,7 @@ pub const Frontend = struct {
         return switch (err) {
             error.UnknownAdapter => .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{request.adapter orelse ""}) },
             error.SessionExists => .{ .code = "session_exists", .message = "the session id is already open" },
+            error.DirectoryMismatch => .{ .code = "invalid_request", .message = "requested directory conflicts with session history" },
             error.UnknownSession => .{ .code = "unknown_session", .message = if (refused.reason.message.len > 0) refused.reason.message else "no closed session is kept under that id" },
             error.SessionClosed => .{ .code = "session_closed", .message = "the session was already closed when the open probed it" },
             error.StaleCapabilities => try refusalWith(arena, "stale_capabilities", "the open cites a capability revision that is no longer current", try arena.dupe(oap_types.DetailEntry, &.{

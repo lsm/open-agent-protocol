@@ -120,11 +120,17 @@ func (h *Hub) openIn(ctx context.Context, adapterName, directory string, request
 		}
 		request.NativeSessionID = bound.Record.NativeSessionID
 		request.Adopted = bound.Record.Adopted
+		if directory != "" && directory != bound.Record.Directory {
+			return nil, protocol.SessionState{}, ErrDirectoryMismatch
+		}
 		directory = bound.Record.Directory
 	}
 	implementation, placed, err := h.registry.Place(adapterName, directory)
 	if err != nil {
 		return nil, protocol.SessionState{}, err
+	}
+	if request.Reopen && directory != "" && placed != directory {
+		return nil, protocol.SessionState{}, ErrDirectoryMismatch
 	}
 	session, err := implementation.Open(ctx, request)
 	var gone *base.UnknownSessionError
@@ -377,7 +383,8 @@ var (
 
 	ErrUnknownSession = base.ErrUnknownSession
 
-	ErrSessionExists = errors.New("serve: session already exists")
+	ErrSessionExists     = errors.New("serve: session already exists")
+	ErrDirectoryMismatch = errors.New("serve: requested directory conflicts with session history")
 
 	ErrScopeMismatch = errors.New("serve: request session does not match the addressed session")
 
@@ -418,6 +425,9 @@ func (e *SessionClosedError) Error() string { return "the session is closed" }
 func (e *SessionClosedError) Unwrap() error { return base.ErrSessionClosed }
 
 func ControlRefusal(err error) (code, message string, details map[string]any, ok bool) {
+	if errors.Is(err, ErrDirectoryMismatch) {
+		return "invalid_request", err.Error(), nil, true
+	}
 	var unsupported *base.UnsupportedControlError
 	if errors.As(err, &unsupported) {
 		details = map[string]any{"feature": unsupported.Feature, "reason": unsupported.Reason}

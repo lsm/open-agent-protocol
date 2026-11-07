@@ -653,6 +653,7 @@ type requestLine struct {
 	ID        *int64          `json:"id"`
 	Op        string          `json:"op"`
 	Adapter   string          `json:"adapter,omitempty"`
+	Directory *string         `json:"directory,omitempty"`
 	SessionID string          `json:"session_id,omitempty"`
 	RunID     string          `json:"run_id,omitempty"`
 	After     json.RawMessage `json:"after,omitempty"`
@@ -697,6 +698,7 @@ var canonicalKeys = map[string]bool{
 	"id": true, "op": true, "adapter": true, "session_id": true, "run_id": true, "after": true, "request": true,
 	"cursor": true, "limit": true, "subscription": true,
 	"allow_degraded_features": true,
+	"directory":               true,
 }
 
 func scanKeys(frame []byte) (map[string]bool, error) {

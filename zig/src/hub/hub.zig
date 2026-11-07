@@ -26,6 +26,7 @@ pub const Failure = error{
     AdapterExists,
     UnknownSession,
     SessionExists,
+    DirectoryMismatch,
     ScopeMismatch,
     NoRunToResume,
     StaleCapabilities,
@@ -993,6 +994,7 @@ pub const Hub = struct {
                 if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
                 native_session_id = try arena.dupe(u8, record.native_id);
                 adopted_native = record.adopted;
+                if (request.directory.len > 0 and !std.mem.eql(u8, request.directory, record.directory)) return error.DirectoryMismatch;
                 directory = try arena.dupe(u8, record.directory);
             } else {
                 const store = self.bindings orelse return error.UnknownSession;
@@ -1006,10 +1008,12 @@ pub const Hub = struct {
                 if (!std.mem.eql(u8, stored.record.adapter, adapter_name)) return error.UnknownSession;
                 native_session_id = stored.record.native_session_id;
                 adopted_native = stored.record.adopted;
+                if (request.directory.len > 0 and !std.mem.eql(u8, request.directory, stored.record.directory)) return error.DirectoryMismatch;
                 directory = stored.record.directory;
             }
         }
         const placed = try self.placedIn(registered, directory);
+        if (request.reopen and directory.len > 0 and !std.mem.eql(u8, directory, placed.directory)) return error.DirectoryMismatch;
         var session = placed.adapter.open(arena, request.contractRequest(native_session_id, adopted_native), &refused.reason) catch |err| {
             if (request.reopen and err == error.UnknownSession) return refused.reason.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
             return err;
