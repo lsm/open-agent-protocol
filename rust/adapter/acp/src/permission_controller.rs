@@ -45,7 +45,9 @@ impl Permissions {
         let operation = Operation::spawn(move |control| {
             self.bridge.arm(control);
             let mut bindings = self.bindings.lock().unwrap_or_else(|p| p.into_inner());
-            Ok(work(&self, &mut bindings))
+            let outcome = work(&self, &mut bindings);
+            bindings.retain(|binding| binding.source.strong_count() > 0);
+            Ok(outcome)
         });
         Box::pin(async move { operation.await.map_err(Error::harness)? })
     }
@@ -59,7 +61,7 @@ impl Permissions {
             if !owner.bridge.owns(&request) {
                 return Err(Error::InvalidResolution);
             }
-            if owner.bridge.is_closed() || run.lock().unwrap().state().closed {
+            if owner.bridge.is_closed() {
                 return Err(Error::SessionClosed);
             }
             if bindings
@@ -87,12 +89,12 @@ impl Permissions {
                         text.permission_request(params, owner.participant.clone(), (owner.clock)())
                     }
                     Err(_) => {
-                        text.fail(
+                        let _ = text.fail(
                             "acp_invalid_permission",
                             "malformed permission request",
                             false,
                             (owner.clock)(),
-                        )?;
+                        );
                         Err(Error::Harness("invalid permission request".into()))
                     }
                 }
@@ -207,10 +209,7 @@ fn bound<'a>(
 ) -> Result<&'a mut Binding, Error> {
     let binding = bindings
         .iter_mut()
-        .find(|binding| &binding.id == id)
+        .find(|binding| &binding.id == id && Weak::ptr_eq(&binding.run, &Arc::downgrade(run)))
         .ok_or(Error::InteractionNotFound)?;
-    if !Weak::ptr_eq(&binding.run, &Arc::downgrade(run)) {
-        return Err(Error::InvalidResolution);
-    }
     Ok(binding)
 }

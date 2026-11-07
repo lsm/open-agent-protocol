@@ -367,3 +367,10 @@ and close joins it. Futures remain caller-owned through bridge shutdown.
 Run `rust-acp-permission-controller.md` for the standalone native comparison,
 source/duplicate/concurrent-answer checks and quiet-child ownership proof.
 Normal Session permissions retain the following integration slice.
+
+Malformed native asks receive their protocol error independently of whether a
+local failure event can be emitted. Binding lookup uses the actual run object
+and its interaction id. Completed entries expire with their native request
+object, with pruning after each controller operation. Retained request objects
+keep weak duplicate guards until release. Per-run id generators can restart
+without routing the next run's reply through a preceding binding.

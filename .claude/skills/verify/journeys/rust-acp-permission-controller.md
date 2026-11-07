@@ -37,3 +37,13 @@ same mutex. Read the actual PTY reply and `/quit` exit. Normal Session permissio
 publication/resolve/admission/close remains the next approved slice, followed
 by cancel, reopen/config and corpus. The shared process helper's existing
 grandchild-held-pipe limitation applies.
+
+Review regressions drive actual native peers for malformed asks before run
+start and two sequential runs whose id generators restart. A malformed ask
+must receive -32602 even when local run failure cannot be emitted. The second
+run must cancel its own native ask and finish while the first request object
+is retained. Bindings match both the run object and interaction id. Completed
+bindings are pruned once their native request object has no external owner.
+Retained live request objects keep weak duplicate-publication guards until
+they are released and the next controller operation prunes them. Keep signed
+native failing regressions before both review fixes.

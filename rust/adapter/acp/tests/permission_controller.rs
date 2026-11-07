@@ -300,6 +300,25 @@ fn controller_run(id: &str) -> Arc<Mutex<TextRun>> {
     )))
 }
 
+fn controller_proof(fixture: &Fixture, case: &str, events: serde_json::Value) {
+    let pid = std::fs::read_to_string(fixture.0.join("pid")).unwrap();
+    assert!(!std::process::Command::new("/bin/kill")
+        .args(["-0", pid.trim()])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let wire = std::fs::read_to_string(fixture.0.join("wire")).unwrap();
+    let frames = wire
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    println!(
+        "controller-review-proof {}",
+        json!({"case":case,"native_pid":pid.trim().parse::<u32>().unwrap(),"wire":frames,"runs":events})
+    );
+}
+
 fn malformed_request_is_answered(closed: bool) {
     let (fixture, bridge, received, permissions) = controller_peer(
         r#"
@@ -319,6 +338,15 @@ sys.stdin.read()
     assert!(outcome.is_err());
     let reply: serde_json::Value =
         serde_json::from_slice(&std::fs::read(fixture.0.join("reply.json")).unwrap()).unwrap();
+    controller_proof(
+        &fixture,
+        if closed {
+            "malformed-closed"
+        } else {
+            "malformed-unstarted"
+        },
+        json!([]),
+    );
     assert_eq!(reply["id"], "ask");
     assert_eq!(reply["error"]["code"], -32602);
 }
@@ -372,6 +400,16 @@ sys.stdin.read()
         all_events.push(block_on(stream.collect::<Vec<_>>()));
     }
     block_on(bridge.close()).unwrap();
+    let observed = all_events
+        .iter()
+        .map(|events| {
+            events
+                .iter()
+                .map(|event| serde_json::to_value(event.as_ref().unwrap()).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    controller_proof(&fixture, "restarted-ids", json!(observed));
     for (index, outcome) in outcomes.into_iter().enumerate() {
         outcome.unwrap();
         let reply: serde_json::Value = serde_json::from_slice(

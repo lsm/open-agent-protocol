@@ -86,6 +86,19 @@ def main():
                     (case/'failure-observations.json').write_text(json.dumps(observations,indent=2))
                 if (case/'pid').exists() and not outbound.ownership.absent(int((case/'pid').read_text())):
                     os.kill(int((case/'pid').read_text()),signal.SIGKILL)
+    observed=[]
+    for name in ['malformed_request_is_answered','a_second_run_with_restarted_ids']:
+        result=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permission_controller',name,'--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+        (output/(name+'.log')).write_text(result.stdout+result.stderr)
+        assert result.returncode==0,result.stdout+result.stderr
+        for line in result.stdout.splitlines():
+            if 'controller-review-proof ' in line:
+                proof=json.loads(line.split('controller-review-proof ',1)[1])
+                assert outbound.ownership.absent(proof['native_pid']),proof['native_pid']
+                (output/(proof['case']+'.json')).write_text(json.dumps(proof,ensure_ascii=False,indent=2))
+                observed.append(proof['case'])
+    assert set(observed)=={'malformed-closed','malformed-unstarted','restarted-ids'},observed
+    print('PASS review regressions: native malformed-request error replies and restarted-id run settlement; complete host wires retained, children reaped',flush=True)
     print(f'PASS owned permission controller. Synthetic native inputs only. Evidence {output}',flush=True)
 
 
