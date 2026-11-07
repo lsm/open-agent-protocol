@@ -563,7 +563,7 @@ const Entry = struct {
     title: []u8 = &.{},
     directory: []u8 = &.{},
     ready_token: ?*ready.Token = null,
-    polling: bool = true,
+    fallback_index: ?usize = null,
 
     fn observe(self: *Entry, enabled: bool) void {
         const token = self.ready_token orelse return;
@@ -622,7 +622,8 @@ pub const Hub = struct {
     bound: std.ArrayList(Bound) = .empty,
     bindings: ?binding.Bindings = null,
     shutting_down: bool = false,
-    next_entry: usize = 0,
+    fallbacks: std.ArrayList(usize) = .empty,
+    next_fallback: usize = 0,
     pass_remaining: usize = 0,
     ready_queue: ?*ready.Queue = null,
 
@@ -652,6 +653,7 @@ pub const Hub = struct {
         self.subscriptions.deinit(self.allocator);
         for (self.entries.items) |*entry| entry.deinit(self.allocator);
         self.entries.deinit(self.allocator);
+        self.fallbacks.deinit(self.allocator);
         if (self.ready_queue) |queue| {
             queue.deinit();
             self.allocator.destroy(queue);
@@ -1074,6 +1076,7 @@ pub const Hub = struct {
         entry.parked_runs = entry.cursors.items.len;
         entry.session_closed = true;
         entry.parked = true;
+        self.removeFallback(entry);
         entry.releaseReady(self.allocator);
         for (entry.journal.items) |kept| self.allocator.free(kept.line);
         entry.journal.clearRetainingCapacity();
@@ -1690,8 +1693,8 @@ pub const Hub = struct {
         if (self.ready_queue) |queue| {
             if (queue.handle()) |handle| try handles.append(arena, handle);
         }
-        for (self.entries.items) |*entry| {
-            const handle = handleOf(entry) orelse continue;
+        for (self.fallbacks.items) |index| {
+            const handle = handleOf(&self.entries.items[index]) orelse continue;
             try handles.append(arena, handle);
         }
         return handles.items;
@@ -1710,8 +1713,8 @@ pub const Hub = struct {
     }
 
     fn awaitCompletion(self: *Hub, wait_ns: u64) bool {
-        for (self.entries.items) |*entry| {
-            if (handleOf(entry) != null) return compat.time.sleepUntilCompletion(wait_ns);
+        for (self.fallbacks.items) |index| {
+            if (handleOf(&self.entries.items[index]) != null) return compat.time.sleepUntilCompletion(wait_ns);
         }
         return false;
     }
@@ -1785,12 +1788,7 @@ pub const Hub = struct {
     }
 
     fn drivePass(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
-        const count = self.entries.items.len;
-        if (count == 0) {
-            self.pass_remaining = 0;
-            self.next_entry = 0;
-            return false;
-        }
+        const count = self.fallbacks.items.len;
         if (self.pass_remaining == 0) self.pass_remaining = count;
         const started = self.clock();
         const share = wait_ns / @max(count, 1);
@@ -1802,20 +1800,21 @@ pub const Hub = struct {
             if (prefer_ready) {
                 if (self.ready_queue) |queue| notified = queue.pop();
             }
-            var selected: ?*Entry = if (notified) |token| &self.entries.items[token.index] else null;
+            var selected: ?usize = if (notified) |token| token.index else null;
             if (selected == null and self.pass_remaining > 0) {
-                self.next_entry %= count;
-                selected = &self.entries.items[self.next_entry];
-                self.next_entry = (self.next_entry + 1) % count;
+                self.next_fallback %= self.fallbacks.items.len;
+                selected = self.fallbacks.items[self.next_fallback];
+                self.next_fallback = (self.next_fallback + 1) % self.fallbacks.items.len;
                 self.pass_remaining -= 1;
             }
             if (selected == null and !prefer_ready) {
                 if (self.ready_queue) |queue| notified = queue.pop();
-                if (notified) |token| selected = &self.entries.items[token.index];
+                if (notified) |token| selected = token.index;
             }
-            const entry = selected orelse break;
+            const index = selected orelse break;
+            const entry = &self.entries.items[index];
             prefer_ready = !prefer_ready;
-            if (!entry.parked and (notified != null or entry.polling)) {
+            if (!entry.parked) {
                 errdefer if (entry.ready_token) |token| token.queue.push(token);
                 const wait = if (notified != null or handleOf(entry) != null) 0 else share;
                 const pumped = entry.session.pump(wait) catch |err| switch (err) {
@@ -1827,8 +1826,8 @@ pub const Hub = struct {
                 };
                 const delivered = try self.deliver(entry, arena);
                 moved = moved or pumped or delivered;
+                try self.refreshFallback(entry, index);
                 if (entry.ready_token) |token| {
-                    entry.polling = entry.session.vtable.readable != null or !entry.session.holdsNoLiveWork();
                     if (pumped or delivered) token.queue.push(token);
                 }
             }
@@ -2292,31 +2291,53 @@ pub const Hub = struct {
     }
 
     fn watch(self: *Hub, entry: *Entry) Failure!void {
-        entry.polling = true;
-        if (entry.session.vtable.set_ready == null) return;
+        const index = for (self.entries.items, 0..) |*candidate, index| {
+            if (candidate == entry) break index;
+        } else unreachable;
+        if (entry.session.vtable.set_ready == null) return self.refreshFallback(entry, index);
         if (self.ready_queue == null) {
             const queue = try self.allocator.create(ready.Queue);
             errdefer self.allocator.destroy(queue);
             queue.* = ready.Queue.init(if (builtin.is_test) testing.io else std.Io.Threaded.global_single_threaded.io()) catch return error.BackendFailed;
             self.ready_queue = queue;
         }
-        const index = for (self.entries.items, 0..) |*candidate, index| {
-            if (candidate == entry) break index;
-        } else unreachable;
         const token = try self.allocator.create(ready.Token);
+        errdefer self.allocator.destroy(token);
         token.* = .{ .queue = self.ready_queue.?, .index = index };
         entry.ready_token = token;
-        entry.polling = entry.session.vtable.readable != null or !entry.session.holdsNoLiveWork();
+        errdefer entry.ready_token = null;
+        try self.refreshFallback(entry, index);
         entry.observe(true);
+    }
+
+    fn refreshFallback(self: *Hub, entry: *Entry, index: usize) std.mem.Allocator.Error!void {
+        const needed = entry.ready_token == null or entry.session.vtable.readable != null or !entry.session.holdsNoLiveWork();
+        if (!needed) return self.removeFallback(entry);
+        if (entry.fallback_index != null) return;
+        try self.fallbacks.append(self.allocator, index);
+        entry.fallback_index = self.fallbacks.items.len - 1;
+    }
+
+    fn removeFallback(self: *Hub, entry: *Entry) void {
+        const index = entry.fallback_index orelse return;
+        _ = self.fallbacks.swapRemove(index);
+        if (index < self.fallbacks.items.len) {
+            self.entries.items[self.fallbacks.items[index]].fallback_index = index;
+        }
+        entry.fallback_index = null;
+        self.next_fallback = @min(self.next_fallback, index);
+        self.pass_remaining = @min(self.pass_remaining, self.fallbacks.items.len);
     }
 
     fn removeSession(self: *Hub, entry: *Entry) void {
         for (self.entries.items, 0..) |*candidate, index| {
             if (candidate.session_id.ptr != entry.session_id.ptr) continue;
+            self.removeFallback(candidate);
             var removed = self.entries.orderedRemove(index);
-            if (index < self.next_entry) self.next_entry -= 1;
-            self.pass_remaining = @min(self.pass_remaining, self.entries.items.len);
             removed.deinit(self.allocator);
+            for (self.fallbacks.items) |*at| {
+                if (at.* > index) at.* -= 1;
+            }
             for (self.entries.items[index..], index..) |*remaining, at| {
                 if (remaining.ready_token) |token| token.index = at;
             }
@@ -2496,6 +2517,7 @@ const testing = std.testing;
 const SignallingMemory = struct {
     inner: *memory.Adapter,
     sessions: std.ArrayList(*Session) = .empty,
+    live_work: bool = false,
 
     const Session = struct {
         inner: contract.Session,
@@ -2503,6 +2525,7 @@ const SignallingMemory = struct {
         observer: ?contract.Session.Ready = null,
         closed: bool = false,
         refuse_close: bool = false,
+        live_work: bool = false,
 
         const vtable = contract.Session.VTable{
             .id = id,
@@ -2579,8 +2602,8 @@ const SignallingMemory = struct {
             self.closed = true;
         }
 
-        fn liveWork(_: *anyopaque) bool {
-            return false;
+        fn liveWork(ptr: *anyopaque) bool {
+            return cast(ptr).live_work;
         }
 
         fn setReady(ptr: *anyopaque, observer: ?contract.Session.Ready) void {
@@ -2633,7 +2656,7 @@ const SignallingMemory = struct {
         const name = try testing.allocator.dupe(u8, inner.id());
         errdefer testing.allocator.free(name);
         try self.sessions.append(testing.allocator, session);
-        session.* = .{ .inner = inner, .name = name };
+        session.* = .{ .inner = inner, .name = name, .live_work = self.live_work };
         return .{ .ptr = session, .vtable = &Session.vtable };
     }
 };
@@ -2698,10 +2721,60 @@ test "idle notifying sessions leave no unfinished fallback pass" {
     try testing.expectEqual(false, hub.hasPendingPass());
 }
 
-fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
+test "mixed fallback sessions survive removal and observed live work can become idle" {
     var inner = memory.Adapter.init(testing.allocator);
     defer inner.deinit();
     var adapter = SignallingMemory{ .inner = &inner };
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("signalling", adapter.adapter());
+    try hub.register("memory", inner.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const first = try hub.open(arena, "memory", .{ .session_id = "fallback-first" });
+    const observed = try hub.open(arena, "signalling", .{ .session_id = "live-ready", .subscribe = true });
+    const middle = try hub.open(arena, "memory", .{ .session_id = "fallback-middle" });
+    const last = try hub.open(arena, "memory", .{ .session_id = "fallback-last", .subscribe = true });
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    const session = adapter.sessions.items[0];
+    session.live_work = true;
+    session.signal();
+    try hub.pump(testing.allocator, 0);
+    try hub.close(arena, middle.session_id);
+    try hub.close(arena, first.session_id);
+    var refusal = contract.Refusal{};
+    const observed_request = try submitFor(arena, observed.session_id);
+    const observed_run = try session.inner.submit(arena, &observed_request, "unnotified-live-work", &refusal);
+    const last_request = try submitFor(arena, last.session_id);
+    const last_run = try hub.submit(arena, last.session_id, &last_request, "remaining-fallback");
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings(observed_run.run_id.?, observed.subscription.?.next().?.run_id);
+    try testing.expectEqualStrings(last_run.run_id.?, last.subscription.?.next().?.run_id);
+    _ = try hub.cancel(arena, last.session_id, last_run.run_id.?);
+    try hub.close(arena, last.session_id);
+    _ = try hub.cancel(arena, observed.session_id, observed_run.run_id.?);
+    session.live_work = false;
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(false, hub.hasPendingPass());
+    try testing.expect(try hub.park(arena, observed.session_id));
+    const reopened = try hub.submit(arena, observed.session_id, &observed_request, "reopened-ready");
+    while (hub.hasPendingPass()) try hub.pump(testing.allocator, 0);
+    var found = false;
+    while (observed.subscription.?.next()) |event| {
+        found = found or std.mem.eql(u8, event.run_id, reopened.run_id.?);
+    }
+    try testing.expectEqual(true, found);
+    _ = try hub.cancel(arena, observed.session_id, reopened.run_id.?);
+    try hub.close(arena, observed.session_id);
+}
+
+fn failedOpenLeavesNoSession(allocator: std.mem.Allocator) !void {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var adapter = SignallingMemory{ .inner = &inner, .live_work = true };
     defer adapter.deinit();
     var hub = Hub.init(allocator, testClock, .{});
     defer hub.deinit();

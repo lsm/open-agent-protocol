@@ -2047,7 +2047,13 @@ that keeps a session restores observation. Parking delivers pending OAP output
 before destroying the harness. An open that fails after adoption releases its
 entry and observer. Ready visits and fallback visits share the 64-session,
 4 ms pass budget. Backends with readable handles, background jobs, or no
-observer remain eligible for fallback visits. Tests in the readiness journey
+observer remain eligible for fallback visits. A separate fallback list contains
+only those sessions, and handle collection also visits only that list. Sessions
+enter or leave it after a ready visit observes a change in live work. Parking
+removes membership and reopening restores it when needed. Removing an entry
+updates both fallback references and ready tokens before the next pass. Idle
+notifying sessions consume no fallback visits and leave no unfinished pass.
+Tests in the readiness journey
 observe the shared handle and a cancellation across parking, retry refused
 parking, and check allocation failures during open.
 
