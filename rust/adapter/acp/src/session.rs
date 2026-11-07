@@ -133,6 +133,8 @@ impl Session {
                 ..SessionState::default()
             },
         }));
+        #[cfg(test)]
+        tests::LAST_SESSION.with(|slot| *slot.borrow_mut() = Some(Arc::downgrade(&inner)));
         let weak = Arc::downgrade(&inner);
         let done = process.client.done();
         let native_id = opened.session_id.clone();
@@ -406,3 +408,7 @@ impl ModelLister for Session {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/session_permissions.rs"]
+mod tests;
