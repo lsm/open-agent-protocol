@@ -249,7 +249,18 @@ pub const Jobs = struct {
             return error.UnknownJob;
         };
         if (job.term != null or job.cause != null) {
+            const settling = job.term == null;
             self.mutex.unlock();
+            if (settling) {
+                self.end(job);
+                while (true) {
+                    self.lock();
+                    const finished = job.term != null;
+                    self.mutex.unlock();
+                    if (finished) break;
+                    compat.time.sleepMs(1);
+                }
+            }
             return false;
         }
         job.killed = true;

@@ -355,9 +355,8 @@ session for its lifetime, not to a subscription or a transport connection;
 independent endpoints host distinct sessions and do not share counters. The
 oapx adapter reports background command starts and ends and includes tasks in
 session state. A job completion wakes its session, and close publishes endings
-with `session_closed` before ending its subscriptions. Task controls follow
-separately. The
-Zig hub does not yet publish `session.state.updated`; when it does, those events
+with `session_closed` before ending its subscriptions. Task output follows
+separately. The Zig hub does not yet publish `session.state.updated`; when it does, those events
 share this counter.
 
 The stdio overflow regression drives one producer run, then drains its queued
@@ -620,7 +619,7 @@ error. That is stated because the four reasons are the whole set.
 | `GET /sessions/{id}/models` | `models` | `models.response` | see [models](#models) |
 | `POST /sessions/{id}/submit` | `submit` | `session.message.submit.response`, or `session.compact.response` for a compaction | see [submit](#submit) |
 | `POST /sessions/{id}/resolve` | `resolve` | the matching resolve response | see [resolve](#resolve) |
-| `POST /sessions/{id}/cancel` | `cancel` | `run.cancel.response` | see [cancel](#cancel) |
+| `POST /sessions/{id}/cancel` | `cancel` | `run.cancel.response`; Zig also serves `session.task.cancel.response` | see [cancel](#cancel) |
 | `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
@@ -1805,8 +1804,14 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
 
 ### `cancel`
 
+The Zig `cancel` operation also accepts a `session.task.cancel.request` envelope
+and returns its correlated `session.task.cancel.response`. Task cancellation is
+intent; `session.task.ended` reports its settlement on the session stream. Go
+task cancellation follows separately.
+
 - **params:** `session_id` and `request`, and nothing else.
-- **answer:** a `run.cancel.response` envelope. It is **intent, not settlement**:
+- **answer:** a `run.cancel.response` envelope, or a `session.task.cancel.response`
+  for a task request on Zig. A run cancellation is **intent, not settlement**:
   a run settles `cancelled` only once an accepted cancel exchange is the
   evidence, so the host watches for `run.cancelled` on its subscription.
 - **errors:** `unknown_session` (404), `invalid_request`, `malformed_json`,

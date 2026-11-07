@@ -18,7 +18,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v17";
+pub const capability_revision = "oapx-agent-v18";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -45,6 +45,8 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .native, .reason = "guidance joins the running loop after its current tool result or turn; guidance still waiting when the run ends is dropped" },
     .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder, and approve_always or reject_always settles a call that names a path or a command for the rest of the session, as the loop remembers it; bypass mode skips prompts" },
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
+    .{ .key = "session.tasks", .level = .native },
+    .{ .key = contract.feature_task_cancel, .level = .native },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
     .{ .key = "run.cancel", .level = .native, .reason = "cancelling a run leaves its session open" },
@@ -462,6 +464,7 @@ pub const Session = struct {
         .submit = submit,
         .resolve = resolve,
         .cancel = cancel,
+        .cancel_task = cancelTask,
         .pump = pump,
         .set_ready = setReady,
         .drain = drain,
@@ -845,7 +848,7 @@ pub const Session = struct {
             try row.put("kind", .{ .string = "command" });
             try row.put("status", .{ .string = @tagName(task.status) });
             try row.put("tool_call_id", .{ .string = task.tool_call_id });
-            try row.put("cancellable", .{ .bool = false });
+            try row.put("cancellable", .{ .bool = true });
             if (task.cause) |cause| try row.put("cause", .{ .string = @tagName(cause) });
             if (self.task_origins.get(task.task_id)) |origin| {
                 if (origin.run_id.len > 0) try row.put("run_id", .{ .string = origin.run_id });
@@ -1463,6 +1466,15 @@ pub const Session = struct {
         return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
     }
 
+    fn cancelTask(ptr: *anyopaque, task_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.TaskCancelResponse {
+        const self = cast(ptr);
+        const requested = self.jobs.cancelTask(task_id) catch |err| switch (err) {
+            error.UnknownJob => return refusal.fail(error.InvalidSubmission, "the task does not exist"),
+        };
+        _ = try self.publishTasks();
+        return .{ .outcome = if (requested) .requested else .already_ended };
+    }
+
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
         _ = refusal;
         const self = cast(ptr);
@@ -1567,7 +1579,7 @@ pub const Session = struct {
                     try row.put("status", .{ .string = "running" });
                     if (origin.run_id.len > 0) try row.put("run_id", .{ .string = origin.run_id });
                     try row.put("tool_call_id", .{ .string = origin.tool_call_id });
-                    try row.put("cancellable", .{ .bool = false });
+                    try row.put("cancellable", .{ .bool = true });
                     var payload = Payload.init(a);
                     try payload.put("task", row.value());
                     try self.emitSession(a, "session.task.started", payload.value());
@@ -5181,7 +5193,7 @@ test "a shell background job is visible as a session task before its run ends" {
         task_id = task.get("task_id").?.string;
         try testing.expectEqualStrings(admitted.run_id.?, task.get("run_id").?.string);
         try testing.expectEqualStrings("call-1", task.get("tool_call_id").?.string);
-        try testing.expect(!task.get("cancellable").?.bool);
+        try testing.expect(task.get("cancellable").?.bool);
     }
     const session = Session.cast(harness.session.ptr);
     const state = try session.snapshot(harness.arena.allocator());
@@ -5431,4 +5443,49 @@ test "forced endpoint finish reports an unannounced job of the active run" {
     const ended = wireLast(&wire, "session.task.ended").object.get("payload").?.object;
     try testing.expectEqualStrings(task_id, ended.get("task_id").?.string);
     try testing.expectEqualStrings("session_closed", ended.get("cause").?.string);
+}
+
+test "a host can cancel a background task and observe its separate ending" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"description\":\"background\",\"workspace_root\":\"{s}\",\"command\":\"sleep 30\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var script = Script{ .tool_first = true, .tool_name = "Shell", .tool_arguments = args };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    wire.owner.options.permission_mode = .bypass;
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"start a job"}]}
+    ));
+    const started = try wire.wait("session.task.started");
+    const task = started.object.get("payload").?.object.get("task").?.object;
+    try testing.expect(task.get("cancellable").?.bool);
+    const task_id = task.get("task_id").?.string;
+    _ = try wire.wait("run.completed");
+    const calls = script.calls;
+    const request = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"task_id\":\"{s}\"}}", .{task_id});
+    try wire.send("session.task.cancel.request", wire_scope, try parseValue(a, request));
+    const ack = wireLast(&wire, "session.task.cancel.response");
+    try testing.expectEqualStrings("requested", ack.object.get("payload").?.object.get("outcome").?.string);
+    const ended = try wire.wait("session.task.ended");
+    var answer_seen = false;
+    for (wire.trace.items) |event| {
+        const kind = event.object.get("type").?.string;
+        if (std.mem.eql(u8, kind, "session.task.cancel.response")) answer_seen = true;
+        if (std.mem.eql(u8, kind, "session.task.ended")) try testing.expect(answer_seen);
+    }
+    const payload = ended.object.get("payload").?.object;
+    try testing.expectEqualStrings(task_id, payload.get("task_id").?.string);
+    try testing.expectEqualStrings("cancelled", payload.get("status").?.string);
+    try testing.expectEqualStrings("cancelled_by_host", payload.get("cause").?.string);
+    try testing.expectEqual(calls, script.calls);
+    try wire.send("session.task.cancel.request", wire_scope, try parseValue(a, request));
+    const retry = wireLast(&wire, "session.task.cancel.response");
+    try testing.expectEqualStrings("already_ended", retry.object.get("payload").?.object.get("outcome").?.string);
 }

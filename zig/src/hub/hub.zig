@@ -1456,6 +1456,18 @@ pub const Hub = struct {
         };
     }
 
+    pub fn cancelTask(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, task_id: []const u8, refusal: *contract.Refusal) Failure!oap_types.TaskCancelResponse {
+        const entry = try self.awake(arena, session_id);
+        const cancel_task = entry.session.vtable.cancel_task orelse return refusal.unsupported(contract.feature_task_cancel, contract.reason_unadvertised);
+        return cancel_task(entry.session.ptr, task_id, refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.SessionClosed;
+            },
+            else => |failure| return failure,
+        };
+    }
+
     pub fn updateSettings(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) Failure!oap_types.SessionSettingsUpdateResponse {
         const entry = try self.awake(arena, session_id);
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;

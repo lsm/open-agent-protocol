@@ -675,6 +675,11 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             if (value.message_ids.len > 0) try serializeStringArray(w, "message_ids", value.message_ids);
             if (value.target_sequence) |sequence| try w.writeIntField("target_sequence", sequence);
         },
+        .task_cancel_request => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("task_id", value.task_id);
+        },
+        .task_cancel_response => |value| try w.writeStringField("outcome", @tagName(value.outcome)),
         .run_cancel_request => |value| {
             try w.writeStringField("session_id", value.session_id);
             try w.writeStringField("run_id", value.run_id);
@@ -1824,6 +1829,14 @@ fn deserializePayload(
             .message_ids = message_ids,
             .target_sequence = target_sequence,
         } };
+    }
+    if (std.mem.eql(u8, type_str, "session.task.cancel.request")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        return .{ .task_cancel_request = .{ .session_id = session_id, .task_id = try requiredOwnedString(obj, "task_id", allocator) } };
+    }
+    if (std.mem.eql(u8, type_str, "session.task.cancel.response")) {
+        return .{ .task_cancel_response = .{ .outcome = try requiredEnum(oap_types.TaskCancelOutcome, obj, "outcome") } };
     }
     if (std.mem.eql(u8, type_str, "run.cancel.request")) {
         const session_id = try requiredOwnedString(obj, "session_id", allocator);
