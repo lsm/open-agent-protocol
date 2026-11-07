@@ -63,6 +63,18 @@ impl PromptBridge {
         }
     }
 
+    pub(crate) fn arm(&self, control: &crate::operation::Cancellation) {
+        control.arm(&self.process.child, &self.process.client);
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.process.client.is_closed()
+    }
+
+    pub(crate) fn owns(&self, request: &Arc<IncomingRequest>) -> bool {
+        owns(&self.requests, request)
+    }
+
     pub fn notify(
         &self,
         method: String,
@@ -100,13 +112,7 @@ impl PromptBridge {
         let process = self.process.clone();
         let requests = self.requests.clone();
         Operation::spawn(move |control| {
-            let known = requests
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .iter()
-                .filter_map(Weak::upgrade)
-                .any(|known| Arc::ptr_eq(&known, &request));
-            if !known {
+            if !owns(&requests, &request) {
                 return Err(DIALECT.error(Fault::InvalidMessage(
                     "reverse request belongs to another bridge".into(),
                 )));
@@ -214,4 +220,13 @@ impl Future for PromptCall {
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.completion).poll(context)
     }
+}
+
+fn owns(requests: &Mutex<Vec<Weak<IncomingRequest>>>, request: &Arc<IncomingRequest>) -> bool {
+    requests
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter_map(Weak::upgrade)
+        .any(|known| Arc::ptr_eq(&known, request))
 }

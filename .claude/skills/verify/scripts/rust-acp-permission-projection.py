@@ -85,9 +85,11 @@ sys.stdin.read()
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output-dir',required=True,type=Path)
-    output=parser.parse_args().output_dir.resolve()
+    parser.add_argument('--consumer',choices=['permission_projection','permission_controller'],default='permission_projection')
+    options=parser.parse_args()
+    output=options.output_dir.resolve()
     output.mkdir(parents=True,exist_ok=False)
-    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example','permission_projection'],output/'rust-build.log')
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example',options.consumer],output/'rust-build.log')
     (output/'reference.go').write_text(GO)
     peer.run(['gofmt','-w',str(output/'reference.go')],output/'gofmt.log')
     peer.run(['go','build','-o',str(output/'reference'),str(output/'reference.go')],output/'go-build.log')
@@ -120,7 +122,7 @@ def main():
             case=output/name
             case.mkdir()
             results,wires={},{}
-            for language,binary in [('rust',ROOT/'rust/target/debug/examples/permission_projection'),('go',output/'reference')]:
+            for language,binary in [('rust',ROOT/'rust/target/debug/examples'/options.consumer),('go',output/'reference')]:
                 directory=case/language
                 directory.mkdir()
                 (directory/'scenario.json').write_text(json.dumps(scenario))

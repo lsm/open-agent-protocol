@@ -10,7 +10,7 @@ python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp
 Require the real rebuilt Rust memory endpoint to accept cursor replay and
 re-deliver the run with identical ordered ids, types and sequences. The
 collected trace must contain only one copy of the run's completion. Require
-twenty-six passing staged checks and EOF exit 0. Two further fresh endpoint
+every staged check and native report validation to pass, with EOF exit 0. Two further fresh endpoint
 processes must exit nonzero after a malformed line and an envelope without
 an id. Require both framing checks to pass.
 
@@ -22,3 +22,9 @@ inputs and reject zero exits, spawn failure and an EOF-ignoring chatty peer.
 
 Source, build logs and output are retained. Runtime HOME/data/config are
 temporary and process groups are cleaned up. Run the complete baseline too.
+
+The positive replay fixture uses a two-second endpoint budget. A controlled
+750 ms cooperative exit delay verifies EOF shutdown grace after a successful
+replay. Negative timeout and event-flood fixtures use 500 ms and retain their
+bounded cleanup assertions. Keep the signed failing fixture regression before
+its budget correction, and retain any full-suite EOF failure that led to it.

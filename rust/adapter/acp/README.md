@@ -343,3 +343,27 @@ unavailable until the approved controller and Session integration layers land.
 A pending terminal still accepts native usage observations into the shared
 session scope. They leave the chosen terminal snapshot intact and reach the
 next run. The pending-usage native barrier proof covers that hand-off.
+
+## Owned permission controller
+
+`Permissions::new(bridge, participant, clock)` binds one native bridge and the
+admitted participant. `request(run, incoming)` accepts only actual requests
+registered by that bridge. Reusing a request object is refused. The controller
+retains the source binding through native reply and correlated commit.
+
+`resolve`, `observe`, `complete` and `prompt_error` serialize native writes and
+projection transitions through an owned worker. Use these methods for a
+controller-managed run. Prepare and validate under the TextRun mutex, release
+it for native I/O, then read the clock and commit. A successful selected write
+and its commit belong to the same worker, so abandoning the future cannot
+discard an accepted reply between them. Parent settlement commits local
+cancellations even when the native transport has failed.
+
+The returned futures begin work when constructed. Await joins the worker.
+Dropping one aborts and reaps its native child and joins the worker, including
+an operation waiting for the controller lock. The bridge owns the dispatcher,
+and close joins it. Futures remain caller-owned through bridge shutdown.
+
+Run `rust-acp-permission-controller.md` for the standalone native comparison,
+source/duplicate/concurrent-answer checks and quiet-child ownership proof.
+Normal Session permissions retain the following integration slice.
