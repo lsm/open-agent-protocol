@@ -2,6 +2,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -105,6 +106,20 @@ def main():
     assert proof['sampled_timestamp']==proof['switched_timestamp'],proof
     (output/'metadata-state.json').write_text(json.dumps(proof,indent=2))
     print('PASS public history, idle asks, refusal and model metadata: a state read preserves the newer model-switch timestamp',flush=True)
+    resources=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--lib','--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+    (output/'resource-checks.log').write_text(resources.stdout+resources.stderr)
+    assert resources.returncode==0,resources.stdout+resources.stderr
+    patterns={
+        'chunks':r'hot-path-proof chunks=(\d+) notification_workers=(\d+) total_workers=(\d+)',
+        'prompt_error':r'prompt-error-proof operation_workers=(\d+)',
+        'resolved_routes':r'permission-route-proof retained=(\d+)',
+        'parent_routes':r'parent-route-proof retained=(\d+)',
+        'cache':r'permission-cache-proof runs=(\d+) routes=(\d+) recent=(\d+)',
+    }
+    proof={name:[int(value) for value in re.search(pattern,resources.stdout).groups()] for name,pattern in patterns.items()}
+    assert proof==dict(chunks=[100,0,0],prompt_error=[0],resolved_routes=[0],parent_routes=[0],cache=[80,0,64]),proof
+    (output/'resources.json').write_text(json.dumps(proof,indent=2))
+    print('PASS resources: 100 chunks plus completion/error use zero operation workers; resolved and parent-settled routes empty; 80 runs retain 64 refusal IDs',flush=True)
     print(f'PASS normal Session permission ownership. Synthetic native inputs only. Evidence {output}',flush=True)
 
 

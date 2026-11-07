@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use futures_util::lock::Mutex as AsyncMutex;
 use oap_adapter::jsonrpc::{IncomingRequest, NotificationMessage};
 use oap_adapter::{BoxFuture, Error, InteractionResolution};
 use oap_protocol::{InteractionId, ParticipantId};
@@ -18,7 +19,7 @@ pub struct Permissions {
     bridge: Arc<PromptBridge>,
     participant: ParticipantId,
     clock: Box<dyn Fn() -> i64 + Send + Sync>,
-    bindings: Mutex<Vec<Binding>>,
+    bindings: AsyncMutex<Vec<Binding>>,
 }
 
 impl Permissions {
@@ -34,7 +35,7 @@ impl Permissions {
             bridge,
             participant,
             clock: Box::new(clock),
-            bindings: Mutex::new(Vec::new()),
+            bindings: AsyncMutex::new(Vec::new()),
         }))
     }
 
@@ -44,7 +45,7 @@ impl Permissions {
     ) -> BoxFuture<'static, T> {
         let operation = Operation::spawn(move |control| {
             self.bridge.arm(control);
-            let mut bindings = self.bindings.lock().unwrap_or_else(|p| p.into_inner());
+            let mut bindings = futures::executor::block_on(self.bindings.lock());
             let outcome = work(&self, &mut bindings);
             bindings.retain(|binding| binding.source.strong_count() > 0);
             Ok(outcome)
@@ -180,9 +181,28 @@ impl Permissions {
         run: Arc<Mutex<TextRun>>,
         update: impl FnOnce(&mut TextRun, i64) -> Result<(), Error> + Send + 'static,
     ) -> BoxFuture<'static, ()> {
-        self.operation(move |owner, bindings| {
-            update(&mut run.lock().unwrap(), (owner.clock)())?;
-            owner.settle(&run, bindings)
+        Box::pin(async move {
+            let native_reply = {
+                let mut bindings = self.bindings.lock().await;
+                let outcome = update(&mut run.lock().unwrap(), (self.clock)());
+                bindings.retain(|binding| binding.source.strong_count() > 0);
+                outcome?;
+                if run.lock().unwrap().permission_settlements().is_empty() {
+                    return Ok(());
+                }
+                let native_reply = bindings.iter().any(|binding| {
+                    Weak::ptr_eq(&binding.run, &Arc::downgrade(&run)) && binding.request.is_some()
+                });
+                if !native_reply {
+                    self.settle(&run, &mut bindings)?;
+                }
+                native_reply
+            };
+            if native_reply {
+                self.operation(move |owner, bindings| owner.settle(&run, bindings))
+                    .await?;
+            }
+            Ok(())
         })
     }
 

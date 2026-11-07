@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, Session as _, SubmitRequest};
+use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
 use oap_protocol::{
     Message, MessageContent, MessageSubmitRequest, Participant, PermissionRequestedPayload,
     PermissionResolveRequest,
@@ -65,8 +65,11 @@ for index in range(turns):
   wait('finish')
  else:
   send(dict(id='ask-'+str(index),method='session/request_permission',params=dict(sessionId='native',toolCall=dict(toolCallId='tool-'+str(index),title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])))
+  if mode=='parent': send(dict(id=prompt['id'],result=dict(stopReason='end_turn')))
   answer=read()
-  assert answer['result']['outcome']==dict(outcome='selected',optionId='allow'),answer
+  expected=dict(outcome='cancelled') if mode=='parent' else dict(outcome='selected',optionId='allow')
+  assert answer['result']['outcome']==expected,answer
+  if mode=='parent': continue
  send(dict(id=prompt['id'],result=dict(stopReason='end_turn')))
 sys.stdin.read()
 "#).unwrap();
@@ -263,4 +266,83 @@ fn a_prompt_error_without_pending_gates_creates_no_operation_worker() {
         spawned, 0,
         "a synchronous prompt error created an operation worker"
     );
+}
+
+#[test]
+fn settled_permission_history_has_a_fixed_capacity() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let (fixture, session, inner) = open("permission", 80);
+    let mut first: Option<InteractionResolution> = None;
+    let mut last: Option<InteractionResolution> = None;
+    for _ in 0..80 {
+        let mut stream = submit(&*session);
+        while let Some(event) = block_on(stream.next()) {
+            let event = event.unwrap();
+            if event.envelope_type.as_str() == "action.permission.requested" {
+                let permission = event
+                    .decode_payload::<PermissionRequestedPayload>()
+                    .unwrap();
+                let answer = InteractionResolution {
+                    run_id: permission.run_id.clone(),
+                    responded_by: permission.responded_by.clone(),
+                    permission: Some(PermissionResolveRequest {
+                        interaction_id: permission.interaction_id,
+                        requested_by: permission.requested_by,
+                        responded_by: permission.responded_by,
+                        session_id: permission.session_id,
+                        run_id: permission.run_id,
+                        choice_id: "allow".into(),
+                        granted: true,
+                        ..PermissionResolveRequest::default()
+                    }),
+                    ..InteractionResolution::default()
+                };
+                block_on(session.resolve(answer.clone())).unwrap();
+                if first.is_none() {
+                    first = Some(answer.clone());
+                }
+                last = Some(answer);
+            }
+        }
+        block_on(session.state()).unwrap();
+        let inner = inner.lock().unwrap();
+        assert!(inner.permission_runs.is_empty());
+        assert!(inner.resolved_permissions.len() <= super::RESOLVED_PERMISSION_CAPACITY);
+    }
+    let retained = inner.lock().unwrap().resolved_permissions.len();
+    assert_eq!(
+        block_on(session.resolve(first.unwrap())),
+        Err(oap_adapter::Error::InteractionNotFound)
+    );
+    assert_eq!(
+        block_on(session.resolve(last.unwrap())),
+        Err(oap_adapter::Error::InteractionResolved)
+    );
+    block_on(session.close()).unwrap();
+    reaped(&fixture);
+    println!("permission-cache-proof runs=80 routes=0 recent={retained}");
+    assert_eq!(retained, 64);
+}
+
+#[test]
+fn a_parent_settled_run_retains_no_permission_routes() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let (fixture, session, inner) = open("parent", 1);
+    let events = block_on(submit(&*session).collect::<Vec<_>>());
+    assert_eq!(
+        events
+            .last()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .envelope_type
+            .as_str(),
+        "run.completed"
+    );
+    block_on(session.state()).unwrap();
+    let retained = inner.lock().unwrap().permission_runs.len();
+    block_on(session.close()).unwrap();
+    reaped(&fixture);
+    println!("parent-route-proof retained={retained}");
+    assert_eq!(retained, 0);
 }

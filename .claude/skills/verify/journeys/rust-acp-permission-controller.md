@@ -19,7 +19,7 @@ coverage or normal Rust Session permission integration.
 The ownership command sends a native permission request with a four-megabyte
 JSON-RPC string id. The agent consumes exactly 64 response bytes before going
 quiet, proving the reverse write started. Poll must return pending promptly.
-Dropping selected/settlement futures, dropping a queued controller operation,
+Dropping selected/settlement futures, dropping a queued native reply operation,
 and closing the bridge must reap the native child and join workers. The live
 consumer's OS thread inventory must return to its pre-open count. One local
 permission resolution must precede tool and parent settlement after failed
@@ -48,3 +48,9 @@ bindings are pruned once their native request object has no external owner.
 Retained live request objects keep weak duplicate-publication guards until
 they are released and the next controller operation prunes them. Keep signed
 native failing regressions before both review fixes.
+
+Local observe/completion/error transitions execute inline on the polling caller
+under an asynchronous bindings lock, then the run lock. An owned Operation is
+created when native settlement replies require I/O. The queued-cancel proof
+therefore queues a native resolution behind a blocked response. The consumer
+polls pending settlement before waiting for the native partial-write marker.

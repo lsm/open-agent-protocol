@@ -69,8 +69,8 @@ replay retains its separate approved slice.
 ## Owned Rust permission controller
 
 The standalone Permissions component binds requests to their actual bridge,
-serializes response writes with correlated commits and parent transitions, and
-owns cancellation through the existing Operation worker. The native consumer
+serializes response writes with correlated commits and parent transitions.
+Local transitions run inline; native I/O owns cancellation through Operation. The native consumer
 compares fourteen Go/Rust event and parsed-wire cases, including trailing
 notifications. Blocked selected and settlement replies, queued cancellation
 and bridge close use synthetic native children and return OS threads to their
@@ -82,7 +82,8 @@ described below. The byte-for-byte corpus remains a later gate.
 Normal Session publication, resolution, admission and close now use the owned
 controller. The descriptor exposes native action.permissions and interactive
 gates under -rust-permissions. Immediate control answers serialize behind
-publication, and state reads reflect the current projection. Settled ids keep
+publication, and state reads reflect the current projection. Live permission routes are pruned
+at commit or settlement. A bounded cache of 64 resolved ids preserves recent
 late-answer refusals across subsequent admissions. Idle native asks receive
 cancellation or malformed-request errors. Accepted native replies consume
 their bindings before a local commit that can fail after close.

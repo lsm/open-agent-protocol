@@ -4,10 +4,10 @@ use std::task::Context;
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter::jsonrpc::{Inbound, NotificationMessage};
+use oap_adapter::jsonrpc::Inbound;
 use oap_adapter::InteractionResolution;
 use oap_adapter_acp::{native::*, process::*, Permissions, PromptBridge, TextRun, TextRunContext};
-use oap_protocol::PermissionResolveRequest;
+use oap_protocol::{InteractionId, PermissionResolveRequest};
 use serde_json::json;
 
 fn command() {
@@ -18,6 +18,24 @@ fn command() {
 fn report(value: serde_json::Value) {
     println!("{value}");
     io::stdout().flush().unwrap();
+}
+
+fn answer(id: InteractionId) -> InteractionResolution {
+    InteractionResolution {
+        run_id: "run".into(),
+        responded_by: "user".into(),
+        permission: Some(PermissionResolveRequest {
+            interaction_id: id,
+            requested_by: "acp.v1".into(),
+            responded_by: "user".into(),
+            session_id: "session".into(),
+            run_id: "run".into(),
+            choice_id: "allow".into(),
+            granted: true,
+            ..PermissionResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    }
 }
 
 fn main() {
@@ -70,6 +88,7 @@ fn main() {
     );
     report(json!({"open":true}));
     command();
+    let resolution = answer(id);
     let mut operation = if mode.starts_with("settle") {
         permissions.clone().complete(
             run.clone(),
@@ -79,27 +98,8 @@ fn main() {
             },
         )
     } else {
-        permissions.clone().resolve(
-            run.clone(),
-            InteractionResolution {
-                run_id: "run".into(),
-                responded_by: "user".into(),
-                permission: Some(PermissionResolveRequest {
-                    interaction_id: id,
-                    requested_by: "acp.v1".into(),
-                    responded_by: "user".into(),
-                    session_id: "session".into(),
-                    run_id: "run".into(),
-                    choice_id: "allow".into(),
-                    granted: true,
-                    ..PermissionResolveRequest::default()
-                }),
-                ..InteractionResolution::default()
-            },
-        )
+        permissions.clone().resolve(run.clone(), resolution.clone())
     };
-    report(json!({"writing":true}));
-    command();
     let waker = noop_waker();
     let began = Instant::now();
     assert!(operation
@@ -107,15 +107,11 @@ fn main() {
         .poll(&mut Context::from_waker(&waker))
         .is_pending());
     let poll_us = began.elapsed().as_micros();
+    report(json!({"writing":true}));
+    command();
     let began = Instant::now();
     if mode == "queued-cancel" {
-        let queued = permissions.clone().observe(
-            run.clone(),
-            NotificationMessage {
-                method: "fixture/ignored".into(),
-                params: None,
-            },
-        );
+        let queued = permissions.clone().resolve(run.clone(), resolution);
         drop(queued);
         assert!(block_on(operation).is_err());
         let _ = block_on(bridge.clone().close());

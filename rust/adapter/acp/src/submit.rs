@@ -25,8 +25,13 @@ impl Inner {
         if self.process.is_none() {
             return;
         }
-        let Some(run) = &self.active else { return };
+        let Some(run) = self.active.clone() else {
+            return;
+        };
         let state = run.lock().state();
+        if state.closed {
+            self.settle_permission_routes();
+        }
         let cursor = state.sequence.to_string();
         if state.status.is_empty() || self.state.transcript_cursor == cursor {
             return;
@@ -126,6 +131,7 @@ impl Session {
             {
                 return Err(Error::RunActive);
             }
+            inner.refresh();
             while let Some(index) = inner.workers.iter().position(|worker| worker.is_finished()) {
                 let _ = inner.workers.swap_remove(index).join();
             }

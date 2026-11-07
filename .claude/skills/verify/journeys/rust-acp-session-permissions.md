@@ -1,54 +1,66 @@
-# Normal Rust ACP Session permissions
+# Owned Rust ACP permission controller
 
-Follow shared setup and the machine mutex in SKILL.md. Run from the repository
-root with the ReleaseSafe validator built.
+Follow shared setup and the mutex in SKILL.md. Run from the repository root
+with the ReleaseSafe validator built.
 
 ```sh
-python3 .claude/skills/verify/scripts/rust-acp-permission-projection.py --consumer session_permissions --output-dir /tmp/oap-session-permissions-native-<unique>
-python3 .claude/skills/verify/scripts/rust-acp-session-permissions.py --output-dir /tmp/oap-session-permissions-ownership-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test permissions)
-(cd rust && cargo test -p oap-adapter-acp --test permission_controller an_accepted_reply_releases_its_native_request_when_local_commit_fails)
+python3 .claude/skills/verify/scripts/rust-acp-permission-projection.py --consumer permission_controller --output-dir /tmp/oap-permission-controller-native-<unique>
+python3 .claude/skills/verify/scripts/rust-acp-permission-controller.py --output-dir /tmp/oap-permission-controller-ownership-<unique>
+(cd rust && cargo test -p oap-adapter-acp --test permission_controller)
 ```
 
-The first command uses normal Adapter.open, Session.submit, Session.resolve,
-state and close. Fourteen cases compare Go/Rust public events while normalizing
-wall-clock timestamps and the declared staged revision. Parsed native host
-frames compare exactly. Retain both raw directions and public results. Actual
-Rust traces use the actual Rust descriptor and admission, with a synthetic host
-request carrying the required degradation opt-ins. All three validators must
-accept. The native child must be absent in every case.
+The first command uses the controller through its normal standalone native
+consumer. Fourteen cases compare exact fixed-clock/id projected event JSON
+and parsed host frames with the public Go adapter. Actual Rust events with a
+synthetic host prefix pass all three validators. It also retains the existing
+pending-window usage proof. Neither comparison claims byte-for-byte corpus
+coverage or normal Rust Session permission integration.
 
-Immediate resolution also reads state at publication, and terminal state must
-carry the last event's cursor. Focused public tests cover wrong responders,
-duplicate answers, late answers across subsequent admissions, default active
-close refusal and idle native cancellation/malformed replies. Retain signed
-public failing reproduction 9a3a873cbe before the integration fix.
+The ownership command sends a native permission request with a four-megabyte
+JSON-RPC string id. The agent consumes exactly 64 response bytes before going
+quiet, proving the reverse write started. Poll must return pending promptly.
+Dropping selected/settlement futures, dropping a queued native reply operation,
+and closing the bridge must reap the native child and join workers. The live
+consumer's OS thread inventory must return to its pre-open count. One local
+permission resolution must precede tool and parent settlement after failed
+writes, and all artifacts, PIDs and partial native frames are retained.
 
-The ownership command uses normal Session publication before pending close,
-owner drop, dropping a blocked resolution and closing with a blocked resolution.
-Large native string ids make response writes block. The agent consumes 64 bytes
-before going quiet for resolver cases. Poll must return promptly. The consumer
-stays alive after cleanup while native PID absence and the original OS thread
-inventory are required. Abort close/drop must finish the retained prefix with
-no appended events. Resolver cancellation retains its actual failure settlement.
-All native peers have empty environments and no provider calls or listeners.
+The focused tests reject a forged source object with a matching native id,
+refuse duplicate publication and serialize concurrent answers to one native
+reply and one correlated resolution. Late answers after selected or parent
+settlement return InteractionResolved while the bridge remains open. The initial signed API red precedes the
+implementation. Use the controller for all transitions of a managed TextRun,
+and keep native I/O outside the projection mutex. The clock is read at commit.
 
-The separate accepted-write race pauses a real native response after 64 bytes,
-closes the projection, then lets the peer receive the complete selected reply.
-Local commit must fail closed, the external weak request handle must expire,
-and the retained stream must have only its original three events. The native
-request guard already refuses a second wire response. Clearing the controller
-binding before commit also releases the accepted source after failed commit.
-Retain this signed failing ownership regression before the fix.
+Run all existing ACP journeys, full baseline and Rust all-features under the
+same mutex. Read the actual PTY reply and `/quit` exit. Normal Session permission
+publication/resolve/admission/close are covered by
+`rust-acp-session-permissions.md`. Cancel, reopen/config and corpus retain
+following slices. The shared process helper's existing
+grandchild-held-pipe limitation applies.
 
-Run all preceding ACP journeys, full baseline and Rust all-features under the
-same mutex, and inspect the real PTY reply and /quit exit. The descriptor now
-advertises native action.permissions and interactive gates. Accepted run cancel,
-reopen/config, byte corpus and C8 served parity retain their subsequent slices.
-The shared process helper's grandchild-held-pipe limitation applies.
+Review regressions drive actual native peers for malformed asks before run
+start and two sequential runs whose id generators restart. A malformed ask
+must receive -32602 even when local run failure cannot be emitted. The second
+run must cancel its own native ask and finish while the first request object
+is retained. Bindings match both the run object and interaction id. Completed
+bindings are pruned once their native request object has no external owner.
+Retained live request objects keep weak duplicate-publication guards until
+they are released and the next controller operation prunes them. Keep signed
+native failing regressions before both review fixes.
 
-The public history test also switches the model after two completed permission
-runs. A state read must preserve the newer model-switch timestamp while the
-run cursor stays fixed. The script retains run, switched and sampled timestamps
-in metadata-state.json. Keep the signed failing public metadata regression
-before the cursor-advance refresh fix.
+Local observe/completion/error transitions execute inline on the polling caller
+under an asynchronous bindings lock, then the run lock. An owned Operation is
+created when native settlement replies require I/O. The queued-cancel proof
+therefore queues a native resolution behind a blocked response. The consumer
+polls pending settlement before waiting for the native partial-write marker.
+
+The ownership script also runs the native resource regressions and retains
+resource-checks.log and resources.json. Require zero Operation workers for 100
+streamed notifications, local completion and local prompt failure. A test-only
+counter records the actual Operation spawn path while the native peer is held
+at a file barrier; all peers are reaped before assertions. Resolved and
+parent-settled runs must retain zero permission routes. Eighty resolved runs
+keep at most 64 recent refusal ids. An evicted id from an older run is refused
+with InteractionNotFound, and the latest resolved id with InteractionResolved.
+Keep signed human-review regression 359b955247 before the fixes.

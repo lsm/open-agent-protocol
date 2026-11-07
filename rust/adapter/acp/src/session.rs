@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -25,16 +25,35 @@ use crate::submit::Run;
 use crate::{Permissions, PromptBridge, UsageScope};
 
 type Shutdown = (Arc<PromptBridge>, Vec<JoinHandle<()>>);
+const RESOLVED_PERMISSION_CAPACITY: usize = 64;
 
 pub(crate) struct Inner {
     pub(crate) process: Option<Arc<PromptBridge>>,
     pub(crate) permissions: Option<Arc<Permissions>>,
     permission_runs: BTreeMap<InteractionId, RunId>,
+    resolved_permissions: VecDeque<InteractionId>,
     pub(crate) state: SessionState,
     pub(crate) active: Option<Arc<Run>>,
     pub(crate) workers: Vec<JoinHandle<()>>,
     pub(crate) usage: Arc<Mutex<UsageScope>>,
     pub(crate) tool_history: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl Inner {
+    fn remember_resolved(&mut self, id: InteractionId) {
+        if !self.resolved_permissions.contains(&id) {
+            self.resolved_permissions.push_back(id);
+            if self.resolved_permissions.len() > RESOLVED_PERMISSION_CAPACITY {
+                self.resolved_permissions.pop_front();
+            }
+        }
+    }
+
+    pub(crate) fn settle_permission_routes(&mut self) {
+        for (id, _) in std::mem::take(&mut self.permission_runs) {
+            self.remember_resolved(id);
+        }
+    }
 }
 
 pub(crate) struct Session {
@@ -120,6 +139,7 @@ impl Session {
             process: None,
             permissions: None,
             permission_runs: BTreeMap::new(),
+            resolved_permissions: VecDeque::new(),
             active: None,
             workers: Vec::new(),
             usage: Arc::default(),
@@ -177,11 +197,16 @@ impl Session {
                         if let Ok(id) = futures::executor::block_on(
                             permissions.request(run.text.clone(), request),
                         ) {
-                            shared
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .permission_runs
-                                .insert(id, run.id.clone());
+                            let mut inner = shared.lock().unwrap_or_else(|p| p.into_inner());
+                            if inner.process.is_some() {
+                                if run.lock().state().closed
+                                    || inner.resolved_permissions.contains(&id)
+                                {
+                                    inner.remember_resolved(id);
+                                } else {
+                                    inner.permission_runs.insert(id, run.id.clone());
+                                }
+                            }
                         }
                     } else {
                         let valid = decode::<PermissionRequest>(
@@ -276,6 +301,7 @@ impl Session {
             return Ok(None);
         };
         inner.permissions.take();
+        inner.permission_runs.clear();
         if let Some(run) = inner.active.take() {
             run.lock().close();
         }
@@ -337,7 +363,7 @@ impl SessionContract for Session {
     }
     fn resolve(&self, resolution: InteractionResolution) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            let (permissions, run) = {
+            let (permissions, run, id) = {
                 let inner = self.lock();
                 let permissions = inner.permissions.clone().ok_or(Error::SessionClosed)?;
                 let answer = resolution
@@ -345,6 +371,9 @@ impl SessionContract for Session {
                     .as_ref()
                     .filter(|_| resolution.input.is_none())
                     .ok_or(Error::InvalidResolution)?;
+                if inner.resolved_permissions.contains(&answer.interaction_id) {
+                    return Err(Error::InteractionResolved);
+                }
                 let run = inner.active.clone().ok_or(Error::InteractionNotFound)?;
                 if inner
                     .permission_runs
@@ -353,10 +382,15 @@ impl SessionContract for Session {
                 {
                     return Err(Error::InteractionResolved);
                 }
-                (permissions, run)
+                (permissions, run, answer.interaction_id.clone())
             };
             let result = permissions.resolve(run.text.clone(), resolution).await;
-            self.lock().refresh();
+            let mut inner = self.lock();
+            if result.is_ok() || result == Err(Error::InteractionResolved) {
+                inner.permission_runs.remove(&id);
+                inner.remember_resolved(id);
+            }
+            inner.refresh();
             result
         })
     }

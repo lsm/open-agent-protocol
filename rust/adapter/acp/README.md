@@ -349,17 +349,19 @@ admitted participant. `request(run, incoming)` accepts only actual requests
 registered by that bridge. Reusing a request object is refused. The controller
 retains the source binding through native reply and correlated commit.
 
-`resolve`, `observe`, `complete` and `prompt_error` serialize native writes and
-projection transitions through an owned worker. Use these methods for a
-controller-managed run. Prepare and validate under the TextRun mutex, release
+`request` and `resolve` own native I/O workers. `observe`, `complete` and
+`prompt_error` run local projection transitions inline when polled, with the
+bindings lock acquired before the run lock. Pending native cancellation replies
+use an owned I/O operation. Use these methods for a controller-managed run. Prepare and validate under the TextRun mutex, release
 it for native I/O, then read the clock and commit. A successful selected write
 and its commit belong to the same worker, so abandoning the future cannot
 discard an accepted reply between them. Parent settlement commits local
 cancellations even when the native transport has failed.
 
-The returned futures begin work when constructed. Await joins the worker.
-Dropping one aborts and reaps its native child and joins the worker, including
-an operation waiting for the controller lock. The bridge owns the dispatcher,
+Native I/O operations begin work when constructed. Await joins their worker.
+Dropping one aborts and reaps its native child and joins its worker, including
+a native reply operation waiting for the controller lock. Local transitions
+wait asynchronously for that lock and run on the polling caller. The bridge owns the dispatcher,
 and close joins it. Futures remain caller-owned through bridge shutdown.
 
 Run `rust-acp-permission-controller.md` for the standalone native comparison,
@@ -384,8 +386,10 @@ Malformed idle asks receive -32602 and valid idle asks receive cancelled.
 State reads refresh from the active projection when its cursor advances,
 including during publication and settlement. This preserves newer model-switch
 timestamps when the run stays settled. Late completion workers refresh the current active projection.
-Settled interaction ids retain typed already-resolved refusals across later
-admissions, with one shared id counter across normal Session runs.
+Live permission routes are removed on commit, parent settlement and close.
+Up to 64 resolved interaction ids retain typed already-resolved refusals across
+later admissions. An older id outside that cache returns InteractionNotFound
+after its run is replaced. Normal Session runs share one id counter.
 
 Default close refuses an active gate with RunActive. Opt-in abort close and
 owner drop finish the retained prefix, stop the native child and join the
