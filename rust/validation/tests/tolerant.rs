@@ -61,6 +61,7 @@ fn tolerant_packed_validation_retains_declared_schemas() {
         "packed-negative",
     );
     assert_eq!(result.diagnostics[0].code, "schema_invalid");
+    assert_eq!(result.diagnostics[0].pointer, "/payload");
 }
 
 #[test]
