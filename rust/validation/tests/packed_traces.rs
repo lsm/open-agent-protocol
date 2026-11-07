@@ -125,3 +125,26 @@ fn a_packed_run_prelude_does_not_claim_to_be_a_core_started_event() {
     let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), "packed-prelude");
     assert!(result.valid(), "{:?}", result.diagnostics);
 }
+
+#[test]
+fn a_packed_event_checks_each_available_string_scope_field() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let validator = Validator::with_packs(&[root.join("packs/reply-roles")]).unwrap();
+    let mut trace: Vec<Value> =
+        serde_json::from_slice(&std::fs::read(root.join("valid/core-completed.json")).unwrap())
+            .unwrap();
+    let mut event = trace[2].clone();
+    event["type"] = serde_json::json!("com.example.replyroles.notice");
+    event["id"] = serde_json::json!("mixed-scope");
+    event["sequence"] = serde_json::json!(2);
+    event["payload"] = serde_json::json!({"session_id":42, "run_id":"r-other"});
+    trace[3]["sequence"] = serde_json::json!(3);
+    trace.insert(3, event);
+    let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), "mixed-scope");
+    let observed: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.index))
+        .collect();
+    assert_eq!(observed, [("scope_mismatch", 3)]);
+}

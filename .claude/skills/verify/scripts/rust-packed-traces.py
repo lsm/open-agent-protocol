@@ -190,6 +190,15 @@ def main():
     trace[1]["payload"]["features"] = {}
     trace[2]["payload"]["com.example.storage.workspace"] = {"bucket":"reports"}
     mutations.append(("member-request-unadvertised", trace, ["unavailable_capability"]))
+    trace = json.loads((ROOT / "fixtures/valid/core-completed.json").read_text())
+    event = dict(deepcopy(trace[2]), type="com.example.replyroles.notice", id="mixed-scope",
+                 sequence=2, payload={"session_id":42, "run_id":"r-other"})
+    trace[-1]["sequence"] = 3
+    trace.insert(3, event)
+    path = output / "packed-scope-partial-decode.json"
+    path.write_text(json.dumps(trace))
+    results.append(compare(goap, rust, path, [ROOT / "fixtures/packs/reply-roles"],
+                           ["scope_mismatch"], output, "packed-scope-partial-decode"))
     for label, trace, expected in mutations:
         path = output / (label + ".json")
         path.write_text(json.dumps(trace))

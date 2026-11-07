@@ -299,3 +299,31 @@ fn branch_of(schema_location: &str) -> Option<&'static str> {
     let index: usize = rest.split('/').next()?.parse().ok()?;
     branches().by_index.get(index)?.as_deref()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Validator;
+    use serde_json::json;
+
+    #[test]
+    fn diagnostics_select_the_declared_root_alternative_for_either_union() {
+        for union in ["oneOf", "anyOf"] {
+            let mut schema = json!({"type":"object"});
+            schema[union] = json!([
+                {"required":["unrelated"]},
+                {"properties":{"payload":{"const":true}}}
+            ]);
+            let compiled = jsonschema::validator_for(&schema).unwrap();
+            let diagnostic = Validator::diagnose_schema(
+                &compiled,
+                &json!({"payload":false}),
+                "synthetic",
+                None,
+                Some(1),
+            )
+            .unwrap();
+            assert_eq!(diagnostic.code, "schema_invalid");
+            assert_eq!(diagnostic.pointer, "/payload", "{union}");
+        }
+    }
+}
