@@ -297,3 +297,59 @@ fn run_start_and_ignored_native_updates_preserve_the_admission_boundary() {
     run.complete(completed(), 40).unwrap();
     assert_eq!(block_on(stream.collect::<Vec<_>>()).len(), 2);
 }
+
+#[test]
+fn prompt_usage_preserves_reported_counts_and_optional_fields() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    run.complete(PromptResult {
+        stop_reason: "end_turn".into(),
+        usage: Some(serde_json::value::RawValue::from_string(r#"{"totalTokens":10,"inputTokens":8,"outputTokens":2,"thoughtTokens":1,"cachedReadTokens":4,"cachedWriteTokens":0}"#.into()).unwrap()),
+    }, 20).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>());
+    let terminal = serde_json::to_value(events.last().unwrap().as_ref().unwrap()).unwrap();
+    assert_eq!(
+        terminal["payload"]["usage"],
+        json!({"input_tokens":8,"output_tokens":2,"total_tokens":10})
+    );
+    assert_eq!(
+        terminal["extensions"]["com.agentclientprotocol.turn_usage"],
+        json!({"total_tokens":10,"input_tokens":8,"output_tokens":2,"thought_tokens":1,"cached_read_tokens":4,"cached_write_tokens":0})
+    );
+}
+
+#[test]
+fn native_message_identities_keep_separate_text_and_reuse_their_oap_ids() {
+    let mut run = engine();
+    let stream = run.start(10).unwrap();
+    for (text, id) in [
+        ("prefix", ""),
+        ("one", "native-one"),
+        ("two", "native-two"),
+        ("again", "native-one"),
+        ("tail", ""),
+    ] {
+        run.observe(chunk(text, id), 20).unwrap();
+    }
+    run.complete(completed(), 30).unwrap();
+    let events = block_on(stream.collect::<Vec<_>>())
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(events.len(), 7);
+    let values = events
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap())
+        .collect::<Vec<_>>();
+    let first = &values[1]["payload"]["message_id"];
+    assert_eq!(first, "session/message");
+    assert_eq!(values[2]["payload"]["message_id"], *first);
+    assert_ne!(values[3]["payload"]["message_id"], *first);
+    assert_eq!(values[4]["payload"]["message_id"], *first);
+    assert_eq!(values[5]["payload"]["message_id"], *first);
+    assert_eq!(values[6]["payload"]["final_response"]["id"], *first);
+    assert_eq!(
+        values[6]["payload"]["final_response"]["content"],
+        "prefixoneagaintail"
+    );
+}

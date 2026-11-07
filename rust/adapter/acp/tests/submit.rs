@@ -30,16 +30,24 @@ out = Path(sys.argv[1])
 mode = sys.argv[2]
 (out / 'pid').write_text(str(os.getpid()))
 (out / 'python').write_text(sys.executable)
+prompt_number = 0
 for line in sys.stdin:
     request = json.loads(line)
     with (out / 'wire').open('a') as wire:
         wire.write(line)
     method = request.get('method')
+    if request.get('id') == 'usage-ready':
+        (out / 'usage-ready').touch()
+        continue
     if method == 'initialize':
         result = {'protocolVersion': 1, 'agentCapabilities': {}}
     elif method == 'session/new':
         result = {'sessionId': 'native', 'configOptions': [{'id':'model','category':'model','type':'select','currentValue':'sol','options':[{'value':'sol','name':'Sol'},{'value':'luna','name':'Luna'}]}]}
     elif method == 'session/prompt':
+        prompt_number += 1
+        if mode == 'usage-error' and prompt_number == 1:
+            print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32000,'message':'synthetic refusal'}}), flush=True)
+            continue
         (out / 'prompt').write_text('seen')
         if mode == 'switch-quiet':
             continue
@@ -49,11 +57,18 @@ for line in sys.stdin:
         for text in ['hello ', '世界']:
             print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'native','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}}), flush=True)
         result = {'stopReason':'end_turn'}
+        if mode in ['usage', 'usage-error']:
+            result['usage'] = {'totalTokens':10,'inputTokens':8,'outputTokens':2,'thoughtTokens':1,'cachedReadTokens':4,'cachedWriteTokens':0}
     elif method == 'session/set_config_option':
         result = {'configOptions':[{'id':'model','type':'select','currentValue':request['params']['value']}]}
     else:
         continue
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
+    if method == 'session/new' and mode in ['usage', 'usage-error']:
+        while not (out / 'start-usage').exists():
+            time.sleep(.005)
+        print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'native','update':{'sessionUpdate':'usage_update','used':0,'size':1000,'cost':{'amount':1.0,'currency':'USD'}}}}), flush=True)
+        print(json.dumps({'jsonrpc':'2.0','id':'usage-ready','method':'idle-query','params':{}}), flush=True)
     if method == 'session/new' and mode in ['blocked', 'blocked-abort']:
         (out / 'ready').write_text('quiet')
         while True:
@@ -388,4 +403,50 @@ fn opt_in_close_settles_blocked_submission_as_session_closed() {
     assert!(matches!(error, Error::SessionClosed), "{error:?}");
     drop(session);
     fixture.reaped();
+}
+
+#[test]
+fn usage_scope_keeps_idle_context_and_limits_core_counts_to_the_first_answer() {
+    for mode in ["usage", "usage-error"] {
+        let fixture = Fixture::new();
+        let session = fixture.open(mode);
+        std::fs::write(fixture.0.join("start-usage"), "ready").unwrap();
+        fixture.wait("usage-ready");
+        for turn in 0..2 {
+            let (_, stream) = block_on(session.submit(submit("hi"))).unwrap();
+            let events = block_on(stream.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let terminal = serde_json::to_value(events.last().unwrap()).unwrap();
+            assert_eq!(
+                terminal["extensions"]["com.agentclientprotocol.context"],
+                json!({"used_tokens":0,"size_tokens":1000,"cost":{"amount":1,"currency":"USD"}})
+            );
+            if mode == "usage-error" && turn == 0 {
+                assert_eq!(terminal["type"], "run.failed");
+                assert!(terminal["payload"].get("usage").is_none());
+                assert!(terminal["extensions"]
+                    .get("com.agentclientprotocol.turn_usage")
+                    .is_none());
+            } else {
+                assert_eq!(terminal["type"], "run.completed");
+                assert_eq!(
+                    terminal["extensions"]["com.agentclientprotocol.turn_usage"]
+                        ["cached_read_tokens"],
+                    4
+                );
+                if turn == 0 {
+                    assert_eq!(
+                        terminal["payload"]["usage"],
+                        json!({"input_tokens":8,"output_tokens":2,"total_tokens":10})
+                    );
+                } else {
+                    assert!(terminal["payload"].get("usage").is_none());
+                }
+            }
+        }
+        block_on(session.close()).unwrap();
+        fixture.reaped();
+    }
 }
