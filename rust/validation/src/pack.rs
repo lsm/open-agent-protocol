@@ -1,6 +1,8 @@
+mod compiled;
 mod references;
 mod resources;
 
+pub use compiled::CompiledPacks;
 pub use resources::PackResources;
 
 use std::collections::{BTreeMap, BTreeSet};

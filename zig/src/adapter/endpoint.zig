@@ -301,6 +301,7 @@ pub const Endpoint = struct {
             .session_compact_request => |*payload| try self.compact(arena, &request, payload, refusal),
             .run_cancel_request => |*payload| try self.cancel(arena, &request, payload, refusal),
             .task_cancel_request => |*payload| try self.cancelTask(arena, &request, payload, refusal),
+            .task_output_request => |*payload| try self.taskOutput(arena, &request, payload, refusal),
             .user_input_resolve_request => |*payload| try self.resolveInput(arena, &request, payload, refusal),
             .permission_resolve_request => |*payload| try self.resolvePermission(arena, &request, payload, refusal),
             .call_resolve_request => |*payload| try self.resolveCall(arena, &request, payload, refusal),
@@ -725,6 +726,19 @@ pub const Endpoint = struct {
             .run_id = admission.run_id,
             .capability_revision = request.capability_revision,
             .payload = .{ .session_compact_response = admission },
+        });
+    }
+
+    fn taskOutput(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.TaskOutputRequest, refusal: *contract.Refusal) Served!void {
+        const entry = try self.entryFor(arena, request);
+        try self.requireScope(arena, payload.session_id, entry);
+        const output = entry.session.vtable.task_output orelse return refusal.unsupported(contract.feature_task_output, contract.reason_unadvertised);
+        const result = try output(entry.session.ptr, arena, payload.task_id, payload.from, refusal);
+        try self.respond(arena, request, .{
+            .id = "",
+            .session_id = entry.session.id(),
+            .capability_revision = request.capability_revision,
+            .payload = .{ .task_output_response = result },
         });
     }
 
@@ -1315,6 +1329,7 @@ fn codeFor(failure: contract.Failure) Mapped {
         error.UnknownSession => .{ .code = "unknown_session", .fallback = "serve: unknown session" },
         error.RunActive => .{ .code = "run_active", .fallback = "adapter: a run is already active" },
         error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "adapter: invalid submission" },
+        error.InvalidRequest => .{ .code = "invalid_request", .fallback = "adapter: invalid request" },
         error.RunNotFound => .{ .code = "run_not_found", .fallback = "adapter: run not found" },
         error.RunTerminal => .{ .code = "run_terminal", .fallback = "adapter: run already completed or failed" },
         error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "adapter: interaction not found" },
@@ -1608,6 +1623,13 @@ const FakeSession = struct {
         .close = close,
     };
 
+    fn taskOutput(ptr: *anyopaque, arena: std.mem.Allocator, task_id: []const u8, from: ?u64, refusal: *contract.Refusal) contract.Failure!oap_types.TaskOutputResponse {
+        _ = ptr;
+        _ = refusal;
+        if (!std.mem.eql(u8, task_id, "t1") or from == null or from.? != 2) return error.InvalidSubmission;
+        return .{ .output = try arena.dupe(u8, "é!"), .next = 5, .truncated = false, .ended = true };
+    }
+
     const offering = contract.Session.VTable{
         .id = idOf,
         .state = stateOf,
@@ -1620,6 +1642,7 @@ const FakeSession = struct {
         .activity = activityOf,
         .close = close,
         .models = models,
+        .task_output = taskOutput,
         .switch_model = switchModel,
         .tools = tools,
     };
@@ -2451,4 +2474,23 @@ test "a mistyped provided tool member is worded as goap's decoder words it" {
     };
     for (cases) |case| try testing.expectEqualStrings(case.want, (try toolsDecodeDefect(a, case.json)).?);
     try testing.expect((try toolsDecodeDefect(a, "[{\"name\":\"a\",\"features\":{\"x\":null},\"extra\":1}]")) == null);
+}
+
+test "task output reaches an adapter and respects session scope" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    const request = framed("session.task.output.request", "output-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"task_id\":\"t1\",\"from\":2}");
+    const unsupported = try harness.send(request);
+    try testing.expectEqualStrings("unsupported_feature", field(unsupported[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("session.task.output", field(unsupported[0], &.{ "payload", "error", "details", "feature" }));
+    harness.offerEverything();
+    const crossed = try harness.send(framed("session.task.output.request", "wrong", ",\"session_id\":\"s1\"", "{\"session_id\":\"s2\",\"task_id\":\"t1\"}"));
+    try testing.expectEqualStrings("scope_mismatch", field(crossed[0], &.{ "payload", "error", "code" }));
+    const answer = try harness.send(request);
+    try testing.expectEqualStrings("session.task.output.response", field(answer[0], &.{"type"}));
+    try testing.expectEqualStrings("output-1", field(answer[0], &.{"in_reply_to"}));
+    try testing.expectEqualStrings("é!", field(answer[0], &.{ "payload", "output" }));
+    try testing.expectEqual(@as(i64, 5), answer[0].object.get("payload").?.object.get("next").?.integer);
 }

@@ -680,6 +680,17 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             try w.writeStringField("task_id", value.task_id);
         },
         .task_cancel_response => |value| try w.writeStringField("outcome", @tagName(value.outcome)),
+        .task_output_request => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("task_id", value.task_id);
+            if (value.from) |from| try w.writeIntField("from", from);
+        },
+        .task_output_response => |value| {
+            try w.writeStringField("output", value.output);
+            try w.writeIntField("next", value.next);
+            try w.writeBoolField("truncated", value.truncated);
+            try w.writeBoolField("ended", value.ended);
+        },
         .run_cancel_request => |value| {
             try w.writeStringField("session_id", value.session_id);
             try w.writeStringField("run_id", value.run_id);
@@ -1837,6 +1848,23 @@ fn deserializePayload(
     }
     if (std.mem.eql(u8, type_str, "session.task.cancel.response")) {
         return .{ .task_cancel_response = .{ .outcome = try requiredEnum(oap_types.TaskCancelOutcome, obj, "outcome") } };
+    }
+    if (std.mem.eql(u8, type_str, "session.task.output.request")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const task_id = try requiredOwnedString(obj, "task_id", allocator);
+        errdefer allocator.free(task_id);
+        return .{ .task_output_request = .{ .session_id = session_id, .task_id = task_id, .from = try optionalUnsigned(obj, "from") } };
+    }
+    if (std.mem.eql(u8, type_str, "session.task.output.response")) {
+        const output = try allocator.dupe(u8, try requiredString(obj, "output"));
+        errdefer allocator.free(output);
+        return .{ .task_output_response = .{
+            .output = output,
+            .next = (try optionalUnsigned(obj, "next")) orelse return DecodeError.MissingField,
+            .truncated = try requiredBool(obj, "truncated"),
+            .ended = try requiredBool(obj, "ended"),
+        } };
     }
     if (std.mem.eql(u8, type_str, "run.cancel.request")) {
         const session_id = try requiredOwnedString(obj, "session_id", allocator);
@@ -3580,4 +3608,13 @@ fn decodeRecoveryCapture(allocator: std.mem.Allocator) !void {
 
 test "recovery reason ownership survives every allocation failure while decoding a capture" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, decodeRecoveryCapture, .{});
+}
+
+test "session task output request and response round trip UTF-8 offsets" {
+    try roundTripFixture("session.task.output.request",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.task.output.request","id":"out","session_id":"s","payload":{"session_id":"s","task_id":"t","from":2}}
+    , "session.task.output.request");
+    try roundTripFixture("session.task.output.response",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.task.output.response","id":"result","in_reply_to":"out","session_id":"s","payload":{"output":"é!","next":5,"truncated":false,"ended":true}}
+    , "session.task.output.response");
 }
