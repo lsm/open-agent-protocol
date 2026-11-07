@@ -9,7 +9,5 @@
     "queue-state-settled-late-event-is-not-terminal",
     "stale-capability"
   ],
-  "go": [
-    "ext-packed-type-malformed"
-  ]
+  "go": []
 }

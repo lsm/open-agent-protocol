@@ -66,6 +66,7 @@ type compiledBundle struct {
 	root     *jsonschema.Schema
 	provider *jsonschema.Schema
 	members  map[string]map[string]*jsonschema.Schema
+	branches map[string]string
 }
 
 type refusingLoader struct{ attempted []string }
@@ -164,7 +165,22 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 	if root == nil {
 		return nil, fmt.Errorf("compile schema bundle: envelope schema not found")
 	}
-	bundle := &compiledBundle{root: root, provider: provider, members: map[string]map[string]*jsonschema.Schema{}}
+	bundle := &compiledBundle{root: root, provider: provider, members: map[string]map[string]*jsonschema.Schema{}, branches: map[string]string{}}
+	for _, pack := range opts.Packs {
+		for kind, uri := range pack.branches {
+			target, err := compiler.Compile(uri)
+			if err != nil {
+				return nil, packCompileError(opts.Packs, loader, err)
+			}
+			for _, union := range [][]*jsonschema.Schema{root.OneOf, root.AnyOf} {
+				for _, branch := range union {
+					if branch.Ref != nil && branch.Ref.Location == target.Location {
+						bundle.branches[branch.Location] = kind
+					}
+				}
+			}
+		}
+	}
 	for payloadType, members := range memberURIs {
 		bundle.members[payloadType] = map[string]*jsonschema.Schema{}
 		for name, uri := range members {

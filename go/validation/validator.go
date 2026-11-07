@@ -19,10 +19,11 @@ import (
 )
 
 type Validator struct {
-	schema  *jsonschema.Schema
-	mode    Mode
-	packs   *PackSet
-	members map[string]map[string]*jsonschema.Schema
+	schema   *jsonschema.Schema
+	mode     Mode
+	packs    *PackSet
+	members  map[string]map[string]*jsonschema.Schema
+	branches map[string]string
 }
 
 type Options struct {
@@ -48,7 +49,7 @@ func NewWith(opts Options) (*Validator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Validator{schema: bundle.root, mode: mode, packs: NewPackSet(opts.Packs), members: bundle.members}, nil
+	return &Validator{schema: bundle.root, mode: mode, packs: NewPackSet(opts.Packs), members: bundle.members, branches: bundle.branches}, nil
 }
 
 func (v *Validator) Mode() Mode { return v.mode }
@@ -102,12 +103,14 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 		}
 		if err := v.validateSchema(value); err != nil {
 			prefix := ""
+			branches := v.branches
 			var member *memberSchemaError
 			if errors.As(err, &member) {
 				prefix = member.pointer
+				branches = nil
 			}
 
-			found := schemaDiagnosticsFor(err, fixture, i, item.line, prefix, declaredType(item.raw))
+			found := schemaDiagnosticsFor(err, fixture, i, item.line, prefix, declaredType(item.raw), branches)
 			if sensitive {
 				redactAuthReplyDiagnostics(found)
 			}
@@ -418,8 +421,16 @@ var branchNames = func() map[string]bool {
 	return names
 }()
 
-func preferDeclaredBranch(leaves []*jsonschema.ValidationError, branches []string, declared string) []*jsonschema.ValidationError {
+func preferDeclaredBranch(leaves []*jsonschema.ValidationError, branches []string, declared string, packed map[string]string) []*jsonschema.ValidationError {
 	want, ok := envelopeBranches[declared]
+	if !ok {
+		for _, kind := range packed {
+			if kind == declared {
+				want, ok = kind, true
+				break
+			}
+		}
+	}
 	if !ok {
 		return leaves
 	}
@@ -452,10 +463,13 @@ func branchOf(schemaURL string) string {
 }
 
 func schemaDiagnosticsAt(err error, fixture string, index, line int, prefix string) []Diagnostic {
-	return schemaDiagnosticsFor(err, fixture, index, line, prefix, "")
+	return schemaDiagnosticsFor(err, fixture, index, line, prefix, "", nil)
 }
 
-func schemaDiagnosticsFor(err error, fixture string, index, line int, prefix, declared string) []Diagnostic {
+func schemaDiagnosticsFor(err error, fixture string, index, line int, prefix, declared string, packed map[string]string) []Diagnostic {
+	if _, core := envelopeBranches[declared]; core {
+		packed = nil
+	}
 	var validationErr *jsonschema.ValidationError
 	if !errors.As(err, &validationErr) {
 		return []Diagnostic{{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Pointer: prefix, Message: err.Error()}}
@@ -463,10 +477,14 @@ func schemaDiagnosticsFor(err error, fixture string, index, line int, prefix, de
 
 	var leaves []*jsonschema.ValidationError
 	var branches []string
-	var walk func(*jsonschema.ValidationError, string)
-	walk = func(e *jsonschema.ValidationError, branch string) {
-		if named := branchOf(e.SchemaURL); named != "" {
-			branch = named
+	var walk func(*jsonschema.ValidationError, string, bool)
+	walk = func(e *jsonschema.ValidationError, branch string, insidePack bool) {
+		if !insidePack {
+			if named, ok := packed[e.SchemaURL]; ok {
+				branch, insidePack = named, true
+			} else if named := branchOf(e.SchemaURL); named != "" {
+				branch = named
+			}
 		}
 		if len(e.Causes) == 0 {
 			leaves = append(leaves, e)
@@ -474,11 +492,11 @@ func schemaDiagnosticsFor(err error, fixture string, index, line int, prefix, de
 			return
 		}
 		for _, cause := range e.Causes {
-			walk(cause, branch)
+			walk(cause, branch, insidePack)
 		}
 	}
-	walk(validationErr, "")
-	leaves = preferDeclaredBranch(leaves, branches, declared)
+	walk(validationErr, "", false)
+	leaves = preferDeclaredBranch(leaves, branches, declared, packed)
 	result := make([]Diagnostic, 0, len(leaves))
 	seen := map[string]bool{}
 	for _, leaf := range leaves {

@@ -70,9 +70,9 @@ the removed member values. The caller's value remains intact. Diagnostics refer
 to the original payload with escaped JSON Pointer tokens and deterministic
 pointer order. Auth-reply diagnostics retain sensitive-answer redaction.
 
-Packed envelope errors select the branch declared for that type. Four public
-controls record Go's existing selection of unrelated core-branch errors while
-Rust points at the declared packed payload. Their schema verdicts agree.
+Packed envelope errors select the branch declared for that type. Go and Rust
+agree on the primary payload pointers, including escaped-reference controls.
+The public replay requires an empty `diagnostic-differences.json`.
 This operation covers parsed-envelope schemas.
 
 ## Native strict trace validation
