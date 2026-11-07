@@ -6,8 +6,8 @@ payload-member declarations. `read_resources` adds contained resource loading,
 exact dependencies and reference ownership. Each surface states its staged
 contract. `PackResources::compile` builds the schema operation, and
 `PackLoader::load` completes corpus policy. `Validator::with_packs` executes
-strict traces. Shared trace parity includes load refusals; tolerant construction
-follows in the successor.
+strict traces. `Validator::tolerant_with_packs` adds tolerant schemas and state
+handling. Shared trace parity includes load refusals and each fixture's mode.
 
 Run from the repository root:
 
@@ -180,7 +180,7 @@ constant; Go selects unrelated core-branch required-property errors. The ledger
 in `drafts/extension-pack-load-refusals.md` records this diagnostic-only difference.
 Inspect raw outputs and the new operation's unit controls for input preservation
 and auth-answer redaction. Native strict trace semantics are exercised below.
-Tolerant mode follows separately.
+Tolerant mode is exercised in `rust-tolerant.md`.
 
 ## Native strict packed traces
 

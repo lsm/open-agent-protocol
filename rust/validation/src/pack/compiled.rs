@@ -18,6 +18,10 @@ pub struct CompiledPacks {
 }
 
 impl CompiledPacks {
+    pub(crate) fn into_tolerant(self) -> Result<Self, PackLoadError> {
+        self.resources.compile_mode(true)
+    }
+
     pub fn resources(&self) -> &PackResources {
         &self.resources
     }
@@ -85,6 +89,10 @@ impl CompiledPacks {
 
 impl PackResources {
     pub fn compile(self) -> Result<CompiledPacks, PackLoadError> {
+        self.compile_mode(false)
+    }
+
+    fn compile_mode(self, tolerant: bool) -> Result<CompiledPacks, PackLoadError> {
         let branches = branches(&self)?;
         let owners = self
             .descriptors()
@@ -116,8 +124,17 @@ impl PackResources {
                 .into_iter()
                 .map(|(uri, document)| (uri, document.clone())),
         );
+        if tolerant {
+            for (uri, document) in &mut documents {
+                if uri != &format!("{SCHEMA_BASE}pack.schema.json")
+                    && uri != &format!("{SCHEMA_BASE}manifest.schema.json")
+                {
+                    *document = crate::tolerant::widen(document);
+                }
+            }
+        }
         let root_uri = format!("{SCHEMA_BASE}envelope.schema.json");
-        let union = documents.get_mut(&root_uri).unwrap()["oneOf"]
+        let union = documents.get_mut(&root_uri).unwrap()[if tolerant { "anyOf" } else { "oneOf" }]
             .as_array_mut()
             .unwrap();
         for branch in union.iter_mut() {
@@ -134,7 +151,9 @@ impl PackResources {
             .map(|(index, kind)| (kind.clone(), union.len() + index))
             .collect();
         union.extend(branches.values().map(|uri| json!({"$ref": uri})));
-        let mut registry = Registry::new().draft(Draft::Draft202012).retriever(Bundle);
+        let mut registry = Registry::new()
+            .draft(Draft::Draft202012)
+            .retriever(Bundle(tolerant));
         for (uri, document) in &documents {
             let uri = Iri::parse(uri.as_str())
                 .map_err(|e| failed(e.to_string(), false))?
@@ -148,7 +167,7 @@ impl PackResources {
             jsonschema::options()
                 .with_registry(&registry)
                 .with_base_uri(uri)
-                .with_retriever(Bundle)
+                .with_retriever(Bundle(tolerant))
                 .should_validate_formats(false)
                 .build(document)
                 .map_err(|e| {
@@ -171,7 +190,7 @@ impl PackResources {
         for (_, descriptor) in self.descriptors() {
             for (index, member) in entries(descriptor, "payload_members").enumerate() {
                 let uri = format!("{}member-{index}.json", base(descriptor));
-                let compiled = build(&uri, &member["schema"])?;
+                let compiled = build(&uri, &documents[&uri])?;
                 members.insert(
                     (
                         text(member, "payload_type").to_owned(),

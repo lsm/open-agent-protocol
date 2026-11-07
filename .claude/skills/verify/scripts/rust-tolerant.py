@@ -66,6 +66,12 @@ def main():
     trace = deepcopy(base)
     trace[1]["payload"]["effective_delivery"], trace[1]["payload"]["status"] = "later", "queued"
     judge("known-admission-contradiction", trace, [], False, False)
+    trace = deepcopy(base)
+    trace[1]["payload"].update(admission="parked", effective_delivery="queue")
+    judge("known-votes-under-foreign-admission", trace, [], False, False)
+    trace = deepcopy(base)
+    trace[1]["payload"].update(admission="merged", effective_delivery="merge", status="paused")
+    judge("all-admission-vocabulary-foreign", trace, [], False, True)
     for statuses in [("paused",), ("paused", "queued"), ("paused", "queued", "waiting_for_input")]:
         trace = deepcopy(base)
         updates = []

@@ -63,16 +63,20 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
             judged.insert(id);
             continue;
         }
-        let packed = if packs.is_empty() {
-            None
-        } else {
-            Some(Validator::with_packs(&packs).unwrap())
+        let configured = match (packs.is_empty(), entry["mode"].as_str()) {
+            (true, Some("tolerant")) => Some(Validator::tolerant().unwrap()),
+            (false, Some("tolerant")) => Some(Validator::tolerant_with_packs(&packs).unwrap()),
+            (false, _) => Some(Validator::with_packs(&packs).unwrap()),
+            (true, _) => None,
         };
         let data = std::fs::read(fixtures().join(path)).unwrap();
         let result = if entry["profile"] == "model-provider-core" {
             provider.validate(&data, path)
         } else {
-            packed.as_ref().unwrap_or(&validator).validate(&data, path)
+            configured
+                .as_ref()
+                .unwrap_or(&validator)
+                .validate(&data, path)
         };
         let mut want: Vec<&str> = entry["codes"]
             .as_array()

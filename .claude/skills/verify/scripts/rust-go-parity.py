@@ -30,6 +30,8 @@ def judge(goap, rust, fixtures, provider, packs, mode, output, label):
     paths = [str(ROOT / "fixtures" / f["path"]) for f in fixtures]
     go_args = [str(goap), "validate", "--format", "json", "--mode", mode]
     rust_args = [str(rust)]
+    if mode == "tolerant":
+        rust_args.append("--tolerant")
     if provider:
         go_args.append("--provider")
         rust_args.append("--provider")

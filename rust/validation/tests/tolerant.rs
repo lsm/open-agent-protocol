@@ -46,6 +46,98 @@ fn tolerant_run_statuses_accept_unknown_vocabulary() {
 }
 
 #[test]
+fn foreign_admission_fields_preserve_the_constraints_between_known_values() {
+    let validator = Validator::tolerant().unwrap();
+    let base: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    for (key, value) in [
+        ("admission", "parked"),
+        ("effective_delivery", "later"),
+        ("status", "paused"),
+    ] {
+        let mut trace = base.clone();
+        trace[1]["payload"][key] = json!(value);
+        let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), key);
+        assert!(result.valid(), "{key}: {:?}", result.diagnostics);
+    }
+    for (key, value, conflicting, contradiction) in [
+        ("effective_delivery", "later", "status", "queued"),
+        ("admission", "parked", "effective_delivery", "queue"),
+    ] {
+        let mut trace = base.clone();
+        trace[1]["payload"][key] = json!(value);
+        trace[1]["payload"][conflicting] = json!(contradiction);
+        let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), key);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "illegal_run_transition"));
+    }
+}
+
+#[test]
+fn a_foreign_requested_delivery_does_not_claim_a_known_capability_key() {
+    let validator = Validator::tolerant().unwrap();
+    let mut trace: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    trace[0]["payload"]["delivery"] = json!("later");
+    trace[1]["payload"]["requested_delivery"] = json!("later");
+    let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), "future-delivery");
+    assert!(result.valid(), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn an_opaque_admission_keeps_its_status_and_terminal_obligation() {
+    let validator = Validator::tolerant().unwrap();
+    let mut base: Value = serde_json::from_slice(&fixture("valid/core-completed.json")).unwrap();
+    base[1]["payload"]["admission"] = json!("merged");
+    let result = validator.validate(
+        &serde_json::to_vec(&base.as_array().unwrap()[..2]).unwrap(),
+        "opaque-unfinished",
+    );
+    let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["missing_run_terminal"]);
+    for (status, valid) in [("waiting_for_input", true), ("queued", false)] {
+        let mut trace = base.clone();
+        let mut update = trace[2].clone();
+        update["type"] = json!("run.status.updated");
+        update["id"] = json!("opaque-before-start");
+        update["payload"]["status"] = json!(status);
+        trace[2]["sequence"] = json!(2);
+        trace[3]["sequence"] = json!(3);
+        trace.as_array_mut().unwrap().insert(2, update);
+        let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), status);
+        assert_eq!(result.valid(), valid, "{status}: {:?}", result.diagnostics);
+        assert!(!result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "missing_run_started"));
+        if !valid {
+            assert!(result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "illegal_run_transition"));
+        }
+    }
+}
+
+#[test]
+fn a_foreign_cancel_status_does_not_force_the_known_cancelling_state() {
+    let validator = Validator::tolerant().unwrap();
+    for (status, valid) in [("draining", true), ("cancelling", false)] {
+        let mut trace: Value =
+            serde_json::from_slice(&fixture("valid/core-cancelled.json")).unwrap();
+        for envelope in trace.as_array_mut().unwrap() {
+            if envelope["type"] == "run.cancel.response" {
+                envelope["payload"]["status"] = json!(status);
+            } else if envelope["type"] == "run.status.updated" {
+                envelope["payload"]["status"] = json!("running");
+            }
+        }
+        let result = validator.validate(&serde_json::to_vec(&trace).unwrap(), status);
+        assert_eq!(result.valid(), valid, "{status}: {:?}", result.diagnostics);
+    }
+}
+
+#[test]
 fn tolerant_packed_validation_retains_declared_schemas() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     let validator = Validator::tolerant_with_packs(&[root.join("packs/storage")]).unwrap();
