@@ -2073,3 +2073,30 @@ test "finished task output ends only after the last bounded page" {
     try std.testing.expect(last.ended);
     try std.testing.expectError(error.InvalidOffset, jobs.outputTask(std.testing.allocator, job.id, 40001));
 }
+
+const TaskOutputAllocationCase = struct {
+    fn decode(allocator: std.mem.Allocator) !void {
+        const result = try Jobs.decodeOutput(allocator, "a\xffé\xe2\x82", true, 32);
+        defer allocator.free(result.text);
+        try std.testing.expectEqualStrings("a�é�", result.text);
+    }
+
+    fn read(allocator: std.mem.Allocator, jobs: *Jobs, id: []const u8) !void {
+        const result = try jobs.outputTask(allocator, id, 0);
+        defer allocator.free(result.text);
+        try std.testing.expectEqualStrings("ready", result.text);
+    }
+};
+
+test "task output ownership survives every allocation failure" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, TaskOutputAllocationCase.decode, .{});
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    try startJob(&jobs, &case, "printf ready; sleep 30", "call");
+    const job = jobs.list.items[0];
+    try waitForOutput(&case, job.output, "ready");
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, TaskOutputAllocationCase.read, .{ &jobs, job.id });
+}
