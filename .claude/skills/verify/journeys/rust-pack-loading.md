@@ -196,7 +196,11 @@ member gates, declared roles, image handling and run sequencing/terminal checks.
 The descriptor-member corpus control must retain `unavailable_capability` at
 index 4 on a stale response, plus stale-revision diagnostics at indices 4 and 5.
 That response must preserve the refresh window. Its signed regression fails
-before the early-return gate check.
+before the early-return gate check. A synthetic object-valued member containing a
+tool-result image must additionally report its own `unavailable_capability` at
+index 4 when `content.image` is unadvertised. The replay retains both gate and
+image diagnostics and pins multiplicity, with a signed failure before moving the
+image check ahead of the stale-descriptor return.
 The public replay found two Rust reply-selection bugs. Go correctly refuses a
 suffix-matched success response without a declared mapping and ignores an event's
 `replies_to` when selecting the real response declaration. Signed failing public

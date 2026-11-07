@@ -496,6 +496,7 @@ impl State {
         if duplicate_response {
             return;
         }
+        self.check_result_images(at, e);
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE
             && !self.current_capability.is_empty()
             && revision != self.current_capability
@@ -504,7 +505,6 @@ impl State {
             return;
         }
         self.payload_scope(at, e);
-        self.check_result_images(at, e);
         self.list_scope(at, e);
         if e.envelope_type == EnvelopeType::SESSION_LIST_RESPONSE {
             self.session_list_response(at, e);
