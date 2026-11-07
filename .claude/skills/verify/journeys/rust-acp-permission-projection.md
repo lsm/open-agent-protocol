@@ -27,7 +27,7 @@ refusal and RPC error, filtered and duplicate options, foreign sessions,
 missing/malformed tool identity/title, invalid options and terminal-tool reuse.
 Actual Rust events use a synthetic host prefix with the reference descriptor
 and admission. All three validators must accept them. This is standalone
-projection proof. Normal Rust Session permission support remains unavailable.
+projection proof. Normal Session integration has its separate `rust-acp-session-permissions.md` journey.
 
 Focused public tests exercise responder/scope/choice/grant validation, repeated
 resolution, opaque replies from another projection with coincident generated
@@ -36,8 +36,9 @@ revival. Keep the signed API red and the separate ownership/usage red tests
 before the fix. The initial API red is a missing-method compile failure.
 
 Native request binding, serialized async reply ownership and quiet-child
-permission cleanup belong to the following approved controller layer. Normal
-Session publication/resolve/admission/close follows it. Accepted run
+permission cleanup are covered by `rust-acp-permission-controller.md`. Normal
+Session publication/resolve/admission/close are covered by
+`rust-acp-session-permissions.md`. Accepted run
 cancellation, reopen/config, full byte corpus and C8 served parity retain their
 later slices. The shared process helper's grandchild-held-pipe limits apply.
 Run all existing ACP journeys, full baseline and Rust all-features under the

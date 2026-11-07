@@ -32,9 +32,9 @@ inspect event kinds, OAP tool identity/scope, retained raw values and final
 session state. Retain the signed failing public stdio regression before the
 implementation commit.
 
-The staged revision is `-rust-tools`. Tool feature rows are degraded observed
-lifecycle claims with no catalog. Permissions and host execution APIs remain
-unavailable. Session close/drop retains its existing prefix/cleanup behavior.
+The staged revision is `-rust-permissions`. Tool feature rows are degraded observed
+lifecycle claims with no catalog. Host execution APIs remain
+unavailable. Normal permissions use the owned Session integration. Session close/drop retains its existing prefix/cleanup behavior.
 Accepted host cancellation, reopen/config, full byte corpus and C8 served
 parity retain their approved later slices. Usage semantics retain the ambiguity
 recorded in the results journey. Shared process-helper grandchild-held-pipe
@@ -45,5 +45,5 @@ the same mutex. Read the actual PTY reply and require `/quit` exit 0. Start no
 live provider or simulator and stop everything started by the proof.
 
 The standalone typed permission projection is covered by
-`rust-acp-permission-projection.md`. Its native controller and normal Session
-integration retain their following approved layers.
+`rust-acp-permission-projection.md`. Its native controller is covered by `rust-acp-permission-controller.md` and
+normal Session integration by `rust-acp-session-permissions.md`.

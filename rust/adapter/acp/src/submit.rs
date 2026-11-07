@@ -9,8 +9,8 @@ use crate::session::{now_ms, Inner, Session};
 use crate::{TextRun, TextRunContext};
 
 pub(crate) struct Run {
-    id: RunId,
-    text: Mutex<TextRun>,
+    pub(crate) id: RunId,
+    pub(crate) text: Arc<Mutex<TextRun>>,
     pub(crate) admitted: crossbeam_channel::Receiver<()>,
 }
 
@@ -21,32 +21,27 @@ impl Run {
 }
 
 impl Inner {
-    pub(crate) fn update(
-        &mut self,
-        run: &Run,
-        work: impl FnOnce(&mut TextRun) -> Result<(), Error>,
-    ) {
+    pub(crate) fn refresh(&mut self) {
         if self.process.is_none() {
             return;
         }
-        let mut text = run.lock();
-        let before = text.state().sequence;
-        let _ = work(&mut text);
-        let state = text.state();
-        if state.sequence != before {
-            self.state.status = if state.closed {
-                SessionStatus::IDLE
-            } else {
-                SessionStatus::RUNNING
-            };
-            self.state.active_run_id = if state.closed {
-                None
-            } else {
-                Some(run.id.clone())
-            };
-            self.state.transcript_cursor = state.sequence.to_string();
-            self.state.updated_at_ms = state.updated_at_ms;
+        let Some(run) = &self.active else { return };
+        let state = run.lock().state();
+        if state.status.is_empty() {
+            return;
         }
+        self.state.status = if state.closed {
+            SessionStatus::IDLE
+        } else {
+            SessionStatus::RUNNING
+        };
+        self.state.active_run_id = if state.closed {
+            None
+        } else {
+            Some(run.id.clone())
+        };
+        self.state.transcript_cursor = state.sequence.to_string();
+        self.state.updated_at_ms = state.updated_at_ms;
     }
 }
 
@@ -117,7 +112,7 @@ impl Session {
             );
         }
         let (release, admitted) = crossbeam_channel::bounded(0);
-        let (process, run) = {
+        let (process, run, permissions) = {
             let mut inner = self.lock();
             let process = inner.process.clone().ok_or(Error::SessionClosed)?;
             if request.session_id != inner.state.session_id {
@@ -135,9 +130,9 @@ impl Session {
             }
             let ids = self.ids.clone();
             let id: RunId = self.new_id("run").into();
-            let mut run = Run {
+            let run = Run {
                 id: id.clone(),
-                text: Mutex::new(TextRun::new_in_scope(
+                text: Arc::new(Mutex::new(TextRun::new_in_scope(
                     TextRunContext {
                         session_id: inner.state.session_id.clone(),
                         native_id: self.native_id.clone(),
@@ -152,16 +147,20 @@ impl Session {
                     },
                     move |kind| format!("{kind}-{}", ids.fetch_add(1, Ordering::SeqCst) + 1),
                     inner.usage.clone(),
-                )),
+                ))),
                 admitted,
             };
-            run.text.get_mut().unwrap().tools.seen = inner.tool_history.clone();
+            run.lock().tools.seen = inner.tool_history.clone();
             let run = Arc::new(run);
             inner.state.status = SessionStatus::RUNNING;
             inner.state.active_run_id = Some(run.id.clone());
             inner.state.updated_at_ms = now_ms();
             inner.active = Some(run.clone());
-            (process, run)
+            (
+                process,
+                run,
+                inner.permissions.clone().ok_or(Error::SessionClosed)?,
+            )
         };
         let mut admission = Admission {
             session: self,
@@ -202,17 +201,16 @@ impl Session {
         let shared = self.inner.clone();
         inner.workers.push(std::thread::spawn(move || {
             let result = futures::executor::block_on(call);
-            shared
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .update(&run, |text| match result {
-                    Ok(result) => text.complete(result, now_ms()),
-                    Err(error) => text.prompt_error(
-                        &error.to_string(),
-                        !matches!(error.fault, oap_adapter::jsonrpc::Fault::Remote { .. }),
-                        now_ms(),
-                    ),
-                });
+            let work = match result {
+                Ok(result) => permissions.complete(run.text.clone(), result),
+                Err(error) => permissions.prompt_error(
+                    run.text.clone(),
+                    error.to_string(),
+                    !matches!(error.fault, oap_adapter::jsonrpc::Fault::Remote { .. }),
+                ),
+            };
+            let _ = futures::executor::block_on(work);
+            shared.lock().unwrap_or_else(|p| p.into_inner()).refresh();
         }));
         admission.pending = false;
         Ok((response, stream))

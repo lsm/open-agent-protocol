@@ -85,9 +85,12 @@ sys.stdin.read()
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output-dir',required=True,type=Path)
-    parser.add_argument('--consumer',choices=['permission_projection','permission_controller'],default='permission_projection')
+    parser.add_argument('--consumer',choices=['permission_projection','permission_controller','session_permissions'],default='permission_projection')
     options=parser.parse_args()
     output=options.output_dir.resolve()
+    normalization=importlib.util.spec_from_file_location('normalization',Path(__file__).with_name('rust-acp-results.py'))
+    normalizer=importlib.util.module_from_spec(normalization)
+    normalization.loader.exec_module(normalizer)
     output.mkdir(parents=True,exist_ok=False)
     peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example',options.consumer],output/'rust-build.log')
     (output/'reference.go').write_text(GO)
@@ -134,14 +137,22 @@ def main():
                 finally:
                     if (directory/'pid').exists() and not peer.absent(int((directory/'pid').read_text())): os.kill(int((directory/'pid').read_text()),signal.SIGKILL)
             assert wires['rust']==wires['go'],(name,wires)
-            assert results['rust']['events']==results['go']['events'],(name,results)
+            if options.consumer=='session_permissions':
+                assert normalizer.normalized(results['rust']['events'])==normalizer.normalized(results['go']['events']),(name,results)
+            else:
+                assert results['rust']['events']==results['go']['events'],(name,results)
             events=results['rust']['events']
-            trace=peer.trace(copy.deepcopy(events),results['go']['admission'],results['go']['descriptor'])
+            source=results['rust'] if options.consumer=='session_permissions' else results['go']
+            trace=peer.trace(copy.deepcopy(events),source['admission'],source['descriptor'])
+            if options.consumer=='session_permissions':
+                for prefix in trace[2:4]: prefix['capability_revision']=events[0]['capability_revision']
+                trace[2]['payload']['allow_degraded_features']=['session.message.submit','run.streaming']
             path=case/'trace.json'
             path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
             for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{language}.log')
-            print(f'PASS {name}: exact Go/Rust projected event JSON and host frames; three validators accept actual Rust events; native children reaped',flush=True)
+            comparison='wall-clock/revision-normalized public events' if options.consumer=='session_permissions' else 'exact projected event JSON'
+            print(f'PASS {name}: Go/Rust {comparison} and parsed host frames; three validators accept actual Rust events; native children reaped',flush=True)
         observed=peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permission_projection','native_usage_in_the_pending_window','--','--nocapture'],output/'pending-usage.log')
         proof=json.loads(next(line.split('pending-usage-proof ',1)[1] for line in observed.splitlines() if 'pending-usage-proof ' in line))
         (output/'pending-usage.json').write_text(json.dumps(proof,ensure_ascii=False,indent=2))
@@ -165,7 +176,7 @@ def main():
         for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
             peer.run(command+[str(path)],output/f'pending-usage-validate-{language}.log')
         print('PASS pending usage: native barrier proves the update reached a pending projection; first terminal stays100, next run sees200; all three validators accept; child reaped',flush=True)
-    print(f'PASS standalone typed ACP permission projection. Normal Rust Session permission integration remains unavailable. Evidence {output}',flush=True)
+    print(f'PASS ACP {options.consumer} permission proof. Evidence {output}',flush=True)
 
 
 if __name__=='__main__':

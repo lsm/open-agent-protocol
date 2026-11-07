@@ -124,6 +124,7 @@ impl ModelSwitcher for Session {
             if inner.process.is_none() {
                 return Err(Error::SessionClosed);
             }
+            inner.refresh();
             let previous =
                 std::mem::replace(&mut inner.state.current_model_id, request.model_id.clone());
             inner.state.reasoning_level = reasoning(&set.config_options);

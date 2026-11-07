@@ -123,3 +123,201 @@ fn public_permission_can_be_resolved_immediately_after_publication() {
     assert_eq!(reply["result"]["outcome"]["optionId"], "allow");
     assert_eq!(events.last().unwrap()["type"], "run.completed");
 }
+
+fn open_permission_peer(mode: &str) -> (Fixture, Box<dyn oap_adapter::Session>) {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "oap-session-permission-peer-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    std::fs::create_dir(&fixture.0).unwrap();
+    std::fs::write(fixture.0.join("agent.py"),r#"import json,sys,os
+from pathlib import Path
+out=Path(sys.argv[1])
+mode=sys.argv[2]
+(out/'pid').write_text(str(os.getpid()))
+def read():
+ line=sys.stdin.readline()
+ with (out/'wire.jsonl').open('a') as wire: wire.write(line)
+ return json.loads(line) if line else None
+def send(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
+request=read()
+send(dict(id=request['id'],result=dict(protocolVersion=1,agentCapabilities={})))
+request=read()
+send(dict(id=request['id'],result=dict(sessionId='native')))
+def ask(index):
+ params=dict(sessionId='native',toolCall=dict(toolCallId='tool-'+str(index),title='Act'),options=[dict(optionId='allow',name='Allow',kind='allow_once')])
+ if mode=='idle-malformed': params=dict(toolCall=7)
+ send(dict(id='ask-'+str(index),method='session/request_permission',params=params))
+if mode.startswith('idle'):
+ ask('idle')
+ (out/'idle.json').write_text(json.dumps(read()))
+ sys.stdin.read()
+else:
+ for index in range(2):
+  prompt=read()
+  ask(index)
+  reply=read()
+  (out/('reply-'+str(index)+'.json')).write_text(json.dumps(reply))
+  send(dict(id=prompt['id'],result=dict(stopReason='end_turn')))
+ sys.stdin.read()
+"#).unwrap();
+    let python = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(python.status.success());
+    let adapter = Adapter::new(Config {
+        process: ProcessConfig {
+            path: String::from_utf8(python.stdout).unwrap().trim().into(),
+            args: vec![
+                "-u".into(),
+                fixture.0.join("agent.py").to_string_lossy().into(),
+                fixture.0.to_string_lossy().into(),
+                mode.into(),
+            ],
+            dir: "/".into(),
+            env: Some(Vec::new()),
+            queue_capacity: 1,
+            write_queue_capacity: 1,
+            shutdown_timeout: Some(Duration::from_secs(1)),
+            ..ProcessConfig::default()
+        },
+        ..Config::default()
+    })
+    .unwrap();
+    let session = block_on(adapter.open(OpenRequest {
+        session_id: "session".into(),
+        participant: Participant {
+            id: "user".into(),
+            ..Participant::default()
+        },
+        ..OpenRequest::default()
+    }))
+    .unwrap();
+    (fixture, session)
+}
+
+fn permission_answer(permission: PermissionRequestedPayload) -> InteractionResolution {
+    InteractionResolution {
+        run_id: permission.run_id.clone(),
+        responded_by: permission.responded_by.clone(),
+        permission: Some(PermissionResolveRequest {
+            interaction_id: permission.interaction_id,
+            requested_by: permission.requested_by,
+            responded_by: permission.responded_by,
+            session_id: permission.session_id,
+            run_id: permission.run_id,
+            choice_id: "allow".into(),
+            granted: true,
+            ..PermissionResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    }
+}
+
+#[test]
+fn settled_permission_stays_known_after_the_next_run_is_admitted() {
+    let (fixture, session) = open_permission_peer("turns");
+    let mut previous: Option<InteractionResolution> = None;
+    for index in 0..2 {
+        let (_, mut stream) = block_on(session.submit(SubmitRequest {
+            request: MessageSubmitRequest {
+                session_id: "session".into(),
+                messages: vec![Message {
+                    id: Some(format!("input-{index}").into()),
+                    role: "user".into(),
+                    content: MessageContent::from_text("synthetic"),
+                    ..Message::default()
+                }],
+                allow_degraded_features: vec![
+                    "session.message.submit".into(),
+                    "run.streaming".into(),
+                ],
+                ..MessageSubmitRequest::default()
+            },
+            ..SubmitRequest::default()
+        }))
+        .unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = block_on(stream.next()) {
+            let event = event.unwrap();
+            if event.envelope_type.as_str() == "action.permission.requested" {
+                let state = block_on(session.state()).unwrap();
+                assert_eq!(state.status.as_str(), "running");
+                assert!(state.transcript_cursor.parse::<u64>().unwrap() >= event.sequence.unwrap());
+                assert_eq!(
+                    block_on(session.close()),
+                    Err(oap_adapter::Error::RunActive)
+                );
+                if let Some(old) = &previous {
+                    assert_eq!(
+                        block_on(session.resolve(old.clone())),
+                        Err(oap_adapter::Error::InteractionResolved)
+                    );
+                }
+                let answer = permission_answer(
+                    event
+                        .decode_payload::<PermissionRequestedPayload>()
+                        .unwrap(),
+                );
+                let mut wrong = answer.clone();
+                wrong.responded_by = "intruder".into();
+                assert_eq!(
+                    block_on(session.resolve(wrong)),
+                    Err(oap_adapter::Error::WrongResponder)
+                );
+                block_on(session.resolve(answer.clone())).unwrap();
+                assert_eq!(
+                    block_on(session.resolve(answer.clone())),
+                    Err(oap_adapter::Error::InteractionResolved)
+                );
+                previous = Some(answer);
+            }
+            events.push(event);
+        }
+        assert_eq!(
+            events.last().unwrap().envelope_type.as_str(),
+            "run.completed"
+        );
+        let state = block_on(session.state()).unwrap();
+        assert_eq!(state.status.as_str(), "idle");
+        assert_eq!(
+            state.transcript_cursor,
+            events.last().unwrap().sequence.unwrap().to_string()
+        );
+    }
+    block_on(session.close()).unwrap();
+    for index in 0..2 {
+        let reply: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.0.join(format!("reply-{index}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reply["id"], format!("ask-{index}"));
+        assert_eq!(reply["result"]["outcome"]["outcome"], "selected");
+    }
+}
+
+#[test]
+fn idle_native_asks_receive_cancelled_or_malformed_replies() {
+    for mode in ["idle", "idle-malformed"] {
+        let (fixture, session) = open_permission_peer(mode);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !fixture.0.join("idle.json").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let state = block_on(session.state()).unwrap();
+        block_on(session.close()).unwrap();
+        assert_eq!(state.status.as_str(), "idle");
+        assert!(state.active_run_id.is_none());
+        assert!(state.transcript_cursor.is_empty());
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.0.join("idle.json")).unwrap()).unwrap();
+        assert_eq!(reply["id"], "ask-idle");
+        if mode == "idle" {
+            assert_eq!(reply["result"]["outcome"]["outcome"], "cancelled");
+        } else {
+            assert_eq!(reply["error"]["code"], -32602);
+        }
+    }
+}

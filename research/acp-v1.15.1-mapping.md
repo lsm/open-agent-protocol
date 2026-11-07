@@ -63,9 +63,8 @@ wait for gate settlements, then settle tools and the parent in order. The
 standalone native bridge consumer compares fixed-clock/id event JSON and
 native host frames with Go, with all three validators checking actual Rust
 events under a synthetic host prefix. This is component evidence. Normal Rust
-Session permission support is unavailable pending its controller/integration
-layers. Native async reply ownership and full corpus replay have separate
-approved slices.
+Session integration uses the owned controller described below. Full corpus
+replay retains its separate approved slice.
 
 ## Owned Rust permission controller
 
@@ -75,5 +74,20 @@ owns cancellation through the existing Operation worker. The native consumer
 compares fourteen Go/Rust event and parsed-wire cases, including trailing
 notifications. Blocked selected and settlement replies, queued cancellation
 and bridge close use synthetic native children and return OS threads to their
-starting inventory after child reap. Normal Session permission support remains
-unavailable pending integration. The byte-for-byte corpus remains a later gate.
+starting inventory after child reap. Normal Session permission integration is described below. The byte-for-byte corpus remains a later gate.
+
+## Normal Rust Session permission integration
+
+Normal Session publication, resolution, admission and close now use the owned
+controller. The descriptor exposes native action.permissions and interactive
+gates under -rust-permissions. Immediate control answers serialize behind
+publication, and state reads reflect the current projection. Settled ids keep
+late-answer refusals across subsequent admissions. Idle native asks receive
+cancellation or malformed-request errors. Accepted native replies consume
+their bindings before a local commit that can fail after close.
+
+The normal public Go/Rust consumer comparison retains raw outputs and host
+frames. It normalizes wall-clock values and the declared staged revision for
+event comparison. Actual Rust traces use the actual Rust descriptor/admission
+and pass all three validators. Close/drop proof uses native quiet peers and
+OS thread inventories. Full byte-for-byte corpus replay remains a later gate.

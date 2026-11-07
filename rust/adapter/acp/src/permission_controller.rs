@@ -140,10 +140,10 @@ impl Permissions {
                 owner.settle(&run, bindings)?;
                 return Err(Error::harness(error));
             }
+            binding.request = None;
             run.lock()
                 .unwrap()
                 .commit_permission(reply, (owner.clock)())?;
-            binding.request = None;
             Ok(())
         })
     }
@@ -193,10 +193,10 @@ impl Permissions {
             if let Some(request) = &binding.request {
                 let _ = request.respond(reply.response());
             }
+            binding.request = None;
             run.lock()
                 .unwrap()
                 .commit_permission(reply, (self.clock)())?;
-            binding.request = None;
         }
         Ok(())
     }
