@@ -721,7 +721,7 @@ An implementation conforms if it:
   `recovery.recovered: true`, the model and settings the session runs under,
   and no run under way unless the open's own message admitted one.
 
-Both conformance runners check the fail-closed half over a single endpoint: a
+The conformance runners check the fail-closed half over a single endpoint: a
 reopen naming a session the endpoint never had must be refused, never answered
 with a fresh session. Reopening a closed session needs a close, which core OAP
 has no verb for, so that half is pinned by each tree's hub tests instead.
@@ -749,7 +749,7 @@ An implementation conforms if it:
 A page is judged on its own: a session that moved between two pages is not a
 defect, for the reason the decision gives.
 
-The Go conformance runner asks for the list right after its open: an endpoint
+The Go and Rust conformance runners ask for the list right after opening. An endpoint
 advertising `session.list` must answer with a page naming the open session as
 `live`, and one that does not must refuse `unsupported_feature`. `goap serve
 agent --session-history <path>` advertises it at `emulated` and answers from

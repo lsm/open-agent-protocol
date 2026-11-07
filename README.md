@@ -1102,6 +1102,16 @@ go run ./go/cmd/goap conformance --command "some-agent --oap" # drive somebody e
 `oapx` carries `serve agent` today; `oapx conformance` is product work under
 Decision 0038. `goap` is this repository's own tool.
 
+The Rust Unix process runner is `oap_conformance::run`. Its `Options` select
+the session, model and wait budget. `Report` includes named checks, Rust
+validator diagnostics and an in-memory trace. Its JSON representation omits
+the trace. The repository example prints the report and exits 1 on failure.
+
+```sh
+cargo build --manifest-path rust/Cargo.toml -p oap-serve --bin oap-rust-hub
+cargo run --manifest-path rust/Cargo.toml -p oap-conformance --example endpoint_conformance -- rust/target/debug/oap-rust-hub serve agent
+```
+
 The binding carries cursor replay as a transport control frame — the same
 place the HTTP binding puts it, where `?after=` and `Last-Event-ID` are not
 envelopes either.

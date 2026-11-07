@@ -1,12 +1,16 @@
 #[cfg(unix)]
 mod process;
 #[cfg(unix)]
+mod report;
+#[cfg(unix)]
 mod runner;
 mod transcript;
 mod wire;
 
 #[cfg(unix)]
 pub use process::{Process, ProcessError};
+#[cfg(unix)]
+pub use report::{run, Options, Report};
 #[cfg(unix)]
 pub use runner::{Check, Runner};
 pub use transcript::Transcript;

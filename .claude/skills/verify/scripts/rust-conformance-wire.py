@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
@@ -191,8 +192,28 @@ for line in sys.stdin:
         let framing = framing_contract(&mut endpoint, Duration::from_secs(2));
         assert!(framing.iter().all(|check| check.passed));
         println!("real endpoint fatal framing checks {}", serde_json::to_string(&framing).unwrap());
+        let report = oap_conformance::run(&mut endpoint, oap_conformance::Options {
+            line_deadline: Duration::from_secs(2),
+            ..oap_conformance::Options::default()
+        }).unwrap();
+        assert!(report.passed, "checks {:?}. Diagnostics {:?}", report.checks, report.diagnostics);
+        assert_eq!(report.checks.len(), 27);
+        assert!(report.diagnostics.is_empty());
+        assert!(!report.trace.is_empty());
+        let serialized = serde_json::to_value(&report).unwrap();
+        assert!(serialized.get("trace").is_none());
+        println!("complete native report passed all 27 checks, including the Rust validator, EOF and fatal inputs");
         println!("PASS: real endpoint/process/Client/Runner exchange and EOF; shared budgets; bootstrap/model/list/run/refusal/replay checks; fatal framing; streamed gates and terminal; malformed-object rejection; trace ordering; exact cursors");
 }
+'''
+
+REFUSAL_ENDPOINT = r'''
+import json,sys
+for line in sys.stdin:
+ try: request=json.loads(line)
+ except ValueError: sys.exit(7)
+ if 'id' not in request: sys.exit(7)
+ print(json.dumps({'protocol':'open-agent-protocol','type':'error.response','id':'refusal-'+request['id'],'in_reply_to':request['id'],'payload':{'error':{'code':'fixture_refusal','message':'synthetic refusal'}}}),flush=True)
 '''
 
 
@@ -215,28 +236,50 @@ def main():
     for name, command in [
         ("endpoint", ["cargo", "build", "--manifest-path", str(ROOT / "rust/Cargo.toml"), "-p", "oap-serve", "--bin", "oap-rust-hub"]),
         ("consumer", ["cargo", "build", "--offline", "--manifest-path", str(manifest), "--target-dir", str(target)]),
+        ("runner", ["cargo", "build", "--manifest-path", str(ROOT / "rust/Cargo.toml"), "-p", "oap-conformance", "--example", "endpoint_conformance"]),
+        ("go", ["go", "build", "-o", str(out / "goap"), "./go/cmd/goap"]),
     ]:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=300)
         (out / f"{name}-build.txt").write_text(result.stdout + result.stderr)
         assert result.returncode == 0, f"{name} build failed; inspect retained build log"
     with tempfile.TemporaryDirectory(prefix="oap-conformance-home-") as home:
         env = {"PATH": os.environ["PATH"], "HOME": home, "XDG_DATA_HOME": home + "/data", "XDG_CONFIG_HOME": home + "/config"}
-        command = [str(target / "debug/oap-conformance-wire-proof"), str(target / "debug/oap-rust-hub")]
-        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            with subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr, start_new_session=True) as process:
-                try:
-                    process.wait(timeout=30)
-                finally:
+        example = str(target / "debug/examples/endpoint_conformance")
+        for name, command in [
+            ("consumer", [str(target / "debug/oap-conformance-wire-proof"), str(target / "debug/oap-rust-hub")]),
+            ("rust-report", [example, str(target / "debug/oap-rust-hub"), "serve", "agent"]),
+            ("go-report", [example, str(out / "goap"), "serve", "agent"]),
+            ("refusal-report", [example, "python3", "-u", "-c", REFUSAL_ENDPOINT]),
+        ]:
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                with subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr, start_new_session=True) as process:
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                stdout.seek(0)
-                stderr.seek(0)
-                text = stdout.read().decode() + stderr.read().decode()
-                (out / "consumer.txt").write_text(text)
-                print(text, end="")
-                assert process.returncode == 0 and "PASS:" in text, "public consumer failed"
+                        process.wait(timeout=30)
+                    finally:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    stdout.seek(0)
+                    stderr.seek(0)
+                    observed, diagnostic = stdout.read().decode(), stderr.read().decode()
+                    (out / f"{name}.stderr.txt").write_text(diagnostic)
+                    if name == "consumer":
+                        (out / "consumer.txt").write_text(observed + diagnostic)
+                        print(observed + diagnostic, end="")
+                        assert process.returncode == 0 and "PASS:" in observed, "public consumer failed"
+                    else:
+                        (out / f"{name}.json").write_text(observed)
+                        expected = name != "refusal-report"
+                        assert process.returncode == (0 if expected else 1), f"{name} failed; inspect retained output"
+                        report = json.loads(observed)
+                        assert report["passed"] == expected and "trace" not in report
+                        if expected:
+                            assert len(report["checks"]) == 27 and not report.get("diagnostics")
+                            print(f"{name}: native CLI passed 27 checks, Rust validation, EOF and fatal input contracts")
+                        else:
+                            assert any(not check["passed"] for check in report["checks"])
+                            print("refusal-report: native CLI reported failed checks and exited 1")
 
 
 if __name__ == "__main__":
