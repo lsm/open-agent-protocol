@@ -1,0 +1,6 @@
+[
+  {
+    "native": "missing count or unknown cache terms",
+    "reason": "Decisions 0063/0065: missing is unknown; no total inferred from incomplete terms."
+  }
+]
