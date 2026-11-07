@@ -58,3 +58,20 @@ fn a_loaded_pack_preserves_core_validity() {
         );
     }
 }
+
+#[test]
+fn a_request_without_a_declared_success_type_only_accepts_a_refusal() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let validator = Validator::with_packs(&[root.join("packs/reply-roles")]).unwrap();
+    let refusal =
+        std::fs::read(root.join("valid/ext-request-without-success-refused.json")).unwrap();
+    assert!(validator.validate(&refusal, "declared-refusal").valid());
+    let response =
+        std::fs::read(root.join("semantic-invalid/ext-undeclared-success-response.json")).unwrap();
+    let result = validator.validate(&response, "undeclared-success");
+    let codes: BTreeSet<_> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        BTreeSet::from(["unmatched_response", "missing_response"])
+    );
+}
