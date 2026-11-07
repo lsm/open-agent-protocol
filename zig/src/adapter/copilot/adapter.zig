@@ -562,7 +562,7 @@ const fake_prelude =
 
 const fake_connect = fake_prelude ++
     \\take; say '{"jsonrpc":"2.0","id":1,"result":{"message":"pong","timestamp":1,"protocolVersion":3}}'
-    \\take; say '{"jsonrpc":"2.0","id":2,"result":{"version":"1.0.98","protocolVersion":3}}'
+    ++ "\ntake; say '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"version\":\"" ++ endpoint_version ++ "\",\"protocolVersion\":3}}'\n" ++
     \\take; say '{"jsonrpc":"2.0","id":3,"result":{"sessionId":"ses-1","workspacePath":"/w"}}'
     \\
 ;
@@ -664,7 +664,7 @@ test "an open refuses a server on another protocol version, and one that answers
     var anonymous: Probe = undefined;
     try anonymous.init(fake_prelude ++
         \\take; say '{"jsonrpc":"2.0","id":1,"result":{"message":"pong","protocolVersion":3}}'
-        \\take; say '{"jsonrpc":"2.0","id":2,"result":{"version":"1.0.98","protocolVersion":3}}'
+        ++ "\ntake; say '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"version\":\"" ++ endpoint_version ++ "\",\"protocolVersion\":3}}'\n" ++
         \\take; say '{"jsonrpc":"2.0","id":3,"result":{}}'
         \\
     ++ fake_idle);

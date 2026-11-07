@@ -1,0 +1,42 @@
+{
+  "advertised_capabilities": {
+    "run.cancel": "unavailable",
+    "run.replay": "degraded",
+    "run.streaming": "native",
+    "session.message.submit": "degraded"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "turn-end-reasons",
+  "identity_map": {
+    "child.sessionId": "adapter_child_settlement_identity",
+    "native.callId": "oap.tool_call_id",
+    "native.sessionId": "oap.session_id_association",
+    "native.turn": "adapter_run_ownership_evidence",
+    "prompt.messageId": "oap.submission_id"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "tag": "dsh-v0.2.2-rc.1",
+    "commit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "commit_tree": "3aeac580e803b0ce82f867b1374ed494a59662c2",
+    "sources": {
+      "core_agent_inbox_blob": "affe0c6b2f653888dc2177fd2987c6082a93f758",
+      "core_agent_loop_blob": "c4daa50c47c13fb86b94466774dfcac32b214076",
+      "core_agent_runtime_types_blob": "2b1698e39c663f4d8d7760ebdaef647bed693257",
+      "core_agent_types_blob": "06d2c88ab1e5ada455214555aaae542077caa571",
+      "core_session_known_event_types_blob": "a0f5c17795be074e3c521c525a0eb59ee25248d6",
+      "core_session_surface_blob": "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
+      "core_session_types_blob": "7787dd9bd073217825356b9c6b419d2e153d2537",
+      "llm_assistant_stream_blob": "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
+      "llm_message_blob": "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
+      "llm_types_blob": "8a48b89895db0ddb8908ec6359eb67af60fe0f54",
+      "sdk_protocol_transport_blob": "4ee65555c0342b276e43b03186659acb623cb6fe",
+      "sdk_protocol_types_blob": "6bcd2de7045e58c0fab0e5bacf956724d1ff6e68",
+      "sdk_server_blob": "1879b23e2eeb57d080f2d38401ab5a0a81ba03d7"
+    }
+  },
+  "version": 1
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "index": 1,
+    "direction": "host-to-copilot",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 2,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 3,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "reducer event projection"
+  },
+  {
+    "index": 4,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "reducer event projection"
+  },
+  {
+    "index": 5,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "reducer event projection"
+  },
+  {
+    "index": 6,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "reducer event projection"
+  }
+]

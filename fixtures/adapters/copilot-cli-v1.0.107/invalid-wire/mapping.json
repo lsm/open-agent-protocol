@@ -1,0 +1,9 @@
+[
+  {
+    "index": 1,
+    "direction": "copilot-to-host",
+    "classification": "refused",
+    "fidelity": "observed-only",
+    "oap": "codec rejection"
+  }
+]

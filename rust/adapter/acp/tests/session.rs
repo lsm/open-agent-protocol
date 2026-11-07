@@ -391,3 +391,44 @@ fn concurrent_model_switches_commit_in_native_request_order() {
     block_on(session.close()).unwrap();
     fixture.assert_reaped();
 }
+
+#[test]
+fn dropping_an_open_session_reaps_its_native_child() {
+    let fixture = Fixture::new();
+    let adapter = fixture.adapter(result("sol"));
+    let session = block_on(adapter.open(request())).unwrap();
+    drop(session);
+    fixture.assert_reaped();
+}
+
+#[test]
+fn a_model_switch_answers_an_interleaved_unknown_native_rpc() {
+    use std::task::{Context, Poll};
+    use std::time::Instant;
+    let fixture = Fixture::new();
+    let adapter = fixture.adapter_with_switches(result("sol"), vec![
+        json!({"jsonrpc":"2.0", "id":"native-query", "method":"fixture/unsupported", "params":{}}),
+        json!({"jsonrpc":"2.0", "id":3, "result":result("luna")}),
+    ]);
+    let session = block_on(adapter.open(request())).unwrap();
+    let mut switching = session
+        .model_switcher()
+        .unwrap()
+        .switch_model(switch_request(&*session, "luna"));
+    let waker = futures::task::noop_waker();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let response = loop {
+        if let Poll::Ready(response) = switching.as_mut().poll(&mut Context::from_waker(&waker)) {
+            break response.unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "model switch did not drain its reverse RPC"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(response.0.model_id, "luna");
+    assert_eq!(response.1.current_model_id, "luna");
+    block_on(session.close()).unwrap();
+    fixture.assert_reaped();
+}

@@ -1,4 +1,4 @@
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
@@ -76,6 +76,17 @@ impl Process {
             Err(RecvTimeoutError::Disconnected) => Ok(None),
             Err(RecvTimeoutError::Timeout) => Err(ProcessError::Timeout),
         }
+    }
+
+    pub(crate) fn send_line(&mut self, line: &str) -> Result<(), ProcessError> {
+        let input = self
+            .input
+            .as_mut()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
+        input.write_all(line.as_bytes())?;
+        input.write_all(b"\n")?;
+        input.flush()?;
+        Ok(())
     }
 
     pub(crate) fn buffered(&self) -> usize {

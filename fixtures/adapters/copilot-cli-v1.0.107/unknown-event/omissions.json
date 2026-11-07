@@ -1,0 +1,6 @@
+[
+  {
+    "native": "session.title_changed",
+    "reason": "Unknown event is observed without a fabricated OAP projection."
+  }
+]

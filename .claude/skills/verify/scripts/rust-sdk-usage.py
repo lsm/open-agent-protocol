@@ -5,6 +5,8 @@ import json
 import re
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = r'''use futures::StreamExt;
@@ -15,7 +17,8 @@ use serde_json::{json, Value};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<String> = std::env::args().collect();
     let client = ClientBuilder::new().command(&arguments[1])
-        .args([format!("--usage={}", arguments[2])]).env_clear().connect().await?;
+        .args([format!("--usage={}", arguments[2])]).env_clear()
+        .handshake_timeout(std::time::Duration::from_secs(10)).connect().await?;
     let request = ExecutionRequest::prompt("fixture/openai-responses@mock", "usage");
     let mut observed = Vec::new();
     for agent in [false, true] {
@@ -120,6 +123,12 @@ def main():
          "--bin", "oap-protocol-fake"], output, "fixture-build")
     run(["cargo", "build", "--offline", "--manifest-path", str(consumer / "Cargo.toml"),
          "--target-dir", str(ROOT / "rust/target")], output, "consumer-build")
+    fixture = ROOT / "rust/target/debug/oap-protocol-fake"
+    delayed_fixture = output / "delayed-fixture"
+    delayed_fixture.write_text(f"#!{sys.executable}\nimport os, sys, time\n"
+                               "time.sleep(2)\n"
+                               f"os.execv({str(fixture)!r}, [{str(fixture)!r}, *sys.argv[1:]])\n")
+    delayed_fixture.chmod(0o700)
     fields = {"input_tokens":"input", "output_tokens":"output", "total_tokens":"total",
               "cache_read_input_tokens":"cache_read", "cache_write_input_tokens":"cache_write",
               "reasoning_tokens":"reasoning"}
@@ -129,9 +138,18 @@ def main():
                {name:18446744073709551615 for name in fields.values()})]
     for index, (raw, expected) in enumerate(cases):
         (output / f"{index}.input").write_text(raw)
+        command = delayed_fixture if index == 0 else fixture
+        began = time.monotonic()
         values = json.loads(run([str(ROOT / "rust/target/debug/usage-consumer"),
-                                 str(ROOT / "rust/target/debug/oap-protocol-fake"), raw],
+                                 str(command), raw],
                                 output, str(index)))
+        if index == 0:
+            elapsed = time.monotonic() - began
+            assert elapsed >= 2, elapsed
+            (output / "delayed-startup.json").write_text(json.dumps({
+                "fixture_delay_seconds": 2, "handshake_budget_seconds": 10,
+                "consumer_elapsed_seconds": elapsed,
+            }, indent=2))
         assert len(values) == 4 and all(value.get("usage", "missing") == expected for value in values), values
         print(f"public Rust consumer {raw}: {values}", flush=True)
     for index, raw in enumerate(["null", '{"input_tokens":null}', '{"input_tokens":-1}', '{"total_tokens":"3"}',

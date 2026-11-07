@@ -17,10 +17,13 @@ and return the same state, catalog, switch response and structured error data.
 The comparison removes only wall-clock `updated_at_ms`; each raw result remains
 in its own artifact. Every child must be reaped.
 
-Eleven cases cover confirmation, current-value reasoning priority, Unicode
+Twelve cases cover confirmation, current-value reasoning priority, Unicode
 label aliases, unknown reasoning, stale/duplicate/wrong-kind confirmation,
 native refusal, missing degradation opt-in, unknown model, wrong scope and an
 absent model option. Local refusals must stop before the native setting RPC.
+The idle-inbound case sends 256 notifications and an unknown reverse RPC before
+the model response. Both consumers must drain them, return the same native
+method-not-supported response and still record the confirmed model/reasoning.
 The Go consumer uses the existing public adapter and establishes the pinned
 mapping, including dotted-capital-I lowercase behavior.
 

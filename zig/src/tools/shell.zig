@@ -21,6 +21,7 @@ pub const Jobs = struct {
     allocator: std.mem.Allocator,
     mutex: std.atomic.Mutex = .unlocked,
     next: u64 = 0,
+    next_end: u64 = 0,
     list: std.ArrayList(*Job) = .empty,
 
     const Job = struct {
@@ -30,6 +31,7 @@ pub const Jobs = struct {
         tool_call_id: []u8,
         leader: std.posix.pid_t,
         term: ?std.process.Child.Term = null,
+        ended_order: u64 = 0,
         killed: bool = false,
         cause: ?Cause = null,
         noticed: bool = false,
@@ -47,6 +49,7 @@ pub const Jobs = struct {
         tool_call_id: []const u8,
         status: Status,
         cause: ?Cause,
+        ended_order: u64,
     };
 
     pub const Notice = struct {
@@ -127,6 +130,8 @@ pub const Jobs = struct {
         const term = process_runner.waitLeader(job.leader) catch std.process.Child.Term{ .unknown = 0 };
         self.lock();
         job.term = term;
+        self.next_end += 1;
+        job.ended_order = self.next_end;
         if (job.cause == null) job.cause = .finished;
         self.mutex.unlock();
         process_runner.endGroup(job.leader);
@@ -186,6 +191,7 @@ pub const Jobs = struct {
                 .tool_call_id = try allocator.dupe(u8, job.tool_call_id),
                 .status = taskStatus(job),
                 .cause = if (job.term == null) null else job.cause,
+                .ended_order = job.ended_order,
             };
             filled += 1;
         }

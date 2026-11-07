@@ -8,6 +8,10 @@ python3 .claude/skills/verify/scripts/rust-acp-foundation.py --output-dir /tmp/o
 (cd rust && cargo test -p oap-adapter-acp)
 ```
 
+For native-dispatch ownership and concurrent cleanup, also run
+`rust-acp-session-bridge.md`. Session close and final-owner drop close the native
+process and join its `PromptBridge` dispatcher.
+
 The standalone public consumer opens a credential-free synthetic ACP agent,
 observes the initialize/session-new wire with its working directory and configured
 MCP servers, then reads OAP idle state and an opted-in model catalog. Native
