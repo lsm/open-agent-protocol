@@ -12,8 +12,6 @@
   "rust": [
     "descriptor-leaks-attachment-fields",
     "model-switch-degraded-no-optin",
-    "models-current-mismatch",
-    "models-held-position-moved-no-model",
     "tools-catalog-leaks-attachment-env"
   ]
 }
