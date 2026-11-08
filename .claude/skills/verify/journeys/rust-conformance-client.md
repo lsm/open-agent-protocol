@@ -5,6 +5,7 @@ Use shared toolchain setup from `SKILL.md`, then run
 ```sh
 python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp/oap-conformance-client-<unique-name>
 cargo test --manifest-path rust/Cargo.toml -p oap-conformance --test client -- --nocapture
+cargo test --manifest-path rust/Cargo.toml -p oap-conformance --lib client::tests -- --nocapture
 cargo test --manifest-path rust/Cargo.toml -p oap-conformance
 ```
 
@@ -37,3 +38,22 @@ injects two seconds before READY, and readiness_ms must include that delay while
 drain_ms still uses the original one-second budget. This checks actual Python
 process I/O, not a mock or a retry. Keep signed failing slow-start reproduction
 `25994601f7` before the readiness fix. Run Rust all-features under the same mutex.
+
+The EOF-expiry regressions first reap a real synthetic subprocess and confirm
+its reader has delivered EOF. One deliberately pauses the caller inside the
+wait loop past the unchanged two-second budget: the already-delivered EOF must
+still succeed without recording a runner timeout. The other starts at an
+expired response boundary and must return `EndpointGone`. Both failed before
+the fix in signed regression commit `cbb6e10adf`; the native fixtures and reader
+workers are closed before their result assertions. The original intermittent
+failure log did not retain scheduler telemetry, so this deterministic boundary
+case proves the false-timeout path rather than reconstructing that attempt's
+precise scheduling interleaving. The existing public consumer must still match
+real endpoint replies and exit 0 after EOF, while silent and chatty peers keep
+their original timeout and cleanup behavior.
+
+Also require the expired-budget drain to deliver a queued reply before a later
+malformed line, leaving the wire error for the next consumer call. A real native
+peer queues those outputs in order; regression commit `7efa863f8d` fails before
+the return-order fix. This prevents bulk draining from discarding a reply that
+the caller can already receive.
