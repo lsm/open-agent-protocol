@@ -82,6 +82,7 @@ pub(crate) struct State {
     model_catalogs: HashMap<String, model_catalog::SessionCatalog>,
     held_models: HashMap<String, Vec<model_catalog::HeldModel>>,
     held_positions: Vec<model_positions::HeldPosition>,
+    model_marks: HashMap<String, Vec<model_positions::Mark>>,
     judged_attaches: HashMap<String, bool>,
     attached_providers: HashMap<String, provider_attach::Attached>,
     session_models: HashMap<String, default_model::SessionModel>,
@@ -370,6 +371,7 @@ impl State {
             model_catalogs: HashMap::new(),
             held_models: HashMap::new(),
             held_positions: Vec::new(),
+            model_marks: HashMap::new(),
             judged_attaches: HashMap::new(),
             attached_providers: HashMap::new(),
             session_models: HashMap::new(),
@@ -533,6 +535,7 @@ impl State {
         self.auth_dispatch(at, e);
         self.redelivery_held(e);
         self.run_dispatch(at, e);
+        self.mark_started_model(at, e);
         self.reconcile_held_positions();
         self.participants_from(at, e);
         self.controls_dispatch(at, e);

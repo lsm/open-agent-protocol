@@ -41,6 +41,14 @@ impl State {
     pub(super) fn open_model(&mut self, at: (usize, usize), e: &Envelope) {
         self.capture_model(at, e);
         let p: SessionState = payload(e);
+        self.mark_model(
+            s(&p.session_id).as_str(),
+            &p.current_model_id,
+            "",
+            0,
+            "",
+            at.0,
+        );
         if !p.current_model_id.is_empty() {
             let track = self.session_models.entry(s(&p.session_id)).or_default();
             if !track.mutated && track.opening.is_none() {
@@ -73,6 +81,8 @@ impl State {
                 &[reply.as_str()],
             );
         }
+        let reply = os(&e.in_reply_to);
+        self.mark_model(s(&p.session_id).as_str(), &p.model_id, "", 0, &reply, at.0);
         let track = self.session_models.entry(s(&p.session_id)).or_default();
         track.mutated = true;
         track.current = Some(p.model_id);
@@ -82,6 +92,14 @@ impl State {
     pub(super) fn state_model(&mut self, at: (usize, usize), e: &Envelope) {
         self.capture_model(at, e);
         let p: SessionState = payload(e);
+        self.mark_model(
+            s(&p.session_id).as_str(),
+            &p.current_model_id,
+            "",
+            0,
+            "",
+            at.0,
+        );
         let track = self.session_models.entry(s(&p.session_id)).or_default();
         let moved = track
             .guarded
