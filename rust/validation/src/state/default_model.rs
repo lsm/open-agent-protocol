@@ -67,6 +67,21 @@ impl State {
         if asked.session_id != p.session_id || asked.model_id != p.model_id {
             return;
         }
+        if self.features.get(FEATURE_SESSION_MODEL_SWITCH) == Some(&SupportLevel::DEGRADED)
+            && !asked.allows_degraded(FEATURE_SESSION_MODEL_SWITCH)
+        {
+            let reply = os(&e.in_reply_to);
+            self.add_expected(
+                codes::DEGRADED_WITHOUT_OPTIN,
+                at,
+                e,
+                "/type",
+                "degraded core model switch accepted without opt-in",
+                "session.model.switch in allow_degraded_features",
+                e.envelope_type.as_str(),
+                &[reply.as_str()],
+            );
+        }
         if self.catalog_lists(p.session_id.as_str(), &p.model_id) == Some(false) {
             let message = "model switch accepted an id absent from the session catalog";
             let reply = os(&e.in_reply_to);
