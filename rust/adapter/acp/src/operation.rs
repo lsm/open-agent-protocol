@@ -88,15 +88,8 @@ impl<T> Future for Operation<T> {
         match Pin::new(&mut self.response).poll(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(outcome) => {
-                let joined = self
-                    .worker
-                    .take()
-                    .expect("operation already completed")
-                    .join();
-                Poll::Ready(match joined {
-                    Ok(()) => outcome.unwrap_or_else(|_| Err(worker_error())),
-                    Err(_) => Err(worker_error()),
-                })
+                self.worker.take().expect("operation already completed");
+                Poll::Ready(outcome.unwrap_or_else(|_| Err(worker_error())))
             }
         }
     }
