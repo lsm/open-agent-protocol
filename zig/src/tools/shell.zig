@@ -1519,9 +1519,9 @@ test "a line written past the offset the model saw matches a rule set later, and
     var jobs = Jobs.init(std.testing.allocator);
     defer jobs.deinit();
     jobs.foreground_budget_ms = 150;
-    var result = try movedCase(&jobs, &case, "echo seen failure; sleep 0.3; echo late failure; sleep 30");
+    var result = try movedCase(&jobs, &case, "printf 'seen failure\\nlate failure\\n'; sleep 30");
     defer result.deinit(std.testing.allocator);
-    compat.time.sleepMs(400);
+    try std.testing.expectEqual(@as(u64, "seen failure\n".len), jobs.list.items[0].seen);
 
     try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "failure"));
     try waitForNotice(&jobs);
