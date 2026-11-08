@@ -42,4 +42,5 @@ reply/quit evidence. Register rows are
 
 This journey checks response-page contents. Capability/degradation refusal
 gates, endpoint persistence, live session discovery and live providers remain
-outside its scope; snapshot deferred claims are unchanged.
+outside its scope; snapshot deferred claims are unchanged. Query capability and
+degradation outcomes are checked by `rust-query-gates.md`.

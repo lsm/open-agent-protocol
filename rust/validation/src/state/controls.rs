@@ -1,3 +1,5 @@
+mod query_gates;
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -308,6 +310,12 @@ pub(super) struct PendingToolList {
     honour: bool,
 }
 
+#[derive(Default)]
+pub(super) struct PendingQuery {
+    expectation: Option<Expectation>,
+    honour: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct PendingAttach {
     expectations: Vec<Expectation>,
@@ -550,6 +558,7 @@ impl Controls {
 
 impl State {
     pub(super) fn controls_dispatch(&mut self, at: (usize, usize), e: &Envelope) {
+        self.query_feature(at, e);
         let t = &e.envelope_type;
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.record_catalog(at, e);

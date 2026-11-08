@@ -5,7 +5,6 @@
     "controls-per-run-overwrites-default-after-refresh",
     "models-catalog-in-the-announce-window",
     "provider-attach-in-the-announce-window",
-    "provider-attach-stale-catalog-omits-attached",
     "queue-state-settled-late-event-is-not-terminal",
     "stale-capability"
   ],
