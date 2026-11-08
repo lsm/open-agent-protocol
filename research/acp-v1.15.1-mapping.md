@@ -42,7 +42,7 @@ Rust corpus parity.
 
 ## Staged Rust tool and permission projection
 
-The Rust `-rust-settings` stage projects observed native tool calls and sparse
+The Rust `-rust-journal` stage projects observed native tool calls and sparse
 patches through the normal session submit stream. Tool identity is session-wide,
 terminal events synthesize a missing start, and unfinished children settle in
 creation order before the parent. The synthetic tools journey compares public
@@ -83,7 +83,7 @@ described below. The byte-for-byte corpus remains a later gate.
 
 Normal Session publication, resolution, admission and close now use the owned
 controller. The descriptor exposes native action.permissions and interactive
-gates under -rust-settings. Immediate control answers serialize behind
+gates under -rust-journal. Immediate control answers serialize behind
 publication, and state reads reflect the current projection. Live permission routes are pruned
 at commit or settlement. A bounded cache of 64 resolved ids preserves recent
 late-answer refusals across subsequent admissions. Idle native asks receive
@@ -98,7 +98,7 @@ OS thread inventories. Full byte-for-byte corpus replay remains a later gate.
 
 ## Rust native cancellation
 
-The -rust-settings stage accepts run-targeted native session/cancel intent,
+The -rust-journal stage accepts run-targeted native session/cancel intent,
 preserves cancelling through streamed events and waits for a cancelled stop
 or remote -32800 confirmation. Completion or another error may win. Pending
 permissions settle with native cancellation and correlated local resolutions;
@@ -107,7 +107,7 @@ Go/Rust events and parsed host frames are compared after clock/revision
 normalization, and all three validators judge actual Rust events with the
 accepted host exchange. A controlled clock pauses accepted-write commit to
 prove confirmation waits. Quiet peers prove queued control drop/close reap
-and join. Run replay/resume, full byte corpus and C8 remain later gates.
+and join. Bounded run replay/resume is described below; full byte corpus and C8 remain later gates.
 
 ## Rust live config projection
 
@@ -123,13 +123,13 @@ session updates leave recorded settings alone.
 The synthetic public Go/Rust comparison retains both directions of native wire,
 snapshots and run events, normalizing only clocks and the staged revision. All
 three validators judge wrapped Rust exchanges. This adds no capability support
-level. The current stage uses `-rust-settings` for native reopen, described below.
+level. The current stage uses `-rust-journal` for native reopen, described below.
 Confirmed opening config/reasoning is described below, followed by full ACP
 byte corpus replay. No served-parity or live-agent claim is made.
 
 ## Rust capability-gated reload
 
-The -rust-settings stage advertises native session.open.reopen. It follows the
+The -rust-journal stage advertises native session.open.reopen. It follows the
 existing native mapping: loadSession=true selects session/load first, otherwise
 a sessionCapabilities.resume object selects session/resume. It refuses absent
 bindings and unsupported agents, preserves omitted/null bound ids, and refuses
@@ -150,7 +150,7 @@ byte corpus replay remains the next approved slice. This is not a C8 served-pari
 
 ## Rust confirmed opening settings
 
-The -rust-settings stage adds emulated session.reasoning in session_open mode
+The -rust-journal stage adds emulated session.reasoning in session_open mode
 and a private Config.session_config map. It follows Go's opening sequence:
 sorted option writes with unique/select advertised-value checks, immediate
 confirmation, full-set confirmation, reasoning mapping/confirmation, then
@@ -168,3 +168,17 @@ child absence and threads returning to baseline before caller exit. Waiting
 polls are measured at the native boundary; large snapshot CPU preparation is
 retained separately and can exceed 50 ms. No full byte corpus, served parity
 or live-provider interoperability claim is made.
+
+
+The Rust -rust-journal stage adds bounded Session.resume and live-follow over
+canonical OAP events, using the shared journal and bounded subscriber. Zero
+capacity selects 256 records; scope is session/process_memory. Run.resume and
+run.replay are degraded; reconciliation is emulated. Missing runs, future
+cursors and explicit replay gaps remain distinct. Retained suffixes preserve
+identity and precede the bounded live queue atomically. Close retains each
+queued prefix without inventing native settlement; reopening imports no old
+OAP runs. Run cursor metadata persists for prior known runs, while retained
+event records have the configured capacity bound. Cancellation still addresses
+the tracked run. Public native proof is rust-acp-journal.md; per-open MCP
+attachments, deterministic clocks/ids and the complete byte corpus remain the
+next approved C1 prerequisites, and C8 remains a later served-parity gate.

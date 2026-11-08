@@ -61,9 +61,9 @@ def main():
                 else:
                     assert expected in result['openError'], result
                 assert result['descriptor']['endpoint']['version'] == pin['endpoint_version']
-                assert result['revision'] == pin['capability_revision'] + '-rust-settings'
+                assert result['revision'] == pin['capability_revision'] + '-rust-journal'
                 assert result['corpus'] == pin['corpus']
-                assert result['journalReplay'] == 'unavailable'
+                assert result['journalReplay'] == 'degraded'
                 assert result['descriptor']['sources'] == [
                     {'id': 'local', 'kind': 'process', 'protocol': 'mcp'}]
                 for key, support in result['descriptor']['features'].items():
@@ -76,6 +76,8 @@ def main():
                         'session.message.submit': 'degraded', 'run.streaming': 'degraded',
                         'session.message.delivery.auto': 'emulated', 'run.status': 'emulated',
                         'action.tools': 'degraded', 'action.tools.execute': 'degraded',
+                        'run.resume': 'degraded', 'run.replay': 'degraded',
+                        'run.reconciliation': 'emulated',
                     }.get(key, 'unavailable')
                     assert support['level'] == level, (key, support)
                 observed = result

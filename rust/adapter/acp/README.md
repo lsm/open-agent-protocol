@@ -60,9 +60,9 @@ and configured source descriptors.
 
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
-the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Native reload is described below; replay remains unavailable. Text submission and
+the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Native reload and bounded canonical replay are described below. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-settings` to the catalog revision because this descriptor has
+appends `-rust-journal` to the catalog revision because this descriptor has
 fewer capabilities than the completed adapter. Full corpus replay remains a
 later slice of #1439.
 
@@ -102,7 +102,7 @@ opt-in. It reports the latest model config-option snapshot, flattening
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Live snapshots replace the opening snapshot as described below.
-The descriptor uses a `-rust-settings`
+The descriptor uses a `-rust-journal`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -219,7 +219,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-settings`
+opt-in. The staged descriptor records these limits under its `-rust-journal`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -405,7 +405,7 @@ request binding before local commit, including a projection closed during the
 write. Parent settlement consumes the binding before committing cancellation.
 
 The descriptor advertises native action.permissions and interactive gates,
-under the staged -rust-settings revision. Run
+under the staged -rust-journal revision. Run
 `rust-acp-session-permissions.md` for normal Session event/wire comparisons,
 immediate resolution, idle replies, across-run history, state and cleanup.
 Native cancellation, reload and opening settings are described below. Full
@@ -418,8 +418,8 @@ return RunNotFound, the retained completed/failed run returns RunAlreadyTerminal
 and cancelling/cancelled retries are accepted without another native notification.
 Retained terminal metadata still answers after the native agent exits; an
 explicitly closed Session refuses controls with SessionClosed.
-No stale control can target a subsequent run. The journal and resume remain
-unavailable in this stage.
+No stale control can target a subsequent run. Canonical replay of prior known
+runs is separate from the tracked cancellation target and is described below.
 
 A written native session/cancel accepts intent and emits run.status.updated
 with cancelling. Ordinary text/tool events preserve that status, and Session
@@ -439,9 +439,9 @@ is invented when the native notification was never written.
 
 Run rust-acp-cancel.md for public Go/Rust event and parsed-wire comparisons,
 three-validator traces, controlled confirmation ordering and quiet-child/thread
-ownership. The staged revision is -rust-settings and run.cancel is native. Submit
-and streaming retain their degradation opt-ins; run replay/resume,
-full byte corpus and C8 served parity remain later slices.
+ownership. The staged revision is -rust-journal and run.cancel is native. Submit
+and streaming retain their degradation opt-ins. Run replay/resume is covered
+by the bounded journal below; full byte corpus and C8 served parity remain later slices.
 
 ## Live config state and model catalog
 
@@ -457,7 +457,7 @@ model or reasoning advance the state timestamp.
 Config-only updates emit no stream event. Wrong-session and malformed idle
 updates leave state unchanged; malformed active updates retain the existing
 `acp_invalid_update` failure. No native I/O worker is started for this local
-projection. Capability fidelity stays staged under `-rust-settings`, as no
+projection. Capability fidelity stays staged under `-rust-journal`, as no
 optional feature's support level changes.
 
 Run `.claude/skills/verify/journeys/rust-acp-live-config.md` for actual native
@@ -470,7 +470,8 @@ A reopen needs an existing native session id. After initialize, the adapter
 uses session/load when loadSession is true, otherwise session/resume when its
 capability is an object. Missing bindings or unsupported agents refuse with
 an unsatisfiable session.open.reopen control. The descriptor advertises native
-reopen under the -rust-settings revision; no journal/replay support is implied.
+reopen under the -rust-journal revision. Reopening creates a fresh journal;
+pre-close OAP run ids and events are not recovered from native history.
 
 The public Process.call_draining_async operation consumes ordered inbound
 messages while its scoped RPC worker waits. Historical notifications are
@@ -501,7 +502,7 @@ required set is rechecked before and after a requested reasoning level. A later
 setting cannot silently reset an earlier required value. Refusals close the
 owned process before any Session or prompt is published.
 
-Opening reasoning is emulated in session_open mode under -rust-settings. The
+Opening reasoning is emulated in session_open mode under -rust-journal. The
 agent's thought_level option supplies a case-insensitive value/name mapping;
 its reply must confirm the selected id/value. Requested reasoning remains
 explicit in state. With configured options or reload, other model/reasoning
@@ -518,3 +519,35 @@ and retains partial bytes and OS-thread inventories. Large snapshot CPU
 preparation is separately measured; waiting-poll latency is checked only
 after actual native bytes/requests are observed. Full byte corpus and C8
 served parity remain their separate gates.
+
+
+## Bounded session journal and canonical replay
+
+Config.journal_capacity bounds retained event records per Session; zero selects
+256, matching Go. The descriptor reports session/process_memory scope and
+degraded run.resume/run.replay, with emulated reconciliation. There is no disk
+persistence, native history import or recovery of pre-close OAP runs.
+
+Session.resume returns the exact retained suffix after its cursor and follows
+that run through its terminal. Snapshot installation is serialized with event
+emission; replay preserves event ids, sequence, payload, timestamps and revision.
+A future cursor is refused, a missing run is distinct from an evicted suffix,
+and Error::ReplayGap carries the requested, oldest and latest sequence. Prior
+completed run cursor metadata remains addressable even after all of its event
+records are evicted, as in Go. Only retained event records have the configured
+capacity bound; this is not a claim of durable history or bounded run metadata.
+
+The shared journal stores canonical events. Each follower retains its initial
+suffix plus a 64-event live queue. A slow consumer receives a contiguous prefix
+and an explicit overflow instead of skipped events. Close preserves queued
+prefixes, closes followers and joins the existing native workers; it invents no
+terminal for an unconfirmed run. Reopening starts an empty journal. Cancellation
+continues to address the tracked run under the previously disclosed stage.
+
+Run rust-acp-journal.md for public Go/Rust recovery and event comparisons,
+parsed native wire, close/overflow and missing/future/evicted cursor outcomes.
+Complete original traces must pass all three validators. Aborted/overflowed
+prefixes must be retained as incomplete and produce missing_run_terminal,
+not be padded with a synthetic terminal to make validation pass. The stage is
+-rust-journal. Per-open MCP attachments and deterministic clocks/ids plus the
+full corpus retain their next approved slices; this is not C8 served parity.

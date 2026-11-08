@@ -4,8 +4,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures::{FutureExt, StreamExt};
 use futures_util::lock::Mutex as AsyncMutex;
+use oap_adapter::journal::Journal;
 use oap_adapter::jsonrpc::Inbound;
+use oap_adapter::subscriber::Subscriber;
 use oap_adapter::{
     BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution, ModelLister,
     ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
@@ -16,7 +19,7 @@ use oap_protocol::{
     VERSION,
 };
 
-use crate::adapter::{unavailable, Config};
+use crate::adapter::Config;
 use crate::native::{
     decode, ConfigOption, PermissionOutcome, PermissionRequest, PermissionResponse,
     SessionNewParams, SessionNewResult, METHOD_SESSION_NEW, METHOD_SESSION_REQUEST_PERMISSION,
@@ -39,6 +42,7 @@ pub(crate) struct Inner {
     pub(crate) workers: Vec<JoinHandle<()>>,
     pub(crate) usage: Arc<Mutex<UsageScope>>,
     pub(crate) tool_history: Arc<Mutex<BTreeSet<String>>>,
+    pub(crate) journal: Journal,
 }
 
 impl Inner {
@@ -172,6 +176,7 @@ impl Session {
             workers: Vec::new(),
             usage: Arc::new(Mutex::new(usage)),
             tool_history: Arc::default(),
+            journal: Journal::new(config.journal_capacity),
             model_option,
             state: SessionState {
                 session_id,
@@ -352,6 +357,7 @@ impl Session {
         if let Some(run) = inner.active.take() {
             run.lock().close();
         }
+        inner.journal.close();
         inner.state.status = SessionStatus::CLOSED;
         inner.state.active_run_id = None;
         inner.state.updated_at_ms = now_ms();
@@ -466,8 +472,60 @@ impl SessionContract for Session {
             result
         })
     }
-    fn resume(&self, _: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
-        Box::pin(async { Err(unavailable("run.resume")) })
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
+        Box::pin(async move {
+            let mut inner = self.lock();
+            if inner.process.is_none() {
+                return Err(Error::SessionClosed);
+            }
+            let active = inner.active.clone();
+            let mut run = active.as_ref().map(|run| run.lock());
+            if let (Some(active), Some(run)) = (&active, &run) {
+                inner.refresh_run(&active.id, run.state());
+            }
+            let current = active
+                .as_ref()
+                .is_some_and(|active| active.id == request.run_id);
+            let latest = if current {
+                run.as_ref().expect("active run").state().sequence
+            } else {
+                inner
+                    .journal
+                    .ended(request.run_id.as_str())
+                    .ok_or(Error::RunNotFound)?
+            };
+            if request.after_sequence > latest {
+                return Err(Error::ReplayCursorFuture);
+            }
+            let (recovery, mut replay) = inner.journal.resume(
+                inner.state.clone(),
+                request.run_id.as_str(),
+                request.after_sequence,
+                latest,
+            );
+            if let Some(gap) = recovery.replay_gap {
+                return Err(Error::ReplayGap(gap));
+            }
+            let retained = recovery.replayed_through - request.after_sequence;
+            let follower = Subscriber::new(retained as usize + 64);
+            for _ in 0..retained {
+                let event = replay
+                    .next()
+                    .now_or_never()
+                    .expect("locked journal snapshot is ready")
+                    .expect("retained journal event")?;
+                follower.replay(event);
+            }
+            if current && !run.as_ref().expect("active run").state().closed {
+                run.as_mut()
+                    .expect("active run")
+                    .followers
+                    .push(follower.clone());
+            } else {
+                follower.close();
+            }
+            Ok((recovery, follower.stream()))
+        })
     }
 }
 

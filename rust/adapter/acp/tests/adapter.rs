@@ -86,10 +86,10 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        format!("{}-rust-settings", pin().capability_revision)
+        format!("{}-rust-journal", pin().capability_revision)
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
-    assert_eq!(descriptor.journal.replay, SupportLevel::UNAVAILABLE);
+    assert_eq!(descriptor.journal.replay, SupportLevel::DEGRADED);
     assert!(descriptor.interactive_gates);
     assert_eq!(descriptor.max_active_runs_per_session, 1);
     for (key, support) in descriptor.capabilities.features {
@@ -99,7 +99,8 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "session.state"
             | "session.message.delivery.auto"
             | "session.reasoning"
-            | "run.status" => SupportLevel::EMULATED,
+            | "run.status"
+            | "run.reconciliation" => SupportLevel::EMULATED,
             "session.open" | "session.open.reopen" | "action.permissions" | "run.cancel" => {
                 SupportLevel::NATIVE
             }
@@ -108,7 +109,9 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "session.message.submit"
             | "run.streaming"
             | "action.tools"
-            | "action.tools.execute" => SupportLevel::DEGRADED,
+            | "action.tools.execute"
+            | "run.resume"
+            | "run.replay" => SupportLevel::DEGRADED,
             _ => SupportLevel::UNAVAILABLE,
         };
         assert_eq!(support.level, expected, "{key}");
