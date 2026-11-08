@@ -6,9 +6,9 @@ publishes, the core model switch and live provider attachment. Go and Zig name
 the function in `go/validation/`, `zig/src/validation/` and
 `rust/validation/src/`. Rust judges session scope through generic response and
 payload checks, plus response-local catalog model IDs, defaults and current-model
-membership, and query refusal, degradation and honour checks. Catalog history
-and model-event positions, switches and attachment rules beyond session scope
-remain owed. The attachment rows follow 0028 as
+membership, query refusal, degradation and honour checks, and catalog
+stability within one capability revision. Model-event positions, switches
+and attachment rules beyond session scope remain owed. The attachment rows follow 0028 as
 [Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
 closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
@@ -39,8 +39,8 @@ Source: [`decisions/0006-models-catalog.md`](../../decisions/0006-models-catalog
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/1` | Two catalogs served for one session under one capability revision at `native` or `emulated` MUST be equal by value, comparing models and providers by id. | L101–104, L177–186 | `unannounced_catalog_change` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
-| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/2` | A `capabilities.response` repeating the active revision MUST advertise `models.list` at the level that revision already advertised, unless a `capabilities.updated` has invalidated it. | L139–146, L170–176 | `unannounced_catalog_change` | `models.go:checkCatalogAdvertisement` | `semantic.zig:checkAdvertisement` | — |
+| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/1` | Two catalogs served for one session under one capability revision at `native` or `emulated` MUST be equal by value, comparing models and providers by id. | L101–104, L177–186 | `unannounced_catalog_change` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `model_catalog.rs:record_model_catalog` |
+| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/2` | A `capabilities.response` repeating the active revision MUST advertise `models.list` at the level that revision already advertised, unless a `capabilities.updated` has invalidated it. | L139–146, L170–176 | `unannounced_catalog_change` | `models.go:checkCatalogAdvertisement` | `semantic.zig:checkAdvertisement` | `queue.rs:record_limits` |
 | `0006#a-catalog-belongs-to-the-revision-it-was-served-under/3` | A catalog citing a revision other than the active one, or arriving before the descriptor of an announced revision is in hand, binds nothing and displaces nothing; its gate reports the stale or missing descriptor. | L106–117, L148–157 | `stale_capability_revision`, `unavailable_capability` | `state.go:featureKeys`, `models.go:modelsResponse` | `semantic.zig:featureKeys`, `semantic.zig:modelsResponse` | — |
 | `0006#a-catalog-belongs-to-the-revision-it-was-served-under/4` | A selection made under a revision whose catalog has not been served is held, and the first `native` or `emulated` catalog under that revision judges it as rows /1 to /3 of the binding rule would have. | L195–203 | `model_not_in_catalog` | `models.go:reconcileUnjudgedModels` | `semantic.zig:reconcileUnjudged` | — |
 | `0006#a-catalog-belongs-to-the-revision-it-was-served-under/5` | A catalog MUST NOT list two descriptors under one id. | L119–122 | `duplicate_model_id` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `state/models.rs:models_response_shape` |

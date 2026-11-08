@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use oap_protocol::*;
 
@@ -12,6 +12,14 @@ pub(super) struct SessionCatalog {
     revision: String,
     ids: HashSet<String>,
     providers: HashSet<String>,
+    models_served: serde_json::Value,
+    providers_served: serde_json::Value,
+}
+
+fn served<'a, T: serde::Serialize + 'a>(
+    entries: impl Iterator<Item = (&'a str, &'a T)>,
+) -> serde_json::Value {
+    serde_json::to_value(entries.collect::<BTreeMap<_, _>>()).unwrap_or_default()
 }
 
 pub(super) struct HeldModel {
@@ -69,6 +77,37 @@ impl State {
             self.model_catalogs.remove(&session);
             return;
         }
+        let models_served = served(p.models.iter().map(|model| (model.id.as_str(), model)));
+        let providers_served = served(
+            p.providers
+                .iter()
+                .map(|provider| (provider.id.as_str(), provider)),
+        );
+        let changed = self
+            .model_catalogs
+            .get(&session)
+            .filter(|prior| prior.revision == revision)
+            .and_then(|prior| {
+                if prior.models_served != models_served {
+                    Some("/payload/models")
+                } else if prior.providers_served != providers_served {
+                    Some("/payload/providers")
+                } else {
+                    None
+                }
+            });
+        if let Some(pointer) = changed {
+            self.add_expected(
+                codes::UNANNOUNCED_CATALOG_CHANGE,
+                at,
+                e,
+                pointer,
+                "catalog changed under one capability revision without a capabilities.updated",
+                &format!("the catalog served under {revision}"),
+                "a different catalog",
+                &[],
+            );
+        }
         let mut providers: HashSet<String> = p
             .providers
             .iter()
@@ -91,6 +130,8 @@ impl State {
                 revision,
                 ids,
                 providers,
+                models_served,
+                providers_served,
             },
         );
     }

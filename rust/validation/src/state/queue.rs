@@ -74,6 +74,7 @@ pub(super) struct Snapshot {
     revision: String,
     stale: bool,
     queue: Option<SupportLevel>,
+    models: Option<SupportLevel>,
     limits: Option<CapabilityLimits>,
 }
 
@@ -470,6 +471,7 @@ impl State {
             revision: self.current_capability.clone(),
             stale: self.capabilities_stale,
             queue: self.features.get(FEATURE_DELIVERY_QUEUE).cloned(),
+            models: self.features.get(FEATURE_MODELS_LIST).cloned(),
             limits: self.limits,
         };
     }
@@ -495,6 +497,21 @@ impl State {
                 &message,
                 &describe_level(outgoing.queue.as_ref()),
                 &describe_level(current.as_ref()),
+                &[],
+            );
+        }
+        let models = self.features.get(FEATURE_MODELS_LIST).cloned();
+        if models != outgoing.models {
+            let pointer = format!("/payload/features/{FEATURE_MODELS_LIST}");
+            let message = format!("{FEATURE_MODELS_LIST} changed under one capability revision without a capabilities.updated");
+            self.add_expected(
+                codes::UNANNOUNCED_CATALOG_CHANGE,
+                at,
+                e,
+                &pointer,
+                &message,
+                &describe_level(outgoing.models.as_ref()),
+                &describe_level(models.as_ref()),
                 &[],
             );
         }
