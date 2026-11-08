@@ -80,38 +80,7 @@ impl Fixture {
         .unwrap();
         std::fs::write(
             directory.join("agent.py"),
-            r#"import copy, json, os, sys, time
-from pathlib import Path
-root = Path(sys.argv[1])
-(root / 'pid').write_text(str(os.getpid()))
-frames = [json.loads(line) for line in (root / 'native.jsonl').read_text().splitlines()]
-options = json.loads((root / 'options.json').read_text()) if (root / 'options.json').exists() else {}
-turn = 0
-for line in sys.stdin:
-    request = json.loads(line)
-    with (root / 'host.jsonl').open('a') as wire:
-        wire.write(line)
-    method = request.get('method')
-    if method == 'initialize':
-        selected = frames[:1]
-    elif method == 'session/new':
-        selected = frames[1:2]
-    elif method == 'session/prompt':
-        turn += 1
-        selected = [frames[2]] * options.get('chunks', 1) + frames[-1:]
-    else:
-        continue
-    for index, frame in enumerate(selected):
-        raw = copy.deepcopy(frame['raw'])
-        if 'result' in raw or 'error' in raw:
-            raw['id'] = request['id']
-        with (root / 'agent.jsonl').open('a') as wire:
-            wire.write(json.dumps(raw) + '\n')
-        print(json.dumps(raw), flush=True)
-        if method == 'session/prompt' and index == 0 and options.get('hold'):
-            while not (root / ('release-' + str(turn))).exists():
-                time.sleep(.001)
-"#,
+            include_str!("../../../../.claude/skills/verify/scripts/fixtures/acp-journal-agent.py"),
         )
         .unwrap();
         let environment = definition
@@ -150,6 +119,7 @@ for line in sys.stdin:
                 ],
                 dir: "/".into(),
                 env: Some(self.environment.clone()),
+                queue_capacity: 1,
                 shutdown_timeout: Some(Duration::from_secs(1)),
                 ..ProcessConfig::default()
             },
@@ -295,7 +265,7 @@ pub fn exercise(mode: &str) -> Value {
     let large = matches!(mode, "large-close" | "overflow");
     std::fs::write(
         fixture.directory.join("options.json"),
-        json!({"hold":held,"chunks":if large {100}else{1}}).to_string(),
+        json!({"hold":held,"chunks":if large {100}else{1},"reload":mode=="reopen"}).to_string(),
     )
     .unwrap();
     let capacity = if matches!(mode, "evicted" | "cross-run" | "overflow") {
@@ -478,6 +448,23 @@ pub fn exercise(mode: &str) -> Value {
     }
     wait(session.close()).unwrap();
     fixture.reaped();
+    if mode == "reopen" {
+        let mut open = request();
+        open.reopen = true;
+        open.native_session_id = "native-session".into();
+        let reopened = wait(adapter.open(open)).unwrap();
+        assert_eq!(
+            wait(reopened.resume(ResumeRequest {
+                run_id: id,
+                after_sequence: 0
+            }))
+            .err(),
+            Some(Error::RunNotFound)
+        );
+        out["reopened"] = serde_json::to_value(wait(reopened.state()).unwrap()).unwrap();
+        wait(reopened.close()).unwrap();
+        fixture.reaped();
+    }
     out
 }
 
@@ -492,6 +479,7 @@ fn public_journal_preserves_replay_and_live_follow_across_its_boundaries() {
         "close",
         "overflow",
         "large-close",
+        "reopen",
     ] {
         exercise(mode);
     }
