@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Client, ClientError};
 
@@ -47,5 +47,38 @@ fn an_empty_closed_endpoint_is_gone_at_the_expired_response_boundary() {
         matches!(result, Err(ClientError::EndpointGone)),
         "{result:?}"
     );
+    assert!(client.closed_by_runner().is_none());
+}
+
+#[test]
+fn a_buffered_reply_precedes_a_later_bad_line_at_expiry() {
+    let mut command = Command::new("python3");
+    command.args([
+        "-u",
+        "-c",
+        "print('{\"protocol\":\"open-agent-protocol\",\"type\":\"capabilities.response\",\"id\":\"answer\",\"in_reply_to\":\"request\",\"payload\":{}}',flush=True); print('{',flush=True)",
+    ]);
+    let mut client = Client::spawn(&mut command, Duration::from_secs(2)).unwrap();
+    client.close_input();
+    assert!(client
+        .process
+        .wait_exit(Duration::from_secs(2))
+        .unwrap()
+        .success());
+    let start = Instant::now();
+    while client.process.buffered() != 2 {
+        assert!(start.elapsed() < Duration::from_secs(2));
+        std::thread::yield_now();
+    }
+    let reply = client.wait_for(Duration::ZERO, true, "answer to request", |client| {
+        client.responses.pop_front()
+    });
+    let following = client.event();
+    client.close().unwrap();
+    assert_eq!(reply.unwrap().id.as_str(), "answer");
+    assert!(matches!(
+        following,
+        Err(ClientError::Process(crate::ProcessError::Wire(_)))
+    ));
     assert!(client.closed_by_runner().is_none());
 }
