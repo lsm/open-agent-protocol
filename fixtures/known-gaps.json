@@ -9,7 +9,5 @@
     "queue-compound-open-model-anchor",
     "queue-compound-open-model-genesis"
   ],
-  "rust": [
-    "tools-catalog-leaks-attachment-env"
-  ]
+  "rust": []
 }

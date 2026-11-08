@@ -507,6 +507,15 @@ impl State {
             return;
         }
         self.check_result_images(at, e);
+        if matches!(
+            e.envelope_type.as_str(),
+            "action.tools.list.response"
+                | "session.open.response"
+                | "session.state.response"
+                | "session.state.updated"
+        ) {
+            self.check_published_sources(at, e);
+        }
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE
             && !self.current_capability.is_empty()
             && revision != self.current_capability
