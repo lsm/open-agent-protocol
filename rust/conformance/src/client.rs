@@ -6,6 +6,9 @@ use oap_protocol::{Envelope, EnvelopeId, RunId};
 
 use crate::{ControlFrame, Frame, Process, ProcessError, Transcript};
 
+#[cfg(test)]
+mod tests;
+
 pub const DEFAULT_LINE_DEADLINE: Duration = Duration::from_secs(300);
 pub const CONTROL_ANSWER_BUDGET: Duration = Duration::from_secs(10);
 
