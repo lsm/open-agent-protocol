@@ -13,11 +13,7 @@
     "descriptor-leaks-attachment-fields",
     "model-switch-degraded-no-optin",
     "models-current-mismatch",
-    "models-held-position-in-another-session",
-    "models-held-position-in-another-session-no-current",
     "models-held-position-moved-no-model",
-    "models-position-in-another-session",
-    "models-position-in-another-session-no-current",
     "tools-catalog-leaks-attachment-env"
   ]
 }
