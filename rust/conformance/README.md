@@ -26,8 +26,9 @@ its exit budget. Call `close_input` to send stdin EOF first.
 answers by transport ID. Each wait shares one deadline across unrelated frames
 and checks buffered answers and already-delivered EOF before expiring. The final
 drain is bounded by the queue snapshot plus one nonblocking receive, so an empty
-disconnected reader is EOF rather than a timeout. A zero deadline selects five
-minutes. Response, event and EOF-drain timeouts close the endpoint and retain a
+disconnected reader is EOF rather than a timeout. A ready reply returns before
+a later line is parsed, just as it does during an unexpired wait. A zero deadline
+selects five minutes. Response, event and EOF-drain timeouts close the endpoint and retain a
 `closed_by_runner` reason. EOF draining shares one budget so a chatty endpoint
 cannot postpone termination. A control wait uses the smaller of the line
 deadline and ten seconds, and its timeout leaves the endpoint usable.

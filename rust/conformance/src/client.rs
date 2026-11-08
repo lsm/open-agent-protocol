@@ -188,6 +188,9 @@ impl Client {
                         Err(ClientError::Process(ProcessError::Timeout)) => break,
                         result => result?,
                     }
+                    if let Some(answer) = take(self) {
+                        return Ok(answer);
+                    }
                     if self.eof {
                         break;
                     }

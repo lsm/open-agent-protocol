@@ -51,3 +51,9 @@ case proves the false-timeout path rather than reconstructing that attempt's
 precise scheduling interleaving. The existing public consumer must still match
 real endpoint replies and exit 0 after EOF, while silent and chatty peers keep
 their original timeout and cleanup behavior.
+
+Also require the expired-budget drain to deliver a queued reply before a later
+malformed line, leaving the wire error for the next consumer call. A real native
+peer queues those outputs in order; regression commit `7efa863f8d` fails before
+the return-order fix. This prevents bulk draining from discarding a reply that
+the caller can already receive.
