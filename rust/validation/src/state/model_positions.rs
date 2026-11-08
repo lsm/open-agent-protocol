@@ -50,7 +50,12 @@ impl State {
         if e.envelope_type != EnvelopeType::RUN_STARTED {
             return;
         }
-        let Some((run, sequence)) = self.runs.get(&os(&e.run_id)).zip(e.sequence) else {
+        let Some((run, sequence)) = self
+            .runs
+            .get(&os(&e.run_id))
+            .filter(|run| !run.terminal)
+            .zip(e.sequence)
+        else {
             return;
         };
         if let Some(model) = run.mutation_model().map(str::to_owned) {
