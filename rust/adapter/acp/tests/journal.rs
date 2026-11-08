@@ -6,10 +6,15 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, OpenRequest, ResumeRequest, SubmitRequest};
+use oap_adapter::{
+    Adapter as _, Error, EventStream, OpenRequest, ResumeRequest, Session, SubmitRequest,
+};
 use oap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config};
-use oap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest, Participant};
-use serde_json::Value;
+use oap_protocol::{
+    Envelope, Message, MessageContent, MessageRole, MessageSubmitRequest, Participant, RunId,
+    SessionStatus,
+};
+use serde_json::{json, Value};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -75,11 +80,13 @@ impl Fixture {
         .unwrap();
         std::fs::write(
             directory.join("agent.py"),
-            r#"import json, os, sys
+            r#"import copy, json, os, sys, time
 from pathlib import Path
 root = Path(sys.argv[1])
 (root / 'pid').write_text(str(os.getpid()))
 frames = [json.loads(line) for line in (root / 'native.jsonl').read_text().splitlines()]
+options = json.loads((root / 'options.json').read_text()) if (root / 'options.json').exists() else {}
+turn = 0
 for line in sys.stdin:
     request = json.loads(line)
     with (root / 'host.jsonl').open('a') as wire:
@@ -90,13 +97,17 @@ for line in sys.stdin:
     elif method == 'session/new':
         selected = frames[1:2]
     elif method == 'session/prompt':
-        selected = frames[2:]
+        turn += 1
+        selected = [frames[2]] * options.get('chunks', 1) + frames[-1:]
     else:
         continue
     for frame in selected:
-        raw = frame['raw']
+        raw = copy.deepcopy(frame['raw'])
         if 'result' in raw or 'error' in raw:
-            assert raw['id'] == request['id'], (raw, request)
+            if method == 'session/prompt' and options.get('hold'):
+                while not (root / ('release-' + str(turn))).exists():
+                    time.sleep(.001)
+            raw['id'] = request['id']
         with (root / 'agent.jsonl').open('a') as wire:
             wire.write(json.dumps(raw) + '\n')
         print(json.dumps(raw), flush=True)
@@ -118,12 +129,18 @@ for line in sys.stdin:
     }
 
     fn adapter(&self) -> Adapter {
+        self.adapter_with_capacity(0)
+    }
+
+    fn adapter_with_capacity(&self, capacity: usize) -> Adapter {
         let selected = Command::new("python3")
             .args(["-c", "import sys; print(sys.executable)"])
             .output()
             .unwrap();
         assert!(selected.status.success());
         Adapter::new(Config {
+            journal_capacity: capacity,
+            abort_active_on_close: true,
             process: ProcessConfig {
                 path: String::from_utf8(selected.stdout).unwrap().trim().into(),
                 args: vec![
@@ -230,4 +247,235 @@ fn the_captured_replay_case_resumes_the_actual_completed_public_run() {
     )
     .unwrap();
     assert_eq!(observed, None, "captured public replay was refused");
+}
+
+fn submit(session: &dyn Session) -> (oap_protocol::MessageSubmitResponse, EventStream) {
+    wait(session.submit(SubmitRequest {
+        request: MessageSubmitRequest {
+            session_id: "session".into(),
+            messages: vec![Message {
+                role: MessageRole::USER,
+                content: MessageContent::from_text("hello"),
+                ..Message::default()
+            }],
+            allow_degraded_features: vec!["session.message.submit".into(), "run.streaming".into()],
+            ..MessageSubmitRequest::default()
+        },
+        ..SubmitRequest::default()
+    }))
+    .unwrap()
+}
+
+fn collect(stream: &mut EventStream) -> (Vec<Envelope>, Option<Error>) {
+    let mut events = Vec::new();
+    while let Some(event) = wait(stream.next()) {
+        match event {
+            Ok(event) => events.push(event),
+            Err(error) => return (events, Some(error)),
+        }
+    }
+    (events, None)
+}
+
+fn replay(session: &dyn Session, run_id: &RunId, after: u64) -> (Value, EventStream) {
+    let (recovery, stream) = wait(session.resume(ResumeRequest {
+        run_id: run_id.clone(),
+        after_sequence: after,
+    }))
+    .unwrap();
+    (
+        json!({"state":recovery.state,"run_id":recovery.run_id,"requested_after":recovery.requested_after,"replayed_from":recovery.replayed_from,"replayed_through":recovery.replayed_through}),
+        stream,
+    )
+}
+
+pub fn exercise(mode: &str) -> Value {
+    let fixture = Fixture::new("replay-degradation");
+    let held = matches!(mode, "active" | "close" | "overflow");
+    let large = matches!(mode, "large-close" | "overflow");
+    std::fs::write(
+        fixture.directory.join("options.json"),
+        json!({"hold":held,"chunks":if large {100}else{1}}).to_string(),
+    )
+    .unwrap();
+    let capacity = if matches!(mode, "evicted" | "cross-run" | "overflow") {
+        2
+    } else {
+        256
+    };
+    let adapter = fixture.adapter_with_capacity(if mode == "default" { 0 } else { capacity });
+    let descriptor = wait(adapter.probe()).unwrap();
+    assert_eq!(
+        descriptor.journal.capacity,
+        if mode == "default" { 256 } else { capacity }
+    );
+    assert_eq!(descriptor.journal.scope, "session");
+    assert_eq!(descriptor.journal.persistence, "process_memory");
+    assert_eq!(descriptor.journal.replay.as_str(), "degraded");
+    let session = wait(adapter.open(request())).unwrap();
+    let opened = wait(session.state()).unwrap();
+    let (admission, mut primary) = submit(session.as_ref());
+    let id = admission.run_id.clone().unwrap();
+    let mut out = json!({"descriptor":descriptor.capabilities,"revision":descriptor.capability_revision,"journal":{"scope":descriptor.journal.scope,"persistence":descriptor.journal.persistence,"replay":descriptor.journal.replay,"capacity":descriptor.journal.capacity},"opened":opened,"admission":admission});
+    if held {
+        let prefix = vec![
+            wait(primary.next()).unwrap().unwrap(),
+            wait(primary.next()).unwrap().unwrap(),
+        ];
+        let after = if mode == "active" { 1 } else { 0 };
+        let (recovery, mut following) = replay(session.as_ref(), &id, after);
+        out["recovery"] = recovery;
+        if mode == "active" {
+            let first = wait(following.next()).unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(&first).unwrap(),
+                serde_json::to_value(&prefix[1]).unwrap()
+            );
+            assert!(matches!(
+                following
+                    .as_mut()
+                    .poll_next(&mut Context::from_waker(&noop_waker())),
+                Poll::Pending
+            ));
+            std::fs::write(fixture.directory.join("release-1"), "go").unwrap();
+            let (tail, error) = collect(&mut primary);
+            assert_eq!(error, None);
+            let (replayed, error) = collect(&mut following);
+            assert_eq!(error, None);
+            assert_eq!(
+                serde_json::to_value(&replayed).unwrap(),
+                serde_json::to_value(&tail).unwrap()
+            );
+            out["events"] = serde_json::to_value([prefix, tail].concat()).unwrap();
+            out["replayed"] = serde_json::to_value([vec![first], replayed].concat()).unwrap();
+        } else if mode == "close" {
+            wait(session.close()).unwrap();
+            let (replayed, error) = collect(&mut following);
+            assert_eq!(error, None);
+            assert_eq!(
+                serde_json::to_value(&replayed).unwrap(),
+                serde_json::to_value(&prefix).unwrap()
+            );
+            assert!(collect(&mut primary).0.is_empty());
+            assert_eq!(
+                wait(session.resume(ResumeRequest {
+                    run_id: id.clone(),
+                    after_sequence: 0
+                }))
+                .err(),
+                Some(Error::SessionClosed)
+            );
+            out["events"] = serde_json::to_value(prefix).unwrap();
+            out["replayed"] = serde_json::to_value(replayed).unwrap();
+        } else {
+            std::fs::write(fixture.directory.join("release-1"), "go").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while wait(session.state()).unwrap().status != SessionStatus::IDLE {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let (replayed, error) = collect(&mut following);
+            assert_eq!(error, Some(Error::EventStreamOverflow));
+            assert_eq!(replayed.len(), 66);
+            for (index, event) in replayed.iter().enumerate() {
+                assert_eq!(event.sequence, Some(index as u64 + 1));
+            }
+            out["events"] = serde_json::to_value(prefix).unwrap();
+            out["replayed"] = serde_json::to_value(replayed).unwrap();
+            out["overflow"] = json!(true);
+        }
+    } else {
+        let (events, error) = collect(&mut primary);
+        if mode == "large-close" {
+            assert_eq!(error, Some(Error::EventStreamOverflow));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while wait(session.state()).unwrap().status != SessionStatus::IDLE {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let (_, mut reference) = replay(session.as_ref(), &id, 0);
+            let (expected, error) = collect(&mut reference);
+            assert_eq!(error, None);
+            assert_eq!(expected.len(), 102);
+            let (recovery, mut following) = replay(session.as_ref(), &id, 0);
+            wait(session.close()).unwrap();
+            let (replayed, error) = collect(&mut following);
+            assert_eq!(error, None);
+            assert_eq!(
+                serde_json::to_value(&replayed).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            out["events"] = serde_json::to_value(expected).unwrap();
+            out["replayed"] = serde_json::to_value(replayed).unwrap();
+            out["recovery"] = recovery;
+        } else {
+            assert_eq!(error, None);
+            assert_eq!(
+                wait(session.resume(ResumeRequest {
+                    run_id: "missing".into(),
+                    after_sequence: 0
+                }))
+                .err(),
+                Some(Error::RunNotFound)
+            );
+            assert_eq!(
+                wait(session.resume(ResumeRequest {
+                    run_id: id.clone(),
+                    after_sequence: 4
+                }))
+                .err(),
+                Some(Error::ReplayCursorFuture)
+            );
+            let after = if mode == "cross-run" { 3 } else { 1 };
+            if mode == "cross-run" {
+                let (_, mut second) = submit(session.as_ref());
+                assert_eq!(collect(&mut second).1, None);
+            }
+            if matches!(mode, "evicted" | "cross-run") {
+                let gap = wait(session.resume(ResumeRequest {
+                    run_id: id.clone(),
+                    after_sequence: 0,
+                }))
+                .err()
+                .unwrap();
+                let Error::ReplayGap(gap) = gap else {
+                    panic!("expected an explicit replay gap")
+                };
+                assert_eq!(gap.latest_available, 3);
+                assert_eq!(gap.oldest_available, if mode == "evicted" { 2 } else { 0 });
+                out["gap"] = json!({"requested_after":gap.requested_after,"oldest_available":gap.oldest_available,"latest_available":gap.latest_available});
+            }
+            let (recovery, mut following) = replay(session.as_ref(), &id, after);
+            let (replayed, error) = collect(&mut following);
+            assert_eq!(error, None);
+            assert_eq!(
+                serde_json::to_value(&replayed).unwrap(),
+                serde_json::to_value(&events[after as usize..]).unwrap()
+            );
+            let (_, mut ended) = replay(session.as_ref(), &id, 3);
+            assert!(collect(&mut ended).0.is_empty());
+            out["events"] = serde_json::to_value(events).unwrap();
+            out["replayed"] = serde_json::to_value(replayed).unwrap();
+            out["recovery"] = recovery;
+        }
+    }
+    wait(session.close()).unwrap();
+    fixture.reaped();
+    out
+}
+
+#[test]
+fn public_journal_preserves_replay_and_live_follow_across_its_boundaries() {
+    for mode in [
+        "default",
+        "complete",
+        "evicted",
+        "cross-run",
+        "active",
+        "close",
+        "overflow",
+        "large-close",
+    ] {
+        exercise(mode);
+    }
 }
