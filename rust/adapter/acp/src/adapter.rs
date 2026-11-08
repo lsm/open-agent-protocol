@@ -26,8 +26,14 @@ pub struct Config {
     pub abort_active_on_close: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DESCRIPTORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct Adapter {
     config: Config,
+    descriptor: Descriptor,
     next_session: Arc<AtomicU64>,
 }
 
@@ -63,12 +69,19 @@ impl Adapter {
             }
         }
         Ok(Self {
+            descriptor: Self::build(&config),
             config,
             next_session: Arc::new(AtomicU64::new(0)),
         })
     }
 
     pub fn describe(&self) -> Descriptor {
+        self.descriptor.clone()
+    }
+
+    fn build(config: &Config) -> Descriptor {
+        #[cfg(test)]
+        DESCRIPTORS.with(|built| built.set(built.get() + 1));
         let mut features: BTreeMap<String, FeatureSupport> = [
             "session.open",
             FEATURE_OPEN_REOPEN,
@@ -154,8 +167,7 @@ impl Adapter {
                 protocol_versions: vec![VERSION.into()],
                 profiles: vec![PROFILE.into()],
                 features,
-                sources: self
-                    .config
+                sources: config
                     .mcp_servers
                     .iter()
                     .map(|server| ToolSourceDescriptor {
@@ -174,7 +186,7 @@ impl Adapter {
                 replay: SupportLevel::DEGRADED,
                 scope: "session".into(),
                 persistence: "process_memory".into(),
-                capacity: self.config.journal_capacity,
+                capacity: config.journal_capacity,
             },
             ..Descriptor::default()
         }
@@ -225,3 +237,7 @@ impl Admitter for Adapter {
         Box::pin(async move { result })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/adapter.rs"]
+mod tests;
