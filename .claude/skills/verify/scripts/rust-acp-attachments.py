@@ -256,7 +256,9 @@ def main():
                 assert not observed['rust']['spawned'] and not observed['go']['spawned'],name
             else:
                 assert failure is None and observed['rust']['spawned'],(name,result)
+        validated = 0
         for index,frames in traces(observed['rust'],request):
+            validated += 1
             path=case/f'trace-{index}.json';path.write_text(json.dumps(frames,ensure_ascii=False,indent=2))
             for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{index}-{language}.log')
@@ -264,7 +266,8 @@ def main():
             host=[item['frame'] for item in wires['rust'] if item['from']=='host']
             requested=next(item for item in host if item.get('method')=='session/new')['params']['mcpServers']
             assert requested==[dict(name='filesystem',command='/usr/local/bin/mcp-filesystem',args=['--root','/workspace'],env=[dict(name='MCP_TOKEN',value='operator-secret'),dict(name='MCP_MODE',value='readonly')])],requested
-        print(f'PASS {name}: Go/Rust public outcome and native wire agree, admission is consistent, successful state traces pass three validators, native children reaped',flush=True)
+        disposition = f'{validated} actual state exchanges pass three validators' if validated else 'preflight refusal, no native startup' if expected is not None else 'cancelled after actual native MCP request, no Session published'
+        print(f'PASS {name}: Go/Rust public outcome and native wire agree; {disposition}; admission consistent; native children reaped',flush=True)
     peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','attachments','--test','attachment_cases','--','--nocapture'],output/'integration.log')
     print(f'PASS ACP per-open MCP attachments. Only clocks/staged revision normalized; raw diagnostic wording retained. Evidence: {output}',flush=True)
 
