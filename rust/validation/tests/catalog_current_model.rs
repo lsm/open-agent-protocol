@@ -33,3 +33,20 @@ fn a_state_document_marks_the_model_a_catalog_may_report() {
     let codes: Vec<_> = stale.diagnostics.iter().map(|d| d.code.as_str()).collect();
     assert_eq!(codes, ["session_state_mismatch"], "{:?}", stale.diagnostics);
 }
+
+#[test]
+fn a_run_start_after_terminality_marks_no_model() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/catalog_current_model/late-start-after-terminal.json");
+    let result = Validator::new()
+        .unwrap()
+        .validate(&std::fs::read(path).unwrap(), "late-start-after-terminal");
+    let mut codes: Vec<_> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    codes.sort();
+    assert_eq!(
+        codes,
+        ["event_after_terminal", "session_state_mismatch"],
+        "{:?}",
+        result.diagnostics
+    );
+}
