@@ -101,16 +101,16 @@ for line in sys.stdin:
         selected = [frames[2]] * options.get('chunks', 1) + frames[-1:]
     else:
         continue
-    for frame in selected:
+    for index, frame in enumerate(selected):
         raw = copy.deepcopy(frame['raw'])
         if 'result' in raw or 'error' in raw:
-            if method == 'session/prompt' and options.get('hold'):
-                while not (root / ('release-' + str(turn))).exists():
-                    time.sleep(.001)
             raw['id'] = request['id']
         with (root / 'agent.jsonl').open('a') as wire:
             wire.write(json.dumps(raw) + '\n')
         print(json.dumps(raw), flush=True)
+        if method == 'session/prompt' and index == 0 and options.get('hold'):
+            while not (root / ('release-' + str(turn))).exists():
+                time.sleep(.001)
 "#,
         )
         .unwrap();
@@ -303,7 +303,11 @@ pub fn exercise(mode: &str) -> Value {
     } else {
         256
     };
-    let adapter = fixture.adapter_with_capacity(if mode == "default" { 0 } else { capacity });
+    let adapter = if mode == "default" {
+        fixture.adapter()
+    } else {
+        fixture.adapter_with_capacity(capacity)
+    };
     let descriptor = wait(adapter.probe()).unwrap();
     assert_eq!(
         descriptor.journal.capacity,
