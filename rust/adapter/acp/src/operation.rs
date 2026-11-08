@@ -211,3 +211,7 @@ impl Process {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/operation.rs"]
+mod tests;
