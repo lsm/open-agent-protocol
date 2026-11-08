@@ -26,6 +26,11 @@ pub struct Config {
     pub abort_active_on_close: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DESCRIPTORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct Adapter {
     config: Config,
     next_session: Arc<AtomicU64>,
@@ -69,6 +74,8 @@ impl Adapter {
     }
 
     pub fn describe(&self) -> Descriptor {
+        #[cfg(test)]
+        DESCRIPTORS.with(|built| built.set(built.get() + 1));
         let mut features: BTreeMap<String, FeatureSupport> = [
             "session.open",
             FEATURE_OPEN_REOPEN,
@@ -225,3 +232,7 @@ impl Admitter for Adapter {
         Box::pin(async move { result })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/adapter.rs"]
+mod tests;
