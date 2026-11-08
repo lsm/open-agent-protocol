@@ -10,7 +10,6 @@
     "queue-compound-open-model-genesis"
   ],
   "rust": [
-    "descriptor-leaks-attachment-fields",
     "tools-catalog-leaks-attachment-env"
   ]
 }

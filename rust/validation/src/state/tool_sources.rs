@@ -79,7 +79,48 @@ impl State {
         }
     }
 
+    pub(super) fn check_published_sources(&mut self, at: (usize, usize), e: &Envelope) {
+        let raw: serde_json::Value = payload(e);
+        self.check_raw_sources(at, e, "/payload/sources", &raw["sources"]);
+        if let Some(layers) = raw["layers"].as_object() {
+            for (name, layer) in layers {
+                let token = name.replace('~', "~0").replace('/', "~1");
+                let pointer = format!("/payload/layers/{token}/sources");
+                self.check_raw_sources(at, e, &pointer, &layer["sources"]);
+            }
+        }
+    }
+
+    fn check_raw_sources(
+        &mut self,
+        at: (usize, usize),
+        e: &Envelope,
+        pointer: &str,
+        sources: &serde_json::Value,
+    ) {
+        let Some(sources) = sources.as_array() else {
+            return;
+        };
+        for (index, source) in sources.iter().enumerate() {
+            for member in ["command", "args", "environment"] {
+                if source.get(member).is_some() {
+                    self.add_expected(
+                        codes::ATTACHMENT_FIELD_IN_CATALOG,
+                        at,
+                        e,
+                        &format!("{pointer}/{index}/{member}"),
+                        "a published tool source carries an attachment-only member",
+                        "no command, args, or environment",
+                        member,
+                        &[],
+                    );
+                }
+            }
+        }
+    }
+
     pub(super) fn check_descriptor_catalog(&mut self, at: (usize, usize), e: &Envelope) {
+        self.check_published_sources(at, e);
         let p: CapabilitiesResponse = payload(e);
         let mut declared = HashSet::new();
         let mut duplicate_source = None;
