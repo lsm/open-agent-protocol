@@ -92,6 +92,14 @@ impl State {
     pub(super) fn state_model(&mut self, at: (usize, usize), e: &Envelope) {
         self.capture_model(at, e);
         let p: SessionState = payload(e);
+        self.mark_model(
+            s(&p.session_id).as_str(),
+            &p.current_model_id,
+            "",
+            0,
+            "",
+            at.0,
+        );
         let track = self.session_models.entry(s(&p.session_id)).or_default();
         let moved = track
             .guarded
