@@ -395,6 +395,13 @@ pub fn exercise(mode: &str) -> Value {
             out["overflow"] = json!(true);
         }
     } else {
+        if mode == "large-close" {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while wait(session.state()).unwrap().status != SessionStatus::IDLE {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         let (events, error) = collect(&mut primary);
         if mode == "large-close" {
             assert_eq!(error, Some(Error::EventStreamOverflow));
