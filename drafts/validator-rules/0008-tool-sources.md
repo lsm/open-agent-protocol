@@ -6,7 +6,7 @@ validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
 and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports the
 generic tool lifecycle, list capability gates and response-local integrity,
-descriptor catalog integrity, attachment gates/refusals and the provided-tool
+descriptor catalog integrity and attachment-only field rejection, attachment gates/refusals and the provided-tool
 rules marked below.
 The items in
 [`research/validator-divergences.md`](../../research/validator-divergences.md)
@@ -67,7 +67,7 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#the-attachment-shape-is-not-the-catalog-shape/1` | A published tool source (descriptor top level, each layer, list response, open response, session state) MUST NOT carry `command`, `args` or `environment`. | L226–259 | `attachment_field_in_catalog` | `toolsources.go:checkRawSources` | `semantic.zig:checkRawSources` | — |
+| `0008#the-attachment-shape-is-not-the-catalog-shape/1` | A published tool source (descriptor top level, each layer, list response, open response, session state) MUST NOT carry `command`, `args` or `environment`. | L226–259 | `attachment_field_in_catalog` | `toolsources.go:checkRawSources` | `semantic.zig:checkRawSources` | `state/tool_sources.rs:check_published_sources` (descriptors; other publications owed) |
 
 ### [0008] Attachment is bounded by what the endpoint disclosed
 
