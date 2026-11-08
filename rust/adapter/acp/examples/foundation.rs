@@ -4,7 +4,7 @@ use futures::executor::block_on;
 use oap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
 use oap_adapter_acp::{native::McpServer, pin, process::ProcessConfig, Adapter, Config};
 use oap_protocol::{
-    ModelsRequest, Participant, SessionModelSwitchRequest, FEATURE_MODELS_LIST,
+    CompactionPolicy, ModelsRequest, Participant, SessionModelSwitchRequest, FEATURE_MODELS_LIST,
     FEATURE_SESSION_MODEL_SWITCH,
 };
 use serde::Deserialize;
@@ -17,6 +17,7 @@ struct Input {
     servers: Vec<McpServer>,
     participant: String,
     reasoning_level: String,
+    compaction_policy: Option<CompactionPolicy>,
     open: bool,
     model: Option<String>,
     allow_switch: bool,
@@ -67,6 +68,7 @@ fn main() {
             ..Participant::default()
         },
         reasoning_level: input.reasoning_level.as_str().into(),
+        compaction_policy: input.compaction_policy,
         ..OpenRequest::default()
     };
     let admitted = block_on(adapter.admitter().unwrap().admit(&request));

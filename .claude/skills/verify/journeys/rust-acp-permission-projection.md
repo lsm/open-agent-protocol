@@ -38,7 +38,7 @@ before the fix. The initial API red is a missing-method compile failure.
 Native request binding, serialized async reply ownership and quiet-child
 permission cleanup are covered by `rust-acp-permission-controller.md`. Normal
 Session publication/resolve/admission/close are covered by
-`rust-acp-session-permissions.md`. Native cancellation is covered by rust-acp-cancel.md. Live config is covered by `rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening config, full byte corpus and C8 served parity retain their
+`rust-acp-session-permissions.md`. Native cancellation is covered by rust-acp-cancel.md. Live config is covered by `rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening config is covered by `rust-acp-opening-config.md`; full byte corpus and C8 served parity retain their
 later slices. The shared process helper's grandchild-held-pipe limits apply.
 Run all existing ACP journeys, full baseline and Rust all-features under the
 same mutex, and read the real PTY reply and `/quit` exit.

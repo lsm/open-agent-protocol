@@ -42,7 +42,7 @@ def main():
         for name, patch, expected in [
             ('probe', {}, None),
             ('participant', {'participant': ''}, 'participant identity is required'),
-            ('reasoning', {'reasoning_level': 'high'}, 'session.reasoning'),
+            ('compaction', {'compaction_policy': {'kind': 'off'}}, 'session.compaction.policy'),
             ('empty-executable', {'path': ''}, 'executable is required'),
             ('relative-directory', {'dir': 'relative'}, 'absolute working directory is required'),
             ('unnamed-mcp', {'servers': [{}]}, 'needs a name'),
@@ -61,7 +61,7 @@ def main():
                 else:
                     assert expected in result['openError'], result
                 assert result['descriptor']['endpoint']['version'] == pin['endpoint_version']
-                assert result['revision'] == pin['capability_revision'] + '-rust-reload'
+                assert result['revision'] == pin['capability_revision'] + '-rust-settings'
                 assert result['corpus'] == pin['corpus']
                 assert result['journalReplay'] == 'unavailable'
                 assert result['descriptor']['sources'] == [
@@ -69,6 +69,7 @@ def main():
                 for key, support in result['descriptor']['features'].items():
                     level = {
                         'protocol.initialize': 'emulated', 'capabilities': 'emulated',
+                        'session.reasoning': 'emulated',
                         'session.open': 'native', 'session.open.reopen': 'native', 'session.state': 'emulated',
                         'action.permissions': 'native', 'run.cancel': 'native',
                         'models.list': 'degraded', 'session.model.switch': 'degraded',

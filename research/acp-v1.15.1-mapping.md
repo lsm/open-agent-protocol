@@ -42,7 +42,7 @@ Rust corpus parity.
 
 ## Staged Rust tool and permission projection
 
-The Rust `-rust-reload` stage projects observed native tool calls and sparse
+The Rust `-rust-settings` stage projects observed native tool calls and sparse
 patches through the normal session submit stream. Tool identity is session-wide,
 terminal events synthesize a missing start, and unfinished children settle in
 creation order before the parent. The synthetic tools journey compares public
@@ -51,7 +51,7 @@ all three validators. It normalizes wall clocks and the declared staged revision
 Byte-for-byte corpus replay retains its final approved ACP slice.
 
 The degraded tool rows describe observed native execution. Permission
-publication/resolution uses the native support described below. Native host cancellation and live config are described below. Reload is described below; opening configuration retains its following slice. Closing or abandoning an active session
+publication/resolution uses the native support described below. Native host cancellation and live config are described below. Reload and opening configuration are described below. Closing or abandoning an active session
 retains its existing bounded prefix and owned process cleanup contract.
 
 ## Typed Rust permission projection
@@ -83,7 +83,7 @@ described below. The byte-for-byte corpus remains a later gate.
 
 Normal Session publication, resolution, admission and close now use the owned
 controller. The descriptor exposes native action.permissions and interactive
-gates under -rust-reload. Immediate control answers serialize behind
+gates under -rust-settings. Immediate control answers serialize behind
 publication, and state reads reflect the current projection. Live permission routes are pruned
 at commit or settlement. A bounded cache of 64 resolved ids preserves recent
 late-answer refusals across subsequent admissions. Idle native asks receive
@@ -98,7 +98,7 @@ OS thread inventories. Full byte-for-byte corpus replay remains a later gate.
 
 ## Rust native cancellation
 
-The -rust-reload stage accepts run-targeted native session/cancel intent,
+The -rust-settings stage accepts run-targeted native session/cancel intent,
 preserves cancelling through streamed events and waits for a cancelled stop
 or remote -32800 confirmation. Completion or another error may win. Pending
 permissions settle with native cancellation and correlated local resolutions;
@@ -107,7 +107,7 @@ Go/Rust events and parsed host frames are compared after clock/revision
 normalization, and all three validators judge actual Rust events with the
 accepted host exchange. A controlled clock pauses accepted-write commit to
 prove confirmation waits. Quiet peers prove queued control drop/close reap
-and join. Run replay/resume, opening config, full byte corpus and C8 remain later gates.
+and join. Run replay/resume, full byte corpus and C8 remain later gates.
 
 ## Rust live config projection
 
@@ -123,13 +123,13 @@ session updates leave recorded settings alone.
 The synthetic public Go/Rust comparison retains both directions of native wire,
 snapshots and run events, normalizing only clocks and the staged revision. All
 three validators judge wrapped Rust exchanges. This adds no capability support
-level. The current stage uses `-rust-reload` for native reopen, described below.
-Confirmed opening config/reasoning remains the next slice, followed by full ACP
+level. The current stage uses `-rust-settings` for native reopen, described below.
+Confirmed opening config/reasoning is described below, followed by full ACP
 byte corpus replay. No served-parity or live-agent claim is made.
 
 ## Rust capability-gated reload
 
-The -rust-reload stage advertises native session.open.reopen. It follows the
+The -rust-settings stage advertises native session.open.reopen. It follows the
 existing native mapping: loadSession=true selects session/load first, otherwise
 a sessionCapabilities.resume object selects session/resume. It refuses absent
 bindings and unsupported agents, preserves omitted/null bound ids, and refuses
@@ -145,5 +145,26 @@ diagnostic wording differs. All three validators judge successful Rust traces.
 Quiet and partially written reverse replies prove child reap and joined
 workers on cancellation/deadline, before the public consumer exits. Scoped
 call-worker ownership preserves the RPC deadline when reverse-write teardown
-also produces a broken pipe. Opening config/reasoning and byte corpus replay
-remain the next approved slices. This is not a C8 served-parity hand-off.
+also produces a broken pipe. Opening config/reasoning is described below;
+byte corpus replay remains the next approved slice. This is not a C8 served-parity hand-off.
+
+## Rust confirmed opening settings
+
+The -rust-settings stage adds emulated session.reasoning in session_open mode
+and a private Config.session_config map. It follows Go's opening sequence:
+sorted option writes with unique/select advertised-value checks, immediate
+confirmation, full-set confirmation, reasoning mapping/confirmation, then
+full-set confirmation again. New/reloaded state uses the final snapshot and
+preserves explicitly requested reasoning. Unsupported or reset settings close
+the owned process without publishing a Session or prompt. Setters reuse the
+bounded owning collector and drain notifications/reverse calls before dispatch.
+
+Twenty-eight synthetic public Go/Rust cases compare state/catalog results and
+structured refusal metadata, with exact parsed native-frame agreement. Raw
+parser/error text remains available but is not treated as portable diagnostic
+wording. Three validators judge successful wrapped Rust exchanges. Quiet
+new/reloaded and partial request/reverse-write cases observe actual bytes,
+child absence and threads returning to baseline before caller exit. Waiting
+polls are measured at the native boundary; large snapshot CPU preparation is
+retained separately and can exceed 50 ms. No full byte corpus, served parity
+or live-provider interoperability claim is made.
