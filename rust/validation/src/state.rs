@@ -8,6 +8,7 @@ mod default_model;
 mod interactions;
 mod live_settings;
 mod model_catalog;
+mod model_positions;
 mod models;
 mod name_pattern;
 mod packed;
@@ -80,6 +81,7 @@ pub(crate) struct State {
     pending_controls: HashMap<String, controls::PendingSubmit>,
     model_catalogs: HashMap<String, model_catalog::SessionCatalog>,
     held_models: HashMap<String, Vec<model_catalog::HeldModel>>,
+    held_positions: Vec<model_positions::HeldPosition>,
     judged_attaches: HashMap<String, bool>,
     attached_providers: HashMap<String, provider_attach::Attached>,
     session_models: HashMap<String, default_model::SessionModel>,
@@ -367,6 +369,7 @@ impl State {
             pending_controls: HashMap::new(),
             model_catalogs: HashMap::new(),
             held_models: HashMap::new(),
+            held_positions: Vec::new(),
             judged_attaches: HashMap::new(),
             attached_providers: HashMap::new(),
             session_models: HashMap::new(),
@@ -518,6 +521,7 @@ impl State {
         } else if e.envelope_type == EnvelopeType::MODELS_RESPONSE {
             self.models_response_shape(at, e);
             self.record_model_catalog(at, e);
+            self.models_position(at, e);
         } else if e.envelope_type == EnvelopeType::SESSION_MODEL_SWITCH_RESPONSE {
             self.switched_model(at, e);
         }
@@ -529,6 +533,7 @@ impl State {
         self.auth_dispatch(at, e);
         self.redelivery_held(e);
         self.run_dispatch(at, e);
+        self.reconcile_held_positions();
         self.participants_from(at, e);
         self.controls_dispatch(at, e);
         let t = &e.envelope_type;
