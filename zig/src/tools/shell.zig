@@ -1518,12 +1518,20 @@ test "a line written past the offset the model saw matches a rule set later, and
     defer case.deinit();
     var jobs = Jobs.init(std.testing.allocator);
     defer jobs.deinit();
-    jobs.foreground_budget_ms = 150;
-    var result = try movedCase(&jobs, &case, "printf 'seen failure\\nlate failure\\n'; sleep 30");
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u64, "seen failure\n".len), jobs.list.items[0].seen);
+    try startJob(&jobs, &case, "mkfifo release; echo seen failure; read token < release; echo late failure; sleep 30", "call-bg");
+    const job = jobs.list.items[0];
+    try waitForOutput(&case, job.output, "seen failure");
+    try std.testing.expect(try jobs.setRule(job.output, "^seen failure$"));
+    try waitForNotice(&jobs);
+    const first = (try jobs.takeNotice(std.testing.allocator)).?;
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, first.text, "Matching line: seen failure") != null);
+    try std.testing.expectEqual(@as(u64, "seen failure\n".len), job.seen);
+    var released = try case.run("release", "echo go > release");
+    defer released.deinit(std.testing.allocator);
+    try waitForOutput(&case, job.output, "late failure");
 
-    try std.testing.expect(try jobs.setRule(jobs.list.items[0].output, "failure"));
+    try std.testing.expect(try jobs.setRule(job.output, "failure"));
     try waitForNotice(&jobs);
     const notice = (try jobs.takeNotice(std.testing.allocator)).?;
     defer notice.deinit(std.testing.allocator);
