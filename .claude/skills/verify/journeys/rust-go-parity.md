@@ -16,9 +16,9 @@ load codes through `Validator::with_packs`. Only IDs in the Rust list of
 `fixtures/known-gaps.json` are skipped. A fixture in the Rust list of
 `.claude/skills/verify/scripts/rust-location-gaps.json` must agree on its codes and may differ only
 in where or how often it reports them. The script fails on any other
-disagreement. The Go list pins the accepted packed-branch pointer difference
-while retaining phase, code, index, envelope identity and multiplicity. It also
-fails on a listed fixture that has come to agree, which must then
+disagreement. The Go pointer-exception list is empty: packed-branch pointers must now agree
+while retaining phase, code, index, envelope identity and multiplicity. The replay
+also fails on a listed fixture that has come to agree, which must then
 be deleted from the list. `disagreements.json` in the output directory holds
 each mismatch.
 

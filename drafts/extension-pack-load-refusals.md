@@ -247,18 +247,17 @@ Rust URI requirement is retained. [Go resolver](../go/validation/pack.go),
 
 ## Packed-schema diagnostic selection
 
-The parsed-envelope Rust schema operation and Go's complete validator agree that
-`ext-packed-type-malformed` is schema-invalid. Rust reports the missing `key` at
-`/payload` in the declared storage request branch. Go instead reports missing
-`run_id` and `sequence` at the root, from a core branch the packed request does
-not declare. Go's preferred-branch map contains core types, so a packed type
-leaves unrelated branch errors eligible for primary selection.
+Go and Rust select the branch declared for each loaded packed type. The storage
+request missing `key` reports `/payload`; the three escaped-URI invalid-payload
+controls report the conflicting constant at `/payload/ok`. Their valid controls
+pass both validators. The public replay requires exact primary-pointer agreement
+and an empty `diagnostic-differences.json`.
 
-The three escaped-URI invalid-payload controls in `rust-pack-compiled.py` show the
-same selection difference. Rust reports the conflicting constant at `/payload/ok`.
-Go reports unrelated required core properties at the root. Their valid controls
-pass both validators. These four diagnostic-only differences are retained in
-`diagnostic-differences.json` by the public replay, alongside agreeing schema/load
-verdicts and member-pointer checks. Rust keeps the declared-branch diagnostic.
+Go records compiled root-union branch locations per validator, including
+canonical targets reached through escaped references. Once a diagnostic enters
+that packed branch, nested core references retain its ownership. Global envelope
+constraints and independently validated payload members keep their diagnostics.
+The signed public regression reproduces the former unrelated core required-field
+errors before the fix.
 [Go diagnostic selector](../go/validation/validator.go),
 [Rust schema operation](../rust/validation/src/pack/compiled.rs).

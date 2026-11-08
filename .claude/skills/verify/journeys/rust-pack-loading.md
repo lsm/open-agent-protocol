@@ -168,16 +168,21 @@ the library. The external consumer now calls this operation for each envelope.
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_schema_validation
+go test ./go/validation -run '^TestPackedPrimaryDiagnostic' -count=1
 python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-pack-schema-operation-<unique>
 ```
 
 All schema/load verdicts must agree with Go. Member errors must point into the
 original payload with escaped tokens, and two invalid members must select the
 first escaped pointer. The signed ordering regression fails before the sort.
-Four controls retain a primary-diagnostic difference in `diagnostic-differences.json`.
-Rust identifies the declared packed branch's missing key or conflicting payload
-constant; Go selects unrelated core-branch required-property errors. The ledger
-in `drafts/extension-pack-load-refusals.md` records this diagnostic-only difference.
+The replay requires exact primary-diagnostic agreement and an empty
+`diagnostic-differences.json`, including the four formerly pinned packed cases.
+Both validators identify the declared packed branch's missing key or conflicting
+payload constant. Go's public regressions exercise both strict and tolerant modes,
+whole-document/escaped references, nested core references, valid payloads and
+global required-envelope constraints. Independent member errors retain their
+escaped pointers and ordering. The ledger in
+`drafts/extension-pack-load-refusals.md` records the corrected selection.
 Inspect raw outputs and the new operation's unit controls for input preservation
 and auth-answer redaction. Native strict trace semantics are exercised below.
 Tolerant mode is exercised in `rust-tolerant.md`.
@@ -215,5 +220,4 @@ Run the shared parity journey and complete Verify baseline as well. The rebuilt
 Zig CLI must judge each new `reply-roles` fixture with the pack loaded.
 The helper checks their exit status and exact diagnostic codes and retains
 `zig-results.json` plus raw outputs. Record any observed Zig difference in the
-per-tree gap list. The accepted packed-schema pointer differences
-and URI compatibility differences above remain separately pinned.
+per-tree gap list. The URI compatibility differences above remain separately pinned.

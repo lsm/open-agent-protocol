@@ -138,12 +138,6 @@ def main():
     cases.append(("escaped-member-order", path, [directory], False, None))
     results = []
     diagnostic_differences = []
-    packed_branch_locations = {
-        "ext-packed-type-malformed":"/payload",
-        "compiled-fragment-escaped-invalid":"/payload/ok",
-        "compiled-id-pipe-escaped-invalid":"/payload/ok",
-        "compiled-id-space-escaped-invalid":"/payload/ok",
-    }
     for label, trace, directories, valid, codes in cases:
         rust = run([str(consumer), str(trace), *map(str, directories)], label + ".rust")
         data = json.loads(rust.stdout)
@@ -163,12 +157,8 @@ def main():
             expected = {(d.get("index", 0), d.get("pointer", ""), d["code"]) for d in go_diagnostics}
             actual = {(d["index"], d["diagnostic"].get("pointer", ""), d["diagnostic"]["code"]) for d in data["diagnostics"]}
             assert {d[0] for d in actual} == {d[0] for d in expected}, (label, data, go_diagnostics)
-            if label in packed_branch_locations:
-                assert actual == {(0, packed_branch_locations[label], "schema_invalid")}, actual
-                assert expected == {(0, "", "schema_invalid")}, expected
-                diagnostic_differences.append({"id":label, "rust":data["diagnostics"], "go":go_diagnostics, "reason":"Go selects a core-branch required error for a declared packed request"})
-            else:
-                assert actual <= expected, (label, data, go_diagnostics)
+            if actual != expected:
+                diagnostic_differences.append({"id":label, "rust":data["diagnostics"], "go":go_diagnostics})
             if label == "escaped-member-order":
                 assert actual and all(d[1] == "/payload/com.example.pointer.ab/ok" for d in actual), actual
             if label == "escaped-member-pointer-false":
@@ -176,8 +166,9 @@ def main():
         results.append({"id":label, "valid":valid, "codes":codes, "rust":data})
     (output / "diagnostic-differences.json").write_text(json.dumps(diagnostic_differences, indent=2) + "\n")
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+    assert not diagnostic_differences, diagnostic_differences
     print(f"PASS: {len(results)} public compiled-schema/load cases agree with Go")
-    print(f"RECORDED: {len(diagnostic_differences)} packed-branch primary diagnostics differ from Go; member pointers and ordering agree")
+    print("PASS: primary diagnostic pointers agree; diagnostic-differences.json is empty")
     print("SCHEMA: parsed-envelope operation verified; trace semantics are checked by rust-packed-traces.py and rust-tolerant.py")
 
 
