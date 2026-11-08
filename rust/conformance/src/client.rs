@@ -183,18 +183,25 @@ impl Client {
             }
             let remaining = within.saturating_sub(start.elapsed());
             if remaining.is_zero() {
-                for _ in 0..self.process.buffered() {
-                    self.pull(Duration::ZERO)?;
+                for _ in 0..=self.process.buffered() {
+                    match self.pull(Duration::ZERO) {
+                        Err(ClientError::Process(ProcessError::Timeout)) => break,
+                        result => result?,
+                    }
+                    if self.eof {
+                        break;
+                    }
                 }
                 if let Some(answer) = take(self) {
                     return Ok(answer);
                 }
+                if self.eof {
+                    return Err(ClientError::EndpointGone);
+                }
                 return Err(self.expire(within, fatal, target));
             }
             match self.pull(remaining) {
-                Err(ClientError::Process(ProcessError::Timeout)) => {
-                    return Err(self.expire(within, fatal, target));
-                }
+                Err(ClientError::Process(ProcessError::Timeout)) => {}
                 result => result?,
             }
         }
