@@ -21,7 +21,7 @@ use oap_protocol::{
 
 use crate::adapter::Config;
 use crate::native::{
-    decode, ConfigOption, PermissionOutcome, PermissionRequest, PermissionResponse,
+    decode, ConfigOption, McpServer, PermissionOutcome, PermissionRequest, PermissionResponse,
     SessionNewParams, SessionNewResult, METHOD_SESSION_NEW, METHOD_SESSION_REQUEST_PERMISSION,
 };
 use crate::process::{Implementation, Process};
@@ -89,12 +89,13 @@ impl Session {
         request: OpenRequest,
         descriptor: Descriptor,
         next: &Arc<AtomicU64>,
+        mcp_servers: Vec<McpServer>,
     ) -> Result<Box<dyn SessionContract>, Error> {
-        let params = serde_json::value::to_raw_value(&SessionNewParams {
+        let opening = SessionNewParams {
             cwd: config.process.dir.clone(),
-            mcp_servers: config.mcp_servers.clone(),
-        })
-        .map_err(native_error)?;
+            mcp_servers,
+        };
+        let params = serde_json::value::to_raw_value(&opening).map_err(native_error)?;
         let mut process_config = config.process.clone();
         process_config
             .client_info
@@ -107,7 +108,7 @@ impl Session {
             .await
             .map_err(|error| Error::Harness(error.to_string()))?;
         let (process, raw) = if request.reopen {
-            crate::reload::call(process, &request, config).await?
+            crate::reload::call(process, &request, config, &opening.mcp_servers).await?
         } else {
             process
                 .call_async(METHOD_SESSION_NEW.into(), Some(params), None)
@@ -189,7 +190,17 @@ impl Session {
                     ..RecoveryMetadata::default()
                 }),
                 updated_at_ms: now_ms(),
-                sources: descriptor.capabilities.sources,
+                sources: descriptor
+                    .capabilities
+                    .sources
+                    .into_iter()
+                    .chain(
+                        request
+                            .tool_sources
+                            .iter()
+                            .map(oap_protocol::ToolSourceAttachment::descriptor),
+                    )
+                    .collect(),
                 ..SessionState::default()
             },
         }));
