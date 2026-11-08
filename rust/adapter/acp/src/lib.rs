@@ -6,6 +6,8 @@ pub mod process;
 mod adapter;
 pub use adapter::{pin, Adapter, Config};
 
+mod attachments;
+
 mod operation;
 pub use operation::Operation;
 

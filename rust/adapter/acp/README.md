@@ -62,7 +62,7 @@ The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
 the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Native reload and bounded canonical replay are described below. Text submission and
 streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-journal` to the catalog revision because this descriptor has
+appends `-rust-attachments` to the catalog revision because this descriptor has
 fewer capabilities than the completed adapter. Full corpus replay remains a
 later slice of #1439.
 
@@ -102,7 +102,7 @@ opt-in. It reports the latest model config-option snapshot, flattening
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Live snapshots replace the opening snapshot as described below.
-The descriptor uses a `-rust-journal`
+The descriptor uses a `-rust-attachments`
 revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
@@ -219,7 +219,7 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-journal`
+opt-in. The staged descriptor records these limits under its `-rust-attachments`
 revision. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
@@ -405,7 +405,7 @@ request binding before local commit, including a projection closed during the
 write. Parent settlement consumes the binding before committing cancellation.
 
 The descriptor advertises native action.permissions and interactive gates,
-under the staged -rust-journal revision. Run
+under the staged -rust-attachments revision. Run
 `rust-acp-session-permissions.md` for normal Session event/wire comparisons,
 immediate resolution, idle replies, across-run history, state and cleanup.
 Native cancellation, reload and opening settings are described below. Full
@@ -439,7 +439,7 @@ is invented when the native notification was never written.
 
 Run rust-acp-cancel.md for public Go/Rust event and parsed-wire comparisons,
 three-validator traces, controlled confirmation ordering and quiet-child/thread
-ownership. The staged revision is -rust-journal and run.cancel is native. Submit
+ownership. The staged revision is -rust-attachments and run.cancel is native. Submit
 and streaming retain their degradation opt-ins. Run replay/resume is covered
 by the bounded journal below; full byte corpus and C8 served parity remain later slices.
 
@@ -457,7 +457,7 @@ model or reasoning advance the state timestamp.
 Config-only updates emit no stream event. Wrong-session and malformed idle
 updates leave state unchanged; malformed active updates retain the existing
 `acp_invalid_update` failure. No native I/O worker is started for this local
-projection. Capability fidelity stays staged under `-rust-journal`, as no
+projection. Capability fidelity stays staged under `-rust-attachments`, as no
 optional feature's support level changes.
 
 Run `.claude/skills/verify/journeys/rust-acp-live-config.md` for actual native
@@ -470,7 +470,7 @@ A reopen needs an existing native session id. After initialize, the adapter
 uses session/load when loadSession is true, otherwise session/resume when its
 capability is an object. Missing bindings or unsupported agents refuse with
 an unsatisfiable session.open.reopen control. The descriptor advertises native
-reopen under the -rust-journal revision. Reopening creates a fresh journal;
+reopen under the -rust-attachments revision. Reopening creates a fresh journal;
 pre-close OAP run ids and events are not recovered from native history.
 
 The public Process.call_draining_async operation consumes ordered inbound
@@ -502,7 +502,7 @@ required set is rechecked before and after a requested reasoning level. A later
 setting cannot silently reset an earlier required value. Refusals close the
 owned process before any Session or prompt is published.
 
-Opening reasoning is emulated in session_open mode under -rust-journal. The
+Opening reasoning is emulated in session_open mode under -rust-attachments. The
 agent's thought_level option supplies a case-insensitive value/name mapping;
 its reply must confirm the selected id/value. Requested reasoning remains
 explicit in state. With configured options or reload, other model/reasoning
@@ -549,5 +549,35 @@ parsed native wire, close/overflow and missing/future/evicted cursor outcomes.
 Complete original traces must pass all three validators. Aborted/overflowed
 prefixes must be retained as incomplete and produce missing_run_terminal,
 not be padded with a synthetic terminal to make validation pass. The stage is
--rust-journal. Per-open MCP attachments and deterministic clocks/ids plus the
-full corpus retain their next approved slices; this is not C8 served parity.
+-rust-attachments. Per-open MCP attachments are described below. Deterministic
+clocks/ids with the full corpus retain their next approved slice; this is not C8 served parity.
+
+
+## Per-open stdio MCP attachments
+
+OpenRequest.tool_sources accepts process descriptors in session_open mode.
+The attachment capability is native with the process transport limit. The
+adapter sends configured servers first, followed by that open's attachments,
+in session/new, session/load or session/resume. The agent owns MCP execution;
+the adapter does not start an attached command itself. Protocol/display/endpoint
+members remain descriptor metadata, matching Go's process-transport mapping.
+
+Ids must be nonempty and unique across configured and attached servers.
+Non-process transports and duplicate environment names produce typed
+unsatisfiable controls. A missing command returns InvalidResolution; inline
+tool definitions remain unadvertised. Admission performs these same checks
+before starting a native process.
+
+Literal NAME=value entries, including empty values, are forwarded in order.
+Bare NAME entries resolve only against explicit Config.process.env pairs;
+missing names are dropped and the ambient process environment is not consulted
+for this allowlist. The last explicit configured value wins. Per-open arguments,
+commands and environment values appear only in the native parameters. Public
+Session state publishes configured plus attached descriptor projections, with
+no command, args or environment fields, and later opens do not inherit them.
+
+Run rust-acp-attachments.md for captured-array matching, normal new/load/resume
+wire, validation priority, environment behavior, independent opens and actual
+quiet-opening cancellation cleanup. The stage is -rust-attachments. The full
+byte corpus with deterministic clocks/ids remains the next C1 prerequisite;
+no C8 served-parity hand-off is claimed.

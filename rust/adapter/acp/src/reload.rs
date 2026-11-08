@@ -4,7 +4,7 @@ use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE}
 use oap_protocol::FEATURE_OPEN_REOPEN;
 use serde_json::value::RawValue;
 
-use crate::native::{SessionReopenParams, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME};
+use crate::native::{McpServer, SessionReopenParams, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME};
 use crate::{process::Process, Config};
 
 pub(crate) const REASON: &str = "ACP restored the bound conversation; configOptions reports the agent's current settings, and omitted settings remain the loader's configuration";
@@ -22,6 +22,7 @@ pub(crate) async fn call(
     process: Process,
     request: &OpenRequest,
     config: &Config,
+    mcp_servers: &[McpServer],
 ) -> Result<(Process, Box<RawValue>), Error> {
     let caps = process
         .initialize
@@ -48,7 +49,7 @@ pub(crate) async fn call(
     let params = serde_json::value::to_raw_value(&SessionReopenParams {
         session_id: request.native_session_id.clone(),
         cwd: config.process.dir.clone(),
-        mcp_servers: config.mcp_servers.clone(),
+        mcp_servers: mcp_servers.to_vec(),
     })
     .map_err(|error| Error::Harness(error.to_string()))?;
     process

@@ -4,9 +4,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use oap_adapter::{
-    refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
-    Adapter as AdapterContract, Admitter, BoxFuture, Descriptor, Error, JournalDescriptor,
-    OpenRequest, Session,
+    refuse_unadvertised_settings, Adapter as AdapterContract, Admitter, BoxFuture, Descriptor,
+    Error, JournalDescriptor, OpenRequest, Session,
 };
 use oap_protocol::{
     CapabilityDescriptor, EndpointDescriptor, FeatureSupport, SupportLevel, ToolSourceDescriptor,
@@ -140,6 +139,10 @@ impl Adapter {
             reason:"session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level".into(),
             ..FeatureSupport::default()
         });
+        features.insert(
+            FEATURE_TOOL_SOURCES_ATTACH.into(),
+            crate::attachments::support(),
+        );
         Descriptor {
             capabilities: CapabilityDescriptor {
                 endpoint: EndpointDescriptor {
@@ -164,7 +167,7 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-journal", pin().capability_revision),
+            capability_revision: format!("{}-rust-attachments", pin().capability_revision),
             max_active_runs_per_session: 1,
             interactive_gates: true,
             journal: JournalDescriptor {
@@ -177,16 +180,16 @@ impl Adapter {
         }
     }
 
-    fn validate_open(&self, request: &OpenRequest) -> Result<(), Error> {
+    fn validate_open(&self, request: &OpenRequest) -> Result<Vec<McpServer>, Error> {
         if request.participant.id.as_str().is_empty() {
             return Err(Error::InvalidParticipant);
         }
         if request.reopen && request.native_session_id.is_empty() {
             return Err(crate::reload::refusal("the binding names no ACP session"));
         }
-        refuse_unadvertised_tool_sources(request, &[])?;
-        refuse_unadvertised_tools(request, &[])?;
-        refuse_unadvertised_settings(request, &self.describe().capabilities)
+        let attached = crate::attachments::attached(&self.config, request)?;
+        refuse_unadvertised_settings(request, &self.describe().capabilities)?;
+        Ok(attached)
     }
 }
 
@@ -197,12 +200,15 @@ impl AdapterContract for Adapter {
 
     fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn Session>> {
         Box::pin(async move {
-            self.validate_open(&request)?;
+            let attached = self.validate_open(&request)?;
+            let mut servers = self.config.mcp_servers.clone();
+            servers.extend(attached);
             crate::session::Session::open(
                 &self.config,
                 request,
                 self.describe(),
                 &self.next_session,
+                servers,
             )
             .await
         })
@@ -215,7 +221,7 @@ impl AdapterContract for Adapter {
 
 impl Admitter for Adapter {
     fn admit(&self, request: &OpenRequest) -> BoxFuture<'_, ()> {
-        let result = self.validate_open(request);
+        let result = self.validate_open(request).map(|_| ());
         Box::pin(async move { result })
     }
 }

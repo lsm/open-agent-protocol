@@ -28,8 +28,9 @@ Seven complete original traces must pass Go, Rust and Zig validators. The close
 and overflow prefixes have no confirmed terminal; all three must reject those
 with missing_run_terminal. Retain those expected refusals and never append a
 fabricated terminal. This is public API replay proof, not the later complete
-byte corpus or served-parity C8 hand-off. The current stage is -rust-journal;
-MCP attachments and deterministic clocks/ids remain their approved next slices.
+byte corpus or served-parity C8 hand-off. The current stage is -rust-attachments;
+Per-open MCP attachments are covered by rust-acp-attachments.md. Deterministic
+clocks/ids with the full byte corpus remain the approved next slice.
 
 Run all prior ACP journeys, the complete baseline and Rust all-features under
 the same mutex. Read the actual baseline PTY reply and /quit exit. Keep the
