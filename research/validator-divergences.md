@@ -283,9 +283,12 @@ only a port. None is a protocol question.
   degraded switch sent without the opt-in, which 0028's "ordinary gate" fixes
   as `capability_degraded`. Add it to both.
 - Rust judges session scope and response-local catalog shape: unique model IDs,
-  at most one default, and a current model listed in the response itself.
-  Catalog history, model-event positions, switches and provider attachment
-  remain owed, including the alias half of `optional-sessionproviderattach/2`.
+  at most one default, and a current model listed in the response itself. It
+  also judges catalog stability within a revision, model-event positions and
+  the current model across a query's window, and accepted switches against the
+  degraded opt-in gate (`core-sessionmodelswitch/3`). Other switch and provider
+  attachment rules remain owed, including the alias half of
+  `optional-sessionproviderattach/2`.
 
 ## Tool sources and provided tools (0008, 0011, 0048)
 

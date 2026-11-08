@@ -9,7 +9,8 @@ payload checks, plus response-local catalog model IDs, defaults and current-mode
 membership, query refusal, degradation and honour checks, and catalog
 stability within one capability revision, and the current model a catalog
 reports, at its model-event position or across the query's window.
-Switches and attachment rules beyond session scope remain owed. The attachment rows follow 0028 as
+Rust also judges accepted switches against the degraded opt-in gate. Other
+switch and attachment rules beyond session scope remain owed. The attachment rows follow 0028 as
 [Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
 closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
@@ -104,9 +105,9 @@ Source: [`decisions/0028-live-model-and-provider-control.md`](../../decisions/00
 | --- | --- | --- | --- | --- | --- | --- |
 | `0028#core-sessionmodelswitch/1` | A `session.model.switch.response` MUST name the session its request named. | L25–28 | `scope_mismatch` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | `state.rs:response` |
 | `0028#core-sessionmodelswitch/2` | An accepted switch MUST report the requested `model_id` as the new default. | L28–29, L37–38 | `unapplied_control` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | — |
-| `0028#core-sessionmodelswitch/3` | A switch accepted while `session.model.switch` is advertised `degraded` MUST carry the key in `allow_degraded_features`. | L39–40 | `degraded_without_optin` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | — |
+| `0028#core-sessionmodelswitch/3` | A switch accepted while `session.model.switch` is advertised `degraded` MUST carry the key in `allow_degraded_features`. | L39–40 | `degraded_without_optin` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | `state/default_model.rs:switched_model` |
 | `0028#core-sessionmodelswitch/4` | A switch sent while `session.model.switch` is advertised `degraded` without the key in `allow_degraded_features` MUST be refused with `capability_degraded` naming the feature. | L39–40 | `degraded_without_optin` | — | — | — |
-| `0028#core-sessionmodelswitch/5` | A switch MUST NOT be accepted to a model the session's bound catalog does not list. | L38–39 | `model_not_in_catalog` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | — |
+| `0028#core-sessionmodelswitch/5` | A switch MUST NOT be accepted to a model the session's bound catalog does not list. | L38–39 | `model_not_in_catalog` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | `state/default_model.rs:switched_model` |
 | `0028#core-sessionmodelswitch/6` | An accepted switch MUST be followed by a `session.state.updated` reporting the new model. | L29–31 | `session_state_mismatch` | `modelcontrol.go:closeSwitchObservations` | `semantic.zig:close` | — |
 | `0028#core-sessionmodelswitch/7` | A switch refusal MUST NOT use `model_not_found` for a model the session's bound catalog lists. | L42–47 | `model_not_in_catalog` | `modelcontrol.go:settleModelControlRefusal` | — | — |
 | `0028#core-sessionmodelswitch/8` | A `model_not_found` switch refusal for a model the bound catalog does not list MUST name it in `details.model_id`. | L35–37 | `model_not_in_catalog` | `modelcontrol.go:settleModelControlRefusal` | — | — |

@@ -11,7 +11,6 @@
   ],
   "rust": [
     "descriptor-leaks-attachment-fields",
-    "model-switch-degraded-no-optin",
     "tools-catalog-leaks-attachment-env"
   ]
 }
