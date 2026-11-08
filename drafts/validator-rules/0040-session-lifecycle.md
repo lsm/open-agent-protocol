@@ -116,8 +116,8 @@ Source: [`decisions/0046-a-session-list-is-the-hosts-bindings.md`](../../decisio
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0046#the-capability-key-is-sessionlist-advertised-by-the-host/1` | A `session.list.request` to an endpoint that does not affirmatively advertise `session.list` MUST be refused `unsupported_feature` naming it. | L91–96 | `unavailable_capability` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListRequest` | — |
-| `0046#the-capability-key-is-sessionlist-advertised-by-the-host/2` | A list under a `degraded` `session.list` without the caller's opt-in MUST be refused `capability_degraded`. | 0005 L90–132 (the degraded opt-in gate, applied to `session.list`) | `degraded_without_optin` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListResponse` | — |
+| `0046#the-capability-key-is-sessionlist-advertised-by-the-host/1` | A `session.list.request` to an endpoint that does not affirmatively advertise `session.list` MUST be refused `unsupported_feature` naming it. | L91–96 | `unavailable_capability` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListRequest` | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
+| `0046#the-capability-key-is-sessionlist-advertised-by-the-host/2` | A list under a `degraded` `session.list` without the caller's opt-in MUST be refused `capability_degraded`. | 0005 L90–132 (the degraded opt-in gate, applied to `session.list`) | `degraded_without_optin` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListResponse` | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
 
 ### [0046] A list is paged on an opaque cursor, newest first
 
@@ -160,8 +160,8 @@ Source: [`decisions/0051-transcript-load.md`](../../decisions/0051-transcript-lo
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0051#8/1` | A `transcript.load.request` to an endpoint that does not affirmatively advertise `transcript.load` MUST be refused `unsupported_feature` naming it. | L136–143 | `unavailable_capability` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadRequest` (gatedRequest) | — |
-| `0051#8/2` | A load under a `degraded` `transcript.load` without the caller's opt-in MUST be refused `capability_degraded`. | 0005 L90–132 (the degraded opt-in gate, applied to `transcript.load`) | `degraded_without_optin` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadResponse` | — |
+| `0051#8/1` | A `transcript.load.request` to an endpoint that does not affirmatively advertise `transcript.load` MUST be refused `unsupported_feature` naming it. | L136–143 | `unavailable_capability` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadRequest` (gatedRequest) | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
+| `0051#8/2` | A load under a `degraded` `transcript.load` without the caller's opt-in MUST be refused `capability_degraded`. | 0005 L90–132 (the degraded opt-in gate, applied to `transcript.load`) | `degraded_without_optin` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadResponse` | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
 
 ### [0051] 4. Each page is bounded and says so
 
