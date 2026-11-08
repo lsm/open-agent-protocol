@@ -45,4 +45,5 @@ shared Verify baseline and observe its isolated PTY fixture reply and `/quit`
 exit 0, with child cleanup. Register rows are `0051#4/1`, `0051#2/1` and
 `0051#5/1–3`. Capability gates, the unimplemented truncated/pruned rules,
 admission/lead/active/model anchors, real data, credentials and provider calls
-are outside this journey.
+are outside this journey. `rust-query-gates.md` covers capability/degradation
+outcomes through the public consumers.

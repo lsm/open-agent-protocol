@@ -20,6 +20,9 @@ Unadvertised queries need `unsupported_feature` naming the feature and reason
 for a different feature must not excuse admission. Unknown future support levels
 remain unavailable in tolerant mode. Reversed replies retain each request's
 own expectation, and a wrong response kind cannot discharge the real query.
+After an announced descriptor refresh, a pending degraded query still needs its
+original typed refusal. A model catalog request made under an affirmative
+disclosure keeps its honour obligation when that feature is later withdrawn.
 
 An advertised, satisfiable model-list query must be honoured. Ordinary refusals
 of session-list and transcript reads remain allowed when no gate is violated.

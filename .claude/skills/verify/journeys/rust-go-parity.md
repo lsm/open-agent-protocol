@@ -41,3 +41,10 @@ executing run. The `queue_leads` regression pins the shared positive and negativ
 traces. A promotion must remain active across a stale read so a later omission
 is diagnosed. Run `cargo test --manifest-path rust/Cargo.toml -p oap-validation
 --test queue_leads` before the shared public-consumer comparison above.
+
+Optional model-list, session-list and transcript queries retain request-time
+refusal/degradation expectations. Their direct public replay in
+`rust-query-gates.md` covers repaired traces, exact feature opt-ins, future
+support levels, reversed replies, wrong response kinds and descriptor refreshes.
+An advertised satisfiable model catalog must be honoured; ordinary list and
+transcript failures remain allowed when no capability gate is violated.

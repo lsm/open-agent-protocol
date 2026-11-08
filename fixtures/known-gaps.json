@@ -24,17 +24,11 @@
     "models-held-position-in-another-session",
     "models-held-position-in-another-session-no-current",
     "models-held-position-moved-no-model",
-    "models-list-degraded-without-optin",
-    "models-list-refused-advertised",
     "models-position-in-another-session",
     "models-position-in-another-session-no-current",
-    "models-unadvertised-wrong-reason",
-    "session-list-degraded-admitted-without-optin",
-    "session-list-unadvertised-wrong-refusal",
     "session-reopen-degraded-admitted-without-optin",
     "session-reopen-unadvertised",
     "session-reopen-unadvertised-wrong-refusal",
-    "tools-catalog-leaks-attachment-env",
-    "transcript-load-degraded-admitted-without-optin"
+    "tools-catalog-leaks-attachment-env"
   ]
 }
