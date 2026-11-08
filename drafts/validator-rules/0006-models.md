@@ -7,9 +7,9 @@ the function in `go/validation/`, `zig/src/validation/` and
 `rust/validation/src/`. Rust judges session scope through generic response and
 payload checks, plus response-local catalog model IDs, defaults and current-model
 membership, query refusal, degradation and honour checks, and catalog
-stability within one capability revision, and the session that owns a
-catalog's model-event position. The current model at that position,
-switches and attachment rules beyond session scope remain owed. The attachment rows follow 0028 as
+stability within one capability revision, and the current model a catalog
+reports, at its model-event position or across the query's window.
+Switches and attachment rules beyond session scope remain owed. The attachment rows follow 0028 as
 [Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
 closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
@@ -54,8 +54,8 @@ Source: [`decisions/0006-models-catalog.md`](../../decisions/0006-models-catalog
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/1` | A nonempty `current_model_id` MUST name one of the response's own model ids. | L263–266 | `model_not_in_catalog` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `state/models.rs:models_response_shape` |
-| `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/2` | A catalog without `as_of_model_event` MUST report a `current_model_id` the session held at some point between the query and its response. | L211–219 | `session_state_mismatch` | `models.go:checkCatalogCurrentModel` | — | — |
-| `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/3` | A catalog whose `as_of_model_event` the trace has reached MUST report the model the session held at that event; one the trace has not reached is held and judged when the event arrives. | L221–229, L256–261 | `session_state_mismatch` | `models.go:checkCatalogCurrentModel`, `models.go:reconcileHeldCatalogs` | `semantic.zig:close` (switch positions only) | — |
+| `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/2` | A catalog without `as_of_model_event` MUST report a `current_model_id` the session held at some point between the query and its response. | L211–219 | `session_state_mismatch` | `models.go:checkCatalogCurrentModel` | — | `model_positions.rs:judge_position` |
+| `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/3` | A catalog whose `as_of_model_event` the trace has reached MUST report the model the session held at that event; one the trace has not reached is held and judged when the event arrives. | L221–229, L256–261 | `session_state_mismatch` | `models.go:checkCatalogCurrentModel`, `models.go:reconcileHeldCatalogs` | `semantic.zig:close` (switch positions only) | `model_positions.rs:judge_position` |
 | `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/4` | An `as_of_model_event` MUST name a run of the catalog's own session, whether or not the catalog reports a current model. | L231–254 | `scope_mismatch` | `models.go:foreignPosition` | `semantic.zig:close` | `model_positions.rs:judge_position` |
 | `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/5` | An `as_of_model_event.switch_request_id` MUST name a model switch of the catalog's own session. | L206–210, L231–233; 0028 L60–64 | `scope_mismatch` | `models.go:foreignPosition` | `semantic.zig:close` | `model_positions.rs:judge_position` |
 
