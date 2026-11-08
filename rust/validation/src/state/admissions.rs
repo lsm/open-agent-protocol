@@ -94,6 +94,9 @@ impl State {
         else {
             return;
         };
+        if self.reopen_admission(at, e) {
+            return;
+        }
         let recovered = p
             .recovery
             .as_ref()

@@ -38,3 +38,6 @@ python3 .claude/skills/verify/scripts/rust-provider-parity.py --output-dir /tmp/
 Rust and Go must report the same phase, code, envelope and pointer for every
 diagnostic, and both they and Zig must draw exactly the codes the manifest
 declares, exiting 0 only when it declares none. Build `oapx` first.
+
+Capability/refusal elections and compound reopen ownership are checked by
+`rust-reopen-gates.md`; this journey retains the recovery/loading boundaries.

@@ -1,4 +1,5 @@
 mod query_gates;
+mod reopen_gates;
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -604,6 +605,7 @@ impl State {
         } else if *t == EnvelopeType::SESSION_OPEN_REQUEST {
             let p: SessionOpenRequest = payload(e);
             self.subscribe_gate(at, e, &p);
+            self.reopen_gate(at, e, &p);
             self.open_source_gates(at, e, &p);
             self.open_settings_gate(at, e, &p, MODE_SESSION_OPEN);
             if let Some(message) = &p.message {
@@ -699,6 +701,7 @@ impl State {
             self.settle_provide_refusal(at, e);
             self.steer_refusal(at, e);
             self.open_settings_refusal(at, e);
+            self.reopen_refusal(at, e);
             self.settle_subscribe_refusal(at, e);
         }
         if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE
@@ -1328,6 +1331,7 @@ impl State {
             self.pending_subscribes
                 .get(reply)
                 .and_then(|pending| pending.expectation.as_ref()),
+            self.pending_reopens.get(reply),
         ];
         let retained: Vec<&Expectation> = retained
             .into_iter()
