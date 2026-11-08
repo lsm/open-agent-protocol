@@ -7,7 +7,8 @@ the function in `go/validation/`, `zig/src/validation/` and
 `rust/validation/src/`. Rust judges session scope through generic response and
 payload checks, plus response-local catalog model IDs, defaults and current-model
 membership, and query refusal, degradation and honour checks. Catalog history
-and model-event positions remain owed. The attachment rows follow 0028 as
+and model-event positions, switches and attachment rules beyond session scope
+remain owed. The attachment rows follow 0028 as
 [Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
 closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
