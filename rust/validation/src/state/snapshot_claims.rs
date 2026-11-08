@@ -22,9 +22,8 @@ pub(super) struct Claim {
     pub(super) envelope: Envelope,
 }
 
-pub(super) fn pending_matches(run: &Run, sequence: Option<u64>, listed: &HashSet<String>) -> bool {
-    let expected: HashSet<_> = run
-        .interactions
+fn pending_at(run: &Run, sequence: Option<u64>) -> HashSet<String> {
+    run.interactions
         .iter()
         .filter(|(_, x)| match sequence {
             Some(sequence) => {
@@ -34,7 +33,42 @@ pub(super) fn pending_matches(run: &Run, sequence: Option<u64>, listed: &HashSet
             None => !x.resolved,
         })
         .map(|(id, _)| id.clone())
-        .collect();
+        .collect()
+}
+
+fn acknowledgements(
+    run: &Run,
+    listed: &HashSet<String>,
+    acknowledged: &[InteractionId],
+    want: Option<&HashSet<String>>,
+) -> Vec<&'static str> {
+    let named: HashSet<_> = acknowledged.iter().map(|id| id.as_str()).collect();
+    let mut found = Vec::new();
+    for id in &named {
+        if !listed.contains(*id) {
+            found
+                .push("an acknowledged interaction must be among the entry's pending interactions");
+        } else if run
+            .interactions
+            .get(*id)
+            .is_none_or(|x| !x.opaque && !x.call.acked())
+        {
+            found.push("an acknowledged interaction must have an accepted started acknowledgement");
+        }
+    }
+    for id in want.into_iter().flatten() {
+        if run.interactions.get(id).is_some_and(|x| x.call.acked()) && !named.contains(id.as_str())
+        {
+            found.push(
+                "an entry must list each pending interaction whose acknowledgement was accepted",
+            );
+        }
+    }
+    found
+}
+
+pub(super) fn pending_matches(run: &Run, sequence: Option<u64>, listed: &HashSet<String>) -> bool {
+    let expected = pending_at(run, sequence);
     let listed: HashSet<_> = listed
         .iter()
         .filter(|id| !run.prior_unknown || run.interactions.contains_key(*id))
@@ -102,21 +136,36 @@ impl State {
                 .iter()
                 .map(|id| id.as_str().to_owned())
                 .collect();
-            if entry.as_of_sequence.is_none() && !listed.is_empty() {
+            let deferred = entry
+                .as_of_sequence
+                .is_some_and(|sequence| sequence >= run.next);
+            let want = if entry.as_of_sequence.is_none() && !listed.is_empty() {
                 found.push((
                     format!("{pointer}/as_of_sequence"),
                     "an entry naming pending interactions must state its capture position",
                 ));
-            } else if entry
-                .as_of_sequence
-                .is_some_and(|sequence| sequence >= run.next)
-            {
+                None
+            } else if deferred {
+                None
+            } else {
+                if !pending_matches(run, entry.as_of_sequence, &listed) {
+                    found.push((
+                        format!("{pointer}/pending_interactions"),
+                        "the pending interactions must match the run at the stated capture position",
+                    ));
+                }
+                Some(pending_at(run, entry.as_of_sequence))
+            };
+            for message in acknowledgements(
+                run,
+                &listed,
+                &entry.acknowledged_interactions,
+                want.as_ref(),
+            ) {
+                found.push((format!("{pointer}/acknowledged_interactions"), message));
+            }
+            if deferred {
                 claims.push((Kind::Pending(listed), id.to_owned(), entry.as_of_sequence));
-            } else if !pending_matches(run, entry.as_of_sequence, &listed) {
-                found.push((
-                    format!("{pointer}/pending_interactions"),
-                    "the pending interactions must match the run at the stated capture position",
-                ));
             }
             if run.started {
                 continue;
