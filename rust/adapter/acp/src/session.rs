@@ -319,7 +319,10 @@ impl Session {
             }
             shared.lock().unwrap_or_else(|p| p.into_inner()).refresh();
         }));
-        let permissions = Permissions::new(bridge.clone(), request.participant.id, || 0)?;
+        let clock = runtime.clone();
+        let permissions = Permissions::new(bridge.clone(), request.participant.id, move || {
+            clock.now_ms()
+        })?;
         {
             let mut state = inner.lock().unwrap_or_else(|p| p.into_inner());
             state.process = Some(bridge);

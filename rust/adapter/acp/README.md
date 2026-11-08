@@ -593,7 +593,9 @@ Each emitted event samples its envelope time separately. Payload times such as
 `run.started.started_at_ms` and cancellation's `updated_at_ms` are sampled when
 that payload is constructed. Notifications that emit nothing consume no clock
 read. Session state changes sample the same source. Session-owned text runs
-therefore do not pre-sample a fallback time at each native input boundary.
+therefore do not pre-sample a fallback time at each native input boundary. The
+permission controller retains a real fallback clock and samples it only for
+standalone runs without an installed runtime.
 
 Standalone `TextRun` callers keep their explicit timestamp and ID callback
 contract. `TextRun::with_runtime` opts into the shared sources for both IDs and

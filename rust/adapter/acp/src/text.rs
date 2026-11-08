@@ -89,10 +89,22 @@ impl TextRun {
     }
 
     pub fn with_runtime(mut self, runtime: crate::Runtime) -> Self {
+        self.set_runtime(runtime);
+        self
+    }
+
+    pub(crate) fn set_runtime(&mut self, runtime: crate::Runtime) {
         let ids = runtime.clone();
         self.ids = Box::new(move |kind| ids.new_id(kind));
         self.runtime = Some(runtime);
-        self
+    }
+
+    pub(crate) fn input_time(&self, fallback: &dyn Fn() -> i64) -> i64 {
+        if self.runtime.is_some() {
+            self.state.updated_at_ms
+        } else {
+            fallback()
+        }
     }
 
     pub(crate) fn timestamp(&self, fallback: i64) -> i64 {

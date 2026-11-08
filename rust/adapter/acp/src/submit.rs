@@ -61,10 +61,14 @@ impl Drop for Admission<'_> {
     fn drop(&mut self) {
         if self.pending {
             let mut inner = self.session.lock();
+            let now = self
+                .run
+                .lock()
+                .input_time(&|| self.session.runtime.now_ms());
             let _ = self
                 .run
                 .lock()
-                .prompt_error("ACP prompt ended before acceptance", true, 0);
+                .prompt_error("ACP prompt ended before acceptance", true, now);
             if inner.process.is_some() {
                 inner.active = None;
                 inner.state.status = SessionStatus::IDLE;
@@ -138,27 +142,25 @@ impl Session {
             let id: RunId = self.new_id("run").into();
             let run = Run {
                 id: id.clone(),
-                text: Arc::new(Mutex::new(
-                    TextRun::new_in_scope(
-                        TextRunContext {
-                            session_id: inner.state.session_id.clone(),
-                            native_id: self.native_id.clone(),
-                            run_id: id,
-                            message_id: format!(
-                                "{}/{}",
-                                inner.state.session_id,
-                                self.new_id("message")
-                            )
-                            .into(),
-                            capability_revision: Some(self.revision.clone()),
-                        },
-                        move |kind| ids.new_id(kind),
-                        inner.usage.clone(),
-                    )
-                    .with_runtime(self.runtime.clone()),
-                )),
+                text: Arc::new(Mutex::new(TextRun::new_in_scope(
+                    TextRunContext {
+                        session_id: inner.state.session_id.clone(),
+                        native_id: self.native_id.clone(),
+                        run_id: id,
+                        message_id: format!(
+                            "{}/{}",
+                            inner.state.session_id,
+                            self.new_id("message")
+                        )
+                        .into(),
+                        capability_revision: Some(self.revision.clone()),
+                    },
+                    move |kind| ids.new_id(kind),
+                    inner.usage.clone(),
+                ))),
                 admitted,
             };
+            run.lock().set_runtime(self.runtime.clone());
             run.lock().tools.seen = inner.tool_history.clone();
             run.lock().journal = Some(inner.journal.clone());
             let run = Arc::new(run);
@@ -191,7 +193,11 @@ impl Session {
             return Err(Error::SessionClosed);
         }
         admitted.map_err(Error::harness)?;
-        let stream = run.lock().start(0)?;
+        let stream = {
+            let mut text = run.lock();
+            let now = text.input_time(&|| self.runtime.now_ms());
+            text.start(now)?
+        };
         let state = run.lock().state();
         inner.state.transcript_cursor = state.sequence.to_string();
         inner.state.updated_at_ms = state.updated_at_ms;

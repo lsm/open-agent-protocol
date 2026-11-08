@@ -168,6 +168,11 @@ fn permission_case(mode: &str) {
         .iter()
         .map(|event| serde_json::to_value(event).unwrap())
         .collect::<Vec<_>>();
+    assert_eq!(values[0]["timestamp_ms"], 10);
+    assert!(values
+        .iter()
+        .skip(1)
+        .all(|event| event["timestamp_ms"] == 50));
     let resolved = values
         .iter()
         .find(|event| event["type"] == "action.permission.resolved")
