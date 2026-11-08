@@ -42,6 +42,8 @@ pub struct TextRun {
     texts: BTreeMap<MessageId, String>,
     native_messages: BTreeMap<String, MessageId>,
     subscriber: Subscriber,
+    pub(crate) followers: Vec<Subscriber>,
+    pub(crate) journal: Option<oap_adapter::journal::Journal>,
     usage_scope: Arc<Mutex<UsageScope>>,
     pub(crate) terminal_usage: Option<Usage>,
     extensions: Extensions,
@@ -73,6 +75,8 @@ impl TextRun {
             texts: BTreeMap::new(),
             native_messages: BTreeMap::new(),
             subscriber: Subscriber::new(64),
+            followers: Vec::new(),
+            journal: None,
             usage_scope,
             terminal_usage: None,
             extensions: Extensions::new(),
@@ -126,6 +130,11 @@ impl TextRun {
             event.extensions = self.extensions.clone();
         }
         let id = event.id.clone();
+        if let Some(journal) = &self.journal {
+            journal.append(event.clone(), self.state.closed);
+        }
+        self.followers
+            .retain(|follower| follower.offer(event.clone(), self.state.closed));
         self.subscriber.offer(event, self.state.closed);
         Ok(id)
     }
@@ -459,6 +468,9 @@ impl TextRun {
     pub fn close(&mut self) {
         self.state.closed = true;
         self.subscriber.close();
+        for follower in self.followers.drain(..) {
+            follower.close();
+        }
     }
 }
 

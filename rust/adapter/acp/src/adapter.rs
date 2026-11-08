@@ -6,7 +6,7 @@ use std::sync::Arc;
 use oap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
     Adapter as AdapterContract, Admitter, BoxFuture, Descriptor, Error, JournalDescriptor,
-    OpenRequest, Session, UnsupportedControl,
+    OpenRequest, Session,
 };
 use oap_protocol::{
     CapabilityDescriptor, EndpointDescriptor, FeatureSupport, SupportLevel, ToolSourceDescriptor,
@@ -23,6 +23,7 @@ pub struct Config {
     pub process: ProcessConfig,
     pub mcp_servers: Vec<McpServer>,
     pub session_config: BTreeMap<String, String>,
+    pub journal_capacity: usize,
     pub abort_active_on_close: bool,
 }
 
@@ -35,12 +36,11 @@ pub fn pin() -> &'static oap_harness::Version {
     oap_harness::current("acp").expect("embedded ACP catalog has a current version")
 }
 
-pub(crate) fn unavailable(feature: &str) -> Error {
-    Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(feature)))
-}
-
 impl Adapter {
-    pub fn new(config: Config) -> Result<Self, Error> {
+    pub fn new(mut config: Config) -> Result<Self, Error> {
+        if config.journal_capacity == 0 {
+            config.journal_capacity = 256;
+        }
         if config.process.path.is_empty() {
             return Err(Error::Harness("acp adapter: executable is required".into()));
         }
@@ -129,6 +129,9 @@ impl Adapter {
             ("action.permissions", SupportLevel::NATIVE, "ACP permission choices with synthesized portable identity"),
             ("action.tools", SupportLevel::DEGRADED, "observed ACP presentation tool calls only; no catalog"),
             ("action.tools.execute", SupportLevel::DEGRADED, "observed tool lifecycle is normalized"),
+            ("run.resume", SupportLevel::DEGRADED, "canonical replay is bounded process memory only"),
+            ("run.reconciliation", SupportLevel::EMULATED, "state is adapter-owned"),
+            ("run.replay", SupportLevel::DEGRADED, "bounded process-memory journal; gaps are explicit"),
         ] {
             features.insert(key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() });
         }
@@ -161,12 +164,14 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-settings", pin().capability_revision),
+            capability_revision: format!("{}-rust-journal", pin().capability_revision),
             max_active_runs_per_session: 1,
             interactive_gates: true,
             journal: JournalDescriptor {
-                replay: SupportLevel::UNAVAILABLE,
-                ..JournalDescriptor::default()
+                replay: SupportLevel::DEGRADED,
+                scope: "session".into(),
+                persistence: "process_memory".into(),
+                capacity: self.config.journal_capacity,
             },
             ..Descriptor::default()
         }

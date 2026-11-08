@@ -29,6 +29,10 @@ impl Inner {
             return;
         };
         let state = run.lock().state();
+        self.refresh_run(&run.id, state);
+    }
+
+    pub(crate) fn refresh_run(&mut self, id: &RunId, state: crate::TextRunState) {
         if state.closed {
             self.settle_permission_routes();
         }
@@ -41,11 +45,7 @@ impl Inner {
         } else {
             SessionStatus::RUNNING
         };
-        self.state.active_run_id = if state.closed {
-            None
-        } else {
-            Some(run.id.clone())
-        };
+        self.state.active_run_id = if state.closed { None } else { Some(id.clone()) };
         self.state.transcript_cursor = cursor;
         self.state.updated_at_ms = state.updated_at_ms;
     }
@@ -158,6 +158,7 @@ impl Session {
                 admitted,
             };
             run.lock().tools.seen = inner.tool_history.clone();
+            run.lock().journal = Some(inner.journal.clone());
             let run = Arc::new(run);
             inner.state.status = SessionStatus::RUNNING;
             inner.state.active_run_id = Some(run.id.clone());
