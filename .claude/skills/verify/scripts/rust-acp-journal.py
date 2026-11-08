@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -164,8 +165,15 @@ def main():
         path = case/'trace.json'
         path.write_text(json.dumps(frames, ensure_ascii=False, indent=2))
         for language, command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
-            peer.run(command+[str(path)], case/f'validate-{language}.log')
-        print(f'PASS {mode}: actual Go/Rust recovery/events and parsed native frames agree, three validators accept original Rust event trace, children reaped', flush=True)
+            checked = subprocess.run(command+[str(path)], cwd=ROOT, capture_output=True, text=True, timeout=90)
+            raw = checked.stdout + checked.stderr
+            (case/f'validate-{language}.log').write_text(raw)
+            if mode in ['close','overflow']:
+                assert checked.returncode == 1 and 'missing_run_terminal' in raw, (mode, language, raw)
+            else:
+                assert checked.returncode == 0, (mode, language, raw)
+        disposition = 'expected missing_run_terminal for the unconfirmed prefix' if mode in ['close','overflow'] else 'complete original trace accepted'
+        print(f'PASS {mode}: actual Go/Rust recovery/events and parsed native frames agree, three validators: {disposition}, children reaped', flush=True)
     peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','journal','--','--nocapture'], output/'integration.log')
     print(f'PASS ACP bounded journal/replay. Only clocks and staged revision normalized; raw close diagnostics retained. Evidence: {output}', flush=True)
 
