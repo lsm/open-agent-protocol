@@ -8,7 +8,7 @@ fn descriptors_reject_attachment_members_even_when_empty() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/semantic-invalid/descriptor-leaks-attachment-fields.json");
     let original: Vec<Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    let validator = Validator::new().unwrap();
+    let validator = Validator::tolerant().unwrap();
     for pointer in ["/payload/sources/0", "/payload/layers/action/sources/0"] {
         for (member, value) in [
             ("command", json!("")),
