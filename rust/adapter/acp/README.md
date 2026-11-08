@@ -2,7 +2,7 @@
 
 The Rust port of `go/adapter/acp`: an OAP adapter over an Agent Client Protocol
 v1 agent on stdio, pinned by `harnesses/acp.json` and judged by the corpus in
-`fixtures/adapters/acp-v1.12.0`.
+the `fixtures/adapters/` directory selected by that catalog.
 
 `native` holds the pinned upstream wire types and nothing else. Because the
 corpus records what the Go adapter accepted, they keep four of Go's
@@ -581,3 +581,28 @@ wire, validation priority, environment behavior, independent opens and actual
 quiet-opening cancellation cleanup. The stage is -rust-attachments. The full
 byte corpus with deterministic clocks/ids remains the next C1 prerequisite;
 no C8 served-parity hand-off is claimed.
+
+## Clock and identity sources
+
+`Config::runtime` accepts a cloneable `Runtime::new(clock, ids)` whose sources
+are shared by the adapter's sessions and events. Omission selects wall time in
+milliseconds and one sequential ID source per adapter, as before. Native RPC
+request IDs remain owned by the JSON-RPC client.
+
+Each emitted event samples its envelope time separately. Payload times such as
+`run.started.started_at_ms` and cancellation's `updated_at_ms` are sampled when
+that payload is constructed. Notifications that emit nothing consume no clock
+read. Session state changes sample the same source. Session-owned text runs
+therefore do not pre-sample a fallback time at each native input boundary.
+
+Standalone `TextRun` callers keep their explicit timestamp and ID callback
+contract. `TextRun::with_runtime` opts into the shared sources for both IDs and
+timestamps. This supports the pinned corpus's distinct start-payload and
+envelope timestamps without adding an offset to caller-supplied times.
+
+The clock/identity regression replays the pinned `new-prompt-completed` native
+frames through a real synthetic child with an empty environment. It compares
+all event clocks, IDs, payloads and positions directly with the recorded values,
+and separately verifies the Rust adapter's staged capability revision. The
+complete byte corpus, descriptor graduation and other adapter cases remain a
+later slice of #1439; this check does not claim their completion.

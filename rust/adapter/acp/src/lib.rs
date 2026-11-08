@@ -11,6 +11,9 @@ mod attachments;
 mod operation;
 pub use operation::Operation;
 
+mod runtime;
+pub use runtime::Runtime;
+
 mod session;
 
 mod reload;

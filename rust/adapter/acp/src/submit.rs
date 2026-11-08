@@ -1,11 +1,10 @@
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use oap_adapter::{refuse_unadvertised_controls, Error, EventStream, SubmitRequest};
 use oap_protocol::{MessageId, MessageRole, MessageSubmitResponse, RunId, SessionStatus};
 
 use crate::native::{ContentBlock, PromptParams};
-use crate::session::{now_ms, Inner, Session};
+use crate::session::{Inner, Session};
 use crate::{TextRun, TextRunContext};
 
 pub(crate) struct Run {
@@ -62,15 +61,15 @@ impl Drop for Admission<'_> {
     fn drop(&mut self) {
         if self.pending {
             let mut inner = self.session.lock();
-            let _ =
-                self.run
-                    .lock()
-                    .prompt_error("ACP prompt ended before acceptance", true, now_ms());
+            let _ = self
+                .run
+                .lock()
+                .prompt_error("ACP prompt ended before acceptance", true, 0);
             if inner.process.is_some() {
                 inner.active = None;
                 inner.state.status = SessionStatus::IDLE;
                 inner.state.active_run_id = None;
-                inner.state.updated_at_ms = now_ms();
+                inner.state.updated_at_ms = self.session.runtime.now_ms();
             }
         }
     }
@@ -78,7 +77,7 @@ impl Drop for Admission<'_> {
 
 impl Session {
     fn new_id(&self, kind: &str) -> String {
-        format!("{kind}-{}", self.ids.fetch_add(1, Ordering::SeqCst) + 1)
+        self.runtime.new_id(kind)
     }
 
     pub(crate) async fn submit_text(
@@ -135,26 +134,29 @@ impl Session {
             while let Some(index) = inner.workers.iter().position(|worker| worker.is_finished()) {
                 let _ = inner.workers.swap_remove(index).join();
             }
-            let ids = self.ids.clone();
+            let ids = self.runtime.clone();
             let id: RunId = self.new_id("run").into();
             let run = Run {
                 id: id.clone(),
-                text: Arc::new(Mutex::new(TextRun::new_in_scope(
-                    TextRunContext {
-                        session_id: inner.state.session_id.clone(),
-                        native_id: self.native_id.clone(),
-                        run_id: id,
-                        message_id: format!(
-                            "{}/{}",
-                            inner.state.session_id,
-                            self.new_id("message")
-                        )
-                        .into(),
-                        capability_revision: Some(self.revision.clone()),
-                    },
-                    move |kind| format!("{kind}-{}", ids.fetch_add(1, Ordering::SeqCst) + 1),
-                    inner.usage.clone(),
-                ))),
+                text: Arc::new(Mutex::new(
+                    TextRun::new_in_scope(
+                        TextRunContext {
+                            session_id: inner.state.session_id.clone(),
+                            native_id: self.native_id.clone(),
+                            run_id: id,
+                            message_id: format!(
+                                "{}/{}",
+                                inner.state.session_id,
+                                self.new_id("message")
+                            )
+                            .into(),
+                            capability_revision: Some(self.revision.clone()),
+                        },
+                        move |kind| ids.new_id(kind),
+                        inner.usage.clone(),
+                    )
+                    .with_runtime(self.runtime.clone()),
+                )),
                 admitted,
             };
             run.lock().tools.seen = inner.tool_history.clone();
@@ -162,7 +164,7 @@ impl Session {
             let run = Arc::new(run);
             inner.state.status = SessionStatus::RUNNING;
             inner.state.active_run_id = Some(run.id.clone());
-            inner.state.updated_at_ms = now_ms();
+            inner.state.updated_at_ms = self.runtime.now_ms();
             inner.active = Some(run.clone());
             (
                 process,
@@ -189,7 +191,7 @@ impl Session {
             return Err(Error::SessionClosed);
         }
         admitted.map_err(Error::harness)?;
-        let stream = run.lock().start(now_ms())?;
+        let stream = run.lock().start(0)?;
         let state = run.lock().state();
         inner.state.transcript_cursor = state.sequence.to_string();
         inner.state.updated_at_ms = state.updated_at_ms;
