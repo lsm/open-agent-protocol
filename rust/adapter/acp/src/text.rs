@@ -100,11 +100,9 @@ impl TextRun {
     }
 
     pub(crate) fn input_time(&self, fallback: &dyn Fn() -> i64) -> i64 {
-        if self.runtime.is_some() {
-            self.state.updated_at_ms
-        } else {
-            fallback()
-        }
+        self.runtime
+            .as_ref()
+            .map_or_else(fallback, |_| self.state.updated_at_ms)
     }
 
     pub(crate) fn timestamp(&self, fallback: i64) -> i64 {

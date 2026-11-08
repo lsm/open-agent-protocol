@@ -81,9 +81,9 @@ impl Session {
         config: &Config,
         request: OpenRequest,
         descriptor: Descriptor,
+        runtime: &crate::Runtime,
         mcp_servers: Vec<McpServer>,
     ) -> Result<Box<dyn SessionContract>, Error> {
-        let runtime = config.runtime.clone().expect("adapter initializes runtime");
         let opening = SessionNewParams {
             cwd: config.process.dir.clone(),
             mcp_servers,
@@ -336,7 +336,7 @@ impl Session {
             native_id: opened.session_id,
             revision: descriptor.capability_revision,
             submitting: AsyncMutex::new(()),
-            runtime,
+            runtime: runtime.clone(),
             abort_active_on_close: config.abort_active_on_close,
         }))
     }

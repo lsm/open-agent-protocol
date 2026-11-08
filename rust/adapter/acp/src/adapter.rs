@@ -33,6 +33,7 @@ thread_local! {
 pub struct Adapter {
     config: Config,
     descriptor: Descriptor,
+    runtime: crate::Runtime,
 }
 
 pub fn pin() -> &'static oap_harness::Version {
@@ -66,9 +67,9 @@ impl Adapter {
                 )));
             }
         }
-        config.runtime.get_or_insert_with(crate::Runtime::default);
         Ok(Self {
             descriptor: Self::build(&config),
+            runtime: config.runtime.clone().unwrap_or_default(),
             config,
         })
     }
@@ -213,7 +214,14 @@ impl AdapterContract for Adapter {
             let attached = self.validate_open(&request)?;
             let mut servers = self.config.mcp_servers.clone();
             servers.extend(attached);
-            crate::session::Session::open(&self.config, request, self.describe(), servers).await
+            crate::session::Session::open(
+                &self.config,
+                request,
+                self.describe(),
+                &self.runtime,
+                servers,
+            )
+            .await
         })
     }
 

@@ -145,19 +145,23 @@ impl Permissions {
             let binding = bound(bindings, &run, reply.interaction_id())?;
             let request = binding.request.as_ref().ok_or(Error::InteractionResolved)?;
             if let Err(error) = request.respond(reply.response()) {
-                let now = run.lock().unwrap().input_time(&*owner.clock);
-                run.lock().unwrap().fail(
-                    "acp_permission_response_failed",
-                    &error.to_string(),
-                    true,
-                    now,
-                )?;
+                {
+                    let mut text = run.lock().unwrap();
+                    let now = text.input_time(&*owner.clock);
+                    text.fail(
+                        "acp_permission_response_failed",
+                        &error.to_string(),
+                        true,
+                        now,
+                    )?;
+                }
                 owner.settle(&run, bindings)?;
                 return Err(Error::harness(error));
             }
             binding.request = None;
-            let now = run.lock().unwrap().input_time(&*owner.clock);
-            run.lock().unwrap().commit_permission(reply, now)?;
+            let mut text = run.lock().unwrap();
+            let now = text.input_time(&*owner.clock);
+            text.commit_permission(reply, now)?;
             Ok(())
         })
     }
@@ -233,8 +237,11 @@ impl Permissions {
                 None,
             ))
             .map_err(Error::harness)?;
-            let now = run.lock().unwrap().input_time(&*owner.clock);
-            run.lock().unwrap().request_cancel(now)?;
+            {
+                let mut text = run.lock().unwrap();
+                let now = text.input_time(&*owner.clock);
+                text.request_cancel(now)?;
+            }
             owner.settle(&run, bindings)?;
             Ok(RunCancelResponse {
                 status: RunStatus::CANCELLING,
@@ -287,8 +294,9 @@ impl Permissions {
                 let _ = request.respond(reply.response());
             }
             binding.request = None;
-            let now = run.lock().unwrap().input_time(&*self.clock);
-            run.lock().unwrap().commit_permission(reply, now)?;
+            let mut text = run.lock().unwrap();
+            let now = text.input_time(&*self.clock);
+            text.commit_permission(reply, now)?;
         }
         Ok(())
     }
