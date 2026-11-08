@@ -14,6 +14,12 @@ pub(super) struct Call {
     settlements: HashSet<String>,
 }
 
+impl Call {
+    pub(super) fn acked(&self) -> bool {
+        self.acked
+    }
+}
+
 pub(super) struct PendingResolve {
     run: String,
     interaction: String,

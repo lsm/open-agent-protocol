@@ -205,8 +205,8 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#recovery-reads-two-lists-because-one-cannot-answer-the-question/1` | Every id in an entry's `acknowledged_interactions` MUST also be in its `pending_interactions`. | L349–378 | `session_state_mismatch` | `controltools.go:checkEntryAcknowledged` | `semantic.zig:checkEntryAcknowledged` | — |
-| `0011#recovery-reads-two-lists-because-one-cannot-answer-the-question/2` | Every id in `acknowledged_interactions` MUST have an accepted `started` acknowledgement the trace carries. | L349–378 | `session_state_mismatch` | `controltools.go:checkEntryAcknowledged` | `semantic.zig:checkEntryAcknowledged` | — |
+| `0011#recovery-reads-two-lists-because-one-cannot-answer-the-question/1` | Every id in an entry's `acknowledged_interactions` MUST also be in its `pending_interactions`. | L349–378 | `session_state_mismatch` | `controltools.go:checkEntryAcknowledged` | `semantic.zig:checkEntryAcknowledged` | `snapshot_claims.rs:acknowledgements` |
+| `0011#recovery-reads-two-lists-because-one-cannot-answer-the-question/2` | Every id in `acknowledged_interactions` MUST have an accepted `started` acknowledgement the trace carries. | L349–378 | `session_state_mismatch` | `controltools.go:checkEntryAcknowledged` | `semantic.zig:checkEntryAcknowledged` | `snapshot_claims.rs:acknowledgements` |
 
 ### [0011] A recovered call is judged on what the trace can still see
 
@@ -214,7 +214,7 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#a-recovered-call-is-judged-on-what-the-trace-can-still-see/1` | An entry MUST list a pending interaction whose `started` acknowledgement this trace saw accepted, including one accepted after a reattach. | L349–378, L381–408 | `session_state_mismatch` | `controltools.go:checkEntryAcknowledged` | `semantic.zig:checkEntryAcknowledged` | — |
+| `0011#a-recovered-call-is-judged-on-what-the-trace-can-still-see/1` | An entry MUST list a pending interaction whose `started` acknowledgement this trace saw accepted, including one accepted after a reattach. | L349–378, L381–408 | `session_state_mismatch` | `controltools.go:checkEntryAcknowledged` | `semantic.zig:checkEntryAcknowledged` | `snapshot_claims.rs:acknowledgements` |
 
 ### [0001] One foreground invocation is one run
 
