@@ -353,7 +353,13 @@ pub fn exercise(mode: &str) -> Value {
             out["events"] = serde_json::to_value([prefix, tail].concat()).unwrap();
             out["replayed"] = serde_json::to_value([vec![first], replayed].concat()).unwrap();
         } else if mode == "close" {
-            wait(session.close()).unwrap();
+            let began = Instant::now();
+            let closed = wait(session.close());
+            assert!(
+                matches!(&closed, Err(Error::Harness(message)) if message.contains("shutdown timed out"))
+            );
+            assert!(began.elapsed() < Duration::from_secs(3));
+            out["close_error"] = json!(closed.unwrap_err().to_string());
             let (replayed, error) = collect(&mut following);
             assert_eq!(error, None);
             assert_eq!(
