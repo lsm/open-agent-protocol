@@ -6,8 +6,9 @@ publishes, the core model switch and live provider attachment. Go and Zig name
 the function in `go/validation/`, `zig/src/validation/` and
 `rust/validation/src/`. Rust judges session scope through generic response and
 payload checks, plus response-local catalog model IDs, defaults and current-model
-membership. Catalog history, model-event positions, switches and attachment
-rules beyond session scope remain owed. The attachment rows follow 0028 as
+membership, and query refusal, degradation and honour checks. Catalog history
+and model-event positions, switches and attachment rules beyond session scope
+remain owed. The attachment rows follow 0028 as
 [Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
 closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
@@ -63,9 +64,9 @@ Source: [`decisions/0006-models-catalog.md`](../../decisions/0006-models-catalog
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0006#the-opt-in-is-per-query-because-the-query-is-a-request-of-its-own/1` | A `models.request` to an endpoint advertising `models.list` as `degraded` without the key in `allow_degraded_features` MUST be refused with `capability_degraded` naming the feature; one to an endpoint that does not advertise it MUST be refused with `unsupported_feature`. | L270–277 | `degraded_without_optin`, `unavailable_capability` | `models.go:modelsRequest`, `models.go:settleModelsRefusal` | `semantic.zig:gatedRequest`, `semantic.zig:settleControlRefusal` | — |
-| `0006#the-opt-in-is-per-query-because-the-query-is-a-request-of-its-own/2` | A catalog MUST NOT be served in answer to a query that owed the degraded opt-in and omitted it. | L275–277 | `degraded_without_optin` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
-| `0006#the-opt-in-is-per-query-because-the-query-is-a-request-of-its-own/3` | A satisfiable `models.request` to an endpoint advertising `models.list` MUST NOT be refused. | drafted here, from L47–49 (serving the catalog is the act `models.list` governs) and Decision 0001's capability promise; proposed | `unhonoured_capability` | `models.go:settleModelsRefusal` | `semantic.zig:settleControlRefusal` | — |
+| `0006#the-opt-in-is-per-query-because-the-query-is-a-request-of-its-own/1` | A `models.request` to an endpoint advertising `models.list` as `degraded` without the key in `allow_degraded_features` MUST be refused with `capability_degraded` naming the feature; one to an endpoint that does not advertise it MUST be refused with `unsupported_feature`. | L270–277 | `degraded_without_optin`, `unavailable_capability` | `models.go:modelsRequest`, `models.go:settleModelsRefusal` | `semantic.zig:gatedRequest`, `semantic.zig:settleControlRefusal` | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
+| `0006#the-opt-in-is-per-query-because-the-query-is-a-request-of-its-own/2` | A catalog MUST NOT be served in answer to a query that owed the degraded opt-in and omitted it. | L275–277 | `degraded_without_optin` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
+| `0006#the-opt-in-is-per-query-because-the-query-is-a-request-of-its-own/3` | A satisfiable `models.request` to an endpoint advertising `models.list` MUST NOT be refused. | drafted here, from L47–49 (serving the catalog is the act `models.list` governs) and Decision 0001's capability promise; proposed | `unhonoured_capability` | `models.go:settleModelsRefusal` | `semantic.zig:settleControlRefusal` | `state/controls/query_gates.rs:query_feature`, `state/controls/query_gates.rs:query_outcome` |
 
 ### [0006] The revision is schema-required, an empty catalog is a list, and a descriptor id is non-empty
 

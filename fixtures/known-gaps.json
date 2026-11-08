@@ -26,9 +26,6 @@
     "models-held-position-moved-no-model",
     "models-position-in-another-session",
     "models-position-in-another-session-no-current",
-    "session-reopen-degraded-admitted-without-optin",
-    "session-reopen-unadvertised",
-    "session-reopen-unadvertised-wrong-refusal",
     "tools-catalog-leaks-attachment-env"
   ]
 }
