@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use futures::{task::noop_waker, StreamExt};
+use futures::task::noop_waker;
 use oap_adapter::{Adapter as _, OpenRequest};
 use oap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config};
 use oap_protocol::Participant;
