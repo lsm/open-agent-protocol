@@ -10,9 +10,6 @@
     "queue-compound-open-model-genesis"
   ],
   "rust": [
-    "control-call-recovered-ack-omitted",
-    "control-state-acknowledges-unpending",
-    "control-state-omits-acknowledged",
     "descriptor-leaks-attachment-fields",
     "model-switch-degraded-no-optin",
     "models-advertisement-mutates-within-revision",
