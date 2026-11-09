@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 
-TOKEN = 'synthetic.A_b-9+/=~'
+TOKEN = 'synthetic.A_b-9~+/=='
 MODEL = 'synthetic/openai-responses@model'
 PROFILE = 'open-agent-protocol.agent-control-core'
 
@@ -29,6 +29,8 @@ class Service(http.server.ThreadingHTTPServer):
         self.requests = []
         self.cancelled = threading.Event()
         self.created = threading.Event()
+        self.inferences = 0
+        self.workspace = None
 
     @property
     def url(self):
@@ -77,6 +79,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.end_headers()
+            if service.mode == 'shell':
+                service.inferences += 1
+                identifier = f'i-{service.inferences}'
+                self.event(request, 'inference.create.response', {'accepted': True}, inference_id=identifier)
+                self.event(request, 'inference.started', {'model_ref': MODEL, 'started_at_ms': 1}, 1, identifier)
+                if service.inferences == 1:
+                    arguments = {'description': 'inspect the synthetic environment',
+                                 'workspace_root': service.workspace, 'command': 'env'}
+                    call = {'tool_call_id': 'env-call', 'name': 'Shell', 'arguments_json': arguments}
+                    self.event(request, 'inference.part.started', {'part_index': 0, 'part_kind': 'tool_call',
+                               'tool_call_id': 'env-call', 'name': 'Shell'}, 2, identifier)
+                    self.event(request, 'inference.part.ended', {'part_index': 0, 'part_kind': 'tool_call',
+                               'tool_call': call}, 3, identifier)
+                    self.event(request, 'inference.completed', {'message': {'role': 'assistant',
+                               'content': [dict(type='tool_call', **call)]}, 'stop_reason': 'tool_use'}, 4, identifier)
+                else:
+                    self.event(request, 'inference.completed', {'message': {'role': 'assistant',
+                               'content': 'environment checked'}, 'stop_reason': 'stop'}, 2, identifier)
+                return
             self.event(request, 'inference.create.response', {'accepted': True})
             self.event(request, 'inference.started', {'model_ref': MODEL, 'started_at_ms': 1}, 1)
             service.created.set()
@@ -98,8 +119,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def event(self, request, kind, payload, sequence=None):
-        fields = {'inference_id': 'i-1'}
+    def event(self, request, kind, payload, sequence=None, inference_id='i-1'):
+        fields = {'inference_id': inference_id}
         if sequence is None:
             fields['in_reply_to'] = request['id']
         else:
@@ -127,7 +148,8 @@ def running(service):
 
 def environment(home, url=None, token=None):
     env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'NODE_ENV': 'test',
-           'OAPX_KEYCHAIN_SERVICE': 'oap-synthetic-service-token'}
+           'OAPX_KEYCHAIN_SERVICE': 'oap-synthetic-service-token',
+           'OAP_TOKEN_CHILD_CHECK': 'present'}
     if url is not None:
         env.update(OAPX_PROVIDER_SERVICE_URL=url, OAPX_PROVIDER_SERVICE_SECURITY='loopback')
     if token is not None:
@@ -187,18 +209,26 @@ def dialogue(binary, home, service, token, output):
         until(lambda item: item.get('in_reply_to') == 'init')
         send('capabilities.request', 'caps', {})
         revision = until(lambda item: item.get('in_reply_to') == 'caps')['capability_revision']
-        send('session.open.request', 'open', {'session_id': 's1'}, session_id='s1')
+        opening = {'session_id': 's1'}
+        if service.mode == 'shell':
+            opening['metadata'] = {'oapx': {'permission_mode': 'bypass', 'workspace_root': str(home)}}
+        send('session.open.request', 'open', opening, session_id='s1')
         assert until(lambda item: item.get('in_reply_to') == 'open')['type'] == 'session.open.response'
         send('session.message.submit.request', 'submit', {'session_id': 's1', 'delivery': 'auto',
              'messages': [{'role': 'user', 'content': 'hello'}]}, session_id='s1')
         response = until(lambda item: item.get('in_reply_to') == 'submit')
         assert response['type'] == 'session.message.submit.response', 'submission refused'
-        assert service.created.wait(10), 'inference did not reach the service'
-        run = response['payload']['run_id']
-        send('run.cancel.request', 'cancel', {'session_id': 's1', 'run_id': run},
-             session_id='s1', run_id=run)
-        until(lambda item: item.get('in_reply_to') == 'cancel')
-        assert service.cancelled.wait(10), 'cancel did not reach the service'
+        if service.mode == 'shell':
+            completed = until(lambda item: item.get('type') == 'action.call.completed')
+            assert 'OAP_TOKEN_CHILD_CHECK=present' in json.dumps(completed), 'shell env did not execute'
+            until(lambda item: item.get('type') == 'run.completed')
+        else:
+            assert service.created.wait(10), 'inference did not reach the service'
+            run = response['payload']['run_id']
+            send('run.cancel.request', 'cancel', {'session_id': 's1', 'run_id': run},
+                 session_id='s1', run_id=run)
+            until(lambda item: item.get('in_reply_to') == 'cancel')
+            assert service.cancelled.wait(10), 'cancel did not reach the service'
         child.stdin.close()
         child.wait(timeout=15)
         worker.join(timeout=5)
@@ -210,8 +240,9 @@ def dialogue(binary, home, service, token, output):
         requests = [item for item, _ in service.requests]
         no_token(json.dumps(requests).encode())
         output.with_suffix('.requests.json').write_text(json.dumps(requests, indent=2))
-        required = {'provider.describe.request', 'provider.models.list.request',
-                    'inference.create.request', 'inference.cancel.request'}
+        required = {'provider.describe.request', 'provider.models.list.request', 'inference.create.request'}
+        if service.mode != 'shell':
+            required.add('inference.cancel.request')
         assert required <= {item['type'] for item in requests}, 'missing request surface'
         expected = None if token is None else 'Bearer ' + token
         assert all(header == expected for _, header in service.requests), 'wrong transport authorization'
@@ -248,7 +279,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='oap-service-token-') as temporary:
         home = Path(temporary)
         for index, token in enumerate(['', 'two words', 'tab\there', 'line\r\nbreak',
-                                       'control\x01', 'delete\x7f', 'space\u00a0', 'control\u0085']):
+                                       'control\x01', 'delete\x7f', 'space\u00a0', 'control\u0085',
+                                       'caf\u00e9', 'a=b', '=', '==', 'a?b', 'a:b', 'a,b', 'a[b']):
             def invalid(token=token):
                 result = startup(binary, home, 'http://127.0.0.1:1', token)
                 assert result.returncode != 0 and b'InvalidProviderServiceToken' in result.stderr, 'missing typed token refusal'
@@ -266,6 +298,12 @@ def main():
                 with running(Service()) as service:
                     dialogue(binary, home, service, token, args.output_dir / name)
             check('headers-and-redaction-' + name, headers)
+
+        def shell_environment():
+            with running(Service('shell')) as service:
+                service.workspace = str(home)
+                dialogue(binary, home, service, TOKEN, args.output_dir / 'shell')
+        check('shell-env-and-trace-containment', shell_environment)
 
         def refusal():
             with running(Service('error')) as service:

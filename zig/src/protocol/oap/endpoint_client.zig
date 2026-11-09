@@ -90,7 +90,7 @@ pub const Client = struct {
         try argv.appendSlice(allocator, request.args);
 
         var environment = if (request.environment.len == 0)
-            try compat.runtimeEnviron().createMap(allocator)
+            try compat.createEnvMap(allocator)
         else
             std.process.Environ.Map.init(allocator);
         defer environment.deinit();

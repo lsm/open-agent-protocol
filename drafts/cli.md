@@ -35,9 +35,10 @@ not a second product.
 For the built-in `oapx serve agent` loop, `OAPX_PROVIDER_SERVICE_URL` selects a
 remote provider service and `OAPX_PROVIDER_SERVICE_SECURITY` selects `loopback`,
 `tls` or `mesh_proxy`. Optional `OAPX_PROVIDER_SERVICE_TOKEN` supplies its bearer
-header on every service request. A token requires a URL and a nonempty value
-without whitespace or control characters. Invalid token configuration produces
-a typed startup refusal. The token stays outside OAP data and diagnostic output,
+header on every service request. A token requires a URL and an RFC 6750
+b64token value consisting of ASCII letters, digits and `-._~+/`, followed by
+optional trailing `=` padding. Inherited child environments omit this variable.
+Invalid token configuration produces a typed startup refusal. The token stays outside OAP data and diagnostic output,
 and authenticated requests refuse redirects.
 
 In `goap`, `--timeout` gives one answer wait one budget for the whole wait, not one

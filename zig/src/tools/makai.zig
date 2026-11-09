@@ -1434,7 +1434,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
         \\                   Optional OAPX_PROVIDER_SERVICE_TOKEN sends a bearer header
-        \\                   Token requires URL and must be nonempty without whitespace/control
+        \\                   Token requires URL and an RFC 6750 b64token value
         \\                   Use --backend claude, codex or pi to serve a Claude Code,
         \\                   Codex app-server or Pi child instead of the built-in
         \\                   loop, or an ACP agent, Hermes gateway, DeepSeek harness

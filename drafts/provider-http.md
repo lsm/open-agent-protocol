@@ -81,9 +81,11 @@ The built-in `oapx serve agent` client accepts an optional
 every service request, including discovery, model listing, SSE inference and
 cancellation. The token is configured out of band and stays in HTTP transport
 metadata. Envelopes, traces, logs and error text exclude its value. A configured
-token requires a service URL and a nonempty value without whitespace or control
-characters. Invalid configuration is a typed startup refusal. Authenticated
-requests refuse redirects, including redirects to a different origin.
+token requires a service URL and an RFC 6750 b64token value. Its alphabet is
+ASCII letters, digits and `-._~+/`, followed by optional trailing `=` padding.
+Inherited child environments omit `OAPX_PROVIDER_SERVICE_TOKEN`. Invalid
+configuration is a typed startup refusal. Authenticated requests refuse
+redirects, including redirects to a different origin.
 
 Loopback HTTP is permitted within one trusted host or Pod. Cross-Pod or remote
 traffic requires HTTPS with validated peer identity or an explicitly configured
