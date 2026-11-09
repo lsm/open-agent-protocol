@@ -127,16 +127,13 @@ const McpServerSession = struct {
         const argv = try buildArgv(allocator, self.config.command, self.config.args);
         defer allocator.free(argv);
 
-        var env_map: ?std.process.Environ.Map = null;
-        defer if (env_map) |*map| map.deinit();
-        if (self.config.env.len > 0) {
-            env_map = try compat.createEnvMap(allocator);
-            for (self.config.env) |entry| try env_map.?.put(entry.key, entry.value);
-        }
+        var env_map = try compat.createEnvMap(allocator);
+        defer env_map.deinit();
+        for (self.config.env) |entry| try env_map.put(entry.key, entry.value);
 
         self.child = try std.process.spawn(common.defaultIo(), .{
             .argv = argv,
-            .environ_map = if (env_map) |*map| map else null,
+            .environ_map = &env_map,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,

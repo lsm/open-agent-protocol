@@ -122,7 +122,9 @@ fn getHomeDirFromEnviron(allocator: std.mem.Allocator, environ: std.process.Envi
 }
 
 pub fn createEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
-    return std.process.Environ.createMap(runtimeEnviron(), allocator);
+    var environment = try std.process.Environ.createMap(runtimeEnviron(), allocator);
+    _ = environment.swapRemove("OAPX_PROVIDER_SERVICE_TOKEN");
+    return environment;
 }
 
 test {

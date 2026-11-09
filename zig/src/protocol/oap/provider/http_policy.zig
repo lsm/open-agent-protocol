@@ -10,11 +10,11 @@ pub const ENDPOINT_PATH = "/oap/v0.1/provider";
 
 pub fn validateToken(token: ?[]const u8) !void {
     const value = token orelse return;
-    if (value.len == 0) return error.InvalidProviderServiceToken;
-    var points = (std.unicode.Utf8View.init(value) catch return error.InvalidProviderServiceToken).iterator();
-    while (points.nextCodepoint()) |point| switch (point) {
-        0...0x20, 0x7f...0x9f, 0xa0, 0x1680, 0x2000...0x200a, 0x2028...0x2029, 0x202f, 0x205f, 0x3000 => return error.InvalidProviderServiceToken,
-        else => {},
+    const content = std.mem.trimEnd(u8, value, "=");
+    if (content.len == 0) return error.InvalidProviderServiceToken;
+    for (content) |byte| switch (byte) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~', '+', '/' => {},
+        else => return error.InvalidProviderServiceToken,
     };
 }
 
@@ -71,7 +71,7 @@ test "provider service policy refuses unprotected remote and ambiguous URLs" {
     try std.testing.expectError(error.InvalidProviderServiceUrl, validateBaseUrl("https://provider.example/other", .tls));
 }
 
-test "service token validation rejects empty whitespace and control values" {
+test "service token validation accepts exactly the b64token alphabet with trailing padding" {
     try validateToken(null);
     for ([_][]const u8{ "a", "abcDEF012-._~+/", "a=", "a==", "a====" }) |token| try validateToken(token);
     for ([_][]const u8{ "caf\u{e9}", "a=b", "=", "==", "a?b", "a:b", "a,b", "a[b" }) |token| {
