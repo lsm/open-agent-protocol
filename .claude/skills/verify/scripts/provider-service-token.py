@@ -3,7 +3,6 @@ import argparse
 import contextlib
 import http.server
 import json
-import os
 from pathlib import Path
 import queue
 import subprocess

@@ -14,6 +14,7 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     base_url: []u8,
     security: policy.Security,
+    authorization: ?[]u8 = null,
     request_timeout_ms: u64 = 30_000,
     stream_idle_timeout_ms: u64 = 120_000,
 
@@ -26,7 +27,16 @@ pub const Client = struct {
         };
     }
 
+    pub fn initWithToken(allocator: std.mem.Allocator, base_url: []const u8, security: policy.Security, token: ?[]const u8) !Client {
+        try policy.validateToken(token);
+        var client = try init(allocator, base_url, security);
+        errdefer client.deinit();
+        if (token) |value| client.authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{value});
+        return client;
+    }
+
     pub fn deinit(self: *Client) void {
+        if (self.authorization) |value| self.allocator.free(value);
         self.allocator.free(self.base_url);
         self.* = undefined;
     }
@@ -49,13 +59,16 @@ pub const Client = struct {
 
         var http = compat.http.HttpClient.init(self.allocator);
         defer http.deinit();
+        const headers = [_]std.http.Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "Accept", .value = "application/json" },
+            .{ .name = "Authorization", .value = self.authorization orelse "" },
+        };
         var request = try http.openRequest(.POST, uri, .{
-            .extra_headers = &.{
-                .{ .name = "Content-Type", .value = "application/json" },
-                .{ .name = "Accept", .value = "application/json" },
-            },
+            .extra_headers = headers[0..if (self.authorization == null) @as(usize, 2) else 3],
             .keep_alive = false,
         });
+        if (self.authorization != null) request.redirect_behavior = .unhandled;
         job.setSocket(request.connection.?.stream_reader.stream);
         defer {
             job.clearSocket();
@@ -100,13 +113,16 @@ pub const Client = struct {
 
         var http = compat.http.HttpClient.init(self.allocator);
         defer http.deinit();
+        const headers = [_]std.http.Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "Accept", .value = "text/event-stream, application/json" },
+            .{ .name = "Authorization", .value = self.authorization orelse "" },
+        };
         var request = try http.openRequest(.POST, uri, .{
-            .extra_headers = &.{
-                .{ .name = "Content-Type", .value = "application/json" },
-                .{ .name = "Accept", .value = "text/event-stream, application/json" },
-            },
+            .extra_headers = headers[0..if (self.authorization == null) @as(usize, 2) else 3],
             .keep_alive = false,
         });
+        if (self.authorization != null) request.redirect_behavior = .unhandled;
         job.setSocket(request.connection.?.stream_reader.stream);
         defer {
             job.clearSocket();
@@ -161,6 +177,7 @@ const TimedJob = struct {
     failure: ?anyerror = null,
     base_url: []u8,
     body: []u8,
+    authorization: ?[]u8,
     security: policy.Security,
     kind: Kind,
 
@@ -174,7 +191,9 @@ const TimedJob = struct {
         const url = try arena.dupe(u8, client.base_url);
         errdefer arena.free(url);
         const request = try arena.dupe(u8, body);
-        job.* = .{ .base_url = url, .body = request, .security = client.security, .kind = kind };
+        errdefer arena.free(request);
+        const authorization = if (client.authorization) |value| try arena.dupe(u8, value) else null;
+        job.* = .{ .base_url = url, .body = request, .authorization = authorization, .security = client.security, .kind = kind };
         return job;
     }
 
@@ -183,6 +202,7 @@ const TimedJob = struct {
         for (self.pending.items) |line| arena.free(line);
         self.pending.deinit(arena);
         if (self.answer) |answer| arena.free(answer);
+        if (self.authorization) |value| arena.free(value);
         arena.free(self.base_url);
         arena.free(self.body);
         arena.destroy(self);
@@ -235,12 +255,12 @@ const TimedJob = struct {
 
     fn run(self: *TimedJob) void {
         defer self.release();
-        var client = Client.init(arena, self.base_url, self.security) catch |err| {
-            self.failure = err;
-            self.done.store(true, .release);
-            return;
+        var client = Client{
+            .allocator = arena,
+            .base_url = self.base_url,
+            .security = self.security,
+            .authorization = self.authorization,
         };
-        defer client.deinit();
         const result: anyerror!void = switch (self.kind) {
             .unary => blk: {
                 self.answer = client.postUnaryBlocking(self.body, self) catch |err| break :blk err;
@@ -501,4 +521,21 @@ test "SSE heartbeat resets the remote provider idle deadline" {
     defer if (collector.first) |line| std.testing.allocator.free(line);
     try client.postStream("{}", &collector, FrameCollector.collect);
     try std.testing.expectEqual(@as(usize, 2), collector.count);
+}
+
+test "authenticated client owns its header and unwinds allocation failures" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var token = [_]u8{ 's', 'y', 'n', 't', 'h', 'e', 't', 'i', 'c' };
+            var client = try Client.initWithToken(allocator, "http://127.0.0.1:1", .loopback, &token);
+            defer client.deinit();
+            @memset(&token, 'x');
+            try std.testing.expectEqualStrings("Bearer synthetic", client.authorization.?);
+            const job = try TimedJob.create(&client, "{}", .unary);
+            defer job.release();
+            @memset(client.authorization.?, 'x');
+            try std.testing.expectEqualStrings("Bearer synthetic", job.authorization.?);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
 }

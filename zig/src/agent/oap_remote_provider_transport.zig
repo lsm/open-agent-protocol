@@ -10,6 +10,7 @@ const provider_types = @import("oap_provider_types");
 pub const Config = struct {
     base_url: []const u8,
     security: http_policy.Security,
+    token: ?[]const u8 = null,
 
     pub fn factory(self: *const Config) bridge.TransportFactory {
         return .{ .ctx = @ptrCast(@constCast(self)), .open_fn = open };
@@ -20,7 +21,7 @@ const default_context_window: u32 = 128_000;
 const default_max_tokens: u32 = 32_768;
 
 pub fn discoverModels(allocator: std.mem.Allocator, config: *const Config) ![]ai_types.Model {
-    var client = try http_client.Client.init(allocator, config.base_url, config.security);
+    var client = try http_client.Client.initWithToken(allocator, config.base_url, config.security, config.token);
     defer client.deinit();
     const describe_request = try provider_envelope.serializeEnvelope(.{
         .id = "remote-describe",
@@ -158,7 +159,7 @@ pub fn open(
     errdefer allocator.destroy(state);
     state.* = .{
         .allocator = allocator,
-        .client = try http_client.Client.init(allocator, config.base_url, config.security),
+        .client = try http_client.Client.initWithToken(allocator, config.base_url, config.security, config.token),
     };
     return .{
         .ctx = state,

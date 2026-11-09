@@ -8,6 +8,16 @@ pub const Security = enum {
 
 pub const ENDPOINT_PATH = "/oap/v0.1/provider";
 
+pub fn validateToken(token: ?[]const u8) !void {
+    const value = token orelse return;
+    if (value.len == 0) return error.InvalidProviderServiceToken;
+    var points = (std.unicode.Utf8View.init(value) catch return error.InvalidProviderServiceToken).iterator();
+    while (points.nextCodepoint()) |point| switch (point) {
+        0...0x20, 0x7f...0x9f, 0xa0, 0x1680, 0x2000...0x200a, 0x2028...0x2029, 0x202f, 0x205f, 0x3000 => return error.InvalidProviderServiceToken,
+        else => {},
+    };
+}
+
 pub fn validateBaseUrl(url: []const u8, security: Security) !std.Uri {
     const uri = std.Uri.parse(url) catch return error.InvalidProviderServiceUrl;
     if (uri.host == null or uri.user != null or uri.password != null or uri.fragment != null or uri.query != null) {
@@ -59,4 +69,13 @@ test "provider service policy refuses unprotected remote and ambiguous URLs" {
     try std.testing.expectError(error.InvalidProviderServiceUrl, validateBaseUrl("https://provider.example/?redirect=other", .tls));
     try std.testing.expectError(error.InvalidProviderServiceUrl, validateBaseUrl("https://provider.example/#fragment", .tls));
     try std.testing.expectError(error.InvalidProviderServiceUrl, validateBaseUrl("https://provider.example/other", .tls));
+}
+
+test "service token validation rejects empty whitespace and control values" {
+    try validateToken(null);
+    try validateToken("synthetic.A_b-9+/=~");
+    try validateToken("caf\u{e9}");
+    for ([_][]const u8{ "", " ", "a\tb", "a\r\nb", "a\x00b", "a\x7fb", "a\u{85}b", "a\u{a0}b", "a\u{2003}b", "a\u{2028}b", "a\u{3000}b" }) |token| {
+        try std.testing.expectError(error.InvalidProviderServiceToken, validateToken(token));
+    }
 }
