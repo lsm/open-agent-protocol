@@ -85,7 +85,10 @@ token requires a service URL and an RFC 6750 b64token value. Its alphabet is
 ASCII letters, digits and `-._~+/`, followed by optional trailing `=` padding.
 Inherited child environments omit `OAPX_PROVIDER_SERVICE_TOKEN`. Invalid
 configuration is a typed startup refusal. Authenticated requests refuse
-redirects, including redirects to a different origin.
+redirects, including redirects to a different origin. POSIX startup overwrites
+the token value in the original agent environment after copying it for transport.
+A tool running as the same user can still read any file the agent can, so strict
+isolation requires a sandboxed tool runner or a separate user.
 
 Loopback HTTP is permitted within one trusted host or Pod. Cross-Pod or remote
 traffic requires HTTPS with validated peer identity or an explicitly configured

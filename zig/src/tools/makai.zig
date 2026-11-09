@@ -5469,6 +5469,15 @@ fn runOapMode(
         error.EnvironmentVariableMissing => null,
         else => return err,
     };
+    if (comptime @hasField(std.process.Environ.Block, "slice")) {
+        for (compat.runtimeEnviron().block.view().slice) |entry| {
+            const text = std.mem.span(entry);
+            const prefix = "OAPX_PROVIDER_SERVICE_TOKEN=";
+            if (std.mem.startsWith(u8, text, prefix)) {
+                std.crypto.secureZero(u8, @constCast(text[prefix.len..]));
+            }
+        }
+    }
     defer if (remote_token) |value| allocator.free(value);
     if (remote_token != null and remote_url == null) return error.ProviderServiceUrlRequired;
     try oap_provider_http_policy.validateToken(remote_token);

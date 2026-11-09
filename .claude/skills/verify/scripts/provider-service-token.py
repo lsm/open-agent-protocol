@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ def envelope(kind, identifier, payload, profile=PROFILE, **fields):
 class Service(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, mode='normal', target=None):
+    def __init__(self, mode='normal', target=None, parent_environment=False):
         super().__init__(('127.0.0.1', 0), Handler)
         self.mode, self.target = mode, target
         self.requests = []
@@ -31,6 +32,8 @@ class Service(http.server.ThreadingHTTPServer):
         self.created = threading.Event()
         self.inferences = 0
         self.workspace = None
+        self.parent_environment = parent_environment
+        self.agent_pid = None
 
     @property
     def url(self):
@@ -85,8 +88,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.event(request, 'inference.create.response', {'accepted': True}, inference_id=identifier)
                 self.event(request, 'inference.started', {'model_ref': MODEL, 'started_at_ms': 1}, 1, identifier)
                 if service.inferences == 1:
+                    command = 'env'
+                    if service.parent_environment:
+                        command = (f'ps eww -p {service.agent_pid} -o command=' if sys.platform == 'darwin'
+                                   else f"cat /proc/{service.agent_pid}/environ | tr '\\000' '\\n'")
                     arguments = {'description': 'inspect the synthetic environment',
-                                 'workspace_root': service.workspace, 'command': 'env'}
+                                 'workspace_root': service.workspace, 'command': command}
                     call = {'tool_call_id': 'env-call', 'name': 'Shell', 'arguments_json': arguments}
                     self.event(request, 'inference.part.started', {'part_index': 0, 'part_kind': 'tool_call',
                                'tool_call_id': 'env-call', 'name': 'Shell'}, 2, identifier)
@@ -171,6 +178,7 @@ def dialogue(binary, home, service, token, output):
     child = subprocess.Popen([binary, 'serve', 'agent', '--stdio', '--model', MODEL],
                              env=environment(home, service.url, token), cwd=home,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    service.agent_pid = child.pid
     received = queue.Queue()
     trace = []
 
@@ -304,6 +312,12 @@ def main():
                 service.workspace = str(home)
                 dialogue(binary, home, service, TOKEN, args.output_dir / 'shell')
         check('shell-env-and-trace-containment', shell_environment)
+
+        def parent_environment():
+            with running(Service('shell', parent_environment=True)) as service:
+                service.workspace = str(home)
+                dialogue(binary, home, service, TOKEN, args.output_dir / 'parent')
+        check('parent-env-and-trace-containment', parent_environment)
 
         def refusal():
             with running(Service('error')) as service:
