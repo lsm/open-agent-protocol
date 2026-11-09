@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use oap_adapter::{
     refuse_unadvertised_settings, Adapter as AdapterContract, Admitter, BoxFuture, Descriptor,
@@ -20,6 +18,7 @@ use crate::process::ProcessConfig;
 #[derive(Clone, Debug, Default)]
 pub struct Config {
     pub process: ProcessConfig,
+    pub runtime: Option<crate::Runtime>,
     pub mcp_servers: Vec<McpServer>,
     pub session_config: BTreeMap<String, String>,
     pub journal_capacity: usize,
@@ -34,7 +33,7 @@ thread_local! {
 pub struct Adapter {
     config: Config,
     descriptor: Descriptor,
-    next_session: Arc<AtomicU64>,
+    runtime: crate::Runtime,
 }
 
 pub fn pin() -> &'static oap_harness::Version {
@@ -70,8 +69,8 @@ impl Adapter {
         }
         Ok(Self {
             descriptor: Self::build(&config),
+            runtime: config.runtime.clone().unwrap_or_default(),
             config,
-            next_session: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -219,7 +218,7 @@ impl AdapterContract for Adapter {
                 &self.config,
                 request,
                 self.describe(),
-                &self.next_session,
+                &self.runtime,
                 servers,
             )
             .await

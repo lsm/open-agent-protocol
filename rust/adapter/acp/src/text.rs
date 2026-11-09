@@ -37,6 +37,7 @@ pub struct TextRunState {
 
 pub struct TextRun {
     pub(crate) context: TextRunContext,
+    runtime: Option<crate::Runtime>,
     pub(crate) ids: Box<dyn FnMut(&str) -> String + Send>,
     state: TextRunState,
     texts: BTreeMap<MessageId, String>,
@@ -70,6 +71,7 @@ impl TextRun {
     ) -> Self {
         Self {
             context,
+            runtime: None,
             ids: Box::new(ids),
             state: TextRunState::default(),
             texts: BTreeMap::new(),
@@ -84,6 +86,29 @@ impl TextRun {
             permissions: Vec::new(),
             pending: None,
         }
+    }
+
+    pub fn with_runtime(mut self, runtime: crate::Runtime) -> Self {
+        self.set_runtime(runtime);
+        self
+    }
+
+    pub(crate) fn set_runtime(&mut self, runtime: crate::Runtime) {
+        let ids = runtime.clone();
+        self.ids = Box::new(move |kind| ids.new_id(kind));
+        self.runtime = Some(runtime);
+    }
+
+    pub(crate) fn input_time(&self, fallback: &dyn Fn() -> i64) -> i64 {
+        self.runtime
+            .as_ref()
+            .map_or_else(fallback, |_| self.state.updated_at_ms)
+    }
+
+    pub(crate) fn timestamp(&self, fallback: i64) -> i64 {
+        self.runtime
+            .as_ref()
+            .map_or(fallback, crate::Runtime::now_ms)
     }
 
     pub fn state(&self) -> TextRunState {
@@ -104,6 +129,7 @@ impl TextRun {
         let mut event =
             Envelope::new(kind, (self.ids)("event"), payload).map_err(Error::harness)?;
         event.sequence = Some(self.state.sequence + 1);
+        let now_ms = self.timestamp(now_ms);
         event.timestamp_ms = Some(now_ms);
         event.session_id = Some(self.context.session_id.clone());
         event.run_id = Some(self.context.run_id.clone());
@@ -146,6 +172,7 @@ impl TextRun {
         if !self.state.status.is_empty() {
             return Err(Error::RunActive);
         }
+        let now_ms = self.timestamp(now_ms);
         self.emit(
             EnvelopeType::RUN_STARTED,
             &RunStartedPayload {

@@ -88,16 +88,15 @@ impl Permissions {
             );
             let projected = {
                 let mut text = run.lock().unwrap();
+                let now = text.input_time(&*owner.clock);
                 match params {
-                    Ok(params) => {
-                        text.permission_request(params, owner.participant.clone(), (owner.clock)())
-                    }
+                    Ok(params) => text.permission_request(params, owner.participant.clone(), now),
                     Err(_) => {
                         let _ = text.fail(
                             "acp_invalid_permission",
                             "malformed permission request",
                             false,
-                            (owner.clock)(),
+                            now,
                         );
                         Err(Error::Harness("invalid permission request".into()))
                     }
@@ -146,19 +145,23 @@ impl Permissions {
             let binding = bound(bindings, &run, reply.interaction_id())?;
             let request = binding.request.as_ref().ok_or(Error::InteractionResolved)?;
             if let Err(error) = request.respond(reply.response()) {
-                run.lock().unwrap().fail(
-                    "acp_permission_response_failed",
-                    &error.to_string(),
-                    true,
-                    (owner.clock)(),
-                )?;
+                {
+                    let mut text = run.lock().unwrap();
+                    let now = text.input_time(&*owner.clock);
+                    text.fail(
+                        "acp_permission_response_failed",
+                        &error.to_string(),
+                        true,
+                        now,
+                    )?;
+                }
                 owner.settle(&run, bindings)?;
                 return Err(Error::harness(error));
             }
             binding.request = None;
-            run.lock()
-                .unwrap()
-                .commit_permission(reply, (owner.clock)())?;
+            let mut text = run.lock().unwrap();
+            let now = text.input_time(&*owner.clock);
+            text.commit_permission(reply, now)?;
             Ok(())
         })
     }
@@ -234,8 +237,11 @@ impl Permissions {
                 None,
             ))
             .map_err(Error::harness)?;
-            let now = (owner.clock)();
-            run.lock().unwrap().request_cancel(now)?;
+            {
+                let mut text = run.lock().unwrap();
+                let now = text.input_time(&*owner.clock);
+                text.request_cancel(now)?;
+            }
             owner.settle(&run, bindings)?;
             Ok(RunCancelResponse {
                 status: RunStatus::CANCELLING,
@@ -258,7 +264,8 @@ impl Permissions {
             };
             {
                 let mut text = run.lock().unwrap();
-                update(&mut text, (self.clock)())?;
+                let now = text.input_time(&*self.clock);
+                update(&mut text, now)?;
                 if text.permission_settlements().is_empty() {
                     return Ok(());
                 }
@@ -287,9 +294,9 @@ impl Permissions {
                 let _ = request.respond(reply.response());
             }
             binding.request = None;
-            run.lock()
-                .unwrap()
-                .commit_permission(reply, (self.clock)())?;
+            let mut text = run.lock().unwrap();
+            let now = text.input_time(&*self.clock);
+            text.commit_permission(reply, now)?;
         }
         Ok(())
     }

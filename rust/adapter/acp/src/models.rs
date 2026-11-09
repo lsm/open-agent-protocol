@@ -9,7 +9,7 @@ use crate::native::{
     SetConfigOptionResult, CATEGORY_THOUGHT_LEVEL, METHOD_SESSION_SET_CONFIG_OPTION,
     METHOD_SESSION_UPDATE,
 };
-use crate::session::{now_ms, Inner, Session};
+use crate::session::{Inner, Session};
 
 fn refusal(detail: impl Into<String>) -> Error {
     Error::UnsupportedControl(Box::new(UnsupportedControl {
@@ -116,7 +116,7 @@ impl Inner {
                 self.state.reasoning_level.clone(),
             )
         {
-            self.state.updated_at_ms = now_ms();
+            self.state.updated_at_ms = self.runtime.now_ms();
         }
     }
 }
@@ -187,7 +187,7 @@ impl ModelSwitcher for Session {
             let previous =
                 std::mem::replace(&mut inner.state.current_model_id, request.model_id.clone());
             inner.state.reasoning_level = reasoning(&set.config_options);
-            inner.state.updated_at_ms = now_ms();
+            inner.state.updated_at_ms = inner.runtime.now_ms();
             Ok((
                 SessionModelSwitchResponse {
                     session_id: inner.state.session_id.clone(),

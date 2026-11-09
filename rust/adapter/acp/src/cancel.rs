@@ -33,6 +33,7 @@ impl TextRun {
         if self.state().closed || self.pending.is_some() {
             return Ok(());
         }
+        let now = self.timestamp(now);
         self.emit(
             EnvelopeType::RUN_STATUS_UPDATED,
             &RunStatusUpdatedPayload {

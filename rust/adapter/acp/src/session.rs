@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, StreamExt};
 use futures_util::lock::Mutex as AsyncMutex;
@@ -43,6 +41,7 @@ pub(crate) struct Inner {
     pub(crate) usage: Arc<Mutex<UsageScope>>,
     pub(crate) tool_history: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) journal: Journal,
+    pub(crate) runtime: crate::Runtime,
 }
 
 impl Inner {
@@ -69,14 +68,8 @@ pub(crate) struct Session {
     pub(crate) switching: AsyncMutex<()>,
     pub(crate) revision: String,
     pub(crate) submitting: AsyncMutex<()>,
-    pub(crate) ids: Arc<AtomicU64>,
+    pub(crate) runtime: crate::Runtime,
     abort_active_on_close: bool,
-}
-
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |time| time.as_millis() as i64)
 }
 
 fn native_error(error: impl std::fmt::Display) -> Error {
@@ -88,7 +81,7 @@ impl Session {
         config: &Config,
         request: OpenRequest,
         descriptor: Descriptor,
-        next: &Arc<AtomicU64>,
+        runtime: &crate::Runtime,
         mcp_servers: Vec<McpServer>,
     ) -> Result<Box<dyn SessionContract>, Error> {
         let opening = SessionNewParams {
@@ -164,7 +157,7 @@ impl Session {
             .filter(|value| !matches!(value.as_str(), "" | "default" | "current"))
             .unwrap_or_default();
         let session_id = if request.session_id.as_str().is_empty() {
-            format!("session-{}", next.fetch_add(1, Ordering::SeqCst) + 1).into()
+            runtime.new_id("session").into()
         } else {
             request.session_id
         };
@@ -178,6 +171,7 @@ impl Session {
             usage: Arc::new(Mutex::new(usage)),
             tool_history: Arc::default(),
             journal: Journal::new(config.journal_capacity),
+            runtime: runtime.clone(),
             model_option,
             state: SessionState {
                 session_id,
@@ -189,7 +183,7 @@ impl Session {
                     reason: crate::reload::REASON.into(),
                     ..RecoveryMetadata::default()
                 }),
-                updated_at_ms: now_ms(),
+                updated_at_ms: runtime.now_ms(),
                 sources: descriptor
                     .capabilities
                     .sources
@@ -325,7 +319,10 @@ impl Session {
             }
             shared.lock().unwrap_or_else(|p| p.into_inner()).refresh();
         }));
-        let permissions = Permissions::new(bridge.clone(), request.participant.id, now_ms)?;
+        let clock = runtime.clone();
+        let permissions = Permissions::new(bridge.clone(), request.participant.id, move || {
+            clock.now_ms()
+        })?;
         {
             let mut state = inner.lock().unwrap_or_else(|p| p.into_inner());
             state.process = Some(bridge);
@@ -339,7 +336,7 @@ impl Session {
             native_id: opened.session_id,
             revision: descriptor.capability_revision,
             submitting: AsyncMutex::new(()),
-            ids: next.clone(),
+            runtime: runtime.clone(),
             abort_active_on_close: config.abort_active_on_close,
         }))
     }
@@ -371,7 +368,7 @@ impl Session {
         inner.journal.close();
         inner.state.status = SessionStatus::CLOSED;
         inner.state.active_run_id = None;
-        inner.state.updated_at_ms = now_ms();
+        inner.state.updated_at_ms = inner.runtime.now_ms();
         Ok(Some((process, std::mem::take(&mut inner.workers))))
     }
 }
