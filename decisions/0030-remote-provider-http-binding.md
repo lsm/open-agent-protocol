@@ -63,8 +63,12 @@ OAP envelopes or traces.
 The `oapx` HTTP server binds only to literal loopback. A cross-Pod deployment
 must put an operator-managed proxy in front of that listener; the proxy must
 authorize callers as well as authenticate and encrypt its outbound leg. The
-direct HTTPS client mode validates the server identity but does not itself
-provide a client certificate or authorization header.
+direct HTTPS client mode validates the server identity and may send an
+operator-configured bearer authorization header. The built-in agent reads it
+from `OAPX_PROVIDER_SERVICE_TOKEN`, configured out of band alongside the service
+URL and security mode. Its value stays in HTTP transport metadata and is never
+serialized into OAP envelopes, traces, logs or errors. Authenticated client
+requests refuse redirects.
 
 ## Failure and lifetime
 

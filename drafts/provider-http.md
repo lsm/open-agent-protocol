@@ -67,13 +67,23 @@ agent admits an attachment by operator `service_id`.
 
 ## Credentials and deployment
 
-This version has no credential-value channel. The remote service manages its
-own credentials and advertises `credential_grant: none`. A credential grant
+The remote service manages its provider-account credentials and advertises
+`credential_grant: none`. A credential grant
 request is a typed refusal, never an invitation to put a secret into an OAP
 envelope or HTTP request body. Connection authentication, if used, is
 operator-configured transport metadata and is excluded from OAP traces and
 logs. An agent attachment carries only the provider alias, provider identity,
 and optional operator service identity defined by Decision 0028.
+
+The built-in `oapx serve agent` client accepts an optional
+`OAPX_PROVIDER_SERVICE_TOKEN` alongside `OAPX_PROVIDER_SERVICE_URL` and
+`OAPX_PROVIDER_SERVICE_SECURITY`. It sends `Authorization: Bearer <token>` on
+every service request, including discovery, model listing, SSE inference and
+cancellation. The token is configured out of band and stays in HTTP transport
+metadata. Envelopes, traces, logs and error text exclude its value. A configured
+token requires a service URL and a nonempty value without whitespace or control
+characters. Invalid configuration is a typed startup refusal. Authenticated
+requests refuse redirects, including redirects to a different origin.
 
 Loopback HTTP is permitted within one trusted host or Pod. Cross-Pod or remote
 traffic requires HTTPS with validated peer identity or an explicitly configured

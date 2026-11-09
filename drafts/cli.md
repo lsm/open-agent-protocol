@@ -32,6 +32,14 @@ not a second product.
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
+For the built-in `oapx serve agent` loop, `OAPX_PROVIDER_SERVICE_URL` selects a
+remote provider service and `OAPX_PROVIDER_SERVICE_SECURITY` selects `loopback`,
+`tls` or `mesh_proxy`. Optional `OAPX_PROVIDER_SERVICE_TOKEN` supplies its bearer
+header on every service request. A token requires a URL and a nonempty value
+without whitespace or control characters. Invalid token configuration produces
+a typed startup refusal. The token stays outside OAP data and diagnostic output,
+and authenticated requests refuse redirects.
+
 In `goap`, `--timeout` gives one answer wait one budget for the whole wait, not one
 per line: a response, event or control answer is judged on the deadline from the
 moment the runner starts looking, a frame it did not ask for spends that budget

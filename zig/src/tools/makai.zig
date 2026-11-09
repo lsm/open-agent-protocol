@@ -1433,6 +1433,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
         \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
+        \\                   Optional OAPX_PROVIDER_SERVICE_TOKEN sends a bearer header
+        \\                   Token requires URL and must be nonempty without whitespace/control
         \\                   Use --backend claude, codex or pi to serve a Claude Code,
         \\                   Codex app-server or Pi child instead of the built-in
         \\                   loop, or an ACP agent, Hermes gateway, DeepSeek harness
@@ -5463,13 +5465,20 @@ fn runOapMode(
     defer if (remote_url) |value| allocator.free(value);
     const remote_security_text = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_SECURITY");
     defer if (remote_security_text) |value| allocator.free(value);
+    const remote_token = compat.getEnvVarOwned(allocator, "OAPX_PROVIDER_SERVICE_TOKEN") catch |err| switch (err) {
+        error.EnvironmentVariableMissing => null,
+        else => return err,
+    };
+    defer if (remote_token) |value| allocator.free(value);
+    if (remote_token != null and remote_url == null) return error.ProviderServiceUrlRequired;
+    try oap_provider_http_policy.validateToken(remote_token);
     if (serve_provider and remote_url != null) return error.RemoteProviderRequiresAgentRole;
     var remote_config: ?oap_remote_provider_transport.Config = null;
     if (remote_url) |url| {
         const security_text = remote_security_text orelse return error.ProviderServiceSecurityRequired;
         const security = std.meta.stringToEnum(oap_provider_http_policy.Security, security_text) orelse return error.InvalidProviderServiceSecurity;
         _ = try oap_provider_http_policy.validateBaseUrl(url, security);
-        remote_config = .{ .base_url = url, .security = security };
+        remote_config = .{ .base_url = url, .security = security, .token = remote_token };
     } else if (remote_security_text != null) return error.ProviderServiceUrlRequired;
     return runOapxServe(allocator, stdin, stdout, stderr, serve_provider, parsed.answers_specimens, default_model_id, if (remote_config) |*config| config else null);
 }
