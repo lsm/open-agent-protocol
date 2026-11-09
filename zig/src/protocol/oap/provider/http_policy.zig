@@ -73,8 +73,10 @@ test "provider service policy refuses unprotected remote and ambiguous URLs" {
 
 test "service token validation rejects empty whitespace and control values" {
     try validateToken(null);
-    try validateToken("synthetic.A_b-9+/=~");
-    try validateToken("caf\u{e9}");
+    for ([_][]const u8{ "a", "abcDEF012-._~+/", "a=", "a==", "a====" }) |token| try validateToken(token);
+    for ([_][]const u8{ "caf\u{e9}", "a=b", "=", "==", "a?b", "a:b", "a,b", "a[b" }) |token| {
+        try std.testing.expectError(error.InvalidProviderServiceToken, validateToken(token));
+    }
     for ([_][]const u8{ "", " ", "a\tb", "a\r\nb", "a\x00b", "a\x7fb", "a\u{85}b", "a\u{a0}b", "a\u{2003}b", "a\u{2028}b", "a\u{3000}b" }) |token| {
         try std.testing.expectError(error.InvalidProviderServiceToken, validateToken(token));
     }
