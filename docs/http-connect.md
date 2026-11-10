@@ -33,7 +33,9 @@ fetches initialize the standard proxy environment before making requests.
 is the fallback. Lowercase names take precedence. Unsupported proxy schemes
 and initialization errors fail the request.
 
-`OAP_ATTEMPT_AUDIT_ID` enables JSONL on stderr for Responses model POST attempts.
+`OAP_ATTEMPT_AUDIT_ID` enables JSONL on stderr for model POST attempts in the
+OpenAI/Codex Responses implementation (`openai-responses` and
+`openai-codex-responses`).
 Use a non-secret correlation label of 1–64 ASCII letters, digits, dots,
 underscores or hyphens. Absent, empty or invalid labels disable the sink.
 Each line contains only `audit_id`, a 1-based process-wide `attempt` number,
