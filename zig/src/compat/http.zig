@@ -3,7 +3,7 @@ const Client = @import("http_client");
 
 fn workerEnviron() std.process.Environ {
     const builtin = @import("builtin");
-    if (builtin.is_test) return std.testing.environ;
+    if (builtin.is_test) return .empty;
 
     const Block = std.process.Environ.Block;
     if (@hasField(Block, "use_global")) return .{ .block = .global };
@@ -33,15 +33,33 @@ pub const RequestOptions = struct {
     user_agent: ?[]const u8 = null,
 };
 
+test "unit-test HTTP defaults have no ambient environment" {
+    var environment = try std.process.Environ.createMap(workerEnviron(), std.testing.allocator);
+    defer environment.deinit();
+    try std.testing.expectEqual(@as(usize, 0), environment.count());
+}
+
 pub const HttpClient = struct {
     client: Client,
+    proxy_arena: ?std.heap.ArenaAllocator = null,
 
     pub fn init(allocator: std.mem.Allocator) HttpClient {
         return .{ .client = .{ .allocator = allocator, .io = defaultIo() } };
     }
 
+    pub fn initWithDefaultProxies(allocator: std.mem.Allocator) !HttpClient {
+        var client = init(allocator);
+        errdefer client.deinit();
+        client.proxy_arena = std.heap.ArenaAllocator.init(allocator);
+        var environment = try std.process.Environ.createMap(workerEnviron(), allocator);
+        defer environment.deinit();
+        try client.initDefaultProxies(client.proxy_arena.?.allocator(), &environment);
+        return client;
+    }
+
     pub fn deinit(self: *HttpClient) void {
         self.client.deinit();
+        if (self.proxy_arena) |*arena| arena.deinit();
         self.* = undefined;
     }
 
@@ -68,11 +86,11 @@ var shared_lock: std.atomic.Mutex = .unlocked;
 var shared_client: ?HttpClient = null;
 var last_stale_sweep_ms: i64 = 0;
 
-pub fn sharedClient() *HttpClient {
+pub fn sharedClient() !*HttpClient {
     while (!shared_lock.tryLock()) std.atomic.spinLoopHint();
     defer shared_lock.unlock();
     if (shared_client == null) {
-        shared_client = HttpClient.init(std.heap.smp_allocator);
+        shared_client = try HttpClient.initWithDefaultProxies(std.heap.smp_allocator);
         shared_client.?.client.connection_pool.free_size = shared_idle_connections;
     }
     const client = &shared_client.?;
@@ -177,12 +195,31 @@ pub fn readResponse(reader: *ResponseReader, buffer: []u8) !usize {
     const inner: *std.Io.Reader = @ptrCast(@alignCast(reader));
     var slices = [_][]u8{buffer};
     while (true) {
+        const available = inner.buffered();
+        if (available.len > 0) {
+            const count = @min(available.len, buffer.len);
+            @memcpy(buffer[0..count], available[0..count]);
+            inner.toss(count);
+            return count;
+        }
         const read = inner.readVec(&slices) catch |err| switch (err) {
             error.EndOfStream => return 0,
             else => |failure| return failure,
         };
         if (read > 0 or buffer.len == 0) return read;
     }
+}
+
+test "readResponse returns buffered data before reading again" {
+    var source = std.Io.Reader.failing;
+    var buffered = "delta".*;
+    source.buffer = &buffered;
+    source.end = buffered.len;
+    var output: [64]u8 = undefined;
+    const reader: *ResponseReader = @ptrCast(&source);
+    try std.testing.expectEqual(@as(usize, 5), try readResponse(reader, &output));
+    try std.testing.expectEqualStrings("delta", output[0..5]);
+    try std.testing.expectError(error.ReadFailed, readResponse(reader, &output));
 }
 
 pub fn readAllResponse(reader: *ResponseReader, buffer: []u8) !void {
@@ -280,7 +317,7 @@ fn releaseServer(port: u16) void {
 fn fetchThroughShared(port: u16) !void {
     var url_buffer: [64]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buffer, "http://127.0.0.1:{d}/", .{port});
-    var request = try sharedClient().openRequest(.GET, try std.Uri.parse(url), .{});
+    var request = try (try sharedClient()).openRequest(.GET, try std.Uri.parse(url), .{});
     defer request.deinit();
     try sendBodilessRequest(&request);
     var redirect_buffer: [256]u8 = undefined;
@@ -450,12 +487,8 @@ const FetchJob = struct {
     fn perform(job: *FetchJob, status_out: *u16, body_out: *[]u8) bool {
         const uri = std.Uri.parse(job.url) catch return false;
 
-        var client = HttpClient.init(arena);
+        var client = HttpClient.initWithDefaultProxies(arena) catch return false;
         defer client.deinit();
-
-        var environ_map = std.process.Environ.createMap(workerEnviron(), arena) catch null;
-        defer if (environ_map) |*map| map.deinit();
-        if (environ_map) |*map| client.initDefaultProxies(arena, map) catch {};
 
         var request = client.openRequest(job.method, uri, .{
             .extra_headers = job.headers,

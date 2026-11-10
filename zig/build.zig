@@ -955,6 +955,24 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const responses_proxy_probe = b.addExecutable(.{
+        .name = "responses-proxy-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("../.claude/skills/verify/scripts/responses-proxy-probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "compat", .module = compat_mod },
+                .{ .name = "ai_types", .module = ai_types_mod },
+                .{ .name = "event_stream", .module = event_stream_mod },
+                .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
+            },
+        }),
+    });
+    const install_responses_proxy_probe = b.addInstallArtifact(responses_proxy_probe, .{});
+    b.step("build-responses-proxy-probe", "Build the Responses proxy and attempt audit journey probe").dependOn(&install_responses_proxy_probe.step);
+
     const azure_openai_responses_api_mod = b.createModule(.{
         .root_source_file = b.path("src/providers/azure_openai_responses_api.zig"),
         .target = target,

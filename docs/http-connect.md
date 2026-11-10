@@ -23,3 +23,31 @@ case sensitivity, accept a leading dot and an optional destination port,
 and ignore surrounding spaces. `*` bypasses every destination. Matching
 requests connect directly with the usual target TLS validation. Exclusions
 use destination names without DNS resolution and do not interpret CIDR ranges.
+
+## Environment routing and attempt audit
+
+The shared streaming client, TLS-mode remote provider requests and one-shot
+fetches initialize the standard proxy environment before making requests.
+Loopback and mesh-proxy provider modes always connect directly to their
+validated loopback peer, keeping bearer credentials and content local.
+`http_proxy` or `HTTP_PROXY` selects HTTP forwarding; `https_proxy` or
+`HTTPS_PROXY` selects the proxy for HTTPS targets. `all_proxy` or `ALL_PROXY`
+is the fallback. Lowercase names take precedence. An unusable proxy fails the request only
+when its route is selected, after destination exclusions are checked.
+
+`OAP_ATTEMPT_AUDIT_ID` enables JSONL on stderr for model POST attempts in the
+OpenAI/Codex Responses implementation (`openai-responses` and
+`openai-codex-responses`).
+Use a non-secret correlation label of 1–64 ASCII letters, digits, dots,
+underscores or hyphens. Absent, empty or invalid labels disable the sink.
+Each line contains only `audit_id`, a 1-based process-wide `attempt` number,
+and `outcome`. Numbers are reserved when the model POST begins and remain
+unique across concurrent inferences. Records are written as attempts finish,
+so completion order can differ from attempt-number order.
+
+The fixed outcomes are `success`, `http_error`, `transport_error` and
+`stream_error`. Successful inference completion records success. HTTP failures
+and send/receive failures record their respective outcomes; a later stream
+failure records stream_error. Retries each receive a record. OAuth refresh,
+CONNECT setup and remote OAP transport envelopes do not count as model POSTs.
+The records exclude provider error text, credentials and model content.

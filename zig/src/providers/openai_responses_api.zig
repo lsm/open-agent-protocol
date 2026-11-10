@@ -18,6 +18,39 @@ const codex_oauth = @import("oauth/openai_codex");
 
 const openai_codex_responses_api = "openai-codex-responses";
 
+var attempt_counter: std.atomic.Value(u64) = .init(0);
+
+const AttemptAudit = struct {
+    id: [64]u8 = undefined,
+    len: usize = 0,
+    active: ?u64 = null,
+
+    const Outcome = enum { success, http_error, transport_error, stream_error };
+
+    fn init(allocator: std.mem.Allocator) AttemptAudit {
+        const value = compat.getEnvVarOwned(allocator, "OAP_ATTEMPT_AUDIT_ID") catch return .{};
+        defer allocator.free(value);
+        if (value.len == 0 or value.len > 64) return .{};
+        for (value) |byte| switch (byte) {
+            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-' => {},
+            else => return .{},
+        };
+        var audit: AttemptAudit = .{ .len = value.len };
+        @memcpy(audit.id[0..value.len], value);
+        return audit;
+    }
+
+    fn begin(self: *AttemptAudit) void {
+        if (self.len > 0) self.active = attempt_counter.fetchAdd(1, .monotonic) + 1;
+    }
+
+    fn finish(self: *AttemptAudit, outcome: Outcome) void {
+        const number = self.active orelse return;
+        self.active = null;
+        std.debug.print("{{\"audit_id\":\"{s}\",\"attempt\":{d},\"outcome\":\"{s}\"}}\n", .{ self.id[0..self.len], number, @tagName(outcome) });
+    }
+};
+
 pub const wires: []const []const u8 = &.{ "openai-responses", openai_codex_responses_api };
 
 const responses_wire = provider_catalog.wirePath("openai-responses") orelse unreachable;
@@ -928,6 +961,8 @@ fn runThread(ctx: *ThreadCtx) void {
     const on_payload_fn = ctx.on_payload_fn;
     const on_payload_ctx = ctx.on_payload_ctx;
     const retry_opts = ctx.retry_config;
+    var audit = AttemptAudit.init(allocator);
+    defer audit.finish(.stream_error);
 
     if (on_payload_fn) |cb| {
         cb(on_payload_ctx, body);
@@ -941,7 +976,11 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    const client = compat.http.sharedClient();
+    const client = compat.http.sharedClient() catch {
+        ctx.deinit();
+        stream.completeWithError("HTTP client initialization failed");
+        return;
+    };
 
     const url = provider_catalog.joinModelUrlOwned(allocator, model, responsesWireForModel(model)) catch {
         ctx.deinit();
@@ -1052,7 +1091,9 @@ fn runThread(ctx: *ThreadCtx) void {
         };
         req_initialized = true;
 
+        audit.begin();
         compat.http.sendRequest(&req, body) catch {
+            audit.finish(.transport_error);
             if (retry_attempt < MAX_RETRIES) {
                 const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
                 if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
@@ -1073,6 +1114,7 @@ fn runThread(ctx: *ThreadCtx) void {
         };
 
         response = compat.http.receiveResponse(&req, &head_buf) catch {
+            audit.finish(.transport_error);
             if (retry_attempt < MAX_RETRIES) {
                 const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
                 if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
@@ -1096,6 +1138,7 @@ fn runThread(ctx: *ThreadCtx) void {
             break;
         }
 
+        audit.finish(.http_error);
         const status_code: u16 = @intFromEnum(response.head.status);
         const should_retry = retry_util.isRetryable(status_code) and retry_attempt < MAX_RETRIES;
 
@@ -1533,6 +1576,7 @@ fn runThread(ctx: *ThreadCtx) void {
     allocator.free(url);
     ctx.deinit();
 
+    if (out.stop_reason != .@"error" and out.stop_reason != .aborted) audit.finish(.success);
     ai_types.settleProviderOutcome(stream, out);
 }
 

@@ -75,6 +75,10 @@ fn bypassProxy(exclusions: []const u8, destination: []const u8, port: u16) bool 
 
 pub fn connect(client: *Client, host: HostName, port: u16, protocol: Protocol) ConnectError!*Connection {
     if (bypassProxy(client.no_proxy, host.bytes, port)) return client.connectTcp(host, port, protocol);
+    if (switch (protocol) {
+        .plain => client.http_proxy_invalid,
+        .tls => client.https_proxy_invalid,
+    }) return error.UnsupportedProxyProtocol;
     const proxy = switch (protocol) {
         .plain => client.http_proxy,
         .tls => client.https_proxy,
@@ -100,6 +104,27 @@ pub fn connect(client: *Client, host: HostName, port: u16, protocol: Protocol) C
     return connection;
 }
 
+fn configuredProxy(arena: Allocator, environ_map: *const std.process.Environ.Map, names: []const []const u8, invalid: *bool) Allocator.Error!?*Proxy {
+    invalid.* = false;
+    const proxy = createProxyFromEnvVar(arena, environ_map, names) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            invalid.* = true;
+            return null;
+        },
+    };
+    if (proxy == null) {
+        for (names) |name| {
+            if (environ_map.get(name)) |value| {
+                if (value.len == 0) continue;
+                invalid.* = true;
+                break;
+            }
+        }
+    }
+    return proxy;
+}
+
 pub fn initDefaultProxies(client: *Client, arena: Allocator, environ_map: *const std.process.Environ.Map) !void {
     const io = client.io;
     const pool = &client.connection_pool;
@@ -113,13 +138,13 @@ pub fn initDefaultProxies(client: *Client, arena: Allocator, environ_map: *const
     pool.free_len = 0;
     client.no_proxy = try arena.dupe(u8, environ_map.get("no_proxy") orelse environ_map.get("NO_PROXY") orelse "");
     if (client.http_proxy == null) {
-        client.http_proxy = try createProxyFromEnvVar(arena, environ_map, &.{
+        client.http_proxy = try configuredProxy(arena, environ_map, &.{
             "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY",
-        });
+        }, &client.http_proxy_invalid);
     }
     if (client.https_proxy == null) {
-        client.https_proxy = try createProxyFromEnvVar(arena, environ_map, &.{
+        client.https_proxy = try configuredProxy(arena, environ_map, &.{
             "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY",
-        });
+        }, &client.https_proxy_invalid);
     }
 }

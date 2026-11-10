@@ -802,7 +802,11 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    const client = compat.http.sharedClient();
+    const client = compat.http.sharedClient() catch {
+        ctx.deinit();
+        stream.completeWithError("HTTP client initialization failed");
+        return;
+    };
 
     const url = buildStreamGenerateContentUrl(allocator, base_url, model.id) catch {
         ctx.deinit();

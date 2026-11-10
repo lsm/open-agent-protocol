@@ -41,6 +41,11 @@ pub const Client = struct {
         self.* = undefined;
     }
 
+    fn httpClient(self: *Client) !compat.http.HttpClient {
+        if (self.security == .tls) return compat.http.HttpClient.initWithDefaultProxies(self.allocator);
+        return compat.http.HttpClient.init(self.allocator);
+    }
+
     pub fn postUnary(self: *Client, body: []const u8) ![]u8 {
         const job = try TimedJob.create(self, body, .unary);
         defer job.release();
@@ -57,7 +62,7 @@ pub const Client = struct {
         defer self.allocator.free(endpoint);
         const uri = std.Uri.parse(endpoint) catch return error.InvalidProviderServiceUrl;
 
-        var http = compat.http.HttpClient.init(self.allocator);
+        var http = try self.httpClient();
         defer http.deinit();
         const headers = [_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/json" },
@@ -111,7 +116,7 @@ pub const Client = struct {
         defer self.allocator.free(endpoint);
         const uri = std.Uri.parse(endpoint) catch return error.InvalidProviderServiceUrl;
 
-        var http = compat.http.HttpClient.init(self.allocator);
+        var http = try self.httpClient();
         defer http.deinit();
         const headers = [_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/json" },
