@@ -3,11 +3,10 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
-import socket
+import ssl
 import subprocess
 import tempfile
 import threading
-from urllib.parse import urlsplit
 
 
 def load(name, filename):
@@ -49,7 +48,7 @@ class StreamHandler(transport.OriginHandler):
         self.wfile.flush()
 
 
-def model_case(binary, home, pair, output, proxy_name, audit_id, retry=False, count=1, denied=False, invalid=False, stream_gate=True):
+def model_case(binary, home, pair, output, proxy_name, audit_id, retry=False, count=1, denied=False, invalid=False, stream_gate=True, bypass=False, extra_env=None):
     origin = transport.Origin(*pair)
     origin.RequestHandlerClass = StreamHandler
     origin.retry, origin.streamed = retry, 0
@@ -62,6 +61,9 @@ def model_case(binary, home, pair, output, proxy_name, audit_id, retry=False, co
         if proxy_name:
             scheme = 'socks5' if invalid else 'http'
             env[proxy_name] = f'{scheme}://synthetic:proxy@127.0.0.1:{proxy.server_port}'
+        env.update(extra_env or {})
+        if bypass:
+            env['no_proxy'] = 'localhost'
         if audit_id is not None:
             env['OAP_ATTEMPT_AUDIT_ID'] = audit_id
         child = subprocess.Popen([str(binary)], env=env, cwd=home, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -84,15 +86,17 @@ def model_case(binary, home, pair, output, proxy_name, audit_id, retry=False, co
             records = [json.loads(line) for line in stderr.splitlines()]
             observations = {'inferences': lines.count('INFERENCE'), 'provider_attempts': len(origin.requests), 'records': records, 'connects': len(proxy.connects)}
             output.with_suffix('.observed.json').write_text(json.dumps(observations, indent=2))
-            expected_requests = 0 if denied or invalid else count + int(retry)
-            assert child.returncode == (1 if denied or invalid else 0), 'unexpected inference outcome'
+            failed = denied or (invalid and not bypass)
+            expected_requests = 0 if failed else count + int(retry)
+            assert child.returncode == (1 if failed else 0), 'unexpected inference outcome'
             assert len(origin.requests) == expected_requests, 'wrong provider HTTP attempt count'
-            if not invalid:
-                assert lines.count('INFERENCE') == count, 'wrong inference count'
-            if proxy_name:
+            assert lines.count('INFERENCE') == count, 'wrong inference count'
+            if bypass:
+                assert proxy.connects == [] and proxy.other_requests == 0, 'excluded destination contacted proxy'
+            elif proxy_name:
                 assert len(proxy.connects) == (0 if invalid else (4 if denied else expected_requests)), 'proxy was bypassed or CONNECT count was wrong'
                 assert all(value == transport.AUTH for value in proxy.connects), 'CONNECT authentication missing'
-            if denied or invalid:
+            if failed:
                 assert origin.connections == 0, 'proxy failure fell back directly'
             else:
                 assert origin.streamed == count and lines.count('DELTA') >= count, 'SSE was buffered instead of streamed'
@@ -120,55 +124,53 @@ def model_case(binary, home, pair, output, proxy_name, audit_id, retry=False, co
             reader.join(5)
 
 
-class ForwardProxy(transport.Proxy):
+class AmbientProxy(transport.Proxy):
     def __init__(self, origin, deny=False):
         super().__init__(origin, deny)
-        self.RequestHandlerClass = ForwardHandler
-        self.forwarded = 0
+        self.RequestHandlerClass = AmbientHandler
+        self.forwarded = []
 
 
-class ForwardHandler(transport.ProxyHandler):
+class AmbientHandler(transport.ProxyHandler):
     def do_POST(self):
-        proxy = self.server
-        if self.headers.get('Proxy-Authorization') != transport.AUTH or proxy.deny:
-            self.send_error(403)
-            return
-        target = urlsplit(self.path)
-        assert target.hostname == '127.0.0.1' and target.port == proxy.origin.server_port
         body = self.rfile.read(int(self.headers['Content-Length']))
-        proxy.forwarded += 1
-        headers = [f'POST {target.path} HTTP/1.1', f'Host: 127.0.0.1:{target.port}', 'Connection: close']
-        headers += [f'{name}: {value}' for name, value in self.headers.items()
-                    if name.lower() not in ('host', 'connection', 'proxy-authorization', 'proxy-connection')]
-        with socket.create_connection(('127.0.0.1', target.port), timeout=10) as upstream:
-            upstream.sendall(('\r\n'.join(headers) + '\r\n\r\n').encode() + body)
-            try:
-                while data := upstream.recv(65536):
-                    self.connection.sendall(data)
-            except OSError:
-                return
-        self.close_connection = True
+        self.server.forwarded.append((dict(self.headers), body.decode()))
+        self.send_error(403)
 
 
-def remote_case(binary, home, output, denied=False):
+def remote_case(binary, home, output, security, pair, denied=False):
     original = service_fixture.environment
-    with transport.running(service_fixture.Service()) as origin, transport.running(ForwardProxy(origin, denied)) as proxy:
+    origin = service_fixture.Service()
+    if security == 'tls':
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(*pair)
+        origin.socket = context.wrap_socket(origin.socket, server_side=True)
+    with transport.running(origin), transport.running(AmbientProxy(origin, denied)) as proxy:
         def environment(*args, **kwargs):
             env = original(*args, **kwargs)
             env['HTTP_PROXY'] = f'http://synthetic:proxy@127.0.0.1:{proxy.server_port}'
+            env['HTTPS_PROXY'] = env['HTTP_PROXY']
             env['OAP_ATTEMPT_AUDIT_ID'] = 'remote-fixture'
+            env['OAPX_PROVIDER_SERVICE_SECURITY'] = security
+            if security == 'tls':
+                env['OAPX_PROVIDER_SERVICE_URL'] = f'https://localhost:{origin.server_port}'
             return env
         service_fixture.environment = environment
         try:
-            if denied:
-                result = service_fixture.startup(str(binary), home, origin.url, None)
-                assert result.returncode != 0 and not origin.requests, 'remote provider bypassed the denying proxy'
+            if security == 'tls':
+                result = service_fixture.startup(str(binary), home, origin.url, service_fixture.TOKEN)
+                assert result.returncode != 0 and not origin.requests, 'untrusted TLS origin or denied proxy accepted'
+                assert proxy.connects == [transport.AUTH], 'TLS service did not authenticate CONNECT'
+                assert proxy.tls == ([] if denied else [True]), 'TLS service omitted target TLS'
+                assert proxy.forwarded == [], 'TLS service sent plaintext to proxy'
                 assert b'"audit_id"' not in result.stderr, 'remote transport counted as a model call'
+                service_fixture.no_token(result.stderr)
             else:
-                service_fixture.dialogue(str(binary), home, origin, None, output)
-                assert proxy.forwarded == len(origin.requests) and proxy.forwarded >= 4, 'remote provider request surfaces bypassed the proxy'
+                service_fixture.dialogue(str(binary), home, origin, service_fixture.TOKEN, output)
+                assert len(origin.requests) >= 4, 'remote request surfaces did not run'
+                assert proxy.connects == [] and proxy.forwarded == [], 'local provider reached ambient proxy'
                 assert b'"audit_id"' not in output.with_suffix('.log').read_bytes(), 'remote transport counted as a model call'
-            return {'remote_requests': len(origin.requests), 'forwarded': proxy.forwarded}
+            return {'remote_requests': len(origin.requests), 'connects': len(proxy.connects), 'forwarded': len(proxy.forwarded)}
         finally:
             service_fixture.environment = original
 
@@ -196,7 +198,10 @@ def main():
                  ('audit-id-bound', 'https_proxy', 'a' * 64, {}),
                  ('audit-id-long', 'https_proxy', 'a' * 65, {}),
                  ('audit-id-framing', 'https_proxy', 'bad"\nlabel', {}),
-                 ('invalid-proxy', 'https_proxy', 'fixture-run', {'invalid': True})]
+                 ('invalid-proxy', 'https_proxy', 'fixture-run', {'invalid': True}),
+                 ('bypass-invalid-proxy', 'https_proxy', 'fixture-run', {'invalid': True, 'bypass': True}),
+                 ('unused-invalid-http-proxy', 'https_proxy', 'fixture-run', {'extra_env': {'HTTP_PROXY': 'socks5://127.0.0.1:1'}}),
+                 ('unused-malformed-http-proxy', 'https_proxy', 'fixture-run', {'extra_env': {'HTTP_PROXY': 'http://['}})]
         for name, proxy_name, audit_id, options in cases:
             try:
                 details = model_case(args.binary.resolve(), home, pair, args.output_dir / name, proxy_name, audit_id, **options)
@@ -205,10 +210,10 @@ def main():
                 result = {'case': name, 'passed': False, 'error': type(error).__name__ + ' ' + str(error)}
             results.append(result)
             print('PASS' if result['passed'] else 'FAIL', name, result.get('error', ''), flush=True)
-        for denied in (False, True):
-            name = 'remote-denied' if denied else 'remote-surfaces'
+        for security, denied in [('loopback', False), ('loopback', True), ('mesh_proxy', False), ('mesh_proxy', True), ('tls', False), ('tls', True)]:
+            name = 'remote-' + security + ('-denied' if denied else '-surfaces')
             try:
-                details = remote_case(args.oapx.resolve(), home, args.output_dir / name, denied)
+                details = remote_case(args.oapx.resolve(), home, args.output_dir / name, security, pair, denied)
                 result = {'case': name, 'passed': True, **details}
             except Exception as error:
                 result = {'case': name, 'passed': False, 'error': type(error).__name__ + ' ' + str(error)}
