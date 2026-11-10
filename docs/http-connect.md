@@ -15,3 +15,11 @@ client source, applying the CONNECT implementation in
 hash before applying it. Updating the compiler requires reviewing that source
 and rerunning the authenticated CONNECT journey before updating the hash.
 The client retains the standard TLS verifier and connection pool.
+
+`no_proxy` or `NO_PROXY` supplies comma-separated destination exclusions,
+checked before proxy selection. Lowercase takes precedence, including an
+empty value. Entries match a hostname or dot-delimited subdomains without
+case sensitivity, accept a leading dot and an optional destination port,
+and ignore surrounding spaces. `*` bypasses every destination. Matching
+requests connect directly with the usual target TLS validation. Exclusions
+use destination names without DNS resolution and do not interpret CIDR ranges.

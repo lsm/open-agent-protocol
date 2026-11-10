@@ -53,7 +53,28 @@ fn connectHttpsProxy(
     return &tls.connection;
 }
 
+fn bypassProxy(exclusions: []const u8, destination: []const u8, port: u16) bool {
+    const host = std.mem.trimEnd(u8, destination, ".");
+    var entries = std.mem.splitScalar(u8, exclusions, ',');
+    while (entries.next()) |entry| {
+        var pattern = std.mem.trim(u8, entry, " \t");
+        if (std.mem.eql(u8, pattern, "*")) return true;
+        if (std.mem.findScalarLast(u8, pattern, ':')) |separator| {
+            const required_port = std.fmt.parseInt(u16, pattern[separator + 1 ..], 10) catch continue;
+            if (required_port != port) continue;
+            pattern = pattern[0..separator];
+        }
+        pattern = std.mem.trim(u8, pattern, ".");
+        if (pattern.len == 0 or host.len < pattern.len) continue;
+        const offset = host.len - pattern.len;
+        if (!std.ascii.eqlIgnoreCase(host[offset..], pattern)) continue;
+        if (offset == 0 or host[offset - 1] == '.') return true;
+    }
+    return false;
+}
+
 pub fn connect(client: *Client, host: HostName, port: u16, protocol: Protocol) ConnectError!*Connection {
+    if (bypassProxy(client.no_proxy, host.bytes, port)) return client.connectTcp(host, port, protocol);
     const proxy = switch (protocol) {
         .plain => client.http_proxy,
         .tls => client.https_proxy,
@@ -90,6 +111,7 @@ pub fn initDefaultProxies(client: *Client, arena: Allocator, environ_map: *const
         connection.destroy(io);
     }
     pool.free_len = 0;
+    client.no_proxy = try arena.dupe(u8, environ_map.get("no_proxy") orelse environ_map.get("NO_PROXY") orelse "");
     if (client.http_proxy == null) {
         client.http_proxy = try createProxyFromEnvVar(arena, environ_map, &.{
             "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY",

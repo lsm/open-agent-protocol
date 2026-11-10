@@ -195,6 +195,8 @@ def main():
                     bypass = next((case for case in bypass_cases if case[0] == name), None)
                     if bypass:
                         _, variable, value, direct = bypass
+                        if variable == 'NO_PROXY':
+                            env.pop('no_proxy', None)
                         env[variable] = value.format(port=origin.server_port)
                         if name == 'bypass-precedence':
                             env['NO_PROXY'] = '*'
