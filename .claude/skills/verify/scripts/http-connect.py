@@ -88,6 +88,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
             streams = [self.connection, upstream]
             first = True
+            prefix = b''
             while True:
                 ready, _, _ = select.select(streams, [], [], 10)
                 if not ready:
@@ -98,8 +99,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         if not data:
                             return
                         if source is self.connection and first:
-                            proxy.tls.append(data.startswith(b'\x16\x03'))
-                            first = False
+                            prefix += data
+                            if len(prefix) >= 3:
+                                proxy.tls.append(prefix.startswith(b'\x16\x03'))
+                                first = False
                         destination = upstream if source is self.connection else self.connection
                         destination.sendall(data)
                     except OSError:
@@ -163,7 +166,7 @@ def main():
                         env['https_proxy'] = f'http://synthetic:{password}@127.0.0.1:{proxy.server_port}'
                     child = subprocess.run([str(binary)], env=env, cwd=home, capture_output=True, timeout=20)
                     (args.output_dir / (name + '.log')).write_bytes(child.stdout + child.stderr)
-                    assert (child.returncode == 0) == success, 'unexpected client outcome'
+                    assert child.returncode == (0 if success else 1), 'unexpected client outcome or crash'
                     if proxied:
                         assert len(proxy.connects) == 1, 'CONNECT count or direct fallback'
                         expected = 'Basic ' + base64.b64encode(f'synthetic:{password}'.encode()).decode()
@@ -173,6 +176,7 @@ def main():
                     assert len(origin.requests) == (1 if success else 0), 'origin accepted an invalid tunnel'
                     for headers in origin.requests:
                         assert all(key.lower() != 'proxy-authorization' for key in headers), 'proxy credential reached origin'
+                        assert AUTH.split(' ', 1)[1] not in json.dumps(headers), 'encoded proxy credential reached origin'
                     if proxied and name not in ('bad-auth', 'denied'):
                         assert proxy.tls == [True], 'tunnel did not start TLS'
                     result = {'case': name, 'passed': True, 'client_exit': child.returncode,

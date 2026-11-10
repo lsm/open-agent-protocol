@@ -277,12 +277,24 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const http_client_patcher = b.addExecutable(.{
+        .name = "patch-http-client",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/compat/patch_http_client.zig"), .target = b.graph.host }),
+    });
+    const patch_http_client = b.addRunArtifact(http_client_patcher);
+    patch_http_client.addFileArg(std.Build.LazyPath.zig_lib.path(b, "std/http/Client.zig"));
+    const http_client_module = b.createModule(.{
+        .root_source_file = patch_http_client.addOutputFileArg("Client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const compat_mod = b.createModule(.{
         .root_source_file = b.path("src/compat/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "sse_parser", .module = sse_parser_mod },
+            .{ .name = "http_client", .module = http_client_module },
         },
     });
 
