@@ -3,7 +3,7 @@ const Client = @import("http_client");
 
 fn workerEnviron() std.process.Environ {
     const builtin = @import("builtin");
-    if (builtin.is_test) return std.testing.environ;
+    if (builtin.is_test) return .empty;
 
     const Block = std.process.Environ.Block;
     if (@hasField(Block, "use_global")) return .{ .block = .global };
