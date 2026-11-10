@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) void {
 }
 
 fn perform(init: std.process.Init) !void {
-    const client = compat.http.sharedClient();
+    const client = try compat.http.sharedClient();
     const now = std.Io.Clock.real.now(client.client.io);
     try client.client.ca_bundle.addCertsFromFilePathAbsolute(client.client.allocator, client.client.io, now, init.environ_map.get("TEST_CA_FILE").?);
     client.client.now = now;

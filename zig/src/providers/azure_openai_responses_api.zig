@@ -269,7 +269,10 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    const client = compat.http.sharedClient();
+    const client = compat.http.sharedClient() catch {
+        ctx.stream.completeWithError("HTTP client initialization failed");
+        return;
+    };
 
     const url = std.fmt.allocPrint(ctx.allocator, "{s}/openai/v1/responses", .{ctx.base_url}) catch {
         ctx.stream.completeWithError("oom url");

@@ -32,6 +32,12 @@ not a second product.
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
+Native HTTP clients honor the standard HTTP, HTTPS and fallback proxy
+environment variables. `OAP_ATTEMPT_AUDIT_ID` enables Responses model-attempt
+JSONL on stderr with a bounded non-secret correlation label. Each record has
+only the label, a process-wide attempt number and a fixed outcome. See
+[HTTP transport and audit](../docs/http-connect.md).
+
 For the built-in `oapx serve agent` loop, `OAPX_PROVIDER_SERVICE_URL` selects a
 remote provider service and `OAPX_PROVIDER_SERVICE_SECURITY` selects `loopback`,
 `tls` or `mesh_proxy`. Optional `OAPX_PROVIDER_SERVICE_TOKEN` supplies its bearer

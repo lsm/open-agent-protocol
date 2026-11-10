@@ -1172,7 +1172,11 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    const http_client = compat.http.sharedClient();
+    const http_client = compat.http.sharedClient() catch {
+        ctx.deinit();
+        stream.completeWithError("HTTP client initialization failed");
+        return;
+    };
 
     const url = provider_catalog.joinModelUrlOwned(allocator, model, request_wire) catch {
         ctx.deinit();

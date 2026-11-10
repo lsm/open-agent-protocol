@@ -35,13 +35,25 @@ pub const RequestOptions = struct {
 
 pub const HttpClient = struct {
     client: Client,
+    proxy_arena: ?std.heap.ArenaAllocator = null,
 
     pub fn init(allocator: std.mem.Allocator) HttpClient {
         return .{ .client = .{ .allocator = allocator, .io = defaultIo() } };
     }
 
+    pub fn initWithDefaultProxies(allocator: std.mem.Allocator) !HttpClient {
+        var client = init(allocator);
+        errdefer client.deinit();
+        client.proxy_arena = std.heap.ArenaAllocator.init(allocator);
+        var environment = try std.process.Environ.createMap(workerEnviron(), allocator);
+        defer environment.deinit();
+        try client.initDefaultProxies(client.proxy_arena.?.allocator(), &environment);
+        return client;
+    }
+
     pub fn deinit(self: *HttpClient) void {
         self.client.deinit();
+        if (self.proxy_arena) |*arena| arena.deinit();
         self.* = undefined;
     }
 
@@ -58,8 +70,19 @@ pub const HttpClient = struct {
 
     pub fn initDefaultProxies(self: *HttpClient, allocator: std.mem.Allocator, environ_map: *std.process.Environ.Map) !void {
         try self.client.initDefaultProxies(allocator, environ_map);
+        if (self.client.http_proxy == null and proxyConfigured(environ_map, &.{ "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY" })) return error.UnsupportedProxyProtocol;
+        if (self.client.https_proxy == null and proxyConfigured(environ_map, &.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" })) return error.UnsupportedProxyProtocol;
     }
 };
+
+fn proxyConfigured(environment: *const std.process.Environ.Map, names: []const []const u8) bool {
+    for (names) |name| {
+        if (environment.get(name)) |value| {
+            if (value.len > 0) return true;
+        }
+    }
+    return false;
+}
 
 const shared_idle_connections = 1024;
 const stale_sweep_interval_ms = 1000;
@@ -68,11 +91,11 @@ var shared_lock: std.atomic.Mutex = .unlocked;
 var shared_client: ?HttpClient = null;
 var last_stale_sweep_ms: i64 = 0;
 
-pub fn sharedClient() *HttpClient {
+pub fn sharedClient() !*HttpClient {
     while (!shared_lock.tryLock()) std.atomic.spinLoopHint();
     defer shared_lock.unlock();
     if (shared_client == null) {
-        shared_client = HttpClient.init(std.heap.smp_allocator);
+        shared_client = try HttpClient.initWithDefaultProxies(std.heap.smp_allocator);
         shared_client.?.client.connection_pool.free_size = shared_idle_connections;
     }
     const client = &shared_client.?;
@@ -177,6 +200,13 @@ pub fn readResponse(reader: *ResponseReader, buffer: []u8) !usize {
     const inner: *std.Io.Reader = @ptrCast(@alignCast(reader));
     var slices = [_][]u8{buffer};
     while (true) {
+        const available = inner.buffered();
+        if (available.len > 0) {
+            const count = @min(available.len, buffer.len);
+            @memcpy(buffer[0..count], available[0..count]);
+            inner.toss(count);
+            return count;
+        }
         const read = inner.readVec(&slices) catch |err| switch (err) {
             error.EndOfStream => return 0,
             else => |failure| return failure,
@@ -292,7 +322,7 @@ fn releaseServer(port: u16) void {
 fn fetchThroughShared(port: u16) !void {
     var url_buffer: [64]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buffer, "http://127.0.0.1:{d}/", .{port});
-    var request = try sharedClient().openRequest(.GET, try std.Uri.parse(url), .{});
+    var request = try (try sharedClient()).openRequest(.GET, try std.Uri.parse(url), .{});
     defer request.deinit();
     try sendBodilessRequest(&request);
     var redirect_buffer: [256]u8 = undefined;
@@ -462,12 +492,8 @@ const FetchJob = struct {
     fn perform(job: *FetchJob, status_out: *u16, body_out: *[]u8) bool {
         const uri = std.Uri.parse(job.url) catch return false;
 
-        var client = HttpClient.init(arena);
+        var client = HttpClient.initWithDefaultProxies(arena) catch return false;
         defer client.deinit();
-
-        var environ_map = std.process.Environ.createMap(workerEnviron(), arena) catch null;
-        defer if (environ_map) |*map| map.deinit();
-        if (environ_map) |*map| client.initDefaultProxies(arena, map) catch {};
 
         var request = client.openRequest(job.method, uri, .{
             .extra_headers = job.headers,

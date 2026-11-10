@@ -57,7 +57,7 @@ pub const Client = struct {
         defer self.allocator.free(endpoint);
         const uri = std.Uri.parse(endpoint) catch return error.InvalidProviderServiceUrl;
 
-        var http = compat.http.HttpClient.init(self.allocator);
+        var http = try compat.http.HttpClient.initWithDefaultProxies(self.allocator);
         defer http.deinit();
         const headers = [_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/json" },
@@ -111,7 +111,7 @@ pub const Client = struct {
         defer self.allocator.free(endpoint);
         const uri = std.Uri.parse(endpoint) catch return error.InvalidProviderServiceUrl;
 
-        var http = compat.http.HttpClient.init(self.allocator);
+        var http = try compat.http.HttpClient.initWithDefaultProxies(self.allocator);
         defer http.deinit();
         const headers = [_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/json" },
