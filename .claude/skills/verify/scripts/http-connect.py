@@ -166,6 +166,17 @@ def main():
                  ('untrusted', untrusted, False, True, False, False),
                  ('hostname', mismatch, False, True, False, False),
                  ('plaintext', trusted, False, True, False, True)]
+        bypass_cases = [
+            ('bypass-lower', 'no_proxy', 'localhost', True),
+            ('bypass-upper', 'NO_PROXY', 'LOCALHOST', True),
+            ('bypass-suffix', 'no_proxy', ' .localhost, example.invalid ', True),
+            ('bypass-port', 'no_proxy', 'localhost:{port}', True),
+            ('bypass-wildcard', 'no_proxy', '*', True),
+            ('bypass-miss', 'no_proxy', 'host', False),
+            ('bypass-port-miss', 'no_proxy', 'localhost:1', False),
+            ('bypass-precedence', 'no_proxy', '', False),
+        ]
+        cases += [(name, trusted, True, True, False, False) for name, *_ in bypass_cases]
         for name, pair, success, proxied, deny, plaintext in cases:
             try:
                 with running(Origin(*pair, plaintext=plaintext, dual=name == 'pooled-origin')) as origin, running(Proxy(origin, deny)) as proxy:
@@ -178,12 +189,25 @@ def main():
                         env['TEST_LATE_PROXY'] = '1'
                         env['TEST_WARM_URL'] = f'https://localhost:{origin.server_port}/warm'
                     if proxied:
+                        env['no_proxy'] = 'unmatched.invalid'
                         password = 'incorrect' if name == 'bad-auth' else 'proxy'
                         env['https_proxy'] = f'http://synthetic:{password}@127.0.0.1:{proxy.server_port}'
+                    bypass = next((case for case in bypass_cases if case[0] == name), None)
+                    if bypass:
+                        _, variable, value, direct = bypass
+                        if variable == 'NO_PROXY':
+                            env.pop('no_proxy', None)
+                        env[variable] = value.format(port=origin.server_port)
+                        if name == 'bypass-precedence':
+                            env['NO_PROXY'] = '*'
+                    else:
+                        direct = False
                     child = subprocess.run([str(binary)], env=env, cwd=home, capture_output=True, timeout=20)
                     (args.output_dir / (name + '.log')).write_bytes(child.stdout + child.stderr)
                     assert child.returncode == (0 if success else 1), 'unexpected client outcome or crash'
-                    if proxied:
+                    if direct:
+                        assert proxy.connects == [] and proxy.other_requests == 0, 'bypass contacted proxy'
+                    if proxied and not direct:
                         assert len(proxy.connects) == 1, 'CONNECT count or direct fallback'
                         expected = 'Basic ' + base64.b64encode(f'synthetic:{password}'.encode()).decode()
                         assert proxy.connects == [expected], 'CONNECT omitted or changed proxy authentication'
@@ -197,7 +221,7 @@ def main():
                     for headers in origin.requests:
                         assert all(key.lower() != 'proxy-authorization' for key in headers), 'proxy credential reached origin'
                         assert AUTH.split(' ', 1)[1] not in json.dumps(headers), 'encoded proxy credential reached origin'
-                    if proxied and name not in ('bad-auth', 'denied', 'warm-tls-denied'):
+                    if proxied and not direct and name not in ('bad-auth', 'denied', 'warm-tls-denied'):
                         assert proxy.tls == [True], 'tunnel did not start TLS'
                     result = {'case': name, 'passed': True, 'client_exit': child.returncode,
                               'connects': len(proxy.connects), 'origin_connections': origin.connections,
