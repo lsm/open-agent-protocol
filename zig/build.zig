@@ -277,14 +277,39 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const http_client_patcher = b.addExecutable(.{
+        .name = "patch-http-client",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/compat/patch_http_client.zig"), .target = b.graph.host }),
+    });
+    const patch_http_client = b.addRunArtifact(http_client_patcher);
+    patch_http_client.addFileArg(std.Build.LazyPath.zig_lib.path(b, "std/http/Client.zig"));
+    const http_client_module = b.createModule(.{
+        .root_source_file = patch_http_client.addOutputFileArg("Client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const compat_mod = b.createModule(.{
         .root_source_file = b.path("src/compat/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "sse_parser", .module = sse_parser_mod },
+            .{ .name = "http_client", .module = http_client_module },
         },
     });
+
+    const connect_probe = b.addExecutable(.{
+        .name = "http-connect-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("../.claude/skills/verify/scripts/http-connect-probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "compat", .module = compat_mod }},
+        }),
+    });
+    const install_connect_probe = b.addInstallArtifact(connect_probe, .{});
+    b.step("build-http-connect-probe", "Build the authenticated HTTPS CONNECT journey probe").dependOn(&install_connect_probe.step);
 
     const bounded_output_mod = b.createModule(.{
         .root_source_file = b.path("src/transports/bounded_output.zig"),

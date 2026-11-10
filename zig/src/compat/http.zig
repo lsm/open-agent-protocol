@@ -1,4 +1,5 @@
 const std = @import("std");
+const Client = @import("http_client");
 
 fn workerEnviron() std.process.Environ {
     const builtin = @import("builtin");
@@ -22,9 +23,9 @@ fn defaultIo() std.Io {
 }
 
 pub const Method = std.http.Method;
-pub const Headers = std.http.Client.Request.Headers;
-pub const Request = std.http.Client.Request;
-pub const Response = std.http.Client.Response;
+pub const Headers = Client.Request.Headers;
+pub const Request = Client.Request;
+pub const Response = Client.Response;
 pub const RequestOptions = struct {
     extra_headers: []const std.http.Header = &.{},
     keep_alive: bool = true,
@@ -33,7 +34,7 @@ pub const RequestOptions = struct {
 };
 
 pub const HttpClient = struct {
-    client: std.http.Client,
+    client: Client,
 
     pub fn init(allocator: std.mem.Allocator) HttpClient {
         return .{ .client = .{ .allocator = allocator, .io = defaultIo() } };
@@ -92,7 +93,7 @@ fn dropClosedConnections(client: *HttpClient) void {
     var next = pool.free.first;
     while (next) |node| {
         next = node.next;
-        const connection: *std.http.Client.Connection = @alignCast(@fieldParentPtr("pool_node", node));
+        const connection: *Client.Connection = @alignCast(@fieldParentPtr("pool_node", node));
         var watched = [_]std.posix.pollfd{.{ .fd = connection.stream_reader.stream.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
         const ready = std.posix.poll(&watched, 0) catch 1;
         if (ready == 0) continue;
