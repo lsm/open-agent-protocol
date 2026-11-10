@@ -185,6 +185,18 @@ pub fn readResponse(reader: *ResponseReader, buffer: []u8) !usize {
     }
 }
 
+test "readResponse returns buffered data before reading again" {
+    var source = std.Io.Reader.failing;
+    var buffered = "delta".*;
+    source.buffer = &buffered;
+    source.end = buffered.len;
+    var output: [64]u8 = undefined;
+    const reader: *ResponseReader = @ptrCast(&source);
+    try std.testing.expectEqual(@as(usize, 5), try readResponse(reader, &output));
+    try std.testing.expectEqualStrings("delta", output[0..5]);
+    try std.testing.expectError(error.ReadFailed, readResponse(reader, &output));
+}
+
 pub fn readAllResponse(reader: *ResponseReader, buffer: []u8) !void {
     const inner: *std.Io.Reader = @ptrCast(@alignCast(reader));
     try inner.readSliceAll(buffer);
