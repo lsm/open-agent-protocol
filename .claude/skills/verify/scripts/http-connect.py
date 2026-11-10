@@ -19,8 +19,10 @@ AUTH = 'Basic ' + base64.b64encode(b'synthetic:proxy').decode()
 class Origin(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, certificate, key, plaintext=False):
+    def __init__(self, certificate, key, plaintext=False, dual=False):
         super().__init__(('127.0.0.1', 0), OriginHandler)
+        self.dual = dual
+        self.wrong_connects = 0
         self.context = None
         if not plaintext:
             self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -32,7 +34,7 @@ class Origin(http.server.ThreadingHTTPServer):
         connection, address = super().get_request()
         self.connections += 1
         connection.settimeout(10)
-        if self.context:
+        if self.context and not (self.dual and connection.recv(1, socket.MSG_PEEK) != b'\x16'):
             try:
                 connection = self.context.wrap_socket(connection, server_side=True)
             except Exception:
@@ -45,6 +47,7 @@ class Origin(http.server.ThreadingHTTPServer):
 
 
 class OriginHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
     def log_message(self, *_):
         pass
 
@@ -54,6 +57,11 @@ class OriginHandler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', '14')
         self.end_headers()
         self.wfile.write(b'through tunnel')
+
+
+    def do_CONNECT(self):
+        self.server.wrong_connects += 1
+        self.send_error(405)
 
 
 class Proxy(http.server.ThreadingHTTPServer):
@@ -150,6 +158,7 @@ def main():
         mismatch = certificate(home, 'mismatch', 'wrong.invalid')
         cases = [('direct', trusted, True, False, False, False),
                  ('authenticated', trusted, True, True, False, False),
+                 ('pooled-origin', trusted, True, True, False, False),
                  ('bad-auth', trusted, False, True, False, False),
                  ('denied', trusted, False, True, True, False),
                  ('untrusted', untrusted, False, True, False, False),
@@ -157,10 +166,12 @@ def main():
                  ('plaintext', trusted, False, True, False, True)]
         for name, pair, success, proxied, deny, plaintext in cases:
             try:
-                with running(Origin(*pair, plaintext=plaintext)) as origin, running(Proxy(origin, deny)) as proxy:
+                with running(Origin(*pair, plaintext=plaintext, dual=name == 'pooled-origin')) as origin, running(Proxy(origin, deny)) as proxy:
                     env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'NODE_ENV': 'test',
                            'TEST_URL': f'https://localhost:{origin.server_port}/responses',
                            'TEST_CA_FILE': str(pair[0] if name == 'hostname' else trusted[0])}
+                    if name == 'pooled-origin':
+                        env['TEST_WARM_URL'] = f'http://localhost:{origin.server_port}/warm'
                     if proxied:
                         password = 'incorrect' if name == 'bad-auth' else 'proxy'
                         env['https_proxy'] = f'http://synthetic:{password}@127.0.0.1:{proxy.server_port}'
@@ -172,8 +183,10 @@ def main():
                         expected = 'Basic ' + base64.b64encode(f'synthetic:{password}'.encode()).decode()
                         assert proxy.connects == [expected], 'CONNECT omitted or changed proxy authentication'
                         assert proxy.other_requests == 0, 'proxy denial fell back to a forwarded request'
-                    assert origin.connections == (0 if name in ('bad-auth', 'denied') else 1), 'unexpected origin connection or direct fallback'
-                    assert len(origin.requests) == (1 if success else 0), 'origin accepted an invalid tunnel'
+                    expected_origins = 0 if name in ('bad-auth', 'denied') else (2 if name == 'pooled-origin' else 1)
+                    assert origin.connections == expected_origins, 'unexpected origin connection or direct fallback'
+                    assert origin.wrong_connects == 0, 'CONNECT reached the origin instead of the proxy'
+                    assert len(origin.requests) == (2 if name == 'pooled-origin' else (1 if success else 0)), 'origin accepted an invalid tunnel'
                     for headers in origin.requests:
                         assert all(key.lower() != 'proxy-authorization' for key in headers), 'proxy credential reached origin'
                         assert AUTH.split(' ', 1)[1] not in json.dumps(headers), 'encoded proxy credential reached origin'

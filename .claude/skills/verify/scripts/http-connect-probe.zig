@@ -19,6 +19,17 @@ fn perform(init: std.process.Init) !void {
     const now = std.Io.Clock.real.now(init.io);
     try client.client.ca_bundle.addCertsFromFilePathAbsolute(allocator, init.io, now, init.environ_map.get("TEST_CA_FILE").?);
     client.client.now = now;
+    if (init.environ_map.get("TEST_WARM_URL")) |warm_url| {
+        var warm = try client.openRequest(.GET, try std.Uri.parse(warm_url), .{});
+        defer warm.deinit();
+        try compat.http.sendBodilessRequest(&warm);
+        var head: [4096]u8 = undefined;
+        var response = try compat.http.receiveResponse(&warm, &head);
+        var transfer: [4096]u8 = undefined;
+        const body = try compat.http.allocRemainingResponse(allocator, compat.http.responseReader(&response, &transfer), 4096);
+        defer allocator.free(body);
+        if (response.head.status != .ok) return error.UnexpectedWarmStatus;
+    }
     const uri = try std.Uri.parse(init.environ_map.get("TEST_URL").?);
     var request = try client.openRequest(.GET, uri, .{ .keep_alive = false });
     defer request.deinit();
