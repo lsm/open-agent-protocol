@@ -159,6 +159,8 @@ def main():
         cases = [('direct', trusted, True, False, False, False),
                  ('authenticated', trusted, True, True, False, False),
                  ('pooled-origin', trusted, True, True, False, False),
+                 ('warm-tls', trusted, True, True, False, False),
+                 ('warm-tls-denied', trusted, False, True, True, False),
                  ('bad-auth', trusted, False, True, False, False),
                  ('denied', trusted, False, True, True, False),
                  ('untrusted', untrusted, False, True, False, False),
@@ -172,6 +174,9 @@ def main():
                            'TEST_CA_FILE': str(pair[0] if name == 'hostname' else trusted[0])}
                     if name == 'pooled-origin':
                         env['TEST_WARM_URL'] = f'http://localhost:{origin.server_port}/warm'
+                    if name in ('warm-tls', 'warm-tls-denied'):
+                        env['TEST_LATE_PROXY'] = '1'
+                        env['TEST_WARM_URL'] = f'https://localhost:{origin.server_port}/warm'
                     if proxied:
                         password = 'incorrect' if name == 'bad-auth' else 'proxy'
                         env['https_proxy'] = f'http://synthetic:{password}@127.0.0.1:{proxy.server_port}'
@@ -184,13 +189,15 @@ def main():
                         assert proxy.connects == [expected], 'CONNECT omitted or changed proxy authentication'
                         assert proxy.other_requests == 0, 'proxy denial fell back to a forwarded request'
                     expected_origins = 0 if name in ('bad-auth', 'denied') else (2 if name == 'pooled-origin' else 1)
+                    if name == 'warm-tls':
+                        expected_origins = 2
                     assert origin.connections == expected_origins, 'unexpected origin connection or direct fallback'
                     assert origin.wrong_connects == 0, 'CONNECT reached the origin instead of the proxy'
-                    assert len(origin.requests) == (2 if name == 'pooled-origin' else (1 if success else 0)), 'origin accepted an invalid tunnel'
+                    assert len(origin.requests) == (2 if name in ('pooled-origin', 'warm-tls') else (1 if success or name == 'warm-tls-denied' else 0)), 'origin accepted an invalid tunnel'
                     for headers in origin.requests:
                         assert all(key.lower() != 'proxy-authorization' for key in headers), 'proxy credential reached origin'
                         assert AUTH.split(' ', 1)[1] not in json.dumps(headers), 'encoded proxy credential reached origin'
-                    if proxied and name not in ('bad-auth', 'denied'):
+                    if proxied and name not in ('bad-auth', 'denied', 'warm-tls-denied'):
                         assert proxy.tls == [True], 'tunnel did not start TLS'
                     result = {'case': name, 'passed': True, 'client_exit': child.returncode,
                               'connects': len(proxy.connects), 'origin_connections': origin.connections,

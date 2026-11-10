@@ -15,7 +15,8 @@ fn perform(init: std.process.Init) !void {
     var client = compat.http.HttpClient.init(allocator);
     defer client.deinit();
     client.client.io = init.io;
-    try client.initDefaultProxies(init.arena.allocator(), init.environ_map);
+    const late_proxy = init.environ_map.get("TEST_LATE_PROXY") != null;
+    if (!late_proxy) try client.initDefaultProxies(init.arena.allocator(), init.environ_map);
     const now = std.Io.Clock.real.now(init.io);
     try client.client.ca_bundle.addCertsFromFilePathAbsolute(allocator, init.io, now, init.environ_map.get("TEST_CA_FILE").?);
     client.client.now = now;
@@ -30,6 +31,7 @@ fn perform(init: std.process.Init) !void {
         defer allocator.free(body);
         if (response.head.status != .ok) return error.UnexpectedWarmStatus;
     }
+    if (late_proxy) try client.initDefaultProxies(init.arena.allocator(), init.environ_map);
     const uri = try std.Uri.parse(init.environ_map.get("TEST_URL").?);
     var request = try client.openRequest(.GET, uri, .{ .keep_alive = false });
     defer request.deinit();
