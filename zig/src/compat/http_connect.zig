@@ -16,9 +16,8 @@ fn connectHttpsProxy(
         .host = proxy.host,
         .port = proxy.port,
         .protocol = .plain,
-        .proxied_host = host,
-        .proxied_port = port,
     });
+    connection.proxied = false;
     errdefer {
         connection.closing = true;
         client.connection_pool.release(connection, io);
