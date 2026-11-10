@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **validation: Reject attachment fields in Rust capability sources** ([#1732](https://github.com/lsm/open-agent-protocol/pull/1732)): Refs #1440.
 - **validation: Reject attachment fields in Rust session publications** ([#1733](https://github.com/lsm/open-agent-protocol/pull/1733)): Refs #1440.
 - **docs: AGENTS.md is the agent guide; CLAUDE.md links to it** ([#1730](https://github.com/lsm/open-agent-protocol/pull/1730)): Renames CLAUDE.md to AGENTS.md (content unchanged apart from the title line) and adds CLAUDE.md as a symlink to it, so Codex and Claude Code read the same file.
-- **zig: Synchronize the shell wake offset regression** ([#1734](https://github.com/lsm/open-agent-protocol/pull/1734)): Agent: gpt-6.1-sol (effort: medium) via Codex the daemon recorded this model and effort for this worker session.
+- **zig: Synchronize the shell wake offset regression** ([#1734](https://github.com/lsm/open-agent-protocol/pull/1734)): Removes the shell offset test's race between the foreground budget, two shell writes and delayed rule installation by ordering the second line through a FIFO; signed red reproduction; no timeout increases.
 - **acp: Inject clock and ID sources for recorded event ordering** ([#1735](https://github.com/lsm/open-agent-protocol/pull/1735)): Refs #1439.
 - **zig: Add bearer authentication for remote provider services** ([#1737](https://github.com/lsm/open-agent-protocol/pull/1737)): Closes #1736.
 - **zig: Contain provider service tokens and enforce bearer grammar** ([#1739](https://github.com/lsm/open-agent-protocol/pull/1739)): Closes #1738.
