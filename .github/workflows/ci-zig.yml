@@ -116,14 +116,30 @@ jobs:
           zig build --build-file zig/build.zig build-http-connect-probe -Doptimize=ReleaseSafe
           python3 .claude/skills/verify/scripts/http-connect.py --binary zig/zig-out/bin/http-connect-probe --output-dir "$RUNNER_TEMP/http-connect"
 
+      - name: Run ${{ matrix.group }} unit tests
+        run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
+
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
+
+  responses-proxy-journey:
+    name: Responses proxy and attempt audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
       - name: Verify Responses proxy routing and attempt audit
-        if: matrix.group == 'providers'
         run: |
           zig build --build-file zig/build.zig install build-responses-proxy-probe -Doptimize=ReleaseSafe
           python3 .claude/skills/verify/scripts/responses-proxy.py --binary zig/zig-out/bin/responses-proxy-probe --oapx zig/zig-out/bin/oapx --output-dir "$RUNNER_TEMP/responses-proxy"
-
-      - name: Run ${{ matrix.group }} unit tests
-        run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
       - name: Tests leave no credential store in the checkout
         if: always()
