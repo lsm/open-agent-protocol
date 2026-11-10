@@ -76,19 +76,8 @@ pub const HttpClient = struct {
 
     pub fn initDefaultProxies(self: *HttpClient, allocator: std.mem.Allocator, environ_map: *std.process.Environ.Map) !void {
         try self.client.initDefaultProxies(allocator, environ_map);
-        if (self.client.http_proxy == null and proxyConfigured(environ_map, &.{ "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY" })) return error.UnsupportedProxyProtocol;
-        if (self.client.https_proxy == null and proxyConfigured(environ_map, &.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" })) return error.UnsupportedProxyProtocol;
     }
 };
-
-fn proxyConfigured(environment: *const std.process.Environ.Map, names: []const []const u8) bool {
-    for (names) |name| {
-        if (environment.get(name)) |value| {
-            if (value.len > 0) return true;
-        }
-    }
-    return false;
-}
 
 const shared_idle_connections = 1024;
 const stale_sweep_interval_ms = 1000;

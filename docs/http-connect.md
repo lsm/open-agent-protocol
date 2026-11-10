@@ -26,12 +26,14 @@ use destination names without DNS resolution and do not interpret CIDR ranges.
 
 ## Environment routing and attempt audit
 
-The shared streaming client, remote provider service requests and one-shot
+The shared streaming client, TLS-mode remote provider requests and one-shot
 fetches initialize the standard proxy environment before making requests.
+Loopback and mesh-proxy provider modes always connect directly to their
+validated loopback peer, keeping bearer credentials and content local.
 `http_proxy` or `HTTP_PROXY` selects HTTP forwarding; `https_proxy` or
 `HTTPS_PROXY` selects the proxy for HTTPS targets. `all_proxy` or `ALL_PROXY`
-is the fallback. Lowercase names take precedence. Unsupported proxy schemes
-and initialization errors fail the request.
+is the fallback. Lowercase names take precedence. An unusable proxy fails the request only
+when its route is selected, after destination exclusions are checked.
 
 `OAP_ATTEMPT_AUDIT_ID` enables JSONL on stderr for model POST attempts in the
 OpenAI/Codex Responses implementation (`openai-responses` and

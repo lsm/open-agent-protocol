@@ -32,8 +32,8 @@ not a second product.
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
-Native HTTP clients honor the standard HTTP, HTTPS and fallback proxy
-environment variables. `OAP_ATTEMPT_AUDIT_ID` enables OpenAI/Codex Responses
+Native model clients and TLS remote-provider clients honor the standard HTTP,
+HTTPS and fallback proxy environment variables. `OAP_ATTEMPT_AUDIT_ID` enables OpenAI/Codex Responses
 model-attempt JSONL on stderr with a bounded non-secret correlation label.
 Each record has only the label, a process-wide attempt number and a fixed
 outcome. See
