@@ -33,6 +33,12 @@ pub const RequestOptions = struct {
     user_agent: ?[]const u8 = null,
 };
 
+test "unit-test HTTP defaults have no ambient environment" {
+    var environment = try std.process.Environ.createMap(workerEnviron(), std.testing.allocator);
+    defer environment.deinit();
+    try std.testing.expectEqual(@as(usize, 0), environment.count());
+}
+
 pub const HttpClient = struct {
     client: Client,
     proxy_arena: ?std.heap.ArenaAllocator = null,
