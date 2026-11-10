@@ -286,6 +286,19 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const connect_probe = b.addExecutable(.{
+        .name = "http-connect-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("../.claude/skills/verify/scripts/http-connect-probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "compat", .module = compat_mod }},
+        }),
+    });
+    const install_connect_probe = b.addInstallArtifact(connect_probe, .{});
+    b.step("build-http-connect-probe", "Build the authenticated HTTPS CONNECT journey probe").dependOn(&install_connect_probe.step);
+
     const bounded_output_mod = b.createModule(.{
         .root_source_file = b.path("src/transports/bounded_output.zig"),
         .target = target,

@@ -110,6 +110,12 @@ jobs:
         if: matrix.group == 'core'
         run: python3 scripts/check-zig-config-cache.py
 
+      - name: Verify authenticated HTTPS CONNECT
+        if: matrix.group == 'core'
+        run: |
+          zig build --build-file zig/build.zig build-http-connect-probe -Doptimize=ReleaseSafe
+          python3 .claude/skills/verify/scripts/http-connect.py --binary zig/zig-out/bin/http-connect-probe --output-dir "$RUNNER_TEMP/http-connect"
+
       - name: Run ${{ matrix.group }} unit tests
         run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
