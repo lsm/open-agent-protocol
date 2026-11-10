@@ -78,3 +78,26 @@ pub fn connect(client: *Client, host: HostName, port: u16, protocol: Protocol) C
     connection.proxied = true;
     return connection;
 }
+
+pub fn initDefaultProxies(client: *Client, arena: Allocator, environ_map: *const std.process.Environ.Map) !void {
+    const io = client.io;
+    const pool = &client.connection_pool;
+    try pool.mutex.lock(io);
+    defer pool.mutex.unlock(io);
+    assert(pool.used.first == null);
+    while (pool.free.popFirst()) |node| {
+        const connection: *Connection = @alignCast(@fieldParentPtr("pool_node", node));
+        connection.destroy(io);
+    }
+    pool.free_len = 0;
+    if (client.http_proxy == null) {
+        client.http_proxy = try createProxyFromEnvVar(arena, environ_map, &.{
+            "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY",
+        });
+    }
+    if (client.https_proxy == null) {
+        client.https_proxy = try createProxyFromEnvVar(arena, environ_map, &.{
+            "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY",
+        });
+    }
+}

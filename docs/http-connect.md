@@ -3,7 +3,9 @@
 The HTTP compatibility client tunnels HTTPS targets through an HTTP proxy.
 Proxy credentials are sent on CONNECT, and the tunnel negotiates TLS with the
 target hostname and the configured certificate trust bundle. The CONNECT
-socket uses the proxy's pool key, independently of origin connections. Authentication,
+socket uses the proxy's pool key, independently of origin connections. Proxy
+initialization closes idle connections under the pool lock before publishing
+the settings, so a cached direct TLS connection cannot bypass the proxy. Authentication,
 certificate, hostname and plaintext failures close the tunnel. A proxy URL
 using the HTTPS scheme is refused because nested TLS is unsupported.
 
