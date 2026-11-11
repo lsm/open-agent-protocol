@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.32] - 2026-11-10
+
+### Merged pull requests
+
+- **release: complete alpha.31 notes** ([#1676](https://github.com/lsm/open-agent-protocol/pull/1676)): Complete the alpha.31 notes with the pull requests merged through a99d38213c, including the DeepSeek 0.2.2 and Copilot 1.0.107 pins.
+- **pi: Pin adapter to v1.5.0** ([#1668](https://github.com/lsm/open-agent-protocol/pull/1668)): Pin the Pi RPC adapter to v1.5.0 and preserve v1.3.0 as retired.
+- **adapter: project bounded native ACP text runs** ([#1675](https://github.com/lsm/open-agent-protocol/pull/1675)): Adds a bounded native text-run engine for the Rust ACP adapter as approved slice 2b of #1439.
+- **conformance: assemble native Rust reports and validator verdicts** ([#1679](https://github.com/lsm/open-agent-protocol/pull/1679)): This completes the native Rust endpoint conformance runner with EOF/fatal-input contracts and independent Rust trace validation.
+- **hub: Visit only sessions that need fallback pumping** ([#1680](https://github.com/lsm/open-agent-protocol/pull/1680)): This scheduling fix lets the Hub finish its pass when notifying sessions have no work.
+- **oapx: deliver task endings as sessions close** ([#1677](https://github.com/lsm/open-agent-protocol/pull/1677)): Closing a session now lets the oapx adapter end its background jobs and publish their `session.task.ended` events before the hub closes subscriptions or the raw endpoint finishes.
+- **opencode: upgrade the v2 server pin to 2.2.6** ([#1669](https://github.com/lsm/open-agent-protocol/pull/1669)): Pin the OpenCode adapter to the published v2.2.6 release, accepting its `native` event metadata, archive events, session `time.busy`, and server `hostname`.
+- **validation: Enforce Rust pack reference ownership** ([#1678](https://github.com/lsm/open-agent-protocol/pull/1678)): Rust’s staged pack-resource constructor now checks reference ownership against the owning pack, core bundle and declared dependencies.
+- **chore: update ACP v1 specification pin** ([#1674](https://github.com/lsm/open-agent-protocol/pull/1674)): Updates the ACP v1 catalog from v1.12.0/schema-v1.26.0 to v1.15.1/schema-v1.29.1.
+- **hub: Wait on stdio readiness and idle deadlines** ([#1682](https://github.com/lsm/open-agent-protocol/pull/1682)): This removes periodic wakeups from a native stdio Hub whose sessions are idle.
+- **oapx: support cancellation of session tasks** ([#1681](https://github.com/lsm/open-agent-protocol/pull/1681)): The oapx endpoint and Zig hub now accept `session.task.cancel.request` for a background Shell job.
+- **serve: support session task cancellation** ([#1683](https://github.com/lsm/open-agent-protocol/pull/1683)): Go hosts cannot cancel a session task even when an adapter supports cancellation.
+- **claude: pin Claude Code 2.1.319** ([#1666](https://github.com/lsm/open-agent-protocol/pull/1666)): Upgrade the Claude Code adapter pin to 2.1.319, with Agent SDK 0.3.319 / Python SDK 0.2.179 and a separately versioned synthetic corpus.
+- **hub: select directories when opening named stdio sessions** ([#1684](https://github.com/lsm/open-agent-protocol/pull/1684)): Named stdio opens can now select a workspace through an any_directory adapter.
+- **oapx: move a Shell command past 5 seconds to a background job** ([#1620](https://github.com/lsm/open-agent-protocol/pull/1620)): A `Shell` command past 5 seconds now becomes a session background job, so an agent never sits waiting on a slow command.
+- **test: skip the directory journey without POSIX or Python** ([#1688](https://github.com/lsm/open-agent-protocol/pull/1688)): The directory integration test now skips on Windows or when python3 is unavailable.
+- **adapter: wire Rust ACP public text submission** ([#1685](https://github.com/lsm/open-agent-protocol/pull/1685)): This adds the staged public text-submit path for the Rust ACP adapter in #1439.
+- **validation: Compile Rust pack branches and member schemas** ([#1686](https://github.com/lsm/open-agent-protocol/pull/1686)): Rust now compiles declared pack branches and member schemas for #1440.
+- **oapx: serve UTF-8 background task output** ([#1687](https://github.com/lsm/open-agent-protocol/pull/1687)): oapx hosts need to read a background task's output after a run ends.
+- **hub: Wait on HTTP connection and shutdown deadlines** ([#1689](https://github.com/lsm/open-agent-protocol/pull/1689)): This removes periodic wakeups from an idle native HTTP Hub.
+- **oapx: let ShellJob wake the session on a matching line** ([#1690](https://github.com/lsm/open-agent-protocol/pull/1690)): `ShellJob` now takes `wake_on`, a regular expression, so a model can ask to be woken by a line in a running job's output, such as an error or a server coming up.
+- **hub: serve session task output requests** ([#1691](https://github.com/lsm/open-agent-protocol/pull/1691)): Hosts using the hub cannot read the background-task output already served by oapx's raw endpoint.
+- **docs: record task parking limitations** ([#1695](https://github.com/lsm/open-agent-protocol/pull/1695)): When optional oapx parking reopens a session, its job table is empty: task output and cancellation cannot find ended jobs from before the park, and reading task output wakes the session and counts as activity.
+- **oapx: check the reap backoff by its waits, not the clock** ([#1694](https://github.com/lsm/open-agent-protocol/pull/1694)): The reap backoff test from #1595 asserted real elapsed time, so it failed under load while the backoff was right.
+- **adapter: fold Rust ACP usage and native message identities** ([#1693](https://github.com/lsm/open-agent-protocol/pull/1693)): This ports ACP usage/context folding and native message identities into the Rust adapter for #1439.
+- **adapter: project Rust ACP tool lifecycle** ([#1696](https://github.com/lsm/open-agent-protocol/pull/1696)): This ports observed ACP tool lifecycle events into the Rust adapter for #1439.
+- **validation: Check typed pack corpus expectations** ([#1692](https://github.com/lsm/open-agent-protocol/pull/1692)): This adds the staged Rust pack-corpus expectation check for #1440.
+- **adapter: own Rust ACP outbound native writes** ([#1697](https://github.com/lsm/open-agent-protocol/pull/1697)): This adds owned native ACP notification and reverse-response operations for #1439.
+- **validation: Complete pack loading and corpus owner checks** ([#1698](https://github.com/lsm/open-agent-protocol/pull/1698)): This completes Rust pack construction and corpus policy validation for #1440.
+- **validation: Validate packed envelope schemas through the public API** ([#1700](https://github.com/lsm/open-agent-protocol/pull/1700)): This adds a parsed-envelope schema operation to `CompiledPacks` for #1440.
+- **adapter: project typed Rust ACP permissions** ([#1699](https://github.com/lsm/open-agent-protocol/pull/1699)): This adds the typed ACP permission projection for #1439.
+- **adapter: own Rust ACP permission controller operations** ([#1701](https://github.com/lsm/open-agent-protocol/pull/1701)): This adds the owned native ACP permission controller for #1439.
+- **validation: Integrate native strict packed trace semantics** ([#1702](https://github.com/lsm/open-agent-protocol/pull/1702)): Adds native strict packed-trace validation for #1440 through `Validator::with_packs`.
+- **adapter: integrate Rust ACP Session permissions** ([#1703](https://github.com/lsm/open-agent-protocol/pull/1703)): This adds normal Rust Session permission support for #1439.
+- **serve: load fixed-directory ACP adapters through shared Rust traits** ([#1705](https://github.com/lsm/open-agent-protocol/pull/1705)): The Rust hub can now load explicitly configured ACP adapters in a fixed working directory.
+- **test: separate conformance fixture startup from drain deadlines** ([#1708](https://github.com/lsm/open-agent-protocol/pull/1708)): Fixes a flaky Rust conformance fixture: slow Python startup could consume its one-second EOF drain window before any frames arrived.
+- **adapter: confirm Rust ACP run cancellation** ([#1706](https://github.com/lsm/open-agent-protocol/pull/1706)): This ports native cancellation for #1439 so Rust ACP callers can stop a tracked run and settle pending permission gates.
+- **adapter: record Rust ACP live configuration updates** ([#1709](https://github.com/lsm/open-agent-protocol/pull/1709)): Fixes stale model and reasoning metadata when an ACP agent sends `config_option_update`.
+- **validation: Recognize vocabulary and select schema branches** ([#1710](https://github.com/lsm/open-agent-protocol/pull/1710)): Adds protocol vocabulary recognition and diagnostic foundations for #1440 as the first of two stacked changes.
+- **adapter: reload bound Rust ACP conversations** ([#1711](https://github.com/lsm/open-agent-protocol/pull/1711)): Adds native conversational reload for Rust ACP as part of #1439.
+- **validation: Expose complete tolerant Rust trace constructors** ([#1712](https://github.com/lsm/open-agent-protocol/pull/1712)): This completes tolerant Rust trace validation for #1440 on top of #1710.
+- **adapter: confirm Rust ACP opening configuration and reasoning** ([#1714](https://github.com/lsm/open-agent-protocol/pull/1714)): Adds confirmed opening configuration and reasoning to Rust ACP as part of #1439.
+- **validation: Prefer declared packed schema diagnostics in Go** ([#1715](https://github.com/lsm/open-agent-protocol/pull/1715)): This fixes Go diagnostics for malformed packed envelopes: a storage request missing `key` reported unrelated missing `run_id` and `sequence` at the root.
+- **adapter: replay bounded Rust ACP session journals** ([#1716](https://github.com/lsm/open-agent-protocol/pull/1716)): Adds bounded canonical replay to Rust ACP as part of #1439.
+- **validation: Enforce Rust optional query outcomes** ([#1717](https://github.com/lsm/open-agent-protocol/pull/1717)): Rust accepted degraded model-list, session-list and transcript queries without opt-in or the required feature refusal, and allowed advertised model-list queries to be refused.
+- **adapter: carry per-open Rust ACP MCP attachments** ([#1718](https://github.com/lsm/open-agent-protocol/pull/1718)): Adds per-open stdio MCP attachments to Rust ACP as part of #1439.
+- **validation: Enforce Rust reopen capability gates** ([#1720](https://github.com/lsm/open-agent-protocol/pull/1720)): Rust accepted reopens without advertised support or degraded consent, and rejected valid compound refusals.
+- **conformance: recognize delivered EOF at wait expiry** ([#1721](https://github.com/lsm/open-agent-protocol/pull/1721)): Fixes a false Rust conformance timeout when the reader has already delivered EOF as the caller's wait budget expires.
+- **fix(acp): a ready operation returns without joining its worker** ([#1723](https://github.com/lsm/open-agent-protocol/pull/1723)): A ready Rust ACP `Operation` joined its worker thread inside `poll`, so a poll could block while that thread finished exiting.
+- **fix(validation): Rust judges snapshot acknowledged_interactions** ([#1724](https://github.com/lsm/open-agent-protocol/pull/1724)): Rust accepted session snapshots whose `acknowledged_interactions` broke Decision 0011, so three control fixtures were still Rust known gaps.
+- **fix(acp): build the adapter descriptor once, at construction** ([#1726](https://github.com/lsm/open-agent-protocol/pull/1726)): The first poll of a Rust ACP `open` future built the adapter descriptor twice.
+- **fix(validation): Rust holds a served catalog to its capability revision** ([#1727](https://github.com/lsm/open-agent-protocol/pull/1727)): Rust accepted model catalogs and `models.list` advertisements that changed under one capability revision without a `capabilities.updated`, so five Decision 0006 fixtures were still Rust known gaps.
+- **fix(validation): Rust judges which session owns a catalog's model position** ([#1728](https://github.com/lsm/open-agent-protocol/pull/1728)): Rust accepted a `models.response` whose `as_of_model_event` named a run or model switch of another session, so four Decision 0006 fixtures were still Rust known gaps.
+- **fix(validation): Rust judges the model a catalog reports as current** ([#1729](https://github.com/lsm/open-agent-protocol/pull/1729)): Rust accepted a catalog whose `current_model_id` the session never held, so `models-current-mismatch` and `models-held-position-moved-no-model` were still Rust known gaps.
+- **validation: Require degraded model switch opt-in in Rust** ([#1731](https://github.com/lsm/open-agent-protocol/pull/1731)): Refs #1440.
+- **validation: Reject attachment fields in Rust capability sources** ([#1732](https://github.com/lsm/open-agent-protocol/pull/1732)): Refs #1440.
+- **validation: Reject attachment fields in Rust session publications** ([#1733](https://github.com/lsm/open-agent-protocol/pull/1733)): Refs #1440.
+- **docs: AGENTS.md is the agent guide; CLAUDE.md links to it** ([#1730](https://github.com/lsm/open-agent-protocol/pull/1730)): Renames CLAUDE.md to AGENTS.md (content unchanged apart from the title line) and adds CLAUDE.md as a symlink to it, so Codex and Claude Code read the same file.
+- **zig: Synchronize the shell wake offset regression** ([#1734](https://github.com/lsm/open-agent-protocol/pull/1734)): Removes the shell offset test's race between the foreground budget, two shell writes and delayed rule installation by ordering the second line through a FIFO; signed red reproduction; no timeout increases.
+- **acp: Inject clock and ID sources for recorded event ordering** ([#1735](https://github.com/lsm/open-agent-protocol/pull/1735)): Refs #1439.
+- **zig: Add bearer authentication for remote provider services** ([#1737](https://github.com/lsm/open-agent-protocol/pull/1737)): Closes #1736.
+- **zig: Contain provider service tokens and enforce bearer grammar** ([#1739](https://github.com/lsm/open-agent-protocol/pull/1739)): Closes #1738.
+- **zig: Erase the provider token from the original process environment** ([#1741](https://github.com/lsm/open-agent-protocol/pull/1741)): Closes #1740.
+- **zig: Authenticate CONNECT and validate target TLS** ([#1743](https://github.com/lsm/open-agent-protocol/pull/1743)): Closes #1742.
+- **zig: Honor destination proxy exclusions** ([#1747](https://github.com/lsm/open-agent-protocol/pull/1747)): Closes #1746.
+- **zig: Initialize provider proxies and audit Responses attempts** ([#1745](https://github.com/lsm/open-agent-protocol/pull/1745)): Closes #1744.
+
 ## [0.1.0-alpha.31] - 2026-11-06
 
 ### Breaking changes
