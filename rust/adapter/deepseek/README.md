@@ -3,7 +3,7 @@
 The Rust port of `go/adapter/deepseek`: an OAP adapter over the DeepSeek
 harness SDK runtime's JSON-RPC on stdio, pinned by
 `harnesses/deepseek-harness.json` and judged by the corpus in
-`fixtures/adapters/deepseek-harness-dsh-v0.2.1-rc.2`.
+`fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.1`.
 
 So far it holds the native handshake, prompt, notification and event payload
 types, including Go's `MessageSource` rules for closed source kinds and its
@@ -56,3 +56,14 @@ invalid submission an unscoped or empty request, an unknown delivery, a
 message that is not from the user, and any content that is neither a string
 nor a list of text parts. A message without an id gets one minted from the
 session's id source.
+
+`content` holds the session's pure content mapping. `stream_parts` expands
+assistant stream records into OAP deltas: text and reasoning chunk lists, and a
+`chunk` record whose strictly decoded delta is text or reasoning; every other
+record carries no delta. `final_content` turns a completed turn's blocks into
+the final response, a lone text block as a string and anything else as parts,
+resolving each tool-call block through the run's tools and refusing other
+block kinds with Go's wording. One difference is deliberate: Go copies a
+tool-call block's arguments into the envelope unchecked, so arguments that are
+not JSON make the envelope fail to marshal and the turn's terminal is silently
+dropped. Here they refuse the final message, which fails the run instead.

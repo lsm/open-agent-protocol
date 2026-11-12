@@ -125,3 +125,18 @@ fn final_content_refuses_what_go_refuses() {
         assert_eq!(final_content(&blocks, &tools).unwrap_err(), wanted);
     }
 }
+
+#[test]
+fn invalid_tool_arguments_are_refused_rather_than_dropping_the_terminal() {
+    let call = ContentBlock {
+        kind: "tool-call".into(),
+        id: "native-call".into(),
+        name: "read".into(),
+        arguments: "{".into(),
+        ..ContentBlock::default()
+    };
+    assert_eq!(
+        final_content(&[call], &tools).unwrap_err(),
+        r#"final message carries invalid arguments for tool "native-call""#
+    );
+}
