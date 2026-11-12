@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,7 +57,7 @@ var dshPreviousSources = dshCorpusSources{
 	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
 	SDKServer:            "726f430f155190922bdce21807da26b6e1a7b127",
 	CoreSessionTypes:     "e0931f22405b25cf1e9090929fb9f5f45852d6bc",
-	CoreKnownEvents:      "466e76bb80845580ae24b2e72cc1bafbea88fc2b",
+	CoreKnownEvents:      "a0f5c17795be074e3c521c525a0eb59ee25248d6",
 	CoreAgentTypes:       "5cbc81df38c81be4f5c4d85e6a2c8acd5108ed95",
 	CoreAgentInbox:       "ef00887a544c2dededb484ff7b9ce0efe83dea21",
 	CoreAgentRuntime:     "0fa89afc054a819493206cef65dd7907092cdd7f",
@@ -64,7 +65,7 @@ var dshPreviousSources = dshCorpusSources{
 	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
 	LLMTypes:             "8001ab81d8f4e159f1b5e02e12af4f7f6223f625",
 	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
-	CoreSessionSurface:   "7a13bc1d7c1c87bae96a52ed7b160f8d6a635e3c",
+	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
 }
 
 var dshCurrentSources = dshCorpusSources{
@@ -1514,6 +1515,56 @@ func dshCorpusRoot(t *testing.T) string {
 		t.Fatal("caller")
 	}
 	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(CorpusDirectory))
+}
+
+func TestCorpusProvenanceSourcesExistInTheirDeclaredCommits(t *testing.T) {
+	if os.Getenv("OAP_DSH_PROVENANCE_CHECK") != "1" {
+		t.Skip("set OAP_DSH_PROVENANCE_CHECK=1 to verify the recorded source blobs against the upstream commits over the network")
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	for _, provenance := range []dshCorpusProvenance{dshCurrentProvenance(), dshPreviousProvenance(), dshCarriedProvenance()} {
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.github.com/repos/deepseek-ai/deepseek-harness/git/trees/"+provenance.Commit+"?recursive=1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Accept", "application/vnd.github+json")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("%s: %v", provenance.Tag, err)
+		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			t.Fatalf("%s at commit %s: tree lookup answered %s", provenance.Tag, provenance.Commit, response.Status)
+		}
+		var tree struct {
+			Tree []struct {
+				SHA string `json:"sha"`
+			} `json:"tree"`
+		}
+		err = json.NewDecoder(response.Body).Decode(&tree)
+		response.Body.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", provenance.Tag, err)
+		}
+		present := map[string]bool{}
+		for _, entry := range tree.Tree {
+			present[entry.SHA] = true
+		}
+		encoded, err := json.Marshal(provenance.Sources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sources map[string]string
+		if err := json.Unmarshal(encoded, &sources); err != nil {
+			t.Fatal(err)
+		}
+		for name, blob := range sources {
+			if blob == "" || present[blob] {
+				continue
+			}
+			t.Errorf("%s declares %s blob %s, which is absent from upstream commit %s", provenance.Tag, name, blob, provenance.Commit)
+		}
+	}
 }
 
 func TestDSHCorpusPinConstants(t *testing.T) {
