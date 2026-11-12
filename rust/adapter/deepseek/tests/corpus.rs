@@ -90,41 +90,27 @@ fn opening() -> OpenRequest {
     }
 }
 
-fn normalized(events: Value) -> Value {
-    let mut events = events;
-    for frame in events.as_array_mut().into_iter().flatten() {
-        let Some(frame) = frame.as_object_mut() else {
-            continue;
-        };
-        for key in [
-            "timestamp_ms",
-            "id",
-            "in_reply_to",
-            "run_id",
-            "tool_call_id",
-        ] {
-            frame.remove(key);
-        }
-        if let Some(payload) = frame.get_mut("payload").and_then(Value::as_object_mut) {
-            for key in [
-                "started_at_ms",
-                "updated_at_ms",
-                "duration_ms",
-                "message_id",
-                "run_id",
-                "tool_call_id",
-            ] {
-                payload.remove(key);
+fn compact(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    let (mut quoted, mut escaped) = (false, false);
+    for character in json.chars() {
+        if quoted {
+            out.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
             }
-            if let Some(last) = payload
-                .get_mut("final_response")
-                .and_then(Value::as_object_mut)
-            {
-                last.remove("id");
-            }
+        } else if character == '"' {
+            quoted = true;
+            out.push(character);
+        } else if !character.is_whitespace() {
+            out.push(character);
         }
     }
-    events
+    out
 }
 
 struct Case {
@@ -535,7 +521,15 @@ impl Case {
         let name = self.definition["expected_oap"].as_str().unwrap();
         match read(&self.source.join(name)) {
             Value::Null => Value::Array(Vec::new()),
-            trace => normalized(trace),
+            trace => trace,
+        }
+    }
+
+    fn expected_bytes(&self) -> String {
+        let name = self.definition["expected_oap"].as_str().unwrap();
+        match compact(&std::fs::read_to_string(self.source.join(name)).unwrap()).as_str() {
+            "null" => "[]".into(),
+            trace => trace.into(),
         }
     }
 
@@ -583,23 +577,17 @@ fn every_case_replays_its_recorded_trace() {
             "{}: admitted and refused submissions",
             case.id
         );
-        let mut actual = normalized(serde_json::to_value(outcome.envelopes).unwrap());
+        let mut actual =
+            oap_adapter::gojson::go_marshal(&serde_json::to_string(&outcome.envelopes).unwrap());
         if let Some(reason) = case.exit_reason() {
-            for event in actual.as_array_mut().unwrap() {
-                if let Some(message) = event
-                    .pointer_mut("/payload/error/message")
-                    .filter(|message| *message == "EOF")
-                {
-                    *message = reason.into();
-                }
-            }
+            actual = actual.replace(
+                r#""message":"EOF""#,
+                &format!(r#""message":{}"#, serde_json::to_string(reason).unwrap()),
+            );
         }
-        if actual != case.expected() {
-            mismatched.push(format!(
-                "{}\n want: {}\n  got: {actual}",
-                case.id,
-                case.expected()
-            ));
+        let wanted = case.expected_bytes();
+        if actual != wanted {
+            mismatched.push(format!("{}\n want: {wanted}\n  got: {actual}", case.id));
         }
     }
     assert_eq!(replayed, 17);

@@ -164,7 +164,7 @@ which the ledger records.
 
 `tests/corpus.rs` replays the pinned corpus: each case's recorded native frames
 are played by a fixture runtime over a real process, and the trace must equal
-the case's `expected-oap.json` after the same normalization Go applies. Go
+the case's `expected-oap.json` byte for byte, ids and timestamps included. Go
 records an empty trace as `null`, and its in-process transport reports a
 case's own exit reason where a real process reports `EOF`; the replay accepts
 both. The two lifecycle cases also compare the bytes the adapter writes to the runtime,
