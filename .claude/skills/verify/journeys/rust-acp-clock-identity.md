@@ -12,7 +12,7 @@ start envelope, including distinct payload and envelope times. The second
 replays the pinned native frames through a real child and compares every event's
 clock, ID, payload and position directly with the unchanged corpus. It also
 checks native RPC IDs, generated submission/message IDs, final session time and
-child cleanup. The adapter's staged capability revision is checked separately;
+child cleanup. The adapter's capability revision is checked separately;
 this is not the full byte corpus graduation gate.
 
 The third opens two sessions per adapter with default and injected sources to

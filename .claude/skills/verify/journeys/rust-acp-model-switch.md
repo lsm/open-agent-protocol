@@ -42,8 +42,7 @@ grandchild-held-pipe limits remain applicable. No real harness, providers,
 credentials or network calls are used.
 
 Run the complete baseline, full Rust all-features suite, format/clippy/comment
-checks and inspect the baseline's isolated PTY reply/quit evidence. The temporary
-capability revision is `-rust-attachments`. Normal permissions are covered by
+checks and inspect the baseline's isolated PTY reply/quit evidence. Normal permissions are covered by
 `rust-acp-session-permissions.md`. Live config updates are covered by
-`rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening configuration is covered by `rust-acp-opening-config.md`; full ACP
-corpus replay retains its approved later slice of #1439.
+`rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening configuration is covered by `rust-acp-opening-config.md`; ACP
+corpus replay is covered by `rust-acp-corpus.md`.

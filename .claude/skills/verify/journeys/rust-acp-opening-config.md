@@ -22,7 +22,7 @@ reasoning stays unspecified; concrete model ids still follow the model option.
 Configured/reopened metadata is derived from returned options.
 
 Twenty-eight Go/Rust cases compare successful state/catalog snapshots and
-structured refusal metadata, normalizing only clocks and the staged revision.
+structured refusal metadata, normalizing only clocks and the capability revision.
 Full error/parser wording is retained separately. Parsed native frames in both
 directions must match exactly, including ordered setting ids/values. The agent
 sends 320 notifications and an unknown reverse RPC before every setting reply,
@@ -41,7 +41,7 @@ measurement and the corrected waiting-boundary evidence.
 Run existing reload/deadline ownership, live-config, model-switch, session,
 submit, permission and cancellation journeys, the full baseline and Rust
 all-features under the same mutex. Read the baseline's actual PTY reply and
-`/quit` exit. The current revision is `-rust-attachments`; session.reasoning is
-emulated in session_open mode. Full byte corpus and C8 served parity remain
-later gates of #1439. No live provider/harness, credential or port is used by
+`/quit` exit. session.reasoning is
+emulated in session_open mode. The byte corpus is covered by rust-acp-corpus.md;
+C8 served parity remains a later gate of #1439. No live provider/harness, credential or port is used by
 the new journeys. Shared process-helper grandchild-held-pipe limits apply.

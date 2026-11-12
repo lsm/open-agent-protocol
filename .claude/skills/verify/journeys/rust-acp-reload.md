@@ -21,7 +21,7 @@ extension, outside the new run's core usage.
 The Go/Rust differential covers load precedence, resume fallback, malformed or
 missing capabilities/binding, missing/null/changed ids, malformed results,
 native refusal and opaque settings. Successful public states, catalogs,
-admissions and events normalize only clocks and the staged revision. Refusals
+admissions and events normalize only clocks and the capability revision. Refusals
 compare typed feature/reason; full diagnostic detail is retained separately
 because native parser diagnostics differ. All parsed native frames in both
 directions must agree. Wrapped successful Rust exchanges must pass all three

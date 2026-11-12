@@ -11,7 +11,7 @@ python3 .claude/skills/verify/scripts/rust-acp-session-permissions.py --output-d
 The first command opens the normal public Rust Adapter and Session, submits
 synthetic text and resolves native permission asks through Session.resolve.
 Fourteen cases compare public Go/Rust event JSON after normalizing wall-clock
-fields and the declared staged capability revision. Parsed native host frames
+fields and the capability revision. Parsed native host frames
 must match exactly. Both raw directions, admissions and results are retained.
 Actual Rust events with synthetic host exchanges pass all three validators.
 Immediate state samples must reflect publication, and terminal state must have

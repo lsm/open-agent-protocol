@@ -480,6 +480,20 @@ impl TextRun {
         inferred: bool,
         now_ms: i64,
     ) -> Result<(), Error> {
+        self.settle_prompt("acp_prompt_error", message, inferred, now_ms)
+    }
+
+    pub fn transport_failure(&mut self, message: &str, now_ms: i64) -> Result<(), Error> {
+        self.settle_prompt("acp_transport_failure", message, true, now_ms)
+    }
+
+    fn settle_prompt(
+        &mut self,
+        code: &str,
+        message: &str,
+        inferred: bool,
+        now_ms: i64,
+    ) -> Result<(), Error> {
         if self.state.status.is_empty() {
             self.usage_scope
                 .lock()
@@ -489,7 +503,7 @@ impl TextRun {
             return Ok(());
         }
         self.settle_usage(None);
-        self.fail("acp_prompt_error", message, inferred, now_ms)
+        self.fail(code, message, inferred, now_ms)
     }
 
     pub fn close(&mut self) {

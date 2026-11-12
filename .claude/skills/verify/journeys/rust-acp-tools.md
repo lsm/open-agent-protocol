@@ -13,7 +13,7 @@ The tools suite uses the same standalone public Rust and Go Adapter/Session
 consumers as the results journey. Real credential-free synthetic stdio agents
 run at native queue capacity one. It records both native directions, actual
 admission/state/events and native PIDs. Every child must be reaped. Parsed JSON
-comparison normalizes only wall clocks and the staged descriptor revision.
+comparison normalizes only wall clocks and the capability revision.
 The standalone engine journey compares fixed-clock/id event JSON exactly.
 
 Cases exercise sparse progress, presentation titles and native string names,
@@ -32,7 +32,7 @@ inspect event kinds, OAP tool identity/scope, retained raw values and final
 session state. Retain the signed failing public stdio regression before the
 implementation commit.
 
-The staged revision is `-rust-attachments`. Tool feature rows are degraded observed
+Tool feature rows are degraded observed
 lifecycle claims with no catalog. Host execution APIs remain
 unavailable. Normal permissions use the owned Session integration. Session close/drop retains its existing prefix/cleanup behavior.
 Native cancellation is covered by rust-acp-cancel.md. Live config is covered by `rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening config is covered by `rust-acp-opening-config.md`; full byte corpus and C8 served
