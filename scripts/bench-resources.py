@@ -723,8 +723,12 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
             result["status"] = f"timeout after {timeout}s at step {len(steps)}"
             if options.capture_stalls:
                 kept = Path(options.capture_stalls) / root.name
-                capture_stall(hub.process.pid, phases, kept)
                 result["stall_capture"] = str(kept)
+                result["stall_run"] = str(root)
+                try:
+                    capture_stall(hub.process.pid, phases, kept)
+                except OSError as error:
+                    result["stall_capture_error"] = str(error)
         elif outcome.get("error"):
             result["status"] = f"failed at step {len(steps)}: {outcome['error']}"[:300]
         result["wall_s"] = time.perf_counter() - started
@@ -774,7 +778,14 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
                 pass
             provider.wait(timeout=10)
         if "stall_capture" in result:
-            shutil.move(str(root), str(Path(result["stall_capture"]) / "run"))
+            kept_run = Path(result["stall_capture"]) / "run"
+            try:
+                shutil.move(str(root), str(kept_run))
+                result["stall_run"] = str(kept_run)
+            except OSError as error:
+                result.setdefault("stall_capture_error", str(error))
+            if "stall_capture_error" in result:
+                result["status"] += f" (capture failed with {result['stall_capture_error']})"
         else:
             shutil.rmtree(root, ignore_errors=True)
     return result
@@ -963,6 +974,7 @@ def main():
     revision = arguments.git_revision or subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
                                                         text=True).stdout.strip() or "unknown"
     scratch = tempfile.mkdtemp(prefix="oap-bench-")
+    results = []
     try:
         built = {} if arguments.no_build else build(targets, scratch)
         sources = {"zig": ROOT / "zig/zig-out/bin/oapx", "zig-loop": Path(arguments.loop_binary) if arguments.loop_binary else ROOT / "zig/zig-out/bin/oapx",
@@ -975,7 +987,6 @@ def main():
                 parser.error(f"no binary for {target}; drop --no-build or pass --go")
             binaries[target] = Path(scratch) / ("bin-" + target)
             shutil.copy2(source, binaries[target])
-        results = []
         for target in targets:
             for scenario in scenarios:
                 if scenario in LOOP_ONLY and target != "zig-loop":
@@ -1005,7 +1016,9 @@ def main():
                                  {target: toolchain(target, binaries[target]) for target in targets})
             Path(arguments.report).write_text("".join(line + "\n" for line in lines))
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        keep_scratch = any(row.get("stall_run") and Path(row["stall_run"]).parent == Path(scratch) for row in results)
+        if not keep_scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 if __name__ == "__main__":

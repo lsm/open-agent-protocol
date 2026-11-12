@@ -92,7 +92,8 @@ def main():
                 assert (retained / 'hub-stderr.txt').is_file(), 'hub log was deleted after capture failure'
                 assert (retained / 'data/sessions.jsonl').is_file(), 'session history was deleted after capture failure'
                 kept = output / 'capture-error-run'
-                shutil.move(str(retained), kept)
+                assert retained.parent.parent == scratch, 'retained run escaped the test scratch directory'
+                shutil.move(str(retained.parent), kept)
                 observation['run_retained'] = True
                 assert capture_dir.read_text() == 'capture-unavailable', 'capture path was overwritten'
             else:
