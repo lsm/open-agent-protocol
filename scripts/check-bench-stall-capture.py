@@ -12,17 +12,20 @@ import tempfile
 
 
 def main():
+    cases = [('capture', 'hold-model', True), ('capture-error', 'hold-model', True),
+             ('diagnostic-bytes', 'hold-model', True), ('disabled', 'hold-model', False), ('completed', 'empty', True)]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--allow-unavailable-stack', action='store_true')
+    parser.add_argument('--case', choices=[name for name, _, _ in cases])
     args = parser.parse_args()
+    if args.case:
+        cases = [case for case in cases if case[0] == args.case]
     binary = args.binary.resolve()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     benchmark = Path(__file__).with_name('bench-resources.py')
-    cases = [('capture', 'hold-model', True), ('capture-error', 'hold-model', True),
-             ('disabled', 'hold-model', False), ('completed', 'empty', True)]
     observations = []
     with tempfile.TemporaryDirectory(prefix='oap-stall-check-') as temporary:
         root = Path(temporary)
@@ -41,13 +44,24 @@ def main():
                 assert outbound.recv(1) == b''
                 outbound.close()
                 assert inbound.recv(1) == b''
+        commands = root / 'commands'
+        commands.mkdir()
+        process_listing = commands / 'ps'
+        process_listing.write_text(
+            '#!/bin/sh\n'
+            'case "$*" in\n'
+            '*command*)\n'
+            '  printf "PID PPID PGID ELAPSED STAT COMMAND\\n"\n'
+            '  printf "999999 1 1 00:01 S bench-unrelated-private-argument\\n"\n'
+            '  ;;\n'
+            '*) exec /bin/ps "$@";;\n'
+            'esac\n')
+        process_listing.chmod(0o755)
+        environment['PATH'] = str(commands) + ':' + environment['PATH']
         if sys.platform.startswith('linux'):
-            commands = root / 'commands'
-            commands.mkdir()
             netstat = commands / 'netstat'
             netstat.write_text('#!/bin/sh\necho netstat-unavailable >&2\nexit 1\n')
             netstat.chmod(0o755)
-            environment['PATH'] = str(commands) + ':' + environment['PATH']
         for name, scenario, enabled in cases:
             result_dir = output / (name + '-result')
             capture_dir = output / (name + '-capture')
@@ -60,7 +74,15 @@ def main():
                 capture_dir.write_text('capture-unavailable')
             if enabled:
                 command += ['--capture-stalls', str(capture_dir)]
-            child = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=240)
+            case_environment = environment.copy()
+            if name == 'diagnostic-bytes':
+                malformed = root / 'malformed'
+                malformed.mkdir()
+                lsof = malformed / 'lsof'
+                lsof.write_text("#!/bin/sh\nprintf '\\377'\n")
+                lsof.chmod(0o755)
+                case_environment['PATH'] = str(malformed) + ':' + environment['PATH']
+            child = subprocess.run(command, env=case_environment, capture_output=True, text=True, timeout=240)
             (output / (name + '.log')).write_text(child.stdout + child.stderr)
             assert child.returncode == 0, name + ' CLI failed'
             rows = json.loads((result_dir / 'results.json').read_text())
@@ -70,10 +92,17 @@ def main():
                 assert row['status'] == 'ok', 'ordinary completion failed'
             else:
                 assert row['status'].startswith('timeout after '), 'timeout status was lost'
-            if name == 'capture':
+            if name in ('capture', 'diagnostic-bytes'):
                 capture = Path(row['stall_capture'])
                 files = ['stuck.json', 'processes.txt', 'sockets.txt', 'time-wait.txt', 'sample.txt']
                 assert all((capture / item).stat().st_size > 0 for item in files), 'missing diagnostic'
+                processes = (capture / 'processes.txt').read_text()
+                assert 'bench-unrelated-private-argument' not in processes, 'unrelated process arguments were captured'
+                assert '--stdio' not in processes, 'hub arguments were captured'
+                process_rows = [line for line in processes.splitlines() if re.match(r'^\s*\d+\s', line)]
+                assert len(process_rows) == 1 and 'bin-zig-loop' in process_rows[0], 'process capture exceeded the hub'
+                if name == 'diagnostic-bytes':
+                    assert '\ufffd' in (capture / 'sockets.txt').read_text(encoding='utf-8'), 'invalid diagnostic bytes were lost'
                 time_wait_count = int((capture / 'time-wait.txt').read_text().splitlines()[0])
                 assert time_wait_count > 0, 'TIME_WAIT diagnostic reported a false zero'
                 stuck = json.loads((capture / 'stuck.json').read_text())
@@ -103,7 +132,7 @@ def main():
             observations.append(observation)
     (output / 'checks.json').write_text(json.dumps(observations, indent=2) + '\n')
     print(json.dumps({'checks_passed': len(observations), 'checks_total': len(cases),
-                      'live_stack_captured': observations[0]['live_stack_captured']}))
+                      'live_stack_captured': observations[0].get('live_stack_captured')}))
     return 0
 
 
