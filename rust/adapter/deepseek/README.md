@@ -60,6 +60,12 @@ that id is also the native session id. It refuses resolve and cancel, resumes
 only a run its journal has ended, reporting a `ReplayGap` for a cursor older
 than the journal holds, and closes by shutting the runtime down once;
 a process dropped without a close shuts down the same way.
+From open onward a reader thread takes the runtime's inbound messages, as Go's
+`dispatch` does. It acknowledges barriers and ignores a `session.status` for
+this session while it is usable; a reverse request, which it leaves unanswered
+as Go does, any other notification while no run is reserved, and the runtime
+exiting before close all leave the session unusable, so `state` reports it
+closed.
 Go's `Open` also stops when the caller's context is cancelled; the slice that
 implements the `Adapter` and `Session` contracts brings that cancellation along
 with submitting and the reducer over native notifications.

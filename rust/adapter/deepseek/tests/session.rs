@@ -45,6 +45,10 @@ impl Fixture {
     }
 
     fn adapter_with(&self, answers: bool, start_timeout: Duration) -> Adapter {
+        self.adapter_then(answers, start_timeout, "")
+    }
+
+    fn adapter_then(&self, answers: bool, start_timeout: Duration, after: &str) -> Adapter {
         let dir = self.dir.to_string_lossy().into_owned();
         let info = format!(
             r#"{{"serverInfo":{{"name":"{SERVER_NAME}","version":"{}"}}}}"#,
@@ -54,7 +58,7 @@ impl Fixture {
             r#"printf '%s' $$ > "{dir}/pid"
 if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; printf '%s' "$2" > "{dir}/patch-path"; ls -l "$2" | cut -c1-10 > "{dir}/patch-mode"; fi
 {silence}read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{info}}}'
-read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
+{after}read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
 cat >/dev/null"#,
             silence = if answers { "" } else { "cat >/dev/null; " }
         );
@@ -331,4 +335,76 @@ fn a_start_timeout_past_the_clock_fails_open_before_any_spawn() {
         ))
     );
     assert!(!fixture.dir.join("pid").exists());
+}
+
+fn settles_closed(session: &oap_adapter_deepseek::session::Session) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if session.state().err() == Some(Error::SessionClosed) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+fn unsolicited(method: &str, params: &str) -> String {
+    assert!(
+        oap_adapter_deepseek::native::decode_notification(method, params.as_bytes()).is_ok(),
+        "{method} {params} is not a valid notification"
+    );
+    format!(
+        r#"printf '%s\n' '{{"jsonrpc":"2.0","method":"{method}","params":{params}}}'
+"#
+    )
+}
+
+#[test]
+fn a_native_event_no_run_asked_for_makes_the_session_unusable() {
+    let fixture = Fixture::new();
+    let after = unsolicited(
+        "session.event",
+        r#"{"sessionId":"s","event":{"type":"turn/start","seq":1,"time":1,"data":{"turn":1}}}"#,
+    );
+    let session = fixture
+        .adapter_then(true, Duration::ZERO, &after)
+        .open(request("s"))
+        .unwrap();
+    assert!(settles_closed(&session), "{:?}", session.state());
+    session.close().unwrap();
+}
+
+#[test]
+fn a_status_for_another_session_makes_the_session_unusable() {
+    let fixture = Fixture::new();
+    let after = unsolicited("session.status", r#"{"sessionId":"other","status":"idle"}"#);
+    let session = fixture
+        .adapter_then(true, Duration::ZERO, &after)
+        .open(request("s"))
+        .unwrap();
+    assert!(settles_closed(&session), "{:?}", session.state());
+    session.close().unwrap();
+}
+
+#[test]
+fn a_reverse_request_from_the_runtime_makes_the_session_unusable() {
+    let fixture = Fixture::new();
+    let after = r#"printf '%s\n' '{"jsonrpc":"2.0","id":"r1","method":"session/permission","params":{}}'
+"#;
+    let session = fixture
+        .adapter_then(true, Duration::ZERO, after)
+        .open(request("s"))
+        .unwrap();
+    assert!(settles_closed(&session), "{:?}", session.state());
+    session.close().unwrap();
+}
+
+#[test]
+fn a_runtime_that_exits_after_open_leaves_the_session_unusable() {
+    let fixture = Fixture::new();
+    let session = fixture
+        .adapter_then(true, Duration::ZERO, "exit 0\n")
+        .open(request("s"))
+        .unwrap();
+    assert!(settles_closed(&session), "{:?}", session.state());
 }
