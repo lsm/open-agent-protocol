@@ -31,8 +31,8 @@ own message, and the test must pass again once restored.
 
 The only substitution is the process-exit message. Go's fake client names the
 loss `fixture process exited`; a real pipe reports `EOF`. Every other byte is
-compared as recorded. The session-reopen case has its own Go driver and is not
-replayed by this test.
+compared as recorded. The session-reopen case has its own Go driver; `rust-acp-reopen-corpus.md`
+covers it.
 
 The serve suite runs the registry journey, which now requires the catalog
 revision and Go's levels for submit, streaming and models, and admits a submit

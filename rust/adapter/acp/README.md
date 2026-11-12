@@ -174,8 +174,7 @@ grandchild-held-pipe limitations remain applicable.
 
 The normal session integration below uses this native layer for OAP submission.
 Its public synthetic stdio proof is in
-`.claude/skills/verify/journeys/rust-acp-prompt.md`. OAP run/event mapping follows
-in the next approved #1439 slice.
+`.claude/skills/verify/journeys/rust-acp-prompt.md`. OAP run/event mapping is described below.
 
 ## Bounded native text-run engine
 
@@ -620,5 +619,9 @@ know instead of skipping it.
 
 A transport lost during a prompt fails the run with `acp_transport_failure`,
 as Go's session does; a prompt the agent answers with an error still fails with
-`acp_prompt_error`. The session-reopen case uses its own driver in Go and is not
-replayed here yet. Run `.claude/skills/verify/journeys/rust-acp-corpus.md`.
+`acp_prompt_error`. The session-reopen case uses its own driver in Go; `tests/corpus_reopen.rs`
+ports it, comparing every host request with the recording except
+`session/load`'s `cwd`, then the recovered state except `updated_at_ms`, the
+native binding and the refused resume of a pre-close run. Run
+`.claude/skills/verify/journeys/rust-acp-corpus.md` and
+`.claude/skills/verify/journeys/rust-acp-reopen-corpus.md`.
