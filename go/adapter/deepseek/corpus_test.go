@@ -1538,7 +1538,8 @@ func TestCorpusProvenanceSourcesExistInTheirDeclaredCommits(t *testing.T) {
 		}
 		var tree struct {
 			Tree []struct {
-				SHA string `json:"sha"`
+				Path string `json:"path"`
+				SHA  string `json:"sha"`
 			} `json:"tree"`
 		}
 		err = json.NewDecoder(response.Body).Decode(&tree)
@@ -1546,9 +1547,11 @@ func TestCorpusProvenanceSourcesExistInTheirDeclaredCommits(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", provenance.Tag, err)
 		}
-		present := map[string]bool{}
+		byPath := map[string]string{}
 		for _, entry := range tree.Tree {
-			present[entry.SHA] = true
+			if entry.Path != "" {
+				byPath[entry.Path] = entry.SHA
+			}
 		}
 		encoded, err := json.Marshal(provenance.Sources)
 		if err != nil {
@@ -1559,12 +1562,36 @@ func TestCorpusProvenanceSourcesExistInTheirDeclaredCommits(t *testing.T) {
 			t.Fatal(err)
 		}
 		for name, blob := range sources {
-			if blob == "" || present[blob] {
+			path, known := dshSourcePaths[name]
+			if !known {
+				t.Errorf("%s records source role %q, which has no upstream path bound", provenance.Tag, name)
 				continue
 			}
-			t.Errorf("%s declares %s blob %s, which is absent from upstream commit %s", provenance.Tag, name, blob, provenance.Commit)
+			if blob == "" {
+				continue
+			}
+			if byPath[path] != blob {
+				t.Errorf("%s declares %s blob %s, but %s at commit %s is %s", provenance.Tag, name, blob, path, provenance.Commit, byPath[path])
+			}
 		}
 	}
+}
+
+var dshSourcePaths = map[string]string{
+	"sdk_protocol_types_blob":             "packages/sdk/protocol/src/types.ts",
+	"sdk_protocol_transport_blob":         "packages/sdk/protocol/src/transport.ts",
+	"sdk_server_blob":                     "packages/sdk/server/src/server.ts",
+	"core_session_types_blob":             "packages/core/session/src/types.ts",
+	"core_session_known_event_types_blob": "packages/core/session/src/known-event-types.ts",
+	"core_agent_types_blob":               "packages/core/agent/src/types.ts",
+	"core_agent_inbox_blob":               "packages/core/agent-loop/src/inbox.ts",
+	"core_agent_runtime_types_blob":       "packages/core/agent/src/runtime-types.ts",
+	"core_agent_loop_blob":                "packages/core/agent-loop/src/agent.ts",
+	"core_session_invariant_blob":         "packages/core/session/src/invariant.ts",
+	"llm_message_blob":                    "packages/llm/llm/src/message.ts",
+	"llm_types_blob":                      "packages/llm/llm/src/types.ts",
+	"llm_assistant_stream_blob":           "packages/llm/llm/src/assistant-stream.ts",
+	"core_session_surface_blob":           "packages/core/session/src/surface.ts",
 }
 
 func TestDSHCorpusPinConstants(t *testing.T) {

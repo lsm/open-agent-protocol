@@ -16,8 +16,10 @@ OAP_DSH_PROVENANCE_CHECK=1 go test ./go/adapter/deepseek/ \
 ```
 
 It fetches each declared commit's tree from the public GitHub API, without
-credentials, and fails naming any recorded blob that is absent from that
-tree. Run it after editing corpus provenance, after moving the DeepSeek pin,
-and after adding a carried-forward case. To see it bite, point a blob in one
-of the three source maps at another release's value: the check must name the
-blob and the commit it does not belong to.
+credentials, and compares each source role's recorded blob against the blob
+at that role's upstream file path in that tree, so a blob that merely exists
+somewhere in the commit is not enough. Run it after editing corpus
+provenance, after moving the DeepSeek pin, and after adding a
+carried-forward case. To see it bite, point a blob in one of the three
+source maps at another release's value, or at a different file's blob from
+the same commit: the check must name the role, the path and the commit.
