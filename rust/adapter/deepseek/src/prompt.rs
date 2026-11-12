@@ -37,8 +37,8 @@ pub fn native_prompt(
                 .filter(|id| !id.as_str().is_empty())
                 .unwrap_or_else(|| mint("message").into()),
         );
-        if let Some(body) = message.content.text() {
-            blocks.push(text(body));
+        if let Ok(body) = serde_json::from_str::<Option<String>>(message.content.raw().get()) {
+            blocks.push(text(body.unwrap_or_default()));
             continue;
         }
         let parts = message.content.parts().ok_or(Error::InvalidSubmission)?;

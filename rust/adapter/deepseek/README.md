@@ -54,12 +54,13 @@ native text blocks `session/prompt` carries. It refuses any unadvertised
 control, including a `queue`, `steer` or `btw` delivery, then refuses as an
 invalid submission an unscoped or empty request, an unknown delivery, a
 message that is not from the user, and any content that is neither a string
-nor a list of text parts. A message without an id gets one minted from the
-session's id source.
+nor a list of text parts. A null content is an empty string, as Go decodes it.
+A message without an id gets one minted from the session's id source.
 
 `content` holds the session's pure content mapping. `stream_parts` expands
 assistant stream records into OAP deltas: text and reasoning chunk lists, and a
-`chunk` record whose strictly decoded delta is text or reasoning; every other
+`chunk` record whose strictly decoded delta is text or reasoning, a null
+member decoding as its zero value as in Go; every other
 record carries no delta. `final_content` turns a completed turn's blocks into
 the final response, a lone text block as a string and anything else as parts,
 resolving each tool-call block through the run's tools and refusing other

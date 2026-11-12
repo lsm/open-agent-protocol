@@ -1,4 +1,4 @@
-use oap_adapter::gojson::go_quote;
+use oap_adapter::gojson::{go_quote, zero};
 use oap_protocol::{ContentPart, ContentPartType, MessageContent, ToolCallId};
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -8,10 +8,12 @@ use crate::native::{decode_strict, AssistantStreamRecord, ContentBlock};
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Chunk {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", deserialize_with = "zero")]
     kind: String,
     #[allow(dead_code)]
+    #[serde(deserialize_with = "zero")]
     index: i64,
+    #[serde(deserialize_with = "zero")]
     text: String,
 }
 

@@ -145,7 +145,7 @@ fn invalid_tool_arguments_are_refused_rather_than_dropping_the_terminal() {
 fn null_chunk_members_decode_as_zero_values_as_in_go() {
     assert_eq!(
         json(&chunk_part(&raw(r#"{"type":"text-delta","index":0,"text":null}"#)).unwrap()),
-        r#"{"type":"text"}"#
+        r#"{"type":"text","text":""}"#
     );
     assert_eq!(
         json(
