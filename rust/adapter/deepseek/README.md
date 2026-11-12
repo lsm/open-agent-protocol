@@ -65,7 +65,8 @@ member decoding as its zero value as in Go; every other
 record carries no delta. `final_content` turns a completed turn's blocks into
 the final response, a lone text block as a string and anything else as parts,
 resolving each tool-call block through the run's tools and refusing other
-block kinds with Go's wording. It also refuses tool-call arguments that are
-not JSON. Native decoding already refuses those in both trees, so the check
-matters only when the mapping is called on its own: there Go's `blocksContent`
-yields `null` content instead, which the ledger records.
+block kinds with Go's wording. It also refuses non-empty tool-call arguments
+that are not JSON, and omits empty ones, as Go does. Native decoding already
+refuses both in both trees, so the refusal matters only when the mapping is
+called on its own: there Go's `blocksContent` yields `null` content instead,
+which the ledger records.
