@@ -494,3 +494,21 @@ fn lone_surrogates_and_null_content_reach_the_prompt_as_go_decodes_them() {
     );
     block_on(session.close()).unwrap();
 }
+
+#[test]
+fn a_message_without_content_is_refused_while_null_content_is_not() {
+    let fixture = Fixture::new();
+    let session = fixture.open("complete");
+    let mut absent = submit("");
+    absent.request.messages[0] = serde_json::from_value(json!({"role": "user"})).unwrap();
+    assert!(matches!(
+        block_on(session.submit(absent)),
+        Err(Error::UnsupportedInput)
+    ));
+    let mut null = submit("");
+    null.request.messages[0] =
+        serde_json::from_value(json!({"role": "user", "content": null})).unwrap();
+    let (_, stream) = block_on(session.submit(null)).unwrap();
+    block_on(stream.collect::<Vec<_>>());
+    block_on(session.close()).unwrap();
+}
