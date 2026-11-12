@@ -86,3 +86,7 @@ impl Session {
         self.native_id.clone()
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/session_journal.rs"]
+mod tests;
