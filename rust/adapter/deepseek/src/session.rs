@@ -17,8 +17,8 @@ use crate::admission::{Admission, Candidate};
 use crate::content::{final_content, stream_parts};
 use crate::native::{
     decode_notification, observed_only, AssistantAttempt, AssistantMessageEvent, Event,
-    Notification, SessionPromptParams, SessionPromptResult, StepBoundary, ToolCall, ToolResult,
-    TurnEnd, TurnStart, METHOD_SESSION_PROMPT,
+    Notification, SessionPromptParams, SessionPromptResult, StepBoundary,
+    SubagentFinishedNotification, ToolCall, ToolResult, TurnEnd, TurnStart, METHOD_SESSION_PROMPT,
 };
 use crate::process::Process;
 use crate::prompt::native_prompt;
@@ -43,6 +43,14 @@ struct Inner {
     unusable: bool,
     run: Option<Run>,
     last_seq: Option<i64>,
+    children: Vec<Child>,
+}
+
+struct Child {
+    id: String,
+    run: RunId,
+    terminal: bool,
+    failed: bool,
 }
 
 struct Run {
@@ -76,6 +84,7 @@ const MISMATCH: &str = "deepseek_session_mismatch";
 const EXTERNAL: &str = "deepseek_external_activity";
 const GRAMMAR: &str = "deepseek_invalid_grammar";
 const LIFECYCLE: &str = "deepseek_tool_lifecycle";
+const CHILD: &str = "deepseek_child_lifecycle";
 
 struct Tool {
     native: String,
@@ -112,6 +121,7 @@ impl Session {
                 unusable: false,
                 run: None,
                 last_seq: None,
+                children: Vec::new(),
             }),
             journal: Journal::new(journal_capacity),
             runtime,
@@ -381,7 +391,48 @@ impl Shared {
                 }
                 self.try_settle(inner);
             }
+            Notification::SubagentStarted(child) if started => {
+                self.child_started(inner, &child.child_session_id, "duplicate child start");
+            }
+            Notification::SubagentFinished(child) if started => {
+                self.child_finished(inner, child, "unmatched child finish");
+                self.try_settle(inner);
+            }
             _ => {}
+        }
+    }
+
+    fn child_started(&self, inner: &mut Inner, id: &str, duplicate: &str) {
+        let Some(run) = inner.run.as_ref().and_then(|run| run.id.clone()) else {
+            return;
+        };
+        if inner.children.iter().any(|child| child.id == id) {
+            return self.fail(inner, (CHILD, duplicate));
+        }
+        inner.children.push(Child {
+            id: id.into(),
+            run,
+            terminal: false,
+            failed: false,
+        });
+    }
+
+    fn child_finished(
+        &self,
+        inner: &mut Inner,
+        finished: &SubagentFinishedNotification,
+        unmatched: &str,
+    ) {
+        let run = inner.run.as_ref().and_then(|run| run.id.clone());
+        let child = inner.children.iter_mut().find(|child| {
+            child.id == finished.child_session_id && Some(&child.run) == run.as_ref()
+        });
+        match child {
+            Some(child) if !child.terminal => {
+                child.terminal = true;
+                child.failed = finished.status != "ok" || finished.stop_reason == "max-tokens";
+            }
+            _ => self.fail(inner, (CHILD, unmatched)),
         }
     }
 
@@ -410,13 +461,22 @@ impl Shared {
             }
         }
         for (notification, after) in buffered {
-            let Notification::SessionStatus(status) = notification else {
-                continue;
-            };
-            if let Some(run) = inner.run.as_mut().filter(|run| run.turn_ended) {
-                if after.unwrap_or(0) >= turn_end {
-                    run.idle_after_end = status.status == "idle";
+            match notification {
+                Notification::SessionStatus(status) => {
+                    if let Some(run) = inner.run.as_mut().filter(|run| run.turn_ended) {
+                        if after.unwrap_or(0) >= turn_end {
+                            run.idle_after_end = status.status == "idle";
+                        }
+                    }
                 }
+                Notification::SubagentStarted(child) => {
+                    let invalid = "invalid buffered child start";
+                    self.child_started(inner, &child.child_session_id, invalid);
+                }
+                Notification::SubagentFinished(child) => {
+                    self.child_finished(inner, &child, "invalid buffered child finish");
+                }
+                Notification::SessionEvent(_) => {}
             }
         }
         self.try_settle(inner);
@@ -531,7 +591,19 @@ impl Shared {
         {
             return;
         }
+        let run_id = inner.run.as_ref().and_then(|run| run.id.clone());
+        let mut children = inner
+            .children
+            .iter()
+            .filter(|child| Some(&child.run) == run_id.as_ref());
+        if children.clone().any(|child| !child.terminal) {
+            return;
+        }
+        let failed_child = children.any(|child| child.failed);
         self.settle_open_tools(inner);
+        if failed_child {
+            return self.fail(inner, ("deepseek_child_failed", "subagent failed"));
+        }
         let Some(run) = inner.run.as_ref() else {
             return;
         };
