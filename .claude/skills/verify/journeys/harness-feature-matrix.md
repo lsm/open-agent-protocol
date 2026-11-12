@@ -33,7 +33,10 @@ Check all of these before saying the matrix works:
   for the bound tests only.
 - A skipped, missing, renamed or failing bound test makes the tool exit
   non-zero and write `out/generation-failed.md` instead of the matrix, and the
-  CI job fails with the artifact still uploaded.
+  CI job fails with the artifact still uploaded. A binding whose pin no longer
+  matches the catalog, or an unreadable or malformed test stream, writes the
+  same `out/generation-failed.md` before exiting; the CI record and generate
+  steps run `if: always()` so a failing test run still uploads diagnostics.
 
 Mutation-check the failure paths exactly as the positive one: rename a bound
 test in `matrix.json` (generation must fail naming it), and skip a bound test

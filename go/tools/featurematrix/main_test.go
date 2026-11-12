@@ -97,6 +97,18 @@ func TestEvaluatePublishesPassAndUnsupportedAndFailsOnBadEvidence(t *testing.T) 
 	}
 }
 
+func TestWriteFailureLeavesDiagnosticsForEveryExitPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFailure(dir, []string{"binding rejected: pin moved"}, nil)
+	written, err := os.ReadFile(filepath.Join(dir, "generation-failed.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), "generation failed") || !strings.Contains(string(written), "pin moved") {
+		t.Fatalf("diagnostics = %s", written)
+	}
+}
+
 func TestLoadMatrixRejectsARowBoundToAMovedPin(t *testing.T) {
 	original := matrixData
 	defer func() { matrixData = original }()

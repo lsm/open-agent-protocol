@@ -57,10 +57,12 @@ jobs:
       - name: Check executable core
         run: go run ./go/cmd/goap check
       - name: Record adapter evidence
+        if: always()
         run: |
           set -o pipefail
           go test -json -count=1 ./go/adapter/... | tee "$RUNNER_TEMP/adapter-test.json"
       - name: Generate the harness feature matrix
+        if: always()
         run: |
           go run ./go/tools/featurematrix \
             -test-output "$RUNNER_TEMP/adapter-test.json" \

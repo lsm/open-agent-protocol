@@ -118,10 +118,12 @@ func main() {
 	}
 	matrix, err := loadMatrix()
 	if err != nil {
+		writeFailure(*out, []string{err.Error()}, nil)
 		fatal(err)
 	}
 	statuses, packageOutput, err := readTestEvents(*testOutput)
 	if err != nil {
+		writeFailure(*out, []string{err.Error()}, nil)
 		fatal(err)
 	}
 	result := evaluate(matrix, statuses)
@@ -144,26 +146,30 @@ func main() {
 		fatal(err)
 	}
 	if len(result.Errors) > 0 {
-		var diagnostics bytes.Buffer
-		fmt.Fprintf(&diagnostics, "# Harness feature matrix generation failed\n\n")
-		for _, failure := range result.Errors {
-			fmt.Fprintf(&diagnostics, "- %s\n", failure)
-		}
-		for pkg, lines := range packageOutput {
-			if len(lines) == 0 {
-				continue
-			}
-			fmt.Fprintf(&diagnostics, "\n## %s\n\n%s", pkg, strings.Join(lines, ""))
-		}
-		if err := os.WriteFile(filepath.Join(*out, "generation-failed.md"), diagnostics.Bytes(), 0o644); err != nil {
-			fatal(err)
-		}
+		writeFailure(*out, result.Errors, packageOutput)
 		for _, failure := range result.Errors {
 			fmt.Fprintf(os.Stderr, "featurematrix: %s\n", failure)
 		}
 		os.Exit(1)
 	}
 	if err := os.WriteFile(filepath.Join(*out, "harness-feature-matrix.md"), []byte(renderMarkdown(result, matrix)), 0o644); err != nil {
+		fatal(err)
+	}
+}
+
+func writeFailure(dir string, failures []string, packageOutput map[string][]string) {
+	var diagnostics bytes.Buffer
+	fmt.Fprintf(&diagnostics, "# Harness feature matrix generation failed\n\n")
+	for _, failure := range failures {
+		fmt.Fprintf(&diagnostics, "- %s\n", failure)
+	}
+	for pkg, lines := range packageOutput {
+		if len(lines) == 0 {
+			continue
+		}
+		fmt.Fprintf(&diagnostics, "\n## %s\n\n%s", pkg, strings.Join(lines, ""))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "generation-failed.md"), diagnostics.Bytes(), 0o644); err != nil {
 		fatal(err)
 	}
 }
