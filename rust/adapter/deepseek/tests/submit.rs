@@ -283,3 +283,49 @@ fn close_is_refused_after_the_runtime_answers_the_prompt_with_its_receipt() {
         .expect("the released submit did not return")
         .is_err());
 }
+
+#[test]
+fn a_status_for_another_session_before_the_receipt_fails_submit() {
+    let fixture = Fixture::new();
+    let foreign = notify(
+        "session.status",
+        r#"{"sessionId":"other","status":"running"}"#,
+    );
+    let session = fixture.open(&(foreign + &receipt()));
+    assert_eq!(
+        harness(submit(&session, hello("s")).err().unwrap()),
+        "deepseek adapter: invalid native protocol observation: session.status for foreign session"
+    );
+    assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
+    session.close().unwrap();
+}
+
+#[test]
+fn an_event_for_another_session_after_the_receipt_fails_submit() {
+    let fixture = Fixture::new();
+    let foreign = notify(
+        "session.event",
+        r#"{"sessionId":"other","event":{"type":"turn/start","seq":1,"time":1,"data":{"turn":1}}}"#,
+    );
+    let session = fixture.open(&(receipt() + &foreign));
+    assert_eq!(
+        harness(submit(&session, hello("s")).err().unwrap()),
+        "deepseek adapter: invalid native protocol observation: session.event for foreign session"
+    );
+    assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
+    session.close().unwrap();
+}
+
+#[test]
+fn a_foreign_or_recursive_subagent_before_the_receipt_fails_submit() {
+    let fixture = Fixture::new();
+    let recursive = notify(
+        "subagent.started",
+        r#"{"parentSessionId":"s","childSessionId":"s"}"#,
+    );
+    let session = fixture.open(&(recursive + &receipt()));
+    assert_eq!(
+        harness(submit(&session, hello("s")).err().unwrap()),
+        "deepseek adapter: invalid native protocol observation: foreign or recursive subagent"
+    );
+}
