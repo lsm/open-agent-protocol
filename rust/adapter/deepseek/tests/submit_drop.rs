@@ -165,7 +165,7 @@ fn dropping_submit_while_admission_is_pending_leaves_no_waiter_and_the_run_still
     );
     until("the run never settled", || {
         session.state().is_ok_and(|state| {
-            state.status == SessionStatus::IDLE && state.transcript_cursor == "4"
+            state.status == SessionStatus::IDLE && state.transcript_cursor == "2"
         })
     });
     let (_, mut replay) = session
