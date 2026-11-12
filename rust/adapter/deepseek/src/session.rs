@@ -63,9 +63,13 @@ impl Session {
         if request.after_sequence > latest {
             return Err(Error::ReplayCursorFuture);
         }
-        Ok(self
-            .journal
-            .resume(inner.state.clone(), run, request.after_sequence, latest))
+        let (recovery, replay) =
+            self.journal
+                .resume(inner.state.clone(), run, request.after_sequence, latest);
+        if let Some(gap) = recovery.replay_gap {
+            return Err(Error::ReplayGap(gap));
+        }
+        Ok((recovery, replay))
     }
 
     pub fn close(&self) -> Result<(), Error> {
