@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,23 @@ def main():
         scratch.mkdir()
         environment = {'HOME': str(home), 'TMPDIR': str(scratch), 'NODE_ENV': 'test',
                        'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            outbound = socket.create_connection(listener.getsockname())
+            inbound, _ = listener.accept()
+            with inbound, outbound:
+                inbound.shutdown(socket.SHUT_WR)
+                assert outbound.recv(1) == b''
+                outbound.close()
+                assert inbound.recv(1) == b''
+        if sys.platform.startswith('linux'):
+            commands = root / 'commands'
+            commands.mkdir()
+            netstat = commands / 'netstat'
+            netstat.write_text('#!/bin/sh\necho netstat-unavailable >&2\nexit 1\n')
+            netstat.chmod(0o755)
+            environment['PATH'] = str(commands) + ':' + environment['PATH']
         for name, scenario, enabled in cases:
             result_dir = output / (name + '-result')
             capture_dir = output / (name + '-capture')
@@ -53,6 +71,8 @@ def main():
                 capture = Path(row['stall_capture'])
                 files = ['stuck.json', 'processes.txt', 'sockets.txt', 'time-wait.txt', 'sample.txt']
                 assert all((capture / item).stat().st_size > 0 for item in files), 'missing diagnostic'
+                time_wait_count = int((capture / 'time-wait.txt').read_text().splitlines()[0])
+                assert time_wait_count > 0, 'TIME_WAIT diagnostic reported a false zero'
                 stuck = json.loads((capture / 'stuck.json').read_text())
                 assert 's0' in stuck['left'] and stuck['left']['s0'] > 0, 'unfinished session was not retained'
                 assert stuck['states']['s0']['active_runs'], 'last state omitted the active run'
@@ -62,7 +82,7 @@ def main():
                 stack = 'Call graph:' in sample or re.search(r'^#0\s', sample, re.MULTILINE) is not None
                 assert stack or args.allow_unavailable_stack, 'stack sampling unavailable'
                 observation.update(diagnostic_files=len(files), run_retained=True,
-                                   live_stack_captured=stack)
+                                   live_stack_captured=stack, time_wait_count=time_wait_count)
             else:
                 assert 'stall_capture' not in row, 'capture recorded for an ineligible case'
                 assert not capture_dir.exists(), 'diagnostics were written for an ineligible case'
