@@ -79,7 +79,7 @@ impl Process {
     pub fn start_with(
         config: ProcessConfig,
         deadline: Option<Instant>,
-        _cancel: &Receiver<()>,
+        cancel: &Receiver<()>,
     ) -> Result<Self, Error> {
         if config.path.is_empty() {
             return Err(handshake("executable path is required"));
@@ -149,6 +149,7 @@ impl Process {
                 },
                 recv(done) -> _ => break Err(process.client.err().unwrap_or_else(|| "EOF".into())),
                 recv(expiry) -> _ => break Err("context deadline exceeded".into()),
+                recv(cancel) -> _ => break Err("context canceled".into()),
             }
         };
         match outcome

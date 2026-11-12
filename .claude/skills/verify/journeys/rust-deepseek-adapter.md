@@ -54,4 +54,5 @@ open-tool and lifecycle tests must fail. Settle while a child still runs: the
 two still-running subagent tests must fail. Drop the guard's `close` when a
 dropped `submit` still awaits its receipt: the before-receipt drop test must
 fail. Close on every drop, receipt or not: the after-receipt drop test must
-fail.
+fail. Drop the handshake's cancel arm: the dropped-open test in
+`tests/adapter.rs` must fail, because the runtime outlives it.
