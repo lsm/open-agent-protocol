@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use oap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
@@ -30,6 +31,7 @@ pub struct Config {
     pub max_tokens: Option<i64>,
     pub journal_capacity: usize,
     pub runtime: Runtime,
+    pub start_timeout: Duration,
 }
 
 #[derive(Clone, Debug)]

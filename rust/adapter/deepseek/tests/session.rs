@@ -41,6 +41,10 @@ impl Fixture {
     }
 
     fn adapter(&self) -> Adapter {
+        self.adapter_with(true, Duration::ZERO)
+    }
+
+    fn adapter_with(&self, answers: bool, start_timeout: Duration) -> Adapter {
         let dir = self.dir.to_string_lossy().into_owned();
         let info = format!(
             r#"{{"serverInfo":{{"name":"{SERVER_NAME}","version":"{}"}}}}"#,
@@ -48,10 +52,11 @@ impl Fixture {
         );
         let script = format!(
             r#"printf '%s' $$ > "{dir}/pid"
-if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; printf '%s' "$2" > "{dir}/patch-path"; fi
-read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{info}}}'
+if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; printf '%s' "$2" > "{dir}/patch-path"; ls -l "$2" | cut -c1-10 > "{dir}/patch-mode"; fi
+{silence}read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{info}}}'
 read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
-cat >/dev/null"#
+cat >/dev/null"#,
+            silence = if answers { "" } else { "cat >/dev/null; " }
         );
         Adapter::new(Config {
             process: ProcessConfig {
@@ -65,6 +70,7 @@ cat >/dev/null"#
             provider: "deepseek".into(),
             model: "m".into(),
             runtime: Runtime::new(|| 42, |kind| format!("{kind}-minted")),
+            start_timeout,
             ..Config::default()
         })
         .unwrap()
@@ -267,4 +273,49 @@ fn dropping_an_open_session_shuts_its_runtime_down() {
         .map(|frame| frame["method"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(methods, ["initialize", "shutdown"]);
+}
+
+fn compacted(id: &str) -> OpenRequest {
+    let mut open = request(id);
+    open.compaction_policy = Some(CompactionPolicy {
+        kind: CompactionKind::OFF,
+        ..CompactionPolicy::default()
+    });
+    open
+}
+
+#[test]
+fn the_patch_file_is_readable_and_writable_by_its_owner_only() {
+    let fixture = Fixture::new();
+    let session = fixture.adapter().open(compacted("s")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture.dir.join("patch-mode")).unwrap(),
+        "-rw-------\n"
+    );
+    session.close().unwrap();
+}
+
+#[test]
+fn a_runtime_that_never_answers_fails_open_at_the_start_deadline_and_is_reaped() {
+    let fixture = Fixture::new();
+    let adapter = fixture.adapter_with(false, Duration::from_millis(300));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(adapter.open(compacted("s")).err());
+    });
+    let refused = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("open outlived its start deadline");
+    let message = refused.expect("open succeeded").to_string();
+    assert!(message.contains("context deadline exceeded"), "{message}");
+    let pid = std::fs::read_to_string(fixture.dir.join("pid")).unwrap();
+    let alive = std::process::Command::new("/bin/kill")
+        .args(["-0", &pid])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(!alive, "runtime {pid} outlived its failed open");
+    let patch = std::fs::read_to_string(fixture.dir.join("patch-path")).unwrap();
+    assert!(!PathBuf::from(patch).exists());
 }
