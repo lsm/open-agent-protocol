@@ -3,7 +3,9 @@ package copilot
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +55,53 @@ func TestPublicAdapterOpensThePinnedSyntheticServerAndRuns(t *testing.T) {
 	}
 	if s.(base.NativeSession).NativeSessionID() != "ses" {
 		t.Fatal("native session reference missing")
+	}
+}
+
+func TestCancelIsRefusedAsUnadvertisedAndWritesNothingNative(t *testing.T) {
+	methodLog := filepath.Join(t.TempDir(), "methods.log")
+	config := factoryConfig(t, "")
+	config.Environment = append(config.Environment, "OAP_COPILOT_METHOD_LOG="+methodLog)
+	a, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	descriptor, err := a.Probe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.CancellationTarget != "none" || descriptor.CancellationImplementation != "unavailable" {
+		t.Fatalf("descriptor advertises cancellation as target %q implementation %q", descriptor.CancellationTarget, descriptor.CancellationImplementation)
+	}
+	s, err := a.Open(ctx, openRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := helloRequest()
+	ack, stream, err := s.Submit(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.Drain(t, stream, time.Second)
+	_, err = s.Cancel(ctx, ack.RunID)
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != "run.cancel" || refusal.Reason != base.ControlUnadvertised {
+		t.Fatalf("cancel error = %v, want the explicit unadvertised refusal", err)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	logged, err := os.ReadFile(methodLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{"ping": true, "status.get": true, "session.create": true, "session.send": true}
+	for _, method := range strings.Split(strings.TrimSpace(string(logged)), "\n") {
+		if !known[method] {
+			t.Fatalf("cancel wrote native method %q the pinned server has no interrupt for", method)
+		}
 	}
 }
 
