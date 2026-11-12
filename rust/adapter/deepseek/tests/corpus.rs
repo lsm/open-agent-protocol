@@ -425,6 +425,7 @@ impl Case {
                 }
                 "overlap-submit" => {
                     self.at(index);
+                    replay.admit();
                     let refused = wait(replay.session.submit(request("hello again")));
                     assert_eq!(refused.err(), Some(Error::RunActive), "{}", self.id);
                     assert_eq!(self.prompts().len(), submits, "{}: overlap wrote", self.id);
