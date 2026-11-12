@@ -66,9 +66,21 @@ this session while it is usable; a reverse request, which it leaves unanswered
 as Go does, any other notification while no run is reserved, and the runtime
 exiting before close all leave the session unusable, so `state` reports it
 closed.
-Go's `Open` also stops when the caller's context is cancelled; the slice that
-implements the `Adapter` and `Session` contracts brings that cancellation along
-with submitting and the reducer over native notifications.
+
+`Session::submit` is Go's `Submit` up to the prompt's receipt. It refuses
+another session's id, a closed or unusable session and a busy one, reserves the
+run's stream, and sends `session/prompt`. A notification that arrives while the
+prompt is pending belongs to that run rather than retiring the session. A
+refused prompt fails the submit, a response without a `messageId` also retires
+the session, and a reverse request or the runtime exiting fails it as Go's
+pre-start abort does. Admitting the run from the buffered notifications, with
+`admission::Candidate::evaluate`, and emitting `run.started` come in the next
+slice; until then a prompt the runtime accepts leaves submit waiting.
+
+Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
+until then `submit` waits as long as the runtime neither proves nor refuses the
+turn. The slice that implements the `Adapter` and `Session` contracts brings
+that cancellation.
 
 `admission::Candidate::evaluate` is Go's `evaluateAdmission`: given the
 runtime's receipt for a submitted prompt and every native event buffered since

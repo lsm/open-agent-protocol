@@ -209,7 +209,12 @@ impl Adapter {
             compaction_policy: request.compaction_policy,
             ..SessionState::default()
         };
-        Ok(Session::new(process, state, self.config.journal_capacity))
+        Ok(Session::new(
+            process,
+            state,
+            self.config.journal_capacity,
+            self.config.runtime.clone(),
+        ))
     }
 }
 

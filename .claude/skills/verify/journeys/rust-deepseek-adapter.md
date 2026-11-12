@@ -7,6 +7,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-deepseek --test adapter)
 (cd rust && cargo test -p oap-adapter-deepseek --test session)
 (cd rust && cargo test -p oap-adapter-deepseek --test admission)
+(cd rust && cargo test -p oap-adapter-deepseek --test submit)
 (cd rust && cargo test -p oap-adapter-deepseek --all-features)
 ```
 
@@ -34,3 +35,9 @@ Go's reducer buffers them, checking after each one, and once more with a
 receipt that arrives after its turn ended. To see it bite, stop a `turn/end`
 from marking its turn closed: the three tests whose turn ends without the
 proof must fail.
+
+`tests/submit.rs` drives a shell runtime that answers `session/prompt` with a
+scripted reply, notifications included. Each submit runs under a five-second
+bound, so a submit that never returns fails the test instead of hanging it. To
+see it bite, let a notification retire the session while a prompt is pending:
+the pending-notification test must fail.
