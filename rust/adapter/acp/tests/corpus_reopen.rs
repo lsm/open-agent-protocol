@@ -27,6 +27,14 @@ fn wait<F: Future>(future: F) -> F::Output {
     }
 }
 
+struct Workspace(PathBuf);
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn read(path: PathBuf) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
@@ -47,7 +55,9 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
         .to_owned();
     assert_eq!(definition["identity_map"][&native_id], "session");
     let directory = std::env::temp_dir().join(format!("oap-acp-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
+    let _workspace = Workspace(directory.clone());
     std::fs::write(directory.join("native.jsonl"), &native).unwrap();
     std::fs::write(
         directory.join("agent.py"),
@@ -108,7 +118,6 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
     }));
     let recovered_native = session.native_session_id();
     wait(session.close()).unwrap();
-    let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(
         mismatch, None,
         "the host sent a request the recording does not hold"
