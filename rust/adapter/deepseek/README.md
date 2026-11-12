@@ -46,8 +46,23 @@ the process configuration that session would start: the reasoning level
 becomes `reasoningEffort` when the DeepSeek route takes it, and a compaction
 policy becomes the `--patch` layer `compaction_patch` writes. Go also accepts a
 caller-supplied client factory, which refuses either setting; the Rust adapter
-always starts its own process, so it has no such branch. The session itself,
-and the `Adapter` contract over it, are later slices.
+always starts its own process, so it has no such branch.
+
+`Adapter::open` is Go's `Open`. It refuses a reopen, attached tool sources and
+tools, and unadvertised settings before starting anything, then starts the
+runtime through `launch`, writing a compaction patch to an owner-only temporary
+file under a fresh name that is removed once the runtime has started or failed
+to. A runtime that does not finish the handshake within `start_timeout` (30
+seconds by default) is killed and the open fails, and a timeout too long for
+the clock to represent fails the open before anything starts. The `session::Session` it returns is
+idle under the request's session id, or one minted from `runtime::Runtime`, and
+that id is also the native session id. It refuses resolve and cancel, resumes
+only a run its journal has ended, reporting a `ReplayGap` for a cursor older
+than the journal holds, and closes by shutting the runtime down once;
+a process dropped without a close shuts down the same way.
+Go's `Open` also stops when the caller's context is cancelled; the slice that
+implements the `Adapter` and `Session` contracts brings that cancellation along
+with submitting and the reducer over native notifications.
 
 `prompt::native_prompt` is Go's `nativePrompt`: it turns an OAP submit into the
 native text blocks `session/prompt` carries. It refuses any unadvertised
