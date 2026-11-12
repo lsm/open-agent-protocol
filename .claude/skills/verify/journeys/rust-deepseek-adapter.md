@@ -51,4 +51,7 @@ assistant event through when its step is not the open one: the grammar test
 must fail. Count a buffered idle status from before the turn ended: the
 buffered-idle test must fail. Skip failing open tools before a run fails: the
 open-tool and lifecycle tests must fail. Settle while a child still runs: the
-two still-running subagent tests must fail.
+two still-running subagent tests must fail. Drop the guard's `close` when a
+dropped `submit` still awaits its receipt: the before-receipt drop test must
+fail. Close on every drop, receipt or not: the after-receipt drop test must
+fail.

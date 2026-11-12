@@ -242,12 +242,27 @@ impl Gate {
 }
 
 struct Cancel {
+    shared: Arc<Shared>,
     gate: Arc<Gate>,
 }
 
 impl Drop for Cancel {
     fn drop(&mut self) {
-        self.gate.advance(Phase::Waiting, Phase::Cancelled);
+        if self.gate.advance(Phase::Waiting, Phase::Cancelled) {
+            return;
+        }
+        if !self.gate.advance(Phase::Sent, Phase::Cancelled) {
+            return;
+        }
+        let client = self
+            .shared
+            .lock()
+            .process
+            .as_ref()
+            .map(|process| process.client.clone());
+        if let Some(client) = client {
+            client.close();
+        }
     }
 }
 
@@ -259,6 +274,7 @@ impl SessionContract for Session {
         let shared = self.shared.clone();
         Box::pin(async move {
             let guard = Cancel {
+                shared: shared.clone(),
                 gate: Arc::default(),
             };
             let (reply, replied) = oneshot::channel();
