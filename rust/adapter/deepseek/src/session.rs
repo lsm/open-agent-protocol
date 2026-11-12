@@ -11,7 +11,7 @@ use oap_protocol::{
 
 use crate::native::{
     decode_notification, Notification, SessionPromptParams, SessionPromptResult,
-    METHOD_SESSION_PROMPT, NOTIFY_SESSION_STATUS,
+    METHOD_SESSION_PROMPT,
 };
 use crate::process::Process;
 use crate::prompt::native_prompt;
@@ -270,21 +270,42 @@ impl Shared {
     }
 
     fn apply_notification(&self, notification: &NotificationMessage) {
+        let params = notification.params.as_ref().map_or("", |raw| raw.get());
+        let decoded = decode_notification(&notification.method, params.as_bytes()).ok();
         let mut inner = self.lock();
         if inner.run.is_some() {
+            if let Some(detail) = decoded.as_ref().and_then(|value| self.foreign(value)) {
+                self.fail(&mut inner, detail);
+            }
             return;
         }
-        if !inner.unusable && notification.method == NOTIFY_SESSION_STATUS {
-            let params = notification.params.as_ref().map_or("", |raw| raw.get());
-            if let Ok(Notification::SessionStatus(status)) =
-                decode_notification(&notification.method, params.as_bytes())
-            {
-                if status.session_id == self.native_id {
-                    return;
-                }
+        if let (false, Some(Notification::SessionStatus(status))) = (inner.unusable, &decoded) {
+            if status.session_id == self.native_id {
+                return;
             }
         }
         inner.unusable = true;
+    }
+
+    fn foreign(&self, notification: &Notification) -> Option<&'static str> {
+        let native = &self.native_id;
+        match notification {
+            Notification::SessionEvent(event) if &event.session_id != native => {
+                Some("session.event for foreign session")
+            }
+            Notification::SessionStatus(status) if &status.session_id != native => {
+                Some("session.status for foreign session")
+            }
+            Notification::SubagentStarted(child)
+                if &child.parent_session_id != native || &child.child_session_id == native =>
+            {
+                Some("foreign or recursive subagent")
+            }
+            Notification::SubagentFinished(child) if &child.parent_session_id != native => {
+                Some("foreign child finish")
+            }
+            _ => None,
+        }
     }
 
     fn fail(&self, inner: &mut Inner, detail: &str) {

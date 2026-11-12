@@ -70,7 +70,9 @@ closed.
 `Session::submit` is Go's `Submit` up to the prompt's receipt. It refuses
 another session's id, a closed or unusable session and a busy one, reserves the
 run's stream, and sends `session/prompt`. A notification that arrives while the
-prompt is pending belongs to that run rather than retiring the session. A
+prompt is pending belongs to that run rather than retiring the session, unless
+it names another session or a foreign or recursive subagent, which fails the
+submit as Go's pre-start abort does. A
 refused prompt fails the submit, a response without a `messageId` also retires
 the session, and a reverse request or the runtime exiting fails it as Go's
 pre-start abort does. Close is refused with `RunActive` while a run is
