@@ -82,70 +82,31 @@ impl Adapter {
         #[cfg(test)]
         DESCRIPTORS.with(|built| built.set(built.get() + 1));
         let mut features: BTreeMap<String, FeatureSupport> = [
-            "session.open",
-            FEATURE_OPEN_REOPEN,
-            "session.state",
-            FEATURE_MODELS_LIST,
-            FEATURE_SESSION_MODEL_SWITCH,
-            FEATURE_SESSION_REASONING,
-            FEATURE_COMPACTION_POLICY,
-            "session.message.submit",
-            "session.message.delivery.auto",
-            "run.streaming",
-            "run.status",
-            "run.cancel",
-            "run.resume",
-            "run.reconciliation",
-            "run.replay",
-            "action.tools",
-            "action.tools.execute",
-            FEATURE_TOOL_SOURCES_ATTACH,
-            "action.permissions",
-        ]
-        .into_iter()
-        .map(|key| {
-            (
-                key.into(),
-                FeatureSupport {
-                    level: SupportLevel::UNAVAILABLE,
-                    reason: "the Rust ACP session implementation is not yet ported".into(),
-                    ..FeatureSupport::default()
-                },
-            )
-        })
-        .collect();
-        for key in ["protocol.initialize", "capabilities"] {
-            features.insert(
-                key.into(),
-                FeatureSupport {
-                    level: SupportLevel::EMULATED,
-                    reason:
-                        "the adapter boundary describes ACP initialization and effective support"
-                            .into(),
-                    ..FeatureSupport::default()
-                },
-            );
-        }
-        for (key, level, reason) in [
-            ("session.open", SupportLevel::NATIVE, "session/new opens an ACP session"),
+            ("protocol.initialize", SupportLevel::EMULATED, "ACP initialize is normalized into the OAP adapter boundary"),
+            ("capabilities", SupportLevel::EMULATED, "effective support is synthesized conservatively from stable ACP v1 and adapter policy"),
+            ("session.open", SupportLevel::NATIVE, ""),
             (FEATURE_OPEN_REOPEN, SupportLevel::NATIVE, "session/load when loadSession is advertised, otherwise session/resume when advertised; agents offering neither refuse the binding"),
             ("session.state", SupportLevel::EMULATED, "adapter-owned projection"),
-            (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the agent's model configOption snapshot; its category is a UI hint and supplies no provider, context window or pricing"),
-            (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option confirms a listed model value; which model then runs remains the agent's word"),
-            ("session.message.submit", SupportLevel::DEGRADED, "ACP usage semantics remain lossy and unverified"),
-            ("run.streaming", SupportLevel::DEGRADED, "ordered text and tool events from the staged run projection"),
-            ("session.message.delivery.auto", SupportLevel::EMULATED, "start when idle and refuse an active run"),
-            ("run.status", SupportLevel::EMULATED, "adapter-owned text-run projection"),
-            ("run.cancel", SupportLevel::NATIVE, "session/cancel intent with native prompt settlement"),
-            ("action.permissions", SupportLevel::NATIVE, "ACP permission choices with synthesized portable identity"),
-            ("action.tools", SupportLevel::DEGRADED, "observed ACP presentation tool calls only; no catalog"),
-            ("action.tools.execute", SupportLevel::DEGRADED, "observed tool lifecycle is normalized"),
+            (FEATURE_MODELS_LIST, SupportLevel::DEGRADED, "the values of the agent's configOption whose category is model, with its currentValue as the current model; the category is a UI hint and the list carries no provider, context window or pricing; an agent that reports none refuses"),
+            (FEATURE_SESSION_MODEL_SWITCH, SupportLevel::DEGRADED, "session/set_config_option on the agent's model option with a value it lists, confirmed in the returned option list; the category is a UI hint, so which model then runs is the agent's word; an agent that reports none refuses"),
+            (FEATURE_COMPACTION_POLICY, SupportLevel::UNAVAILABLE, "ACP has no compaction setting; an agent's own threshold is its configuration"),
+            ("session.message.submit", SupportLevel::EMULATED, "admission is synthesized after the prompt request is written"),
+            ("session.message.delivery.auto", SupportLevel::EMULATED, "auto is normalized to start"),
+            ("run.streaming", SupportLevel::NATIVE, ""),
+            ("run.status", SupportLevel::EMULATED, ""),
+            ("run.cancel", SupportLevel::DEGRADED, "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative"),
             ("run.resume", SupportLevel::DEGRADED, "canonical replay is bounded process memory only"),
             ("run.reconciliation", SupportLevel::EMULATED, "state is adapter-owned"),
             ("run.replay", SupportLevel::DEGRADED, "bounded process-memory journal; gaps are explicit"),
-        ] {
-            features.insert(key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() });
-        }
+            ("action.tools", SupportLevel::DEGRADED, "observed ACP presentation tool calls only; no catalog"),
+            ("action.tools.execute", SupportLevel::DEGRADED, "observed tool lifecycle is normalized"),
+            ("action.permissions", SupportLevel::NATIVE, "ACP permission choice semantics with synthesized portable identity"),
+        ]
+        .into_iter()
+        .map(|(key, level, reason)| {
+            (key.into(), FeatureSupport { level, reason: reason.into(), ..FeatureSupport::default() })
+        })
+        .collect();
         features.insert(FEATURE_SESSION_REASONING.into(), FeatureSupport {
             level:SupportLevel::EMULATED,modes:vec![MODE_SESSION_OPEN.into()],
             reason:"session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level".into(),
@@ -178,7 +139,9 @@ impl Adapter {
                     .collect(),
                 ..CapabilityDescriptor::default()
             },
-            capability_revision: format!("{}-rust-attachments", pin().capability_revision),
+            capability_revision: pin().capability_revision.clone(),
+            cancellation_target: "run".into(),
+            cancellation_implementation: "native_session_notification".into(),
             max_active_runs_per_session: 1,
             interactive_gates: true,
             journal: JournalDescriptor {
@@ -187,7 +150,6 @@ impl Adapter {
                 persistence: "process_memory".into(),
                 capacity: config.journal_capacity,
             },
-            ..Descriptor::default()
         }
     }
 

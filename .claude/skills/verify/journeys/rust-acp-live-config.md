@@ -32,7 +32,7 @@ The native PID check happens before assertions on recorded state.
 Run the relevant existing session, model-switch, session-bridge, submit,
 permission and cancellation journeys, complete baseline and Rust all-features
 suite under the same mutex. Inspect the baseline's actual PTY fixture reply
-and `/quit` exit. The current staged revision is `-rust-attachments`; native reload
-is covered by `rust-acp-reload.md`. Opening config/reasoning is covered by `rust-acp-opening-config.md`; full byte
-corpus remains a later slice of #1439.
+and `/quit` exit. Native reload
+is covered by `rust-acp-reload.md`. Opening config/reasoning is covered by `rust-acp-opening-config.md`; the byte
+corpus by `rust-acp-corpus.md`.
 No live providers, credentials, ports or served-parity claim are involved.

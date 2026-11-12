@@ -60,11 +60,10 @@ and configured source descriptors.
 
 The shared `Admitter::admit()` validates participant identity and refuses
 unadvertised controls without starting a process. `Adapter::open()` applies
-the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Native reload and bounded canonical replay are described below. Text submission and
-streaming require explicit degradation opt-in. The staged capability revision
-appends `-rust-attachments` to the catalog revision because this descriptor has
-fewer capabilities than the completed adapter. Full corpus replay remains a
-later slice of #1439.
+the same checks before opening the native session. Permission resolution uses the owned controller. Native cancellation uses the owned controller. Native reload and bounded canonical replay are described below. The descriptor
+cites the catalog revision and equals Go's feature table for it, level and
+reason alike, so text submission and streaming need no degradation opt-in.
+The byte corpus is described below.
 
 Run `.claude/skills/verify/journeys/rust-acp-foundation.md` for the public
 consumer, no-spawn proof and three-validator capability exchange.
@@ -102,8 +101,6 @@ opt-in. It reports the latest model config-option snapshot, flattening
 native option groups in order. `default` and `current` placeholders stay absent
 from the current model. An absent model option returns an unsatisfiable control
 error. Live snapshots replace the opening snapshot as described below.
-The descriptor uses a `-rust-attachments`
-revision to distinguish the staged capabilities.
 
 `close().await` closes asynchronously, serializes concurrent closes, and makes
 state/catalog access report closed. Repeated close succeeds. Native children
@@ -218,9 +215,8 @@ event comparison, bounded overflow, cleanup and three-validator event proof.
 ## Public staged text submission
 
 `Session.submit` accepts user messages with string content and automatic delivery.
-Both `session.message.submit` and `run.streaming` require explicit degradation
-opt-in. The staged descriptor records these limits under its `-rust-attachments`
-revision. Native writer admission precedes the accepted response and the first
+`session.message.submit` is emulated and `run.streaming` is native, so neither
+needs an opt-in. Native writer admission precedes the accepted response and the first
 run event. The ordered dispatcher waits for admission before projecting native
 notifications. A shared session snapshot tracks the run alongside model switches.
 
@@ -404,12 +400,11 @@ dispatcher and prompt workers. A successful native response consumes its
 request binding before local commit, including a projection closed during the
 write. Parent settlement consumes the binding before committing cancellation.
 
-The descriptor advertises native action.permissions and interactive gates,
-under the staged -rust-attachments revision. Run
+The descriptor advertises native action.permissions and interactive gates. Run
 `rust-acp-session-permissions.md` for normal Session event/wire comparisons,
 immediate resolution, idle replies, across-run history, state and cleanup.
-Native cancellation, reload and opening settings are described below. Full
-corpus retains its later slice.
+Native cancellation, reload, opening settings and the byte corpus are
+described below.
 
 ## Run-targeted cancellation
 
@@ -439,9 +434,9 @@ is invented when the native notification was never written.
 
 Run rust-acp-cancel.md for public Go/Rust event and parsed-wire comparisons,
 three-validator traces, controlled confirmation ordering and quiet-child/thread
-ownership. The staged revision is -rust-attachments and run.cancel is native. Submit
-and streaming retain their degradation opt-ins. Run replay/resume is covered
-by the bounded journal below; full byte corpus and C8 served parity remain later slices.
+ownership. run.cancel is degraded, as in Go: ACP cancellation is an unacknowledged
+notification and prompt settlement is authoritative. Run replay/resume is covered
+by the bounded journal below; C8 served parity remains a later slice.
 
 ## Live config state and model catalog
 
@@ -457,8 +452,7 @@ model or reasoning advance the state timestamp.
 Config-only updates emit no stream event. Wrong-session and malformed idle
 updates leave state unchanged; malformed active updates retain the existing
 `acp_invalid_update` failure. No native I/O worker is started for this local
-projection. Capability fidelity stays staged under `-rust-attachments`, as no
-optional feature's support level changes.
+projection, and no optional feature's support level changes.
 
 Run `.claude/skills/verify/journeys/rust-acp-live-config.md` for actual native
 wire, public Go/Rust snapshots, streams and three-validator proof. Native
@@ -470,7 +464,7 @@ A reopen needs an existing native session id. After initialize, the adapter
 uses session/load when loadSession is true, otherwise session/resume when its
 capability is an object. Missing bindings or unsupported agents refuse with
 an unsatisfiable session.open.reopen control. The descriptor advertises native
-reopen under the -rust-attachments revision. Reopening creates a fresh journal;
+reopen. Reopening creates a fresh journal;
 pre-close OAP run ids and events are not recovered from native history.
 
 The public Process.call_draining_async operation consumes ordered inbound
@@ -502,7 +496,7 @@ required set is rechecked before and after a requested reasoning level. A later
 setting cannot silently reset an earlier required value. Refusals close the
 owned process before any Session or prompt is published.
 
-Opening reasoning is emulated in session_open mode under -rust-attachments. The
+Opening reasoning is emulated in session_open mode. The
 agent's thought_level option supplies a case-insensitive value/name mapping;
 its reply must confirm the selected id/value. Requested reasoning remains
 explicit in state. With configured options or reload, other model/reasoning
@@ -548,9 +542,8 @@ Run rust-acp-journal.md for public Go/Rust recovery and event comparisons,
 parsed native wire, close/overflow and missing/future/evicted cursor outcomes.
 Complete original traces must pass all three validators. Aborted/overflowed
 prefixes must be retained as incomplete and produce missing_run_terminal,
-not be padded with a synthetic terminal to make validation pass. The stage is
--rust-attachments. Per-open MCP attachments are described below. Deterministic
-clocks/ids with the full corpus retain their next approved slice; this is not C8 served parity.
+not be padded with a synthetic terminal to make validation pass. Per-open MCP attachments are described below. The byte corpus is described
+under its own heading; this is not C8 served parity.
 
 
 ## Per-open stdio MCP attachments
@@ -578,9 +571,7 @@ no command, args or environment fields, and later opens do not inherit them.
 
 Run rust-acp-attachments.md for captured-array matching, normal new/load/resume
 wire, validation priority, environment behavior, independent opens and actual
-quiet-opening cancellation cleanup. The stage is -rust-attachments. The full
-byte corpus with deterministic clocks/ids remains the next C1 prerequisite;
-no C8 served-parity hand-off is claimed.
+quiet-opening cancellation cleanup. No C8 served-parity hand-off is claimed.
 
 ## Clock and identity sources
 
@@ -608,3 +599,19 @@ all event clocks, IDs, payloads and positions directly with the recorded values,
 and separately verifies the Rust adapter's staged capability revision. The
 complete byte corpus, descriptor graduation and other adapter cases remain a
 later slice of #1439; this check does not claim their completion.
+
+## Byte corpus
+
+`tests/corpus.rs` runs every prompted case of the pinned ACP corpus through a
+real child process. The child answers each request with the case's recorded
+native frames, waits for the host's cancel or permission reply where the case
+records one, and exits where the case records a process exit. The adapter uses
+the corpus clock and ids: clocks count from 1 and ids are `<kind>-a`,
+`<kind>-b` and so on. The OAP trace must equal the expected file byte for byte
+after Go's JSON escaping. One substitution is made: Go's fake client reports a
+lost transport as `fixture process exited`, and a real pipe reports `EOF`.
+
+A transport lost during a prompt fails the run with `acp_transport_failure`,
+as Go's session does; a prompt the agent answers with an error still fails with
+`acp_prompt_error`. The session-reopen case uses its own driver in Go and is not
+replayed here yet. Run `.claude/skills/verify/journeys/rust-acp-corpus.md`.

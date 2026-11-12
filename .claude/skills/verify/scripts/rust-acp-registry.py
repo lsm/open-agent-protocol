@@ -145,9 +145,13 @@ def main():
             descriptor = client.call('capabilities.request')
             client.revision = descriptor['capability_revision']
             assert client.revision == initialized['capability_revision']
-            assert '-rust-' in client.revision, client.revision
-            for feature in ['session.message.submit', 'run.streaming', 'models.list']:
-                assert descriptor['payload']['features'][feature]['level'] == 'degraded', descriptor
+            catalog = json.loads((Path(__file__).resolve().parents[4] / 'harnesses/acp.json').read_text())
+            pin = next(version for version in catalog['versions'] if version['status'] == 'current')
+            assert client.revision == pin['capability_revision'], client.revision
+            features = descriptor['payload']['features']
+            assert features['models.list']['level'] == 'degraded', descriptor
+            assert features['session.message.submit']['level'] == 'emulated', descriptor
+            assert features['run.streaming']['level'] == 'native', descriptor
             (output / 'descriptor.json').write_text(json.dumps(descriptor, indent=2))
             opened = client.call('session.open.request', session_id='host-session')
             assert opened['payload']['session_id'] == 'host-session', opened
@@ -157,11 +161,7 @@ def main():
             assert [model['id'] for model in models['payload']['models']] == ['synthetic-model'], models
             submit = dict(session_id='host-session', delivery='auto',
                           messages=[dict(role='user', content='synthetic')])
-            client.call('session.message.submit.request', expected_error='capability_degraded', **submit)
-            client.call('session.message.submit.request', expected_error='capability_degraded',
-                        allow_degraded_features=['session.message.submit'], **submit)
-            admission = client.call('session.message.submit.request',
-                                    allow_degraded_features=['session.message.submit', 'run.streaming'], **submit)
+            admission = client.call('session.message.submit.request', **submit)
             assert admission['payload']['accepted'], admission
             while not any(event['type'] == 'action.permission.requested' for event in client.events):
                 client.read()
@@ -217,7 +217,7 @@ def main():
                                     env={'HOME': str(root / 'home'), 'REGISTRY_TEST_VALUE': 'resolved'})
             (output / f'{label}-refusal.txt').write_text(result.stdout + result.stderr)
             assert result.returncode != 0 and diagnostic in result.stderr, result
-    print('PASS: configured ACP CLI preserved fixed cwd/native identity, degraded opt-ins, admission-before-events, sequenced permissions, participant refusal and cleanup; unsupported config refused')
+    print('PASS: configured ACP CLI preserved fixed cwd/native identity, the models opt-in, admission without an opt-in before events, sequenced permissions, participant refusal and cleanup; unsupported config refused')
 
 
 if __name__ == '__main__':

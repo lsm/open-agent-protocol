@@ -70,7 +70,7 @@ fn invalid_configuration_is_refused() {
 }
 
 #[test]
-fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
+fn the_public_probe_cites_the_catalog_revision_and_levels() {
     let adapter = Adapter::new(Config {
         mcp_servers: vec![McpServer {
             name: "configured".into(),
@@ -84,9 +84,11 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
         descriptor.capabilities.endpoint.version,
         pin().endpoint_version
     );
+    assert_eq!(descriptor.capability_revision, pin().capability_revision);
+    assert_eq!(descriptor.cancellation_target, "run");
     assert_eq!(
-        descriptor.capability_revision,
-        format!("{}-rust-attachments", pin().capability_revision)
+        descriptor.cancellation_implementation,
+        "native_session_notification"
     );
     assert_eq!(descriptor.capabilities.sources[0].id, "configured");
     assert_eq!(descriptor.journal.replay, SupportLevel::DEGRADED);
@@ -99,17 +101,17 @@ fn the_public_probe_reads_the_pin_and_discloses_staged_support_honestly() {
             | "session.state"
             | "session.message.delivery.auto"
             | "session.reasoning"
+            | "session.message.submit"
             | "run.status"
             | "run.reconciliation" => SupportLevel::EMULATED,
             "session.open"
             | "session.open.reopen"
             | "action.permissions"
-            | "run.cancel"
+            | "run.streaming"
             | "action.tool_sources.attach" => SupportLevel::NATIVE,
             "models.list"
             | "session.model.switch"
-            | "session.message.submit"
-            | "run.streaming"
+            | "run.cancel"
             | "action.tools"
             | "action.tools.execute"
             | "run.resume"

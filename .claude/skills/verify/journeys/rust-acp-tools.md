@@ -32,7 +32,7 @@ inspect event kinds, OAP tool identity/scope, retained raw values and final
 session state. Retain the signed failing public stdio regression before the
 implementation commit.
 
-The staged revision is `-rust-attachments`. Tool feature rows are degraded observed
+Tool feature rows are degraded observed
 lifecycle claims with no catalog. Host execution APIs remain
 unavailable. Normal permissions use the owned Session integration. Session close/drop retains its existing prefix/cleanup behavior.
 Native cancellation is covered by rust-acp-cancel.md. Live config is covered by `rust-acp-live-config.md`. Reload is covered by `rust-acp-reload.md`. Opening config is covered by `rust-acp-opening-config.md`; full byte corpus and C8 served

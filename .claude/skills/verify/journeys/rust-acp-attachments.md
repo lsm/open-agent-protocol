@@ -43,6 +43,6 @@ both wire directions, native PIDs and validator output in the evidence folder.
 
 Run all prior ACP journeys including rust-acp-journal.md, the complete baseline
 and Rust all-features under the same mutex. Read the actual PTY reply and /quit
-exit. The current revision is -rust-attachments; deterministic clocks/ids and
-the full byte corpus remain the next approved slice. Shared process ownership
+exit. The byte corpus,
+with deterministic clocks and ids, is covered by rust-acp-corpus.md. Shared process ownership
 limits apply. This is not a C8 served-parity hand-off.

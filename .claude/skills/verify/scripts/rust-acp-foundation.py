@@ -61,7 +61,7 @@ def main():
                 else:
                     assert expected in result['openError'], result
                 assert result['descriptor']['endpoint']['version'] == pin['endpoint_version']
-                assert result['revision'] == pin['capability_revision'] + '-rust-attachments'
+                assert result['revision'] == pin['capability_revision']
                 assert result['corpus'] == pin['corpus']
                 assert result['journalReplay'] == 'degraded'
                 assert result['descriptor']['sources'] == [
@@ -71,10 +71,10 @@ def main():
                         'protocol.initialize': 'emulated', 'capabilities': 'emulated',
                         'session.reasoning': 'emulated',
                         'session.open': 'native', 'session.open.reopen': 'native', 'session.state': 'emulated',
-                        'action.permissions': 'native', 'run.cancel': 'native',
+                        'action.permissions': 'native', 'run.cancel': 'degraded',
                         'action.tool_sources.attach': 'native',
                         'models.list': 'degraded', 'session.model.switch': 'degraded',
-                        'session.message.submit': 'degraded', 'run.streaming': 'degraded',
+                        'session.message.submit': 'emulated', 'run.streaming': 'native',
                         'session.message.delivery.auto': 'emulated', 'run.status': 'emulated',
                         'action.tools': 'degraded', 'action.tools.execute': 'degraded',
                         'run.resume': 'degraded', 'run.replay': 'degraded',

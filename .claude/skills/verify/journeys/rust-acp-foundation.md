@@ -15,9 +15,8 @@ participant and compaction refusals, the catalog-derived endpoint version and
 corpus, configured MCP source descriptors and the staged capability levels.
 Invalid admission and open requests must return the same refusal.
 
-The temporary foundation descriptor uses the catalog's current revision with
-`-rust-attachments` appended. It must not reuse Go's full capability revision
-while disclosing fewer capabilities. The script wraps the public descriptor in
+The descriptor cites the catalog's current revision, so its feature table
+must equal Go's for that revision, level and reason alike. The script wraps the public descriptor in
 a real capabilities exchange and runs all three validators over it, retaining
 the exchange and each validator's output. This verifies the capability/admission library surface. It does not claim
 session or corpus parity. The separate rust-acp-process journey exercises the

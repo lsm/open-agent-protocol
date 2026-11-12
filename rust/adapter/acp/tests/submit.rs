@@ -263,15 +263,9 @@ fn dropped_write_admission_future_reaps_a_quiet_native_reader() {
 }
 
 #[test]
-fn submission_controls_and_staged_opt_in_are_explicit() {
+fn unadvertised_submission_controls_are_refused() {
     let fixture = Fixture::new();
     let session = fixture.open("complete");
-    let mut request = submit("hi");
-    request.request.allow_degraded_features.clear();
-    assert!(matches!(
-        block_on(session.submit(request)),
-        Err(Error::DegradedControl(_))
-    ));
     let mut request = submit("hi");
     request.request.instructions = Some(String::new());
     assert!(matches!(

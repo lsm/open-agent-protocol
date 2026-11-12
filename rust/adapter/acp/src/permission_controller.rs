@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use futures_util::lock::Mutex as AsyncMutex;
-use oap_adapter::jsonrpc::{IncomingRequest, NotificationMessage};
+use oap_adapter::jsonrpc::{Fault, IncomingRequest, NotificationMessage};
 use oap_adapter::{BoxFuture, Error, InteractionResolution};
 use oap_protocol::{InteractionId, ParticipantId, RunCancelResponse, RunStatus};
 
@@ -202,6 +202,8 @@ impl Permissions {
             if error.remote_code() == Some(-32800) && text.state().status == RunStatus::CANCELLING {
                 text.settle_usage(None);
                 text.cancelled("ACP prompt cancellation confirmed", now)
+            } else if matches!(error.fault, Fault::Transport(_) | Fault::Io(_)) {
+                text.transport_failure(&error.to_string(), now)
             } else {
                 text.prompt_error(&error.to_string(), error.remote_code().is_none(), now)
             }

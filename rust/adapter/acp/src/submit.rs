@@ -91,11 +91,6 @@ impl Session {
         let _submitting = self.submitting.lock().await;
         let request = submit.request;
         refuse_unadvertised_controls(&request, &[])?;
-        for feature in ["session.message.submit", "run.streaming"] {
-            if !request.allows_degraded(feature) {
-                return Err(Error::DegradedControl(feature.into()));
-            }
-        }
         if request.session_id.as_str().is_empty()
             || request.messages.is_empty()
             || !matches!(request.delivery.as_str(), "" | "auto")
