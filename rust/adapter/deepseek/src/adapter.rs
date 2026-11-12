@@ -12,6 +12,8 @@ use oap_protocol::{
 
 use crate::native::{validate_initialize_params, InitializeParams};
 use crate::process::ProcessConfig;
+use crate::runtime::Runtime;
+use crate::session::Session;
 
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
 
@@ -22,6 +24,7 @@ pub struct Config {
     pub model: String,
     pub max_tokens: Option<i64>,
     pub journal_capacity: usize,
+    pub runtime: Runtime,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +164,10 @@ impl Adapter {
         process.initialize.reasoning_effort = level.as_str().into();
         let patch = compaction_patch(request.compaction_policy.as_ref())?;
         Ok(Launch { process, patch })
+    }
+
+    pub fn open(&self, _: OpenRequest) -> Result<Session, Error> {
+        Err(harness(""))
     }
 }
 
