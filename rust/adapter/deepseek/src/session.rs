@@ -5,8 +5,9 @@ use oap_adapter::journal::{Journal, Reservation};
 use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
 use oap_protocol::{
     Admission as SubmitAdmission, EffectiveDeliveryMode, Envelope, EnvelopeType,
-    MessageSubmitRequest, MessageSubmitResponse, RequestedDeliveryMode, RunCancelResponse, RunId,
-    RunStartedPayload, RunStatus, SessionState, SessionStatus, SubmissionId,
+    MessageSubmitRequest, MessageSubmitResponse, ProtocolError, RequestedDeliveryMode,
+    RunCancelResponse, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionState,
+    SessionStatus, SubmissionId, SETTLED_BY_INFERRED,
 };
 
 use crate::admission::{Admission, Candidate};
@@ -50,6 +51,11 @@ struct Run {
     stream: Arc<Mutex<Reservation>>,
     start: Sender<Result<RunId, Error>>,
 }
+
+type Failure<'a> = (&'static str, &'a str);
+
+const MISMATCH: &str = "deepseek_session_mismatch";
+const EXTERNAL: &str = "deepseek_external_activity";
 
 fn native_protocol(detail: &str) -> Error {
     Error::Harness(format!(
@@ -279,7 +285,11 @@ impl Shared {
         if let Some(process) = &inner.process {
             let reason = process.client.err().unwrap_or_else(|| "<nil>".into());
             inner.unusable = true;
-            self.fail(&mut inner, &reason);
+            self.fail_settled(
+                &mut inner,
+                ("deepseek_process_exit", &reason),
+                SETTLED_BY_INFERRED,
+            );
         }
     }
 
@@ -289,7 +299,7 @@ impl Shared {
             Inbound::Request(_) => {
                 let mut inner = self.lock();
                 inner.unusable = true;
-                self.fail(&mut inner, "reverse request");
+                self.fail(&mut inner, (EXTERNAL, "reverse request"));
             }
             Inbound::Notification(notification) => self.apply_notification(&notification),
         }
@@ -315,8 +325,8 @@ impl Shared {
     }
 
     fn apply_native(&self, inner: &mut Inner, notification: &Notification) {
-        if let Some(detail) = self.foreign(inner, notification) {
-            return self.fail(inner, detail);
+        if let Some(failure) = self.foreign(inner, notification) {
+            return self.fail(inner, failure);
         }
         if let Notification::SessionEvent(event) = notification {
             inner.last_seq = Some(event.event.seq);
@@ -324,30 +334,34 @@ impl Shared {
         }
     }
 
-    fn foreign(&self, inner: &Inner, notification: &Notification) -> Option<&'static str> {
+    fn foreign(&self, inner: &Inner, notification: &Notification) -> Option<Failure<'static>> {
         let native = &self.native_id;
-        match notification {
+        let (code, detail) = match notification {
             Notification::SessionEvent(event) if &event.session_id != native => {
-                Some("session.event for foreign session")
+                (MISMATCH, "session.event for foreign session")
             }
             Notification::SessionEvent(event)
                 if inner.last_seq.is_some_and(|last| event.event.seq <= last) =>
             {
-                Some("non-monotonic native event sequence")
+                (
+                    "deepseek_invalid_sequence",
+                    "non-monotonic native event sequence",
+                )
             }
             Notification::SessionStatus(status) if &status.session_id != native => {
-                Some("session.status for foreign session")
+                (MISMATCH, "session.status for foreign session")
             }
             Notification::SubagentStarted(child)
                 if &child.parent_session_id != native || &child.child_session_id == native =>
             {
-                Some("foreign or recursive subagent")
+                (EXTERNAL, "foreign or recursive subagent")
             }
             Notification::SubagentFinished(child) if &child.parent_session_id != native => {
-                Some("foreign child finish")
+                (EXTERNAL, "foreign child finish")
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        Some((code, detail))
     }
 
     fn admit(&self, inner: &mut Inner) {
@@ -367,7 +381,9 @@ impl Shared {
             });
         match run.candidate.evaluate(&run.receipt, events) {
             Admission::Pending => {}
-            Admission::Refused => self.fail(inner, "submission ownership proof failed"),
+            Admission::Refused => {
+                self.abort(inner, native_protocol("submission ownership proof failed"));
+            }
             Admission::Admitted => {
                 let id = RunId::from(self.runtime.new_id("run"));
                 run.id = Some(id.clone());
@@ -383,7 +399,7 @@ impl Shared {
                     started_at_ms: self.runtime.now_ms(),
                     ..RunStartedPayload::default()
                 };
-                let emitted = self.emit(inner, EnvelopeType::RUN_STARTED, &payload);
+                let emitted = self.emit(inner, EnvelopeType::RUN_STARTED, &payload, false);
                 if let Some(run) = &inner.run {
                     let _ = run.start.send(emitted.map(|()| id));
                 }
@@ -396,6 +412,7 @@ impl Shared {
         inner: &mut Inner,
         kind: EnvelopeType,
         payload: &impl serde::Serialize,
+        terminal: bool,
     ) -> Result<(), Error> {
         let run = inner.run.as_mut().ok_or(Error::RunNotFound)?;
         let mut envelope =
@@ -409,12 +426,35 @@ impl Shared {
         inner.state.transcript_cursor = run.next.to_string();
         inner.state.updated_at_ms = now;
         run.next += 1;
-        self.journal.append(envelope, false);
+        self.journal.append(envelope, terminal);
+        if terminal {
+            inner.run = None;
+            inner.state.status = SessionStatus::IDLE;
+            inner.state.active_run_id = None;
+        }
         Ok(())
     }
 
-    fn fail(&self, inner: &mut Inner, detail: &str) {
-        self.abort(inner, native_protocol(detail));
+    fn fail(&self, inner: &mut Inner, failure: Failure) {
+        self.fail_settled(inner, failure, "");
+    }
+
+    fn fail_settled(&self, inner: &mut Inner, (code, detail): Failure, settled_by: &str) {
+        let Some(run_id) = inner.run.as_ref().and_then(|run| run.id.clone()) else {
+            return self.abort(inner, native_protocol(detail));
+        };
+        let payload = RunFailedPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id,
+            error: ProtocolError {
+                code: code.into(),
+                message: detail.into(),
+                ..ProtocolError::default()
+            },
+            settled_by: settled_by.into(),
+            ..RunFailedPayload::default()
+        };
+        let _ = self.emit(inner, EnvelopeType::RUN_FAILED, &payload, true);
     }
 
     fn abort(&self, inner: &mut Inner, error: Error) {

@@ -43,4 +43,6 @@ see it bite, let a notification retire the session while a prompt is pending:
 the pending-notification test must fail. Let a native `seq` fall back without
 failing the run: the backwards-sequence test must fail. Make `Drop` call
 `close` instead of shutting down: the drop test must fail, because the runtime
-outlives a session dropped with its run still running.
+outlives a session dropped with its run still running. Keep the run after a
+terminal `run.failed`: the three after-admission tests must fail; settle a
+runtime exit without `inferred`: the exit test must fail.
