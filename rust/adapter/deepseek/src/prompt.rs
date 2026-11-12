@@ -1,6 +1,8 @@
+use oap_adapter::gojson::replace_lone_surrogates;
 use oap_adapter::{refuse_unadvertised_controls, Error};
 use oap_protocol::{
-    ContentPartType, MessageId, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
+    ContentPart, ContentPartType, MessageId, MessageRole, MessageSubmitRequest,
+    RequestedDeliveryMode,
 };
 
 use crate::native::ContentBlock;
@@ -37,11 +39,13 @@ pub fn native_prompt(
                 .filter(|id| !id.as_str().is_empty())
                 .unwrap_or_else(|| mint("message").into()),
         );
-        if let Ok(body) = serde_json::from_str::<Option<String>>(message.content.raw().get()) {
+        let content = replace_lone_surrogates(message.content.raw().get());
+        if let Ok(body) = serde_json::from_str::<Option<String>>(&content) {
             blocks.push(text(body.unwrap_or_default()));
             continue;
         }
-        let parts = message.content.parts().ok_or(Error::InvalidSubmission)?;
+        let parts: Vec<ContentPart> =
+            serde_json::from_str(&content).map_err(|_| Error::InvalidSubmission)?;
         for part in parts {
             if part.part_type != ContentPartType::TEXT {
                 return Err(Error::InvalidSubmission);
