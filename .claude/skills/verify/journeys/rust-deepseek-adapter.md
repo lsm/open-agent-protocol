@@ -9,6 +9,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-deepseek --test admission)
 (cd rust && cargo test -p oap-adapter-deepseek --test submit)
 (cd rust && cargo test -p oap-adapter-deepseek --test submit_drop)
+(cd rust && cargo test -p oap-adapter-deepseek --test submit_unsent)
 (cd rust && cargo test -p oap-adapter-deepseek --all-features)
 ```
 
@@ -60,4 +61,7 @@ fail. Drop the handshake's cancel arm: the dropped-open test in
 drops a submit while its admission is pending and counts the process's
 threads, so it runs alone in its binary. Forward the admission to the caller
 through a thread blocked on the run's channel: it must fail, because that
-thread outlives the dropped submit.
+thread outlives the dropped submit. `tests/submit_unsent.rs` holds a first prompt
+in flight, drops a second submit before it can send, then lets the first be
+refused; it also counts threads, so it runs alone. Ignore a cancel that lands
+before the send: it must fail, because the dropped submit sends its prompt.
