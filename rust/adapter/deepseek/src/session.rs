@@ -23,6 +23,7 @@ pub struct Session {
 }
 
 struct Shared {
+    prompting: Mutex<()>,
     inner: Mutex<Inner>,
     journal: Journal,
     native_id: String,
@@ -70,6 +71,7 @@ impl Session {
             }),
             journal: Journal::new(journal_capacity),
             runtime,
+            prompting: Mutex::new(()),
         });
         let reader = shared.clone();
         std::thread::spawn(move || reader.dispatch(&inbound, &done));
@@ -90,6 +92,7 @@ impl Session {
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
         let runtime = &self.shared.runtime;
         let (blocks, message_ids) = native_prompt(&request, &|kind| runtime.new_id(kind))?;
+        let prompting = hold(&self.shared.prompting);
         let (client, stream, started) = {
             let mut inner = self.shared.lock();
             let client = match &inner.process {
@@ -111,15 +114,17 @@ impl Session {
             (client, stream, started)
         };
         let receipt = self.prompt(client, blocks).inspect_err(|error| {
-            self.shared.abort(&mut self.shared.lock(), error.clone());
+            self.shared
+                .abort_own(&mut self.shared.lock(), &stream, error.clone());
         })?;
         if receipt.is_empty() {
             let mut inner = self.shared.lock();
             inner.unusable = true;
             let error = native_protocol("prompt response omitted messageId");
-            self.shared.abort(&mut inner, error.clone());
+            self.shared.abort_own(&mut inner, &stream, error.clone());
             return Err(error);
         }
+        drop(prompting);
         let run_id = started.recv().unwrap_or(Err(Error::SessionClosed))?;
         let stream = hold(&stream).stream();
         Ok((
@@ -313,11 +318,22 @@ impl Shared {
     }
 
     fn abort(&self, inner: &mut Inner, error: Error) {
-        let Some(run) = inner.run.take() else {
-            return;
-        };
-        hold(&run.stream).release();
-        let _ = run.start.send(Err(error));
+        if let Some(run) = inner.run.take() {
+            run.end(error);
+        }
+    }
+
+    fn abort_own(&self, inner: &mut Inner, stream: &Arc<Mutex<Reservation>>, error: Error) {
+        if let Some(run) = inner.run.take_if(|run| Arc::ptr_eq(&run.stream, stream)) {
+            run.end(error);
+        }
+    }
+}
+
+impl Run {
+    fn end(self, error: Error) {
+        hold(&self.stream).release();
+        let _ = self.start.send(Err(error));
     }
 }
 

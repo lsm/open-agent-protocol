@@ -76,7 +76,9 @@ submit as Go's pre-start abort does. A
 refused prompt fails the submit, a response without a `messageId` also retires
 the session, and a reverse request or the runtime exiting fails it as Go's
 pre-start abort does. Close is refused with `RunActive` while a run is
-pending, as Go's is. Admitting the run from the buffered notifications, with
+pending, as Go's is. Like Go's prompt lock, a second submit waits until the
+first prompt's receipt has been handled, and a prompt's failure only ever ends
+its own run. Admitting the run from the buffered notifications, with
 `admission::Candidate::evaluate`, and emitting `run.started` come in the next
 slice; until then a prompt the runtime accepts leaves submit waiting.
 

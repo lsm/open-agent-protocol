@@ -263,18 +263,28 @@ fn pending(fixture: &Fixture, session: &Arc<Session>) -> std::sync::mpsc::Receiv
 }
 
 #[test]
-fn a_second_submit_or_a_close_while_the_prompt_is_pending_is_refused() {
+fn a_close_is_refused_and_a_second_submit_waits_while_the_prompt_is_pending() {
     let fixture = Fixture::new();
     let session = fixture.open(&fixture.held_until_released());
     let first = pending(&fixture, &session);
-    assert_eq!(submit(&session, hello("s")).err(), Some(Error::RunActive));
     assert_eq!(session.close().err(), Some(Error::RunActive));
+    let (send, second) = std::sync::mpsc::channel();
+    {
+        let session = session.clone();
+        std::thread::spawn(move || {
+            let _ = send.send(session.submit(hello("s")));
+        });
+    }
+    assert!(second.recv_timeout(Duration::from_millis(200)).is_err());
     fixture.release();
     assert!(first
         .recv_timeout(Duration::from_secs(5))
         .expect("the released submit did not return")
         .is_err());
-    assert_eq!(fixture.prompts().len(), 1);
+    assert!(second
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the second submit did not return")
+        .is_err());
 }
 
 #[test]
