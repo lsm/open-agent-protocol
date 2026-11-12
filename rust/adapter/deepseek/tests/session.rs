@@ -218,3 +218,32 @@ fn close_shuts_the_runtime_down_once_and_retires_the_session() {
         Some(Error::SessionClosed)
     );
 }
+
+#[test]
+fn a_stale_patch_file_under_the_same_name_does_not_block_open() {
+    let fixture = Fixture::new();
+    let stale: Vec<_> = (0..64)
+        .map(|n| {
+            std::env::temp_dir().join(format!("oap-deepseek-{}-{n}.patch.yml", std::process::id()))
+        })
+        .filter(|path| !path.exists())
+        .collect();
+    for path in &stale {
+        std::fs::write(path, "stale").unwrap();
+    }
+    let mut open = request("s");
+    open.compaction_policy = Some(CompactionPolicy {
+        kind: CompactionKind::OFF,
+        ..CompactionPolicy::default()
+    });
+    let opened = fixture.adapter().open(open);
+    for path in &stale {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "stale");
+        std::fs::remove_file(path).unwrap();
+    }
+    opened.unwrap().close().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture.dir.join("patch")).unwrap(),
+        "- id: compaction-basic\n  disabled: true\n"
+    );
+}
