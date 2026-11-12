@@ -3,7 +3,10 @@
 Run on the designated test host with a ReleaseSafe oapx built from the current
 tree. This check holds one synthetic model request and exercises the normal
 benchmark CLI, its timeout, the retained diagnostics and run directory. It also
-checks a timeout without capture and an ordinary completed case.
+checks a timeout without capture and an ordinary completed case. A controlled
+loopback connection creates TIME_WAIT state. On Linux an unavailable netstat
+fixture verifies that capture uses the portable counter instead of recording
+a silent zero.
 
 ```sh
 python3 scripts/check-bench-stall-capture.py --binary zig/zig-out/bin/oapx --output-dir /tmp/oap-stall-check
