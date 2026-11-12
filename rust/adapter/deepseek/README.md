@@ -104,9 +104,16 @@ message and usage. Events the admission buffered are replayed through the same
 grammar once the run starts, skipping the proof's own turn start, user
 message and earlier steps, and a buffered idle status counts only when it
 arrived after the turn ended, so a turn that ended before the receipt was
-handled still settles. Two parts of Go's reducer are still to come: tool
-calls, which fail the run as unknown events until then, and subagents, which
-do not yet hold settlement back.
+handled still settles. A tool call in the open step becomes
+`action.call.requested` with its arguments and `action.call.started` in reply
+to it, and its result `action.call.completed` with the result content, or
+`action.call.failed` with the tool error's code and reason, in reply to the
+start; the final message cites the call by its minted id. A second call with
+the same native id or a result for no open call fails the run with
+`deepseek_tool_lifecycle`, and a run that settles or fails with a call still
+open fails that call as `incomplete_tool` first, as Go's `settleOpenTools`
+does. Subagents, which do not yet hold settlement back, are the last part of
+Go's reducer still to come.
 
 Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
 until then `submit` waits as long as the runtime neither proves nor refuses the

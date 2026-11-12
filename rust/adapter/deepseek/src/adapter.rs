@@ -21,6 +21,7 @@ use crate::process::{Process, ProcessConfig};
 use crate::runtime::Runtime;
 use crate::session::Session;
 
+pub(crate) const ENDPOINT_ID: &str = "deepseek.harness";
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
 const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -132,7 +133,7 @@ impl Adapter {
         Descriptor {
             capabilities: CapabilityDescriptor {
                 endpoint: EndpointDescriptor {
-                    id: "deepseek.harness".into(),
+                    id: ENDPOINT_ID.into(),
                     name: "DeepSeek Harness SDK Adapter".into(),
                     version: pin().endpoint_version.clone(),
                     adapter: "deepseek-harness-jsonrpc".into(),
