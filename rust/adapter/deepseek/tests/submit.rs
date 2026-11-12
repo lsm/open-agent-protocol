@@ -115,6 +115,17 @@ done"#
         .unwrap()
     }
 
+    fn held_until_released(&self) -> String {
+        format!(
+            "until [ -f \"{}/release\" ]; do sleep 0.05; done; exit 0\n",
+            self.dir.display()
+        )
+    }
+
+    fn release(&self) {
+        std::fs::write(self.dir.join("release"), "").unwrap();
+    }
+
     fn prompts(&self) -> Vec<Value> {
         std::fs::read_to_string(self.dir.join("wire"))
             .unwrap_or_default()
@@ -192,12 +203,23 @@ fn a_prompt_response_without_a_message_id_retires_the_session() {
     assert_eq!(session.state().err(), Some(Error::SessionClosed));
 }
 
+fn settles_closed(session: &Session) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if session.state().err() == Some(Error::SessionClosed) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
 #[test]
 fn a_runtime_that_exits_while_the_prompt_is_pending_fails_submit() {
     let fixture = Fixture::new();
     let session = fixture.open("exit 0\n");
     assert!(submit(&session, hello("s")).is_err());
-    assert_eq!(session.state().err(), Some(Error::SessionClosed));
+    assert!(settles_closed(&session), "{:?}", session.state());
 }
 
 #[test]
@@ -211,10 +233,10 @@ fn a_notification_while_the_prompt_is_pending_does_not_retire_the_session() {
     assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
 }
 
-#[test]
-fn a_second_submit_while_the_prompt_is_pending_is_refused_and_close_ends_the_first() {
-    let fixture = Fixture::new();
-    let session = fixture.open("");
+fn pending(
+    fixture: &Fixture,
+    session: &Arc<Session>,
+) -> std::thread::JoinHandle<Result<(MessageSubmitResponse, EventStream), Error>> {
     let first = {
         let session = session.clone();
         std::thread::spawn(move || session.submit(hello("s")))
@@ -224,7 +246,33 @@ fn a_second_submit_while_the_prompt_is_pending_is_refused_and_close_ends_the_fir
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(fixture.prompts().len(), 1);
+    first
+}
+
+#[test]
+fn a_second_submit_or_a_close_while_the_prompt_is_pending_is_refused() {
+    let fixture = Fixture::new();
+    let session = fixture.open(&fixture.held_until_released());
+    let first = pending(&fixture, &session);
     assert_eq!(submit(&session, hello("s")).err(), Some(Error::RunActive));
-    let _ = session.close();
+    assert_eq!(session.close().err(), Some(Error::RunActive));
+    fixture.release();
+    assert!(first.join().unwrap().is_err());
+    assert_eq!(fixture.prompts().len(), 1);
+}
+
+#[test]
+fn close_is_refused_after_the_runtime_answers_the_prompt_with_its_receipt() {
+    let fixture = Fixture::new();
+    let answered = format!("touch \"{}/answered\"\n", fixture.dir.display());
+    let session = fixture.open(&(receipt() + &answered + &fixture.held_until_released()));
+    let first = pending(&fixture, &session);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !fixture.dir.join("answered").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(fixture.dir.join("answered").exists());
+    assert_eq!(session.close().err(), Some(Error::RunActive));
+    fixture.release();
     assert!(first.join().unwrap().is_err());
 }
