@@ -775,3 +775,30 @@ fn an_event_that_breaks_the_turn_grammar_fails_the_run() {
         session.close().unwrap();
     }
 }
+
+#[test]
+fn a_completed_turn_whose_usage_sums_past_i64_max_still_completes_the_run() {
+    let fixture = Fixture::new();
+    let large = reply(5, 1).replace(
+        r#""inputTokens":3"#,
+        &format!(r#""inputTokens":{}"#, i64::MAX),
+    );
+    assert_ne!(large, reply(5, 1));
+    let tail = large + &turn_end(6, 1, "completed") + &idle();
+    let session = fixture.open(&(receipt() + &proof() + &fixture.until_released() + &tail));
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    fixture.release();
+    let completed = (0..4)
+        .map(|_| testkit::next(&mut stream, Duration::from_secs(5)))
+        .last()
+        .unwrap();
+    assert_eq!(completed.envelope_type, EnvelopeType::RUN_COMPLETED);
+    let usage = completed
+        .decode_payload::<RunCompletedPayload>()
+        .unwrap()
+        .usage
+        .unwrap();
+    assert_eq!(usage.input_tokens, Some(i64::MAX as u64));
+    assert_eq!(usage.total_tokens, Some(i64::MAX as u64 + 2));
+    session.close().unwrap();
+}
