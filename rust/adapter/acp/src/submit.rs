@@ -107,7 +107,7 @@ impl Session {
             prompt.push(ContentBlock {
                 kind: "text".into(),
                 text: serde_json::from_str::<Option<String>>(&replace_lone_surrogates(
-                    message.content.raw().get(),
+                    message.content.raw().ok_or(Error::UnsupportedInput)?.get(),
                 ))
                 .map_err(|_| Error::UnsupportedInput)?
                 .unwrap_or_default(),

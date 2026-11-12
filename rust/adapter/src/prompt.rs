@@ -47,7 +47,10 @@ pub fn message_text(message: &Message) -> Result<String, serde_json::Error> {
     if let Some(text) = message.content.text() {
         return Ok(text);
     }
-    let parts: Option<Vec<ContentPart>> = serde_json::from_str(message.content.raw().get())?;
+    let Some(raw) = message.content.raw() else {
+        return Ok(String::new());
+    };
+    let parts: Option<Vec<ContentPart>> = serde_json::from_str(raw.get())?;
     Ok(parts
         .unwrap_or_default()
         .into_iter()

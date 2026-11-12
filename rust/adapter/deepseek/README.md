@@ -54,8 +54,8 @@ native text blocks `session/prompt` carries. It refuses any unadvertised
 control, including a `queue`, `steer` or `btw` delivery, then refuses as an
 invalid submission an unscoped or empty request, an unknown delivery, a
 message that is not from the user, and any content that is neither a string
-nor a list of text parts. A null content is an empty string, as Go decodes it;
-an absent one decodes as null too, where Go refuses it, which the ledger records.
+nor a list of text parts. A null content is an empty string, as Go decodes it,
+and a missing one is refused, as in Go.
 A message without an id gets one minted from the session's id source.
 
 `content` holds the session's pure content mapping. `stream_parts` expands

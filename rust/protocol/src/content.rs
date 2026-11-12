@@ -25,28 +25,32 @@ vocabulary!(ContentPartType {
     TOOL_RESULT = "tool_result",
 });
 
-#[derive(Clone, Debug)]
-pub struct MessageContent(Box<RawValue>);
+#[derive(Clone, Debug, Default)]
+pub struct MessageContent(Option<Box<RawValue>>);
 
 impl MessageContent {
     pub fn from_text(text: &str) -> Self {
-        Self(serde_json::value::to_raw_value(text).unwrap_or_else(|_| null()))
+        Self(Some(
+            serde_json::value::to_raw_value(text).unwrap_or_else(|_| null()),
+        ))
     }
 
     pub fn from_parts(parts: &[ContentPart]) -> Self {
-        Self(serde_json::value::to_raw_value(parts).unwrap_or_else(|_| null()))
+        Self(Some(
+            serde_json::value::to_raw_value(parts).unwrap_or_else(|_| null()),
+        ))
     }
 
     pub fn text(&self) -> Option<String> {
-        serde_json::from_str(self.0.get()).ok()
+        serde_json::from_str(self.raw()?.get()).ok()
     }
 
     pub fn parts(&self) -> Option<Vec<ContentPart>> {
-        serde_json::from_str(self.0.get()).ok()
+        serde_json::from_str(self.raw()?.get()).ok()
     }
 
-    pub fn raw(&self) -> &RawValue {
-        &self.0
+    pub fn raw(&self) -> Option<&RawValue> {
+        self.0.as_deref()
     }
 }
 
@@ -54,21 +58,15 @@ fn null() -> Box<RawValue> {
     RawValue::NULL.to_owned()
 }
 
-impl Default for MessageContent {
-    fn default() -> Self {
-        Self(null())
-    }
-}
-
 impl Serialize for MessageContent {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
+        self.raw().unwrap_or(RawValue::NULL).serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for MessageContent {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Box::<RawValue>::deserialize(deserializer).map(Self)
+        Box::<RawValue>::deserialize(deserializer).map(|raw| Self(Some(raw)))
     }
 }
 
