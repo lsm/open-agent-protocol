@@ -70,6 +70,17 @@ Go's `Open` also stops when the caller's context is cancelled; the slice that
 implements the `Adapter` and `Session` contracts brings that cancellation along
 with submitting and the reducer over native notifications.
 
+`admission::Candidate::evaluate` is Go's `evaluateAdmission`: given the
+runtime's receipt for a submitted prompt and every native event buffered since
+the submit, it decides whether the runtime has proved that a turn is that
+prompt. It admits once the receipt was spliced into the inbox exactly once as a
+direct user message and entered a step of an open turn as one, keeping that
+turn's events for replay, all of them when the turn has already ended. A second
+splice refuses the run, and so does a turn ending before both proofs are in;
+anything else waits. Go's `observeCandidate` has
+no counterpart, because nothing it writes survives the rescan; the ledger says
+why.
+
 `prompt::native_prompt` is Go's `nativePrompt`: it turns an OAP submit into the
 native text blocks `session/prompt` carries. It refuses any unadvertised
 control, including a `queue`, `steer` or `btw` delivery, then refuses as an

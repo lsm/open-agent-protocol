@@ -71,8 +71,7 @@ impl Live {
     }
 
     fn feed(&mut self, event: Event) -> Admission {
-        self.buffered.push(event.clone());
-        self.candidate.observe(&self.receipt, &event);
+        self.buffered.push(event);
         if self.receipt.is_empty() {
             return Admission::Pending;
         }
