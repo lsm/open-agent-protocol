@@ -97,6 +97,91 @@ func TestEvaluatePublishesPassAndUnsupportedAndFailsOnBadEvidence(t *testing.T) 
 	}
 }
 
+func fullPassStream(t *testing.T) string {
+	t.Helper()
+	matrix, err := loadMatrix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, row := range matrix.Rows {
+		for _, cell := range row.Cells {
+			for _, binding := range cell.Evidence {
+				lines = append(lines, event("pass", binding.Package, binding.Test))
+			}
+		}
+	}
+	return stream(t, lines...)
+}
+
+func TestRunRejectsAnUnknownHarnessThroughTheEntryPoint(t *testing.T) {
+	passing := fullPassStream(t)
+	original := matrixData
+	defer func() { matrixData = original }()
+	var matrix matrixFile
+	if err := json.Unmarshal(matrixData, &matrix); err != nil {
+		t.Fatal(err)
+	}
+	matrix.Rows[0].Harness = "no-such-harness"
+	doctored, err := json.Marshal(matrix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrixData = doctored
+	out := filepath.Join(t.TempDir(), "out")
+	code := run([]string{"-test-output", passing, "-out", out})
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 for a binding naming an unknown harness", code)
+	}
+	diagnostics, err := os.ReadFile(filepath.Join(out, "generation-failed.md"))
+	if err != nil {
+		t.Fatalf("no diagnostics written: %v", err)
+	}
+	if !strings.Contains(string(diagnostics), "no-such-harness") {
+		t.Fatalf("diagnostics = %s", diagnostics)
+	}
+}
+
+func TestRunReplacesThePriorAttemptArtifactsInTheSameDirectory(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	good := fullPassStream(t)
+	if code := run([]string{"-test-output", good, "-out", out, "-run-url", "https://example.test/run/1"}); code != 0 {
+		t.Fatalf("publish exit = %d", code)
+	}
+	if code := run([]string{"-test-output", stream(t, "not json"), "-out", out}); code != 1 {
+		t.Fatalf("failure exit = %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(out, "harness-feature-matrix.md")); !os.IsNotExist(err) {
+		t.Fatal("a failed attempt left the previous matrix in place")
+	}
+	if _, err := os.Stat(filepath.Join(out, "matrix-test-evidence.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("a failed attempt left the previous evidence stream in place")
+	}
+	failure, err := os.ReadFile(filepath.Join(out, "generation-failed.md"))
+	if err != nil {
+		t.Fatalf("failed attempt wrote no diagnostics: %v", err)
+	}
+	if !strings.Contains(string(failure), "generation failed") {
+		t.Fatalf("diagnostics = %s", failure)
+	}
+	if code := run([]string{"-test-output", good, "-out", out, "-run-url", "https://example.test/run/1"}); code != 0 {
+		t.Fatalf("republish exit = %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(out, "generation-failed.md")); !os.IsNotExist(err) {
+		t.Fatal("a successful attempt left the previous failure diagnostics in place")
+	}
+	published, err := os.ReadFile(filepath.Join(out, "harness-feature-matrix.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(published), "`[") {
+		t.Fatal("evidence links are wrapped in a code span and cannot be clicked")
+	}
+	if !strings.Contains(string(published), "](https://example.test/run/1)") {
+		t.Fatal("evidence test ids are not linked to the producing run")
+	}
+}
+
 func TestWriteFailureLeavesDiagnosticsForEveryExitPath(t *testing.T) {
 	dir := t.TempDir()
 	writeFailure(dir, []string{"binding rejected: pin moved"}, nil)

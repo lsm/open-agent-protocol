@@ -5,6 +5,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -103,28 +104,44 @@ type report struct {
 }
 
 func main() {
-	testOutput := flag.String("test-output", "", "path to a go test -json stream")
-	out := flag.String("out", "", "directory that receives the rendered matrix")
-	sha := flag.String("sha", "", "the OAP commit the evidence was produced on")
-	runURL := flag.String("run-url", "", "URL of the CI run that produced the evidence")
-	testCommand := flag.String("test-command", "go test -json -count=1 ./go/adapter/...", "command that produced the test stream")
-	flag.Parse()
+	os.Exit(run(os.Args[1:]))
+}
+
+var ownedOutputs = []string{"harness-feature-matrix.md", "harness-feature-matrix.json", "matrix-test-evidence.jsonl", "generation-failed.md"}
+
+func run(args []string) int {
+	flags := flag.NewFlagSet("featurematrix", flag.ContinueOnError)
+	testOutput := flags.String("test-output", "", "path to a go test -json stream")
+	out := flags.String("out", "", "directory that receives the rendered matrix")
+	sha := flags.String("sha", "", "the OAP commit the evidence was produced on")
+	runURL := flags.String("run-url", "", "URL of the CI run that produced the evidence")
+	testCommand := flags.String("test-command", "go test -json -count=1 ./go/adapter/...", "command that produced the test stream")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
 	if *testOutput == "" || *out == "" {
 		fmt.Fprintln(os.Stderr, "featurematrix: -test-output and -out are required")
-		os.Exit(2)
+		return 2
 	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
-		fatal(err)
+		reportError(err)
+		return 1
+	}
+	if err := clearOwnedOutputs(*out); err != nil {
+		reportError(err)
+		return 1
 	}
 	matrix, err := loadMatrix()
 	if err != nil {
-		writeFailure(*out, []string{err.Error()}, nil)
-		fatal(err)
+		_ = writeFailure(*out, []string{err.Error()}, nil)
+		reportError(err)
+		return 1
 	}
 	statuses, packageOutput, err := readTestEvents(*testOutput)
 	if err != nil {
-		writeFailure(*out, []string{err.Error()}, nil)
-		fatal(err)
+		_ = writeFailure(*out, []string{err.Error()}, nil)
+		reportError(err)
+		return 1
 	}
 	result := evaluate(matrix, statuses)
 	result.OAPSHA = *sha
@@ -137,27 +154,44 @@ func main() {
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		fatal(err)
+		reportError(err)
+		return 1
 	}
 	if err := os.WriteFile(filepath.Join(*out, "harness-feature-matrix.json"), append(data, '\n'), 0o644); err != nil {
-		fatal(err)
+		reportError(err)
+		return 1
 	}
 	if err := writeFilteredEvents(*testOutput, filepath.Join(*out, "matrix-test-evidence.jsonl"), matrix); err != nil {
-		fatal(err)
+		reportError(err)
+		return 1
 	}
 	if len(result.Errors) > 0 {
-		writeFailure(*out, result.Errors, packageOutput)
+		if err := writeFailure(*out, result.Errors, packageOutput); err != nil {
+			reportError(err)
+			return 1
+		}
 		for _, failure := range result.Errors {
 			fmt.Fprintf(os.Stderr, "featurematrix: %s\n", failure)
 		}
-		os.Exit(1)
+		return 1
 	}
 	if err := os.WriteFile(filepath.Join(*out, "harness-feature-matrix.md"), []byte(renderMarkdown(result, matrix)), 0o644); err != nil {
-		fatal(err)
+		reportError(err)
+		return 1
 	}
+	return 0
 }
 
-func writeFailure(dir string, failures []string, packageOutput map[string][]string) {
+func clearOwnedOutputs(dir string) error {
+	for _, name := range ownedOutputs {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeFailure(dir string, failures []string, packageOutput map[string][]string) error {
 	var diagnostics bytes.Buffer
 	fmt.Fprintf(&diagnostics, "# Harness feature matrix generation failed\n\n")
 	for _, failure := range failures {
@@ -169,14 +203,21 @@ func writeFailure(dir string, failures []string, packageOutput map[string][]stri
 		}
 		fmt.Fprintf(&diagnostics, "\n## %s\n\n%s", pkg, strings.Join(lines, ""))
 	}
-	if err := os.WriteFile(filepath.Join(dir, "generation-failed.md"), diagnostics.Bytes(), 0o644); err != nil {
-		fatal(err)
-	}
+	return os.WriteFile(filepath.Join(dir, "generation-failed.md"), diagnostics.Bytes(), 0o644)
 }
 
-func fatal(err error) {
+func reportError(err error) {
 	fmt.Fprintf(os.Stderr, "featurematrix: %v\n", err)
-	os.Exit(1)
+}
+
+func currentPin(harness string) (pin harnesses.Pin, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			pin = harnesses.Pin{}
+			err = fmt.Errorf("harness catalog lookup for %q failed: %v", harness, recovered)
+		}
+	}()
+	return harnesses.Current(harness), nil
 }
 
 func loadMatrix() (matrixFile, error) {
@@ -194,7 +235,10 @@ func loadMatrix() (matrixFile, error) {
 		return matrix, fmt.Errorf("matrix.json: columns must be non-empty and unique")
 	}
 	for _, row := range matrix.Rows {
-		pin := harnesses.Current(row.Harness)
+		pin, err := currentPin(row.Harness)
+		if err != nil {
+			return matrix, err
+		}
 		if pin.Label != row.Pin {
 			return matrix, fmt.Errorf("matrix.json: %s pins %q but the catalog's current version is %q; re-bind the evidence to the new pin before publishing", row.Harness, row.Pin, pin.Label)
 		}
@@ -422,11 +466,11 @@ func renderMarkdown(result report, matrix matrixFile) string {
 			cell := byColumn[col.Key]
 			parts := []string{fmt.Sprintf("**%s**", cell.Status)}
 			for _, evidence := range cell.Evidence {
-				test := evidence.Test
 				if result.RunURL != "" {
-					test = fmt.Sprintf("[%s](%s)", test, result.RunURL)
+					parts = append(parts, fmt.Sprintf("[%s](%s)", evidence.Test, result.RunURL))
+				} else {
+					parts = append(parts, fmt.Sprintf("`%s`", evidence.Test))
 				}
-				parts = append(parts, fmt.Sprintf("`%s`", test))
 			}
 			parts = append(parts, cell.Claim)
 			cells = append(cells, strings.Join(parts, "<br>"))
