@@ -48,7 +48,7 @@ struct Run {
     receipt: String,
     started: bool,
     next: u64,
-    buffered: Vec<Notification>,
+    buffered: Vec<(Notification, Option<i64>)>,
     candidate: Candidate,
     message_id: MessageId,
     turn: i64,
@@ -332,10 +332,11 @@ impl Shared {
         let params = notification.params.as_ref().map_or("", |raw| raw.get());
         let decoded = decode_notification(&notification.method, params.as_bytes()).ok();
         let mut inner = self.lock();
+        let after = inner.last_seq;
         if let Some(run) = inner.run.as_mut() {
             let Some(decoded) = decoded else { return };
             if !run.started {
-                run.buffered.push(decoded.clone());
+                run.buffered.push((decoded.clone(), after));
             }
             return self.apply_native(&mut inner, &decoded);
         }
@@ -371,11 +372,41 @@ impl Shared {
         }
     }
 
-    fn begin(&self, inner: &mut Inner) {
-        if let Some(run) = inner.run.as_mut() {
-            run.turn = run.candidate.turn;
-            run.step = run.candidate.step;
+    fn replay(&self, inner: &mut Inner) {
+        let Some(run) = inner.run.as_mut() else {
+            return;
+        };
+        let candidate = std::mem::take(&mut run.candidate);
+        let buffered = std::mem::take(&mut run.buffered);
+        run.turn = candidate.turn;
+        run.step = candidate.step;
+        let mut turn_end = 0;
+        for event in &candidate.events {
+            if event.kind == "turn/end" {
+                turn_end = event.seq;
+            }
+            let admitted = match event.kind.as_str() {
+                "turn/start" | "user/message" => true,
+                "step/start" => event
+                    .data_as::<StepBoundary>()
+                    .is_ok_and(|boundary| boundary.step <= candidate.step),
+                _ => false,
+            };
+            if !admitted {
+                self.apply_owned(inner, event);
+            }
         }
+        for (notification, after) in buffered {
+            let Notification::SessionStatus(status) = notification else {
+                continue;
+            };
+            if let Some(run) = inner.run.as_mut().filter(|run| run.turn_ended) {
+                if after.unwrap_or(0) >= turn_end {
+                    run.idle_after_end = status.status == "idle";
+                }
+            }
+        }
+        self.try_settle(inner);
     }
 
     fn apply_owned(&self, inner: &mut Inner, event: &Event) {
@@ -549,7 +580,7 @@ impl Shared {
         let events = run
             .buffered
             .iter()
-            .filter_map(|notification| match notification {
+            .filter_map(|(notification, _)| match notification {
                 Notification::SessionEvent(event) => Some(&event.event),
                 _ => None,
             });
@@ -577,7 +608,7 @@ impl Shared {
                 if let Some(run) = &inner.run {
                     let _ = run.start.send(emitted.map(|()| id));
                 }
-                self.begin(inner);
+                self.replay(inner);
             }
         }
     }

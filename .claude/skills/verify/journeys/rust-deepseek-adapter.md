@@ -48,4 +48,5 @@ terminal `run.failed`: the three after-admission tests must fail; settle a
 runtime exit without `inferred`: the exit test must fail. Settle without
 waiting for the runtime's idle status: the idle-wait test must fail; let an
 assistant event through when its step is not the open one: the grammar test
-must fail.
+must fail. Count a buffered idle status from before the turn ended: the
+buffered-idle test must fail.
