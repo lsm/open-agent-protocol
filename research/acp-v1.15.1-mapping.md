@@ -49,6 +49,14 @@ the recording except `session/load`'s `cwd`, which names the recorder's
 temporary workspace, and the recovered state, native binding and refused
 pre-close resume match Go's driver.
 
+The Rust prompt reads a message's text as Go's `encoding/json` does: an
+unpaired surrogate escape becomes U+FFFD and a `null` content an empty text
+block. One difference is recorded rather than fixed here. Go refuses a message
+with no `content` member as unsupported input, but Rust's shared `Message`
+decodes an absent member as `null`, so the Rust prompt sends an empty text
+block for it. Only a schema-invalid submit omits `content`, and telling the
+two apart needs a change to the shared protocol type.
+
 ## Staged Rust tool and permission projection
 
 The Rust adapter projects observed native tool calls and sparse

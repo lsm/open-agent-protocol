@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use oap_adapter::gojson::replace_lone_surrogates;
 use oap_adapter::{refuse_unadvertised_controls, Error, EventStream, SubmitRequest};
 use oap_protocol::{MessageId, MessageRole, MessageSubmitResponse, RunId, SessionStatus};
 
@@ -105,7 +106,11 @@ impl Session {
             }
             prompt.push(ContentBlock {
                 kind: "text".into(),
-                text: message.content.text().ok_or(Error::UnsupportedInput)?,
+                text: serde_json::from_str::<Option<String>>(&replace_lone_surrogates(
+                    message.content.raw().get(),
+                ))
+                .map_err(|_| Error::UnsupportedInput)?
+                .unwrap_or_default(),
                 ..ContentBlock::default()
             });
             message_ids.push(

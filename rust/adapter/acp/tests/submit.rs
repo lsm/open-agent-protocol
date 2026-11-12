@@ -483,13 +483,14 @@ fn lone_surrogates_and_null_content_reach_the_prompt_as_go_decodes_them() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|request| request["method"] == "session/prompt")
-        .map(|request| {
-            request["params"]["prompt"][0]["text"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
+        .map(|request| request["params"]["prompt"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(prompts, ["a\u{fffd}b", ""]);
+    assert_eq!(
+        prompts,
+        [
+            json!([{"type": "text", "text": "a\u{fffd}b"}]),
+            json!([{"type": "text"}])
+        ]
+    );
     block_on(session.close()).unwrap();
 }
