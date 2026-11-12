@@ -4,10 +4,12 @@ use crossbeam_channel::{select, Receiver, Sender};
 use oap_adapter::journal::{Journal, Reservation};
 use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
 use oap_protocol::{
-    Admission, EffectiveDeliveryMode, MessageSubmitRequest, MessageSubmitResponse,
-    RequestedDeliveryMode, RunCancelResponse, RunId, RunStatus, SessionState, SessionStatus,
-    SubmissionId,
+    Admission as SubmitAdmission, EffectiveDeliveryMode, Envelope, EnvelopeType,
+    MessageSubmitRequest, MessageSubmitResponse, RequestedDeliveryMode, RunCancelResponse, RunId,
+    RunStartedPayload, RunStatus, SessionState, SessionStatus, SubmissionId,
 };
+
+use crate::admission::{Admission, Candidate};
 
 use crate::native::{
     decode_notification, Notification, SessionPromptParams, SessionPromptResult,
@@ -35,9 +37,16 @@ struct Inner {
     state: SessionState,
     unusable: bool,
     run: Option<Run>,
+    last_seq: Option<i64>,
 }
 
 struct Run {
+    id: Option<RunId>,
+    receipt: String,
+    started: bool,
+    next: u64,
+    buffered: Vec<Notification>,
+    candidate: Candidate,
     stream: Arc<Mutex<Reservation>>,
     start: Sender<Result<RunId, Error>>,
 }
@@ -68,6 +77,7 @@ impl Session {
                 state,
                 unusable: false,
                 run: None,
+                last_seq: None,
             }),
             journal: Journal::new(journal_capacity),
             runtime,
@@ -108,6 +118,12 @@ impl Session {
             let (start, started) = crossbeam_channel::bounded(1);
             let stream = Arc::new(Mutex::new(self.shared.journal.reserve()));
             inner.run = Some(Run {
+                id: None,
+                receipt: String::new(),
+                started: false,
+                next: 1,
+                buffered: Vec::new(),
+                candidate: Candidate::default(),
                 stream: stream.clone(),
                 start,
             });
@@ -117,12 +133,18 @@ impl Session {
             self.shared
                 .abort_own(&mut self.shared.lock(), &stream, error.clone());
         })?;
-        if receipt.is_empty() {
+        {
             let mut inner = self.shared.lock();
-            inner.unusable = true;
-            let error = native_protocol("prompt response omitted messageId");
-            self.shared.abort_own(&mut inner, &stream, error.clone());
-            return Err(error);
+            if receipt.is_empty() {
+                inner.unusable = true;
+                let error = native_protocol("prompt response omitted messageId");
+                self.shared.abort_own(&mut inner, &stream, error.clone());
+                return Err(error);
+            }
+            if let Some(run) = inner.run.as_mut().filter(|run| run.owns(&stream)) {
+                run.receipt.clone_from(&receipt);
+                self.shared.admit(&mut inner);
+            }
         }
         drop(prompting);
         let run_id = started.recv().unwrap_or(Err(Error::SessionClosed))?;
@@ -135,7 +157,7 @@ impl Session {
                 requested_delivery: RequestedDeliveryMode::AUTO,
                 effective_delivery: EffectiveDeliveryMode::START,
                 delivery_resolution: "session_idle".into(),
-                admission: Admission::STARTED,
+                admission: SubmitAdmission::STARTED,
                 run_id: Some(run_id),
                 status: RunStatus::RUNNING,
                 model_id: self.shared.lock().state.current_model_id.clone(),
@@ -206,20 +228,19 @@ impl Session {
     }
 
     pub fn close(&self) -> Result<(), Error> {
-        let process = {
-            let mut inner = self.shared.lock();
-            if inner.process.is_none() {
-                return Ok(());
-            }
-            if inner.run.is_some() {
-                return Err(Error::RunActive);
-            }
-            let Some(process) = inner.process.take() else {
-                return Ok(());
-            };
-            inner.state.status = SessionStatus::CLOSED;
-            process
+        let inner = self.shared.lock();
+        if inner.process.is_some() && inner.run.is_some() {
+            return Err(Error::RunActive);
+        }
+        self.shut_down(inner)
+    }
+
+    fn shut_down(&self, mut inner: MutexGuard<'_, Inner>) -> Result<(), Error> {
+        let Some(process) = inner.process.take() else {
+            return Ok(());
         };
+        inner.state.status = SessionStatus::CLOSED;
+        drop(inner);
         let closed = process.close();
         self.shared.journal.close();
         closed.map_err(Error::Harness)
@@ -232,7 +253,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.close();
+        let _ = self.shut_down(self.shared.lock());
     }
 }
 
@@ -278,11 +299,12 @@ impl Shared {
         let params = notification.params.as_ref().map_or("", |raw| raw.get());
         let decoded = decode_notification(&notification.method, params.as_bytes()).ok();
         let mut inner = self.lock();
-        if inner.run.is_some() {
-            if let Some(detail) = decoded.as_ref().and_then(|value| self.foreign(value)) {
-                self.fail(&mut inner, detail);
+        if let Some(run) = inner.run.as_mut() {
+            let Some(decoded) = decoded else { return };
+            if !run.started {
+                run.buffered.push(decoded.clone());
             }
-            return;
+            return self.apply_native(&mut inner, &decoded);
         }
         if let (false, Some(Notification::SessionStatus(status))) = (inner.unusable, &decoded) {
             if status.session_id == self.native_id {
@@ -292,11 +314,26 @@ impl Shared {
         inner.unusable = true;
     }
 
-    fn foreign(&self, notification: &Notification) -> Option<&'static str> {
+    fn apply_native(&self, inner: &mut Inner, notification: &Notification) {
+        if let Some(detail) = self.foreign(inner, notification) {
+            return self.fail(inner, detail);
+        }
+        if let Notification::SessionEvent(event) = notification {
+            inner.last_seq = Some(event.event.seq);
+            self.admit(inner);
+        }
+    }
+
+    fn foreign(&self, inner: &Inner, notification: &Notification) -> Option<&'static str> {
         let native = &self.native_id;
         match notification {
             Notification::SessionEvent(event) if &event.session_id != native => {
                 Some("session.event for foreign session")
+            }
+            Notification::SessionEvent(event)
+                if inner.last_seq.is_some_and(|last| event.event.seq <= last) =>
+            {
+                Some("non-monotonic native event sequence")
             }
             Notification::SessionStatus(status) if &status.session_id != native => {
                 Some("session.status for foreign session")
@@ -313,24 +350,91 @@ impl Shared {
         }
     }
 
+    fn admit(&self, inner: &mut Inner) {
+        let Some(run) = inner
+            .run
+            .as_mut()
+            .filter(|run| !run.started && !run.receipt.is_empty())
+        else {
+            return;
+        };
+        let events = run
+            .buffered
+            .iter()
+            .filter_map(|notification| match notification {
+                Notification::SessionEvent(event) => Some(&event.event),
+                _ => None,
+            });
+        match run.candidate.evaluate(&run.receipt, events) {
+            Admission::Pending => {}
+            Admission::Refused => self.fail(inner, "submission ownership proof failed"),
+            Admission::Admitted => {
+                let id = RunId::from(self.runtime.new_id("run"));
+                run.id = Some(id.clone());
+                run.started = true;
+                hold(&run.stream).bind(id.as_str());
+                inner.state.status = SessionStatus::RUNNING;
+                inner.state.active_run_id = Some(id.clone());
+                let payload = RunStartedPayload {
+                    session_id: inner.state.session_id.clone(),
+                    run_id: id.clone(),
+                    status: RunStatus::RUNNING,
+                    model_id: inner.state.current_model_id.clone(),
+                    started_at_ms: self.runtime.now_ms(),
+                    ..RunStartedPayload::default()
+                };
+                let emitted = self.emit(inner, EnvelopeType::RUN_STARTED, &payload);
+                if let Some(run) = &inner.run {
+                    let _ = run.start.send(emitted.map(|()| id));
+                }
+            }
+        }
+    }
+
+    fn emit(
+        &self,
+        inner: &mut Inner,
+        kind: EnvelopeType,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), Error> {
+        let run = inner.run.as_mut().ok_or(Error::RunNotFound)?;
+        let mut envelope =
+            Envelope::new(kind, self.runtime.new_id("event"), payload).map_err(Error::harness)?;
+        let now = self.runtime.now_ms();
+        envelope.sequence = Some(run.next);
+        envelope.timestamp_ms = Some(now);
+        envelope.session_id = Some(inner.state.session_id.clone());
+        envelope.run_id.clone_from(&run.id);
+        envelope.capability_revision = Some(crate::adapter::pin().capability_revision.clone());
+        inner.state.transcript_cursor = run.next.to_string();
+        inner.state.updated_at_ms = now;
+        run.next += 1;
+        self.journal.append(envelope, false);
+        Ok(())
+    }
+
     fn fail(&self, inner: &mut Inner, detail: &str) {
         self.abort(inner, native_protocol(detail));
     }
 
     fn abort(&self, inner: &mut Inner, error: Error) {
-        if let Some(run) = inner.run.take() {
+        if let Some(run) = inner.run.take_if(|run| !run.started) {
             run.end(error);
         }
     }
 
     fn abort_own(&self, inner: &mut Inner, stream: &Arc<Mutex<Reservation>>, error: Error) {
-        if let Some(run) = inner.run.take_if(|run| Arc::ptr_eq(&run.stream, stream)) {
+        if let Some(run) = inner.run.take_if(|run| run.owns(stream)) {
             run.end(error);
         }
     }
 }
 
 impl Run {
+    fn owns(&self, stream: &Arc<Mutex<Reservation>>) -> bool {
+        !self.started && Arc::ptr_eq(&self.stream, stream)
+    }
+
     fn end(self, error: Error) {
         hold(&self.stream).release();
         let _ = self.start.send(Err(error));

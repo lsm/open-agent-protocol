@@ -40,4 +40,7 @@ proof must fail.
 scripted reply, notifications included. Each submit runs under a five-second
 bound, so a submit that never returns fails the test instead of hanging it. To
 see it bite, let a notification retire the session while a prompt is pending:
-the pending-notification test must fail.
+the pending-notification test must fail. Let a native `seq` fall back without
+failing the run: the backwards-sequence test must fail. Make `Drop` call
+`close` instead of shutting down: the drop test must fail, because the runtime
+outlives a session dropped with its run still running.
