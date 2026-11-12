@@ -638,18 +638,14 @@ fn idle() -> String {
     notify("session.status", r#"{"sessionId":"s","status":"idle"}"#)
 }
 
-fn completes(held: bool) {
+#[test]
+fn a_completed_turn_that_goes_idle_after_submit_returns_completes_the_run() {
     let fixture = Fixture::new();
-    let hold = if held {
-        fixture.until_released()
-    } else {
-        String::new()
-    };
     let tail = reply(5, 1)
         + &event(6, "step/end", r#"{"turn":1,"step":1}"#)
         + &turn_end(7, 1, "completed")
         + &idle();
-    let session = fixture.open(&(receipt() + &proof() + &hold + &tail));
+    let session = fixture.open(&(receipt() + &proof() + &fixture.until_released() + &tail));
     let (response, mut stream) = submit(&session, hello("s")).unwrap();
     fixture.release();
     let envelopes = testkit::drain(&mut stream, Duration::from_secs(5));
@@ -661,42 +657,31 @@ fn completes(held: bool) {
             EnvelopeType::CONTENT_DELTA,
             EnvelopeType::CONTENT_DELTA,
             EnvelopeType::RUN_COMPLETED
-        ],
-        "held {held}"
+        ]
     );
     for (envelope, text) in envelopes[1..3].iter().zip(["h", "i"]) {
         let delta: ContentDeltaPayload = envelope.decode_payload().unwrap();
-        assert_eq!(delta.part.text, text, "held {held}");
-        assert_eq!(
-            delta.message_id,
-            Some("message-minted".into()),
-            "held {held}"
-        );
+        assert_eq!(delta.part.text, text);
+        assert_eq!(delta.message_id, Some("message-minted".into()));
     }
     let completed = &envelopes[3];
-    assert_eq!(completed.sequence, Some(4), "held {held}");
-    assert_eq!(completed.run_id, response.run_id, "held {held}");
+    assert_eq!(completed.sequence, Some(4));
+    assert_eq!(completed.run_id, response.run_id);
     let payload: RunCompletedPayload = completed.decode_payload().unwrap();
-    assert_eq!(payload.stop_reason, "completed", "held {held}");
+    assert_eq!(payload.stop_reason, "completed");
     assert_eq!(payload.final_response.id, Some("message-minted".into()));
     assert_eq!(payload.final_response.role, MessageRole::ASSISTANT);
     assert_eq!(payload.final_response.content.text().as_deref(), Some("hi"));
     let usage = payload.usage.unwrap();
     assert_eq!(
         (usage.input_tokens, usage.output_tokens, usage.total_tokens),
-        (Some(3), Some(2), Some(5)),
-        "held {held}"
+        (Some(3), Some(2), Some(5))
     );
     let state = session.state().unwrap();
-    assert_eq!(state.status, SessionStatus::IDLE, "held {held}");
-    assert_eq!(state.active_run_id, None, "held {held}");
-    assert_eq!(state.transcript_cursor, "4", "held {held}");
+    assert_eq!(state.status, SessionStatus::IDLE);
+    assert_eq!(state.active_run_id, None);
+    assert_eq!(state.transcript_cursor, "4");
     session.close().unwrap();
-}
-
-#[test]
-fn a_completed_turn_that_goes_idle_after_submit_returns_completes_the_run() {
-    completes(true);
 }
 
 #[test]
@@ -724,9 +709,18 @@ fn a_completed_turn_stays_running_until_the_runtime_reports_idle() {
 
 #[test]
 fn a_turn_that_does_not_complete_fails_the_run_with_its_kind() {
-    for kind in ["blocked", "max-tokens", "interrupted"] {
+    let error = r#""error":{"code":"TOOL_ACTIVATION_FAILED","message":"synthetic tool activation failure"},"#;
+    let aborted = r#""reason":{"kind":"user"},"#;
+    for (kind, extra) in [
+        ("blocked", ""),
+        ("max-tokens", ""),
+        ("interrupted", ""),
+        ("error", error),
+        ("aborted", aborted),
+    ] {
         let fixture = Fixture::new();
-        let (session, payload) = fails_after_admission(&fixture, &(turn_end(5, 1, kind) + &idle()));
+        let end = turn_end(5, 1, kind).replace(r#"{"kind""#, &format!(r#"{{{extra}"kind""#));
+        let (session, payload) = fails_after_admission(&fixture, &(end + &idle()));
         assert_eq!(payload.error.code, format!("deepseek_{kind}"));
         assert_eq!(payload.error.message, format!("native turn ended: {kind}"));
         session.close().unwrap();
