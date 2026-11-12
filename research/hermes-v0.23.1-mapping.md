@@ -47,11 +47,21 @@ Normative source blobs at the release commit:
 docstring now says no product surface launches it any more (Ink and Desktop
 attach to the profile's gateway over WebSocket); dev harnesses still run it
 against a sandbox home. It gains a `gateway.lock` ownership reservation
-(`_claim_launch_home`): beside a live gateway on the same home it refuses and
-exits, and Windows gets a private RPC stdin. The adapter launches the
-gateway with an isolated home, so the reservation does not change its path;
-the posture change (product surface to dev surface) is upstream's, and a
-future pin may need to follow the product onto the shared gateway.
+(`_claim_launch_home`): v0.23.1 takes exclusive ownership of the launch
+home and exits if a live gateway or a second instance already holds it, and
+Windows gets a private RPC stdin. The adapter does not isolate the gateway's
+home: it forwards the caller's `Environment` as given and inherits the
+parent environment when none is configured, so a caller whose environment
+points at a home with a live gateway now hits a startup refusal that this
+pin's corpus cannot rule out — the corpus fixtures configure their own
+homes, which is a test configuration, not what an inheriting caller runs
+under. The posture change (product surface to dev surface) is upstream's,
+and a future pin may need to follow the product onto the shared gateway.
+
+Known limitation needing a live check: start v0.23.1 twice against one home
+in a controlled environment and record both outcomes (fresh home admitted,
+occupied home refused at the lock) before claiming this launch path works
+for callers that inherit their environment.
 
 ## Wire differences against v0.22.2
 
