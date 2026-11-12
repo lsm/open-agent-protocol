@@ -77,4 +77,7 @@ reports `EOF`. To see it bite, spell a turn-end failure code with a hyphen:
 `turn-end-reasons` must fail. Change the provider the adapter is configured
 with: `initialize-lifecycle` must fail on the host wire. Strip the whitespace
 from a framing violation before the runtime writes it: `framing-strictness`
-must fail.
+must fail. Every submission is either admitted, and its run validated even
+when it emits nothing, or refused; the admitted count must equal the case's
+`run.started` events. Let a run that ends before admission answer its submit
+with a run id: the replay must fail.

@@ -141,13 +141,33 @@ struct Replay {
     pending: Option<JoinHandle<Submitted>>,
     settled: Vec<(MessageSubmitResponse, EventStream)>,
     runs: Vec<Vec<Envelope>>,
+    outcome: Outcome,
+}
+
+#[derive(Default)]
+struct Outcome {
     envelopes: Vec<Envelope>,
+    admitted: usize,
+    refused: usize,
 }
 
 impl Replay {
+    fn new(descriptor: Descriptor, session: Arc<dyn Session>) -> Self {
+        Self {
+            descriptor,
+            session,
+            pending: None,
+            settled: Vec::new(),
+            runs: Vec::new(),
+            outcome: Outcome::default(),
+        }
+    }
+
     fn admit(&mut self) {
-        if let Some(Ok(settled)) = self.pending.take().map(|pending| pending.join().unwrap()) {
-            self.settled.push(settled);
+        match self.pending.take().map(|pending| pending.join().unwrap()) {
+            Some(Ok(settled)) => self.settled.push(settled),
+            Some(Err(_)) => self.outcome.refused += 1,
+            None => {}
         }
     }
 
@@ -155,16 +175,15 @@ impl Replay {
         self.admit();
         for (admission, mut stream) in std::mem::take(&mut self.settled) {
             let events = testkit::drain(&mut stream, Duration::from_secs(10));
-            if !events.is_empty() {
-                testkit::RunTrace {
-                    submitted: Some(request("hello").request),
-                    opened: Some(opening()),
-                    ..testkit::RunTrace::new(admission, self.descriptor.clone(), events.clone())
-                }
-                .assert_valid();
-                self.runs.push(events.clone());
+            testkit::RunTrace {
+                submitted: Some(request("hello").request),
+                opened: Some(opening()),
+                ..testkit::RunTrace::new(admission, self.descriptor.clone(), events.clone())
             }
-            self.envelopes.extend(events);
+            .assert_valid();
+            self.outcome.admitted += 1;
+            self.runs.push(events.clone());
+            self.outcome.envelopes.extend(events);
         }
     }
 }
@@ -296,12 +315,12 @@ impl Case {
         .collect()
     }
 
-    fn served(&self) -> Vec<Envelope> {
+    fn served(&self) -> Outcome {
         let adapter = self.adapter(self.definition["server_mode"].as_str().unwrap());
         let descriptor = wait(adapter.probe()).unwrap();
         self.assert_capabilities(&descriptor);
         let mut replay: Option<Replay> = None;
-        let mut envelopes = Vec::new();
+        let mut outcome = Outcome::default();
         for (index, frame) in self.frames.iter().enumerate() {
             match frame["action"].as_str().unwrap() {
                 "open" => {
@@ -310,14 +329,7 @@ impl Case {
                         assert!(opened.is_err(), "{}: the handshake succeeded", self.id);
                         continue;
                     }
-                    replay = Some(Replay {
-                        descriptor: descriptor.clone(),
-                        session: Arc::from(opened.unwrap()),
-                        pending: None,
-                        settled: Vec::new(),
-                        runs: Vec::new(),
-                        envelopes: Vec::new(),
-                    });
+                    replay = Some(Replay::new(descriptor.clone(), Arc::from(opened.unwrap())));
                 }
                 "submit" => {
                     let replay = replay.as_mut().expect("submit without an open session");
@@ -331,7 +343,7 @@ impl Case {
                     let mut open = replay.take().expect("shutdown without an open session");
                     open.record();
                     wait(open.session.close()).unwrap();
-                    envelopes = open.envelopes;
+                    outcome = open.outcome;
                 }
                 "auto" => {}
                 action => panic!(
@@ -356,10 +368,10 @@ impl Case {
             .map(str::to_owned)
             .collect();
         assert_eq!(written, wanted, "{}: host wire", self.id);
-        envelopes
+        outcome
     }
 
-    fn framed(&self) -> Vec<Envelope> {
+    fn framed(&self) -> Outcome {
         let mut checked = 0;
         for (index, frame) in self.frames.iter().enumerate() {
             if !frame["action"]
@@ -378,10 +390,10 @@ impl Case {
             checked += 1;
         }
         assert!(checked > 0, "{}: no framing violations", self.id);
-        Vec::new()
+        Outcome::default()
     }
 
-    fn replay(&self) -> Vec<Envelope> {
+    fn replay(&self) -> Outcome {
         if self.definition.get("server_mode").is_some() {
             return self.served();
         }
@@ -393,14 +405,7 @@ impl Case {
         self.assert_capabilities(&descriptor);
         let session: Arc<dyn Session> =
             Arc::from(wait(oap_adapter::Adapter::open(&adapter, opening())).unwrap());
-        let mut replay = Replay {
-            descriptor,
-            session,
-            pending: None,
-            settled: Vec::new(),
-            runs: Vec::new(),
-            envelopes: Vec::new(),
-        };
+        let mut replay = Replay::new(descriptor, session);
         let mut submits = 0;
         for (index, frame) in self.frames.iter().enumerate() {
             let raw = &frame["raw"];
@@ -465,7 +470,7 @@ impl Case {
             self.id
         );
         let _ = wait(replay.session.close());
-        replay.envelopes
+        replay.outcome
     }
 
     fn control(&self, replay: &mut Replay, control: &Value) {
@@ -559,7 +564,26 @@ fn every_case_replays_its_recorded_trace() {
             entry["path"].as_str().unwrap(),
         );
         replayed += 1;
-        let mut actual = normalized(serde_json::to_value(case.replay()).unwrap());
+        let outcome = case.replay();
+        let submits = case
+            .frames
+            .iter()
+            .filter(|frame| frame["action"] == "submit")
+            .count();
+        let started = case
+            .expected()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "run.started")
+            .count();
+        assert_eq!(
+            (outcome.admitted, outcome.refused),
+            (started, submits - started),
+            "{}: admitted and refused submissions",
+            case.id
+        );
+        let mut actual = normalized(serde_json::to_value(outcome.envelopes).unwrap());
         if let Some(reason) = case.exit_reason() {
             for event in actual.as_array_mut().unwrap() {
                 if let Some(message) = event
