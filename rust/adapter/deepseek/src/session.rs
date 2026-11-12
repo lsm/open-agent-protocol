@@ -489,7 +489,7 @@ impl Shared {
         let usage = reply.usage.as_ref().map(|usage| Usage {
             input_tokens: Some(usage.input_tokens as u64),
             output_tokens: Some(usage.output_tokens as u64),
-            total_tokens: Some((usage.input_tokens + usage.output_tokens) as u64),
+            total_tokens: Some(usage.input_tokens as u64 + usage.output_tokens as u64),
             ..Usage::default()
         });
         let payload = RunCompletedPayload {
