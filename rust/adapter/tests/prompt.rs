@@ -165,6 +165,8 @@ fn message_text_accepts_text_parts_and_absence_but_rejects_other_shapes() {
             serde_json::from_value(json!({"role":"assistant","content":content})).unwrap();
         assert_eq!(message_text(&message).unwrap(), expected);
     }
+    let absent: Message = serde_json::from_value(json!({"role":"assistant"})).unwrap();
+    assert_eq!(message_text(&absent).unwrap(), "");
     let message: Message = serde_json::from_value(json!({"content":42})).unwrap();
     assert!(message_text(&message).is_err());
 }

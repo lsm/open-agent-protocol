@@ -137,3 +137,12 @@ fn lone_surrogate_escapes_become_replacement_characters_as_in_go() {
     let texts: Vec<_> = blocks.iter().map(|block| block.text.as_str()).collect();
     assert_eq!(texts, ["a\u{fffd}b", "c\u{fffd}d"]);
 }
+
+#[test]
+fn a_message_without_content_is_an_invalid_submission_as_in_go() {
+    let absent: Message = serde_json::from_value(serde_json::json!({"role": "user"})).unwrap();
+    assert!(matches!(
+        native_prompt(&request(vec![absent]), &counter()),
+        Err(Error::InvalidSubmission)
+    ));
+}

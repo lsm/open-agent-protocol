@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use oap_protocol::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::value::RawValue;
 use serde_json::Value;
 
 fn fixtures() -> PathBuf {
@@ -239,7 +240,19 @@ fn message_content_reads_as_text_or_parts() {
     }]);
     assert!(parts.text().is_none());
     assert_eq!(parts.parts().unwrap()[0].text, "a");
-    assert_eq!(MessageContent::default().raw().get(), "null");
+    assert!(MessageContent::default().raw().is_none());
+    assert_eq!(
+        serde_json::to_string(&MessageContent::default()).unwrap(),
+        "null"
+    );
+    let absent: Message = serde_json::from_str(r#"{"role":"user"}"#).unwrap();
+    let null: Message = serde_json::from_str(r#"{"role":"user","content":null}"#).unwrap();
+    assert!(absent.content.raw().is_none());
+    assert_eq!(null.content.raw().map(RawValue::get), Some("null"));
+    assert_eq!(
+        serde_json::to_string(&absent).unwrap(),
+        serde_json::to_string(&null).unwrap()
+    );
 }
 
 #[test]
