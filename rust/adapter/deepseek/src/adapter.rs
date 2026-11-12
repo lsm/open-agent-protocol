@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::Receiver;
+use futures_channel::oneshot;
 use oap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
-    Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNADVERTISED,
-    CONTROL_UNSATISFIABLE,
+    Adapter as AdapterContract, BoxFuture, Descriptor, Error, JournalDescriptor, OpenRequest,
+    Session as SessionContract, UnsupportedControl, CONTROL_UNADVERTISED, CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     CapabilityDescriptor, CompactionKind, CompactionPolicy, EndpointDescriptor, FeatureSupport,
@@ -44,6 +46,7 @@ pub struct Launch {
     pub patch: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Adapter {
     config: Config,
 }
@@ -181,6 +184,10 @@ impl Adapter {
     }
 
     pub fn open(&self, request: OpenRequest) -> Result<Session, Error> {
+        self.open_with(request, &crossbeam_channel::never())
+    }
+
+    fn open_with(&self, request: OpenRequest, cancel: &Receiver<()>) -> Result<Session, Error> {
         if request.reopen {
             return Err(Error::UnsupportedControl(Box::new(UnsupportedControl {
                 feature: FEATURE_OPEN_REOPEN.into(),
@@ -195,7 +202,7 @@ impl Adapter {
         let deadline = Instant::now()
             .checked_add(self.config.start_timeout)
             .ok_or_else(|| harness("deepseek adapter: start timeout is out of range"))?;
-        let process = start(self.launch(&request)?, deadline)?;
+        let process = start(self.launch(&request)?, deadline, cancel)?;
         let session_id = if request.session_id.as_str().is_empty() {
             self.config.runtime.new_id("session").into()
         } else {
@@ -219,17 +226,37 @@ impl Adapter {
     }
 }
 
-fn start(launch: Launch, deadline: Instant) -> Result<Process, Error> {
+impl AdapterContract for Adapter {
+    fn probe(&self) -> BoxFuture<'_, Descriptor> {
+        Box::pin(async move { Ok(self.describe()) })
+    }
+
+    fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn SessionContract>> {
+        let adapter = self.clone();
+        Box::pin(async move {
+            let (cancel, cancelled) = crossbeam_channel::bounded::<()>(0);
+            let (reply, replied) = oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = reply.send(adapter.open_with(request, &cancelled));
+            });
+            let session = replied.await.unwrap_or(Err(Error::SessionClosed))?;
+            drop(cancel);
+            Ok(Box::new(session) as Box<dyn SessionContract>)
+        })
+    }
+}
+
+fn start(launch: Launch, deadline: Instant, cancel: &Receiver<()>) -> Result<Process, Error> {
     let mut process = launch.process;
     let Some(patch) = launch.patch else {
-        return Process::start(process, Some(deadline))
+        return Process::start_with(process, Some(deadline), cancel)
             .map_err(|error| harness(&error.to_string()));
     };
     let path = write_patch(&patch, |_, file, bytes| file.write_all(bytes))
         .map_err(|error| harness(&error.to_string()))?;
     process.args.push("--patch".into());
     process.args.push(path.to_string_lossy().into_owned());
-    let started = Process::start(process, Some(deadline));
+    let started = Process::start_with(process, Some(deadline), cancel);
     let _ = std::fs::remove_file(&path);
     started.map_err(|error| harness(&error.to_string()))
 }

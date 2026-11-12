@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::select;
+use crossbeam_channel::{select, Receiver};
 use oap_adapter::process::{wait_error, Child, ChildConfig};
 use serde_json::value::RawValue;
 
@@ -73,6 +73,14 @@ fn initialize_result(raw: &RawValue) -> Result<InitializeResult, Error> {
 
 impl Process {
     pub fn start(config: ProcessConfig, deadline: Option<Instant>) -> Result<Self, Error> {
+        Self::start_with(config, deadline, &crossbeam_channel::never())
+    }
+
+    pub fn start_with(
+        config: ProcessConfig,
+        deadline: Option<Instant>,
+        _cancel: &Receiver<()>,
+    ) -> Result<Self, Error> {
         if config.path.is_empty() {
             return Err(handshake("executable path is required"));
         }
