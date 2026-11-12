@@ -123,3 +123,17 @@ fn null_content_becomes_an_empty_text_block_as_in_go() {
         .collect();
     assert_eq!(texts, [("text", "")]);
 }
+
+#[test]
+fn lone_surrogate_escapes_become_replacement_characters_as_in_go() {
+    let text: MessageContent = serde_json::from_str(r#""a\ud800b""#).unwrap();
+    let parts: MessageContent =
+        serde_json::from_str(r#"[{"type":"text","text":"c\udfffd"}]"#).unwrap();
+    let (blocks, _) = native_prompt(
+        &request(vec![user(text, Some("m")), user(parts, Some("n"))]),
+        &counter(),
+    )
+    .unwrap();
+    let texts: Vec<_> = blocks.iter().map(|block| block.text.as_str()).collect();
+    assert_eq!(texts, ["a\u{fffd}b", "c\u{fffd}d"]);
+}
