@@ -10,6 +10,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-deepseek --test submit)
 (cd rust && cargo test -p oap-adapter-deepseek --test submit_drop)
 (cd rust && cargo test -p oap-adapter-deepseek --test submit_unsent)
+(cd rust && cargo test -p oap-adapter-deepseek --test corpus)
 (cd rust && cargo test -p oap-adapter-deepseek --all-features)
 ```
 
@@ -65,3 +66,15 @@ thread outlives the dropped submit. `tests/submit_unsent.rs` holds a first promp
 in flight, drops a second submit before it can send, then lets the first be
 refused; it also counts threads, so it runs alone. Ignore a cancel that lands
 before the send: it must fail, because the dropped submit sends its prompt.
+
+`tests/corpus.rs` replays every case of the pinned corpus through the adapter
+against `tests/support/corpus_runtime.py`, a runtime that plays the case's
+recorded frames and pauses at each harness-side frame until the test has acted
+on it. Traces are compared after Go's normalization. Two differences are the
+harness's, not the adapter's: Go records an empty trace as `null`, and Go's
+in-process transport reports the case's own exit reason where a real process
+reports `EOF`. To see it bite, spell a turn-end failure code with a hyphen:
+`turn-end-reasons` must fail. Change the provider the adapter is configured
+with: `initialize-lifecycle` must fail on the host wire. Strip the whitespace
+from a framing violation before the runtime writes it: `framing-strictness`
+must fail.
