@@ -129,3 +129,32 @@ func TestReopenIsDeclinedBeforeTheRuntimeStarts(t *testing.T) {
 		t.Fatalf("refusal = %v, runtimes started = %d", err, started)
 	}
 }
+
+func TestCancelIsRefusedAsUnavailableAndWritesNothingNative(t *testing.T) {
+	client := newCorpusClient()
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return client, "deepseek-chat", nil }), Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	descriptor, err := implementation.Probe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feature, advertised := descriptor.Capabilities.Features["run.cancel"]
+	if !advertised || feature.Level != protocol.SupportUnavailable || descriptor.CancellationTarget != "none" || descriptor.CancellationImplementation != "unavailable" {
+		t.Fatalf("descriptor advertises cancellation as %+v (target %q, implementation %q)", feature, descriptor.CancellationTarget, descriptor.CancellationImplementation)
+	}
+	session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(ctx)
+	writes := client.callCount()
+	if _, err := session.Cancel(ctx, "run"); !errors.Is(err, errUnavailable) {
+		t.Fatalf("cancel error = %v, want the explicit unavailable refusal", err)
+	}
+	if client.callCount() != writes {
+		t.Fatalf("cancel wrote %d native request(s) the pinned harness has no method for", client.callCount()-writes)
+	}
+}

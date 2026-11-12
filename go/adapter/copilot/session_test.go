@@ -47,6 +47,12 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		if err != nil {
 			os.Exit(3)
 		}
+		if path := os.Getenv("OAP_COPILOT_METHOD_LOG"); path != "" && message.Method != "" {
+			if file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
+				_, _ = file.WriteString(message.Method + "\n")
+				_ = file.Close()
+			}
+		}
 		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "slow-handshake" && message.Method != "session.send" {
 			time.Sleep(600 * time.Millisecond)
 		}
