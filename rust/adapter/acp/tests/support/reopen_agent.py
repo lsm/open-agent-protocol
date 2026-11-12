@@ -19,3 +19,4 @@ for frame in frames:
 (root / 'replayed').write_text('')
 for line in sys.stdin:
     (root / 'mismatch').write_text(line)
+    sys.exit(1)

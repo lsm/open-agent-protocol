@@ -110,7 +110,6 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
         assert!(Instant::now() < deadline, "agent did not finish the replay");
         std::thread::sleep(Duration::from_millis(1));
     }
-    let mismatch = std::fs::read_to_string(directory.join("mismatch")).ok();
     let state = wait(session.state()).unwrap();
     let resumed = wait(session.resume(ResumeRequest {
         run_id: "pre-close-run".into(),
@@ -118,6 +117,7 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
     }));
     let recovered_native = session.native_session_id();
     wait(session.close()).unwrap();
+    let mismatch = std::fs::read_to_string(directory.join("mismatch")).ok();
     assert_eq!(
         mismatch, None,
         "the host sent a request the recording does not hold"
@@ -128,4 +128,52 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
     assert_eq!(state, read(source.join("expected-oap.json")));
     assert_eq!(recovered_native, Some(native_id));
     assert!(matches!(resumed, Err(Error::RunNotFound)));
+}
+
+#[test]
+fn the_reopen_agent_fails_a_request_after_the_recording_ends() {
+    let native = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(&pin().corpus)
+            .join("cases/session-reopen/native.jsonl"),
+    )
+    .unwrap();
+    let directory =
+        std::env::temp_dir().join(format!("oap-acp-reopen-late-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let _workspace = Workspace(directory.clone());
+    std::fs::write(directory.join("native.jsonl"), &native).unwrap();
+    std::fs::write(
+        directory.join("agent.py"),
+        include_str!("support/reopen_agent.py"),
+    )
+    .unwrap();
+    let mut input = String::new();
+    for line in native.lines() {
+        let frame: Value = serde_json::from_str(line).unwrap();
+        if frame["direction"] == "client_request" {
+            input.push_str(&serde_json::to_string(&frame["raw"]).unwrap());
+            input.push('\n');
+        }
+    }
+    input.push_str("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"session/cancel\"}\n");
+    let mut child = Command::new("python3")
+        .arg("-u")
+        .arg(directory.join("agent.py"))
+        .arg(&directory)
+        .arg(&directory)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+    let status = child.wait().unwrap();
+    assert!(directory.join("replayed").exists());
+    assert!(directory.join("mismatch").exists());
+    assert!(
+        !status.success(),
+        "the agent accepted a request after the recording"
+    );
 }
