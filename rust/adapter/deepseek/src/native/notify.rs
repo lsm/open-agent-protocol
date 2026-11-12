@@ -23,7 +23,7 @@ fn require(ok: bool, what: &str) -> Result<(), String> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Notification {
     SessionEvent(SessionEventNotification),
     SessionStatus(SessionStatusNotification),

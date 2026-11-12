@@ -58,8 +58,9 @@ the clock to represent fails the open before anything starts. The `session::Sess
 idle under the request's session id, or one minted from `runtime::Runtime`, and
 that id is also the native session id. It refuses resolve and cancel, resumes
 only a run its journal has ended, reporting a `ReplayGap` for a cursor older
-than the journal holds, and closes by shutting the runtime down once;
-a process dropped without a close shuts down the same way.
+than the journal holds, and closes by shutting the runtime down once.
+A session dropped without a close shuts its runtime down the same way, even
+while a run is active and close itself would be refused.
 From open onward a reader thread takes the runtime's inbound messages, as Go's
 `dispatch` does. It acknowledges barriers and ignores a `session.status` for
 this session while it is usable; a reverse request, which it leaves unanswered
@@ -67,7 +68,7 @@ as Go does, any other notification while no run is reserved, and the runtime
 exiting before close all leave the session unusable, so `state` reports it
 closed.
 
-`Session::submit` is Go's `Submit` up to the prompt's receipt. It refuses
+`Session::submit` is Go's `Submit` up to `run.started`. It refuses
 another session's id, a closed or unusable session and a busy one, reserves the
 run's stream, and sends `session/prompt`. A notification that arrives while the
 prompt is pending belongs to that run rather than retiring the session, unless
@@ -78,9 +79,14 @@ the session, and a reverse request or the runtime exiting fails it as Go's
 pre-start abort does. Close is refused with `RunActive` while a run is
 pending, as Go's is. Like Go's prompt lock, a second submit waits until the
 first prompt's receipt has been handled, and a prompt's failure only ever ends
-its own run. Admitting the run from the buffered notifications, with
-`admission::Candidate::evaluate`, and emitting `run.started` come in the next
-slice; until then a prompt the runtime accepts leaves submit waiting.
+its own run. Every notification for the pending run is buffered, and a native
+event whose `seq` does not rise fails it. Once the receipt is in, each event
+reruns `admission::Candidate::evaluate` over the buffer: a refusal fails the
+submit, and an admission mints the run id, marks the session running, and
+journals `run.started` at sequence 1 with the pinned capability revision
+before submit returns. What happens to a started run after that, its events,
+its failures and its end, comes in the next slice; until then it stays
+running and close is refused.
 
 Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
 until then `submit` waits as long as the runtime neither proves nor refuses the
