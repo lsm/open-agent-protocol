@@ -1,0 +1,41 @@
+{
+  "advertised_capabilities": {
+    "run.streaming": "native"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "streaming-provenance",
+  "identity_map": {
+    "_block request_id (8 hex)": "interaction identity (expire siblings share it)",
+    "approval registry entry": "interaction identity (no wire request_id)",
+    "event seq (per-session, epoch-guarded)": "ordering evidence; never an OAP identity",
+    "message.start…message.complete span": "run_id adapter-allocated",
+    "prompt.submit receipt (status-only)": "submission_id adapter-minted by construction",
+    "replay epoch (uuid4 hex)": "process identity; guards all seq association",
+    "runtime session_id (uuid4 hex[:8])": "oap session association",
+    "stored_session_id (session_key)": "adapter-side evidence only",
+    "task_id (btw_*/bg_*)": "side-channel correlation, not projected in v1",
+    "tool_id": "tool_call_id correlation"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "3b421578588243f920886e6fe79a6faa87ea026e",
+    "commit_tree": "c69ce0f0fb52a2650efcbb79cc97d35474a9be9a",
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "sources": {
+      "contracts_tree": "4bdc4e3f9e5e56923028558497a8c086348858a9",
+      "entry_py_blob": "ff2f9a899d33fc4466df85c4988e352b7c435228",
+      "event_replay_py_blob": "20298bd23f80922c02d7b45a3c920716021f290b",
+      "methods_prompt_py_blob": "0b2baf072e82ecfeb8a06eb6dc97322941ad14dc",
+      "methods_session_py_blob": "5b1ca479044dc3c34e562ede151a25e34b9b229b",
+      "server_py_blob": "c3cc3d2cd6894f07092b7c51aa1d0ba6f2aabdcb",
+      "server_requests_py_blob": "7d089f8ad2701f8b220ffc061d2872cf6ecf13ef",
+      "stdin_recovery_py_blob": "add5e841df4bead308a96bd8b0f0e3c5475bd167",
+      "transport_py_blob": "691f1d799027b211a073c685fbd7ee5d65fae3a6",
+      "ws_py_blob": "833751e0df038b0c551814ee3bfea95a27d0dabf"
+    },
+    "tag": "v0.23.1"
+  },
+  "version": 1
+}

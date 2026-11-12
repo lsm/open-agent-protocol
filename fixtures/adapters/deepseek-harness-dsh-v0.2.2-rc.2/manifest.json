@@ -1,0 +1,156 @@
+{
+  "adapter": "deepseek-harness-jsonrpc",
+  "cases": [
+    {
+      "id": "initialize-lifecycle",
+      "ledger_fixtures": [
+        "initialize-minimal",
+        "initialize-repeat-rejected",
+        "message-enqueued",
+        "shutdown"
+      ],
+      "path": "initialize-lifecycle"
+    },
+    {
+      "id": "initialize-pre-observe",
+      "ledger_fixtures": [
+        "initialize-before-prompt"
+      ],
+      "path": "initialize-pre-observe"
+    },
+    {
+      "id": "owned-start-completed",
+      "ledger_fixtures": [
+        "owned-start",
+        "completed-turn",
+        "settlement"
+      ],
+      "path": "owned-start-completed"
+    },
+    {
+      "id": "turn-end-reasons",
+      "ledger_fixtures": [
+        "max-tokens-failed",
+        "turn-end-reasons"
+      ],
+      "path": "turn-end-reasons"
+    },
+    {
+      "id": "streaming-chunks",
+      "ledger_fixtures": [
+        "streaming-chunks"
+      ],
+      "path": "streaming-chunks"
+    },
+    {
+      "id": "tool-lifecycle",
+      "ledger_fixtures": [
+        "tool-lifecycle",
+        "tool-failed"
+      ],
+      "path": "tool-lifecycle"
+    },
+    {
+      "id": "injected-origin",
+      "ledger_fixtures": [
+        "injected-origin",
+        "no-wire-claim"
+      ],
+      "path": "injected-origin"
+    },
+    {
+      "id": "subagent-settlement",
+      "ledger_fixtures": [
+        "subagent-run",
+        "child-after-turn-end"
+      ],
+      "path": "subagent-settlement"
+    },
+    {
+      "id": "overlap-rejected",
+      "ledger_fixtures": [
+        "overlap-rejected"
+      ],
+      "path": "overlap-rejected"
+    },
+    {
+      "id": "no-run-paths",
+      "ledger_fixtures": [
+        "intercepted-no-run",
+        "blocked-no-run",
+        "empty-no-run"
+      ],
+      "path": "no-run-paths"
+    },
+    {
+      "id": "unknown-events",
+      "ledger_fixtures": [
+        "unknown-ignorable",
+        "unknown-required"
+      ],
+      "path": "unknown-events"
+    },
+    {
+      "id": "framing-strictness",
+      "ledger_fixtures": [
+        "native-tolerant-frame",
+        "adapter-strict-frame"
+      ],
+      "path": "framing-strictness"
+    },
+    {
+      "id": "unsupported-controls",
+      "ledger_fixtures": [
+        "no-native-cancel"
+      ],
+      "path": "unsupported-controls"
+    },
+    {
+      "id": "journal-replay",
+      "ledger_fixtures": [
+        "no-implied-replay"
+      ],
+      "path": "journal-replay"
+    },
+    {
+      "id": "process-loss",
+      "ledger_fixtures": [
+        "process-exit"
+      ],
+      "path": "process-loss"
+    },
+    {
+      "id": "working-directory-change",
+      "ledger_fixtures": [
+        "working-directory-change"
+      ],
+      "path": "working-directory-change"
+    },
+    {
+      "id": "background-job",
+      "ledger_fixtures": [
+        "background-job"
+      ],
+      "path": "background-job"
+    }
+  ],
+  "commit": "ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c",
+  "commit_tree": "3c4b8825db42206bec763295ce901af11d29ba61",
+  "sources": {
+    "core_agent_inbox_blob": "affe0c6b2f653888dc2177fd2987c6082a93f758",
+    "core_agent_loop_blob": "7ec43dd1323edc6e2b488d7c9d35fdd2d323abbd",
+    "core_agent_runtime_types_blob": "7012dfdf50b7c78b07697fbe0cdc9defec7bb957",
+    "core_agent_types_blob": "06d2c88ab1e5ada455214555aaae542077caa571",
+    "core_session_known_event_types_blob": "466e76bb80845580ae24b2e72cc1bafbea88fc2b",
+    "core_session_surface_blob": "7a13bc1d7c1c87bae96a52ed7b160f8d6a635e3c",
+    "core_session_types_blob": "0cf13c86a0313ba8869f36bb48004e61dc4cb685",
+    "llm_assistant_stream_blob": "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
+    "llm_message_blob": "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
+    "llm_types_blob": "8a48b89895db0ddb8908ec6359eb67af60fe0f54",
+    "sdk_protocol_transport_blob": "4ee65555c0342b276e43b03186659acb623cb6fe",
+    "sdk_protocol_types_blob": "6bcd2de7045e58c0fab0e5bacf956724d1ff6e68",
+    "sdk_server_blob": "bccfa6634e071c5bf1fad2f6b2fde80b0c8e503b"
+  },
+  "tag": "dsh-v0.2.2-rc.2",
+  "version": 1
+}

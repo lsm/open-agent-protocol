@@ -33,16 +33,16 @@ var (
 const (
 	hmCorpusRepository = "https://github.com/NousResearch/hermes-agent"
 
-	hmBlobEntry          = "6f7c2d23e990eb7c3593dec335e0c105840fcb06"
-	hmBlobTransport      = "8e9a54946fe97f83baa2c5fcb6efb9feb00a3058"
-	hmBlobServer         = "83b1ff52f4eab8b4ad3d938e0d2de71db09ddaea"
-	hmBlobEventReplay    = "f0b6aa0f8cec280036d63245bf5d3f97a3fa01e8"
+	hmBlobEntry          = "ff2f9a899d33fc4466df85c4988e352b7c435228"
+	hmBlobTransport      = "691f1d799027b211a073c685fbd7ee5d65fae3a6"
+	hmBlobServer         = "c3cc3d2cd6894f07092b7c51aa1d0ba6f2aabdcb"
+	hmBlobEventReplay    = "20298bd23f80922c02d7b45a3c920716021f290b"
 	hmBlobStdinRecovery  = "add5e841df4bead308a96bd8b0f0e3c5475bd167"
-	hmBlobWS             = "42dbd6164b8acb2fc257ba90d076122e5325ef77"
-	hmBlobMethodsPrompt  = "f4b0b80c94361e07b0634e0b844b5d5303888d8a"
-	hmBlobMethodsSession = "c83b0ef4e4d2fb6d5bad5c2913acfb8a32c60735"
-	hmBlobServerRequests = "dfd39d842485ca081548e38baa3d81518bfc6e23"
-	hmTreeContracts      = "782f88736632b3c17dfcdf0bf7027d37c7eedc87"
+	hmBlobWS             = "833751e0df038b0c551814ee3bfea95a27d0dabf"
+	hmBlobMethodsPrompt  = "0b2baf072e82ecfeb8a06eb6dc97322941ad14dc"
+	hmBlobMethodsSession = "5b1ca479044dc3c34e562ede151a25e34b9b229b"
+	hmBlobServerRequests = "7d089f8ad2701f8b220ffc061d2872cf6ecf13ef"
+	hmTreeContracts      = "4bdc4e3f9e5e56923028558497a8c086348858a9"
 )
 
 var hmLedgerFixtures = map[string]bool{

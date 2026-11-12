@@ -1,6 +1,6 @@
 use oap_adapter_hermes::native::{
     decode_strict, DeltaPayload, Event, MessageCompletePayload, ToolCompletePayload,
-    ToolStartPayload, UsageTickPayload,
+    ToolStartPayload, Usage, UsageTickPayload,
 };
 
 fn event(frame: &str) -> Event {
@@ -22,6 +22,38 @@ fn an_interrupted_settlement_carries_null_text_and_its_persisted_turn() {
         ("", "interrupted")
     );
     assert!(payload.persisted_turn.is_some());
+}
+
+#[test]
+fn a_v0_23_delta_carries_turn_identity_and_a_null_text_boundary_decodes() {
+    let frame = r#"{"type":"message.delta","session_id":"s","seq":4,"payload":{"text":null,"turn_id":"t1","segment":2,"offset":18}}"#;
+    let event = event(frame);
+    let payload: DeltaPayload = decode_strict(event.payload_bytes()).unwrap();
+    assert_eq!(payload.text, "");
+    assert_eq!(payload.turn_id, "t1");
+    assert_eq!(payload.segment, 2);
+    assert_eq!(payload.offset, 18);
+}
+
+#[test]
+fn a_v0_23_completion_carries_user_row_ids_and_a_submission_id() {
+    let payload = complete(
+        r#"{"type":"message.complete","session_id":"s","seq":5,"payload":{"text":"hi","status":"complete","user_row_ids":[3,4],"submission_id":"sub-1"}}"#,
+    )
+    .unwrap();
+    assert_eq!(payload.user_row_ids, vec![3, 4]);
+    assert_eq!(payload.submission_id, "sub-1");
+}
+
+#[test]
+fn a_v0_23_usage_tick_admits_the_deprecated_counters_and_a_null_usage() {
+    let frame = r#"{"type":"session.usage","session_id":"s","seq":6,"payload":{"usage":null,"input_tokens":7,"output_tokens":8,"model":"m","plan_gauge":{"id":"g"}}}"#;
+    let event = event(frame);
+    let tick: UsageTickPayload = decode_strict(event.payload_bytes()).unwrap();
+    assert_eq!(tick.usage, Usage::default());
+    assert_eq!(tick.input_tokens, Some(7));
+    assert_eq!(tick.model, "m");
+    assert!(tick.plan_gauge.is_some());
 }
 
 #[test]

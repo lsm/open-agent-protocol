@@ -326,6 +326,7 @@ const observed_only_events = [_][]const u8{
     "team/member",
     "team/message/delivered",
     "team/message/queued",
+    "team/mode",
     "team/task",
     "tool-workflow/agent-end",
     "tool-workflow/agent-start",
@@ -1395,6 +1396,15 @@ test "an observed-only event is not a required one" {
     try std.testing.expect(!reducer.terminal);
     try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"future/unheard-of\",\"data\":{}}"));
     try std.testing.expectEqualStrings("deepseek_unknown_event", lastFailure(&reducer).?);
+}
+
+test "a team mode change inside a run is observed rather than refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"team/mode\",\"data\":{\"mode\":\"team\"}}"));
+    try std.testing.expect(!reducer.terminal);
+    try std.testing.expect(lastFailure(&reducer) == null);
 }
 
 test "a working-directory change inside a run is observed rather than refused" {

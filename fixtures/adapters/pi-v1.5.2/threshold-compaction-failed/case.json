@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "threshold-compaction-failed",
+  "native": "native.jsonl",
+  "expected_oap": "expected-oap.json",
+  "mapping": "mapping.json",
+  "omissions": "omissions.json",
+  "provenance": {
+    "repository": "https://github.com/earendil-works/pi",
+    "tag": "v1.5.2",
+    "commit": "b4afdddf44e059c67ccf5097e5317d913521b470",
+    "commit_tree": "ed418d79cb44d3690f110e1077c4612db033f2c9",
+    "sources": {
+      "rpc_types_blob": "7fc71516aebb8b68ea019f1df4eef966eeaa17c7",
+      "rpc_mode_blob": "afd8267a1078e86dba06ab6e98aa4432c8217b16",
+      "agent_session_blob": "f76247d5647a6ab17923425ebb0cee5b4ca6495b",
+      "session_manager_blob": "20b6edaa913f691b1bbbdbd8c824788b1f9ddd22",
+      "agent_types_blob": "24bdd7531caf7035653255acab9c04e0ef5f485f",
+      "rpc_entry_blob": "11059a8d47f6d4f22469802f8dca0a6af6c8db88",
+      "cli_args_blob": "8de8441c43185db446cdb1290c1d4f0f9a1f5cb0"
+    }
+  },
+  "advertised_capabilities": {
+    "run.streaming": "native",
+    "run.replay": "degraded",
+    "run.compaction": "native"
+  },
+  "identity_map": {
+    "native.sessionId": "oap.session_id_association",
+    "native.command.id": "private_request_correlation",
+    "native.toolCallId": "oap.tool_call_id"
+  }
+}

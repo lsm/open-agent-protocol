@@ -3,14 +3,31 @@
   "name": "OpenCode",
   "versions": [
     {
-      "label": "v2.2.6",
+      "label": "v2.2.7",
       "status": "current",
-      "admits": ["2.2.6"],
-      "endpoint_version": "v2.2.6",
-      "capability_revision": "opencode-v2.2.6-oap-v5",
-      "ledgers": ["research/opencode-v2.2.6-mapping.md", "research/opencode-v2.0.32-mapping.md", "research/opencode-v2.0.26-mapping.md"],
-      "corpus": "fixtures/adapters/opencode-v2.2.6",
+      "admits": ["2.2.7"],
+      "endpoint_version": "v2.2.7",
+      "capability_revision": "opencode-v2.2.7-oap-v5",
+      "ledgers": ["research/opencode-v2.2.7-mapping.md", "research/opencode-v2.2.6-mapping.md", "research/opencode-v2.0.32-mapping.md", "research/opencode-v2.0.26-mapping.md"],
+      "corpus": "fixtures/adapters/opencode-v2.2.7",
       "corpus_from": "v2.0.24",
+      "components": [
+        { "name": "opencode", "version": "v2.2.7", "repository": "https://github.com/anomalyco/opencode" }
+      ],
+      "artifacts": [
+        {"component": "opencode", "platform": "linux-x64", "kind": "archive", "name": "opencode-linux-x64.tar.gz", "sha256": "89a6cee227b54bc011179c528a5e63176032462b1a5e21723b616801cddc2ca7", "bytes": 121783361},
+        {"component": "opencode", "platform": "linux-x64", "kind": "binary", "name": "opencode", "sha256": "589253d36810f21217edd51545cd435b328cdc3cf4f451fbe0cce6f88afcf5e1", "bytes": 258848944},
+        {"component": "opencode", "platform": "darwin-arm64", "kind": "archive", "name": "opencode-darwin-arm64.zip", "sha256": "811c42be9cad489ea8c411ead49e06f691deee4957ba9a0a56a159a7d6c1abdc", "bytes": 108290453},
+        {"component": "opencode", "platform": "darwin-arm64", "kind": "binary", "name": "opencode", "sha256": "b9d576000191d7f441198076f6d50a843064259709ed31f7de995cbfc540d85f", "bytes": 231824800}
+      ],
+      "sources": [
+        { "component": "opencode", "tag": "v2.2.7", "commit": "fedc6f208aa2bd54c1019227214568083f6380ad", "tree": "ff57370148d7897dd17de9f491e4d2499526ebeb" }
+      ]
+    },
+    {
+      "label": "v2.2.6",
+      "status": "retired",
+      "ledgers": ["research/opencode-v2.2.6-mapping.md", "research/opencode-v2.0.32-mapping.md", "research/opencode-v2.0.26-mapping.md"],
       "components": [
         { "name": "opencode", "version": "v2.2.6", "repository": "https://github.com/anomalyco/opencode" }
       ],

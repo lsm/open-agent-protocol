@@ -2,7 +2,7 @@
 
 The Rust port of `go/adapter/hermes`: an OAP adapter over the Hermes TUI
 gateway's JSON-RPC on stdio, pinned by `harnesses/hermes.json` and judged by
-the corpus in `fixtures/adapters/hermes-v0.22.2`.
+the corpus in `fixtures/adapters/hermes-v0.23.1`.
 
 So far it holds the gateway's event envelope, the payloads of its run events,
 and its server requests (approval, clarify, sudo, secret) with Go's

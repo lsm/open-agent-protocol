@@ -107,7 +107,7 @@ func conversationPath(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "fixtures", "adapters", "codex-appserver-0.167.0-writes", "conversation.json")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "fixtures", "adapters", "codex-appserver-0.167.2-writes", "conversation.json")
 }
 
 func conversationEvent(t *testing.T, stream adapter.EventStream, want protocol.EnvelopeType) protocol.Envelope {
