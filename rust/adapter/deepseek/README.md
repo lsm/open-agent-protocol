@@ -53,7 +53,8 @@ tools, and unadvertised settings before starting anything, then starts the
 runtime through `launch`, writing a compaction patch to an owner-only temporary
 file under a fresh name that is removed once the runtime has started or failed
 to. A runtime that does not finish the handshake within `start_timeout` (30
-seconds by default) is killed and the open fails. The `session::Session` it returns is
+seconds by default) is killed and the open fails, and a timeout too long for
+the clock to represent fails the open before anything starts. The `session::Session` it returns is
 idle under the request's session id, or one minted from `runtime::Runtime`, and
 that id is also the native session id. It refuses resolve and cancel, resumes
 only a run its journal has ended, reporting a `ReplayGap` for a cursor older

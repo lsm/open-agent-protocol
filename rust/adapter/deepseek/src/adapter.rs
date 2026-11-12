@@ -191,7 +191,9 @@ impl Adapter {
         refuse_unadvertised_tool_sources(&request, &[])?;
         refuse_unadvertised_tools(&request, &[])?;
         refuse_unadvertised_settings(&request, &self.describe().capabilities)?;
-        let deadline = Instant::now() + self.config.start_timeout;
+        let deadline = Instant::now()
+            .checked_add(self.config.start_timeout)
+            .ok_or_else(|| harness("deepseek adapter: start timeout is out of range"))?;
         let process = start(self.launch(&request)?, deadline)?;
         let session_id = if request.session_id.as_str().is_empty() {
             self.config.runtime.new_id("session").into()
