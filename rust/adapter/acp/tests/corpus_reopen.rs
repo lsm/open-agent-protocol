@@ -110,7 +110,6 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
         assert!(Instant::now() < deadline, "agent did not finish the replay");
         std::thread::sleep(Duration::from_millis(1));
     }
-    let mismatch = std::fs::read_to_string(directory.join("mismatch")).ok();
     let state = wait(session.state()).unwrap();
     let resumed = wait(session.resume(ResumeRequest {
         run_id: "pre-close-run".into(),
@@ -118,6 +117,7 @@ fn the_reopen_case_loads_its_bound_session_with_the_recorded_wire_and_state() {
     }));
     let recovered_native = session.native_session_id();
     wait(session.close()).unwrap();
+    let mismatch = std::fs::read_to_string(directory.join("mismatch")).ok();
     assert_eq!(
         mismatch, None,
         "the host sent a request the recording does not hold"

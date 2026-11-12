@@ -10,7 +10,10 @@ repository root.
 The test spawns `tests/support/reopen_agent.py`, which replays the pinned
 session-reopen case on its stdio. Each request the host sends must equal the
 recorded one; the agent writes a `mismatch` file and exits on the first that
-differs. The one substitution is `session/load`'s `cwd`: the recording names
+differs. A request after the recording ends fails it the same way, so the
+test reads the marker only after closing the session, and closing fails on
+the agent's non-zero exit too. A second test feeds the agent the recorded
+requests plus one more and requires that exit. The one substitution is `session/load`'s `cwd`: the recording names
 the recorder's temporary workspace, so the agent accepts the configured
 directory in its place and compares every other byte.
 
