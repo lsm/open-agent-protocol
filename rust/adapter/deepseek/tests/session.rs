@@ -47,7 +47,8 @@ impl Fixture {
             *SERVER_VERSION
         );
         let script = format!(
-            r#"if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; printf '%s' "$2" > "{dir}/patch-path"; fi
+            r#"printf '%s' $$ > "{dir}/pid"
+if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; printf '%s' "$2" > "{dir}/patch-path"; fi
 read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{info}}}'
 read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
 cat >/dev/null"#
@@ -246,4 +247,24 @@ fn a_stale_patch_file_under_the_same_name_does_not_block_open() {
         std::fs::read_to_string(fixture.dir.join("patch")).unwrap(),
         "- id: compaction-basic\n  disabled: true\n"
     );
+}
+
+#[test]
+fn dropping_an_open_session_shuts_its_runtime_down() {
+    let fixture = Fixture::new();
+    drop(fixture.adapter().open(request("s")).unwrap());
+    let pid = std::fs::read_to_string(fixture.dir.join("pid")).unwrap();
+    let alive = std::process::Command::new("/bin/kill")
+        .args(["-0", &pid])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(!alive, "runtime {pid} outlived its dropped session");
+    let methods: Vec<_> = fixture
+        .wire()
+        .iter()
+        .map(|frame| frame["method"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(methods, ["initialize", "shutdown"]);
 }
