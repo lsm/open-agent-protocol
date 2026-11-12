@@ -596,10 +596,10 @@ def user_processes():
     return len(subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="], capture_output=True, text=True).stdout.split())
 
 
-def time_waits(tables=Path("/proc/net"), *, timeout=None, check=False):
+def time_waits(tables=Path("/proc/net"), *, timeout=None, check=False, errors=None):
     if sys.platform == "darwin":
         return subprocess.run(["netstat", "-an"], capture_output=True, text=True,
-                              timeout=timeout, check=check).stdout.count("TIME_WAIT")
+                              timeout=timeout, check=check, errors=errors).stdout.count("TIME_WAIT")
     rows = [line.split() for name in ("tcp", "tcp6") if (tables / name).exists() for line in (tables / name).read_text().splitlines()[1:]]
     return sum(row[3] == "06" for row in rows)
 
@@ -643,18 +643,18 @@ def capture_stall(pid, phases, directory):
 
     def save(name, command, wait=30, prefix=""):
         try:
-            done = subprocess.run(command, capture_output=True, text=True, timeout=wait)
-            (directory / name).write_text(prefix + done.stdout + done.stderr)
+            done = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=wait)
+            (directory / name).write_text(prefix + done.stdout + done.stderr, encoding="utf-8")
         except (OSError, subprocess.TimeoutExpired) as error:
-            (directory / name).write_text(prefix + f"{command[0]}: {error}\n")
+            (directory / name).write_text(prefix + f"{command[0]}: {error}\n", encoding="utf-8")
 
     left = dict(phases.get("left") or {})
     states = phases.get("last_state") or {}
     (directory / "stuck.json").write_text(json.dumps({"left": left, "states": {s: states.get(s) for s in list(left)[:50]}}, indent=1))
-    save("processes.txt", ["ps", "-A", "-o", "pid,ppid,pgid,etime,stat,command"])
+    save("processes.txt", ["ps", "-p", str(pid), "-o", "pid,ppid,pgid,etime,stat,comm"])
     save("sockets.txt", ["lsof", "-nP", "-p", str(pid)])
     try:
-        count = f"{time_waits(timeout=30, check=True)}\n"
+        count = f"{time_waits(timeout=30, check=True, errors='replace')}\n"
     except (OSError, subprocess.SubprocessError) as error:
         count = f"TIME_WAIT: {error}\n"
     save("time-wait.txt", ["uptime"], prefix=count)
@@ -727,7 +727,7 @@ def run_case(target, binary, scenario, n, scratch, timeout, cap, options):
                 result["stall_run"] = str(root)
                 try:
                     capture_stall(hub.process.pid, phases, kept)
-                except OSError as error:
+                except Exception as error:
                     result["stall_capture_error"] = str(error)
         elif outcome.get("error"):
             result["status"] = f"failed at step {len(steps)}: {outcome['error']}"[:300]

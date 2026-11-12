@@ -189,8 +189,10 @@ not across machines.
 
 ## When a run stalls
 
-`--capture-stalls DIR` keeps the evidence from a case that times out. Before the hub is torn down it saves a live stack sample, the process list, the hub's open sockets, the TIME_WAIT count and the last state of up to 50 unfinished sessions, and it keeps the run directory under `DIR`. Without the option, a timeout leaves only its status line.
+`--capture-stalls DIR` keeps the evidence from a case that times out. Before the hub is torn down it saves a live stack sample, hub process metadata, the hub's open sockets, the TIME_WAIT count and the last state of up to 50 unfinished sessions, and it keeps the run directory under `DIR`. Without the option, a timeout leaves only its status line.
 
 Stack capture uses `sample` on macOS or `gdb` on Linux. The tools must be installed and permitted to inspect the hub. Each diagnostic file also records errors from its command.
 
 If capture fails, the row keeps its timeout status and reports `stall_capture_error`. `stall_run` names the retained run directory, including its original location when relocation fails.
+
+Raw stack, socket and retained run files are local diagnostics. Review them for private data before sharing.
