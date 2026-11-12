@@ -6,6 +6,7 @@ repository root.
 ```sh
 (cd rust && cargo test -p oap-adapter-deepseek --test adapter)
 (cd rust && cargo test -p oap-adapter-deepseek --test session)
+(cd rust && cargo test -p oap-adapter-deepseek --test admission)
 (cd rust && cargo test -p oap-adapter-deepseek --all-features)
 ```
 
@@ -27,3 +28,9 @@ test must fail. The runtime can also print a notification, a reverse request
 or exit after the handshake, and each must leave `state` reporting the session
 closed. The in-crate tests in `src/session.rs` feed the reader directly: to see
 them bite, drop the exemption for this session's own `session.status`.
+
+`tests/admission.rs` feeds native events to the admission check in the order
+Go's reducer buffers them, checking after each one, and once more with a
+receipt that arrives after its turn ended. To see it bite, stop a `turn/end`
+from marking its turn closed: the three tests whose turn ends without the
+proof must fail.
