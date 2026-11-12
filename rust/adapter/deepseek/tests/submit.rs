@@ -12,10 +12,10 @@ use oap_adapter_deepseek::process::ProcessConfig;
 use oap_adapter_deepseek::runtime::Runtime;
 use oap_adapter_deepseek::session::Session;
 use oap_protocol::{
-    Admission, ContentDeltaPayload, EffectiveDeliveryMode, EnvelopeType, Message, MessageContent,
-    MessageRole, MessageSubmitRequest, MessageSubmitResponse, Participant, RequestedDeliveryMode,
-    RunCompletedPayload, RunFailedPayload, RunStartedPayload, RunStatus, SessionStatus,
-    SETTLED_BY_INFERRED,
+    ActionCallPayload, Admission, ContentDeltaPayload, EffectiveDeliveryMode, EnvelopeType,
+    Message, MessageContent, MessageRole, MessageSubmitRequest, MessageSubmitResponse, Participant,
+    RequestedDeliveryMode, RunCompletedPayload, RunFailedPayload, RunStartedPayload, RunStatus,
+    SessionStatus, SETTLED_BY_INFERRED,
 };
 use serde_json::Value;
 
@@ -839,4 +839,166 @@ fn an_idle_status_buffered_before_the_turn_ended_does_not_settle_the_replayed_ru
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(session.state().unwrap().status, SessionStatus::RUNNING);
     assert_eq!(session.close().err(), Some(Error::RunActive));
+}
+
+fn tool_call(seq: i64, call: &str) -> String {
+    event(
+        seq,
+        "tool/call",
+        &format!(
+            r#"{{"turn":1,"step":1,"callId":"{call}","name":"read","arguments":"{{\"path\":\"a\"}}"}}"#
+        ),
+    )
+}
+
+fn tool_result(seq: i64, call: &str, error: &str) -> String {
+    event(
+        seq,
+        "tool/result",
+        &format!(
+            r#"{{"turn":1,"step":1,"message":{{"id":"t1","role":"tool","content":[{{"type":"text","text":"ok"}}],"source":{{"kind":"tool","callId":"{call}"}},"toolCallId":"{call}"}}{error}}}"#
+        ),
+    )
+}
+
+fn tool_reply(seq: i64) -> String {
+    event(
+        seq,
+        "assistant/message",
+        r#"{"turn":1,"step":2,"message":{"id":"a","role":"assistant","content":[{"type":"tool-call","id":"c1","name":"read","arguments":"{}"},{"type":"text","text":"hi"}],"source":{"kind":"model","provider":"p","model":"m"}},"stream":[]}"#,
+    )
+}
+
+fn run_after_admission(
+    fixture: &Fixture,
+    tail: &str,
+    count: usize,
+) -> (Arc<Session>, Vec<oap_protocol::Envelope>) {
+    let session = fixture.open(&(receipt() + &proof() + &fixture.until_released() + tail));
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    fixture.release();
+    let envelopes = (0..count)
+        .map(|_| testkit::next(&mut stream, Duration::from_secs(5)))
+        .collect();
+    (session, envelopes)
+}
+
+#[test]
+fn a_tool_call_streams_as_requested_started_and_completed_and_the_final_message_cites_it() {
+    let fixture = Fixture::new();
+    let tail = tool_call(5, "c1")
+        + &tool_result(6, "c1", "")
+        + &event(7, "step/end", r#"{"turn":1,"step":1}"#)
+        + &event(8, "step/start", r#"{"turn":1,"step":2}"#)
+        + &tool_reply(9)
+        + &turn_end(10, 1, "completed")
+        + &idle();
+    let (session, envelopes) = run_after_admission(&fixture, &tail, 5);
+    let kinds: Vec<_> = envelopes.iter().map(|e| e.envelope_type.clone()).collect();
+    assert_eq!(
+        kinds,
+        [
+            EnvelopeType::RUN_STARTED,
+            EnvelopeType::ACTION_CALL_REQUESTED,
+            EnvelopeType::ACTION_CALL_STARTED,
+            EnvelopeType::ACTION_CALL_COMPLETED,
+            EnvelopeType::RUN_COMPLETED
+        ]
+    );
+    let requested: ActionCallPayload = envelopes[1].decode_payload().unwrap();
+    assert_eq!(requested.tool_call_id.as_str(), "tool-call-minted");
+    assert_eq!(requested.name, "read");
+    assert_eq!(
+        requested.arguments_json.as_ref().map(|raw| raw.get()),
+        Some(r#"{"path":"a"}"#)
+    );
+    assert_eq!(
+        requested.requested_by.as_ref().map(|id| id.as_str()),
+        Some("deepseek.harness")
+    );
+    assert_eq!(requested.execution_owner.as_str(), "deepseek-harness");
+    assert_eq!(envelopes[1].tool_call_id, Some("tool-call-minted".into()));
+    assert_eq!(envelopes[1].in_reply_to, None);
+    let started: ActionCallPayload = envelopes[2].decode_payload().unwrap();
+    assert!(started.arguments_json.is_none());
+    assert_eq!(envelopes[2].in_reply_to, Some(envelopes[1].id.clone()));
+    let completed: ActionCallPayload = envelopes[3].decode_payload().unwrap();
+    assert_eq!(
+        completed.result.as_ref().map(|raw| raw.get()),
+        Some(r#"[{"type":"text","text":"ok"}]"#)
+    );
+    assert_eq!(envelopes[3].in_reply_to, Some(envelopes[2].id.clone()));
+    assert_eq!(envelopes[3].tool_call_id, Some("tool-call-minted".into()));
+    let done: RunCompletedPayload = envelopes[4].decode_payload().unwrap();
+    let parts = done.final_response.content.parts().unwrap();
+    assert_eq!(parts[0].tool_call_id, Some("tool-call-minted".into()));
+    assert_eq!(parts[0].name, "read");
+    assert_eq!(parts[1].text, "hi");
+    session.close().unwrap();
+}
+
+#[test]
+fn a_tool_result_with_an_error_fails_the_call_with_its_reason() {
+    let fixture = Fixture::new();
+    let error = r#","error":{"name":"ToolFailed","code":"tool_error","reason":"boom"}"#;
+    let tail = tool_call(5, "c1") + &tool_result(6, "c1", error);
+    let (session, envelopes) = run_after_admission(&fixture, &tail, 4);
+    assert_eq!(envelopes[3].envelope_type, EnvelopeType::ACTION_CALL_FAILED);
+    assert_eq!(envelopes[3].in_reply_to, Some(envelopes[2].id.clone()));
+    let failed: ActionCallPayload = envelopes[3].decode_payload().unwrap();
+    let failure = failed.error.unwrap();
+    assert_eq!(
+        (failure.code.as_str(), failure.message.as_str()),
+        ("tool_error", "boom")
+    );
+    assert_eq!(
+        failure.details.get("name"),
+        Some(&Value::from("ToolFailed"))
+    );
+    assert!(failed.result.is_none());
+    drop(session);
+}
+
+#[test]
+fn a_run_that_fails_with_a_tool_still_open_fails_the_tool_first() {
+    let fixture = Fixture::new();
+    let foreign = notify("session.status", r#"{"sessionId":"other","status":"idle"}"#);
+    let (session, envelopes) = run_after_admission(&fixture, &(tool_call(5, "c1") + &foreign), 5);
+    assert_eq!(envelopes[3].envelope_type, EnvelopeType::ACTION_CALL_FAILED);
+    let open: ActionCallPayload = envelopes[3].decode_payload().unwrap();
+    let failure = open.error.unwrap();
+    assert_eq!(failure.code, "incomplete_tool");
+    assert_eq!(
+        failure.message,
+        "turn settled with an unfinished deepseek tool"
+    );
+    assert!(open.arguments_json.is_none());
+    assert_eq!(envelopes[3].in_reply_to, Some(envelopes[2].id.clone()));
+    assert_eq!(envelopes[4].envelope_type, EnvelopeType::RUN_FAILED);
+    session.close().unwrap();
+}
+
+#[test]
+fn a_duplicate_tool_call_or_an_unmatched_result_breaks_the_tool_lifecycle() {
+    let cases = [
+        (
+            tool_call(5, "c1") + &tool_call(6, "c1"),
+            4,
+            "duplicate tool call",
+        ),
+        (tool_result(5, "c9", ""), 1, "unmatched tool result"),
+    ];
+    for (tail, failed_at, message) in cases {
+        let fixture = Fixture::new();
+        let (session, envelopes) = run_after_admission(&fixture, &tail, failed_at + 1);
+        assert_eq!(
+            envelopes[failed_at].envelope_type,
+            EnvelopeType::RUN_FAILED,
+            "{message}"
+        );
+        let payload: RunFailedPayload = envelopes[failed_at].decode_payload().unwrap();
+        assert_eq!(payload.error.code, "deepseek_tool_lifecycle");
+        assert_eq!(payload.error.message, message);
+        session.close().unwrap();
+    }
 }
