@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crossbeam_channel::{select, Receiver};
 use oap_adapter::journal::Journal;
 use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
-use oap_protocol::{RunCancelResponse, RunId, SessionState, SessionStatus};
+use oap_protocol::{
+    MessageSubmitRequest, MessageSubmitResponse, RunCancelResponse, RunId, SessionState,
+    SessionStatus,
+};
 
 use crate::native::{decode_notification, Notification, NOTIFY_SESSION_STATUS};
 use crate::process::Process;
@@ -49,6 +52,13 @@ impl Session {
             return Err(Error::SessionClosed);
         }
         Ok(inner.state.clone())
+    }
+
+    pub fn submit(
+        &self,
+        _: MessageSubmitRequest,
+    ) -> Result<(MessageSubmitResponse, EventStream), Error> {
+        Err(Error::UnsupportedInput)
     }
 
     pub fn resolve(&self, _: InteractionResolution) -> Result<(), Error> {
