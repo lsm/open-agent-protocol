@@ -43,7 +43,11 @@ the native `mcpServers` array and the published source descriptors, and for
 replay-degradation the `replay_after` resume evidence, as Go's driver does.
 The one substitution is the process-exit message: Go's fake client names the
 lost transport `fixture process exited`, and a real pipe reports `EOF`. The
-session-reopen case has its own driver in Go and is not replayed by this test.
+session-reopen case has its own driver in Go, and `tests/corpus_reopen.rs` ports it:
+a real child replays the recorded load exchange, every host request must equal
+the recording except `session/load`'s `cwd`, which names the recorder's
+temporary workspace, and the recovered state, native binding and refused
+pre-close resume match Go's driver.
 
 ## Staged Rust tool and permission projection
 
@@ -186,8 +190,8 @@ queued prefix without inventing native settlement; reopening imports no old
 OAP runs. Run cursor metadata persists for prior known runs, while retained
 event records have the configured capacity bound. Cancellation still addresses
 the tracked run. Public native proof is rust-acp-journal.md; per-open MCP attachments are
-described below. Deterministic clocks/ids and the complete byte corpus remain
-the next approved C1 prerequisite; C8 remains a later served-parity gate.
+described below. Deterministic clocks/ids and the byte corpus are described
+above; C8 remains a later served-parity gate.
 
 
 The Rust adapter adds native action.tool_sources.attach in
