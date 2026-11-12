@@ -23,4 +23,7 @@ refusals, the reasoning and compaction patch a session starts with, the
 patch file's removal after start, the idle state, minted ids, the refused
 resolve, cancel and unknown-run resume, and a single shutdown on close. To see
 the patch check bite, keep the temporary patch file after start: the open
-test must fail.
+test must fail. The runtime can also print a notification, a reverse request
+or exit after the handshake, and each must leave `state` reporting the session
+closed. The in-crate tests in `src/session.rs` feed the reader directly: to see
+them bite, drop the exemption for this session's own `session.status`.
