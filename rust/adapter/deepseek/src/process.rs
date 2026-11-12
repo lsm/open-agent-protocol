@@ -105,7 +105,7 @@ impl Process {
             .filter(|timeout| !timeout.is_zero())
             .unwrap_or(DEFAULT_SHUTDOWN_TIMEOUT);
         child.watch(client.read_done(), timeout);
-        let process = Self {
+        let mut process = Self {
             client,
             initialize: InitializeResult::default(),
             child,
@@ -146,10 +146,10 @@ impl Process {
         match outcome
             .and_then(|initialized| validate_initialize_result(&initialized).map(|()| initialized))
         {
-            Ok(initialize) => Ok(Self {
-                initialize,
-                ..process
-            }),
+            Ok(initialize) => {
+                process.initialize = initialize;
+                Ok(process)
+            }
             Err(detail) => {
                 process.abort();
                 Err(handshake(format!("{detail}; stderr: {}", process.stderr())))
@@ -208,5 +208,11 @@ impl Process {
         let _ = drain.join();
         *closed = Some(outcome.clone());
         outcome
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }

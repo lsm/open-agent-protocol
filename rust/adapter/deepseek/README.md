@@ -54,7 +54,8 @@ runtime through `launch`, writing a compaction patch to a temporary file under
 a fresh name that is removed once the runtime has started. The `session::Session` it returns is
 idle under the request's session id, or one minted from `runtime::Runtime`, and
 that id is also the native session id. It refuses resolve and cancel, resumes
-only a run its journal has ended, and closes by shutting the runtime down once.
+only a run its journal has ended, and closes by shutting the runtime down once;
+a process dropped without a close shuts down the same way.
 The handshake has no deadline yet: Go's `Open` takes the caller's context, and
 the slice that implements the `Adapter` and `Session` contracts brings that
 cancellation along with submitting and the reducer over native notifications.
