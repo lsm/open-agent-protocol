@@ -100,10 +100,13 @@ minted message id. Once the turn has ended and the runtime reports this
 session idle, the run settles as Go's `trySettle` does: a turn that ended
 other than `completed` fails with `deepseek_<kind>`, a completed one without
 an assistant message fails, and otherwise `run.completed` carries the final
-message and usage. Three parts of Go's reducer are still to come: replaying
-the events the admission buffered, so a turn that ended before the receipt
-was handled still settles; tool calls, which fail the run as unknown events
-until then; and subagents, which do not yet hold settlement back.
+message and usage. Events the admission buffered are replayed through the same
+grammar once the run starts, skipping the proof's own turn start, user
+message and earlier steps, and a buffered idle status counts only when it
+arrived after the turn ended, so a turn that ended before the receipt was
+handled still settles. Two parts of Go's reducer are still to come: tool
+calls, which fail the run as unknown events until then, and subagents, which
+do not yet hold settlement back.
 
 Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
 until then `submit` waits as long as the runtime neither proves nor refuses the
