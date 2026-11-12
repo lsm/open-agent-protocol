@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use oap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
@@ -20,6 +22,7 @@ use crate::runtime::Runtime;
 use crate::session::Session;
 
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
+const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 static PATCHES: AtomicU64 = AtomicU64::new(0);
 
@@ -84,6 +87,9 @@ impl Adapter {
         validate_initialize_params(&config.process.initialize).map_err(|text| harness(&text))?;
         if config.journal_capacity == 0 {
             config.journal_capacity = DEFAULT_JOURNAL_CAPACITY;
+        }
+        if config.start_timeout.is_zero() {
+            config.start_timeout = DEFAULT_START_TIMEOUT;
         }
         Ok(Self { config })
     }
@@ -185,7 +191,8 @@ impl Adapter {
         refuse_unadvertised_tool_sources(&request, &[])?;
         refuse_unadvertised_tools(&request, &[])?;
         refuse_unadvertised_settings(&request, &self.describe().capabilities)?;
-        let process = start(self.launch(&request)?)?;
+        let deadline = Instant::now() + self.config.start_timeout;
+        let process = start(self.launch(&request)?, deadline)?;
         let session_id = if request.session_id.as_str().is_empty() {
             self.config.runtime.new_id("session").into()
         } else {
@@ -204,35 +211,40 @@ impl Adapter {
     }
 }
 
-fn start(launch: Launch) -> Result<Process, Error> {
+fn start(launch: Launch, deadline: Instant) -> Result<Process, Error> {
     let mut process = launch.process;
     let Some(patch) = launch.patch else {
-        return Process::start(process, None).map_err(|error| harness(&error.to_string()));
+        return Process::start(process, Some(deadline))
+            .map_err(|error| harness(&error.to_string()));
     };
-    let path = write_patch(&patch).map_err(|error| harness(&error.to_string()))?;
+    let path = write_patch(&patch, |_, file, bytes| file.write_all(bytes))
+        .map_err(|error| harness(&error.to_string()))?;
     process.args.push("--patch".into());
     process.args.push(path.to_string_lossy().into_owned());
-    let started = Process::start(process, None);
+    let started = Process::start(process, Some(deadline));
     let _ = std::fs::remove_file(&path);
     started.map_err(|error| harness(&error.to_string()))
 }
 
-fn write_patch(patch: &str) -> std::io::Result<PathBuf> {
+fn write_patch(
+    patch: &str,
+    write: impl FnOnce(&Path, &mut File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
     loop {
         let path = std::env::temp_dir().join(format!(
             "oap-deepseek-{}-{}.patch.yml",
             std::process::id(),
             PATCHES.fetch_add(1, Ordering::SeqCst)
         ));
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = match options.open(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             opened => opened?,
         };
-        if let Err(error) = std::io::Write::write_all(&mut file, patch.as_bytes()) {
+        if let Err(error) = write(&path, &mut file, patch.as_bytes()) {
             let _ = std::fs::remove_file(&path);
             return Err(error);
         }
@@ -260,3 +272,7 @@ pub fn compaction_patch(policy: Option<&CompactionPolicy>) -> Result<Option<Stri
         )),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/patch.rs"]
+mod tests;
