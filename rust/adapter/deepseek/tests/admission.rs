@@ -193,3 +193,20 @@ fn a_receipt_admitted_in_a_later_turn_keeps_that_turns_events() {
         .collect();
     assert_eq!(seqs, [5, 6, 7]);
 }
+
+#[test]
+fn a_turn_end_of_another_turn_before_the_splice_is_not_kept_for_replay() {
+    let mut live = Live::new("receipt");
+    live.feed(turn_start(1, 1));
+    live.feed(step(2, "step/start", 1, 1));
+    assert_eq!(live.feed(user(3, "receipt", "user")), Admission::Pending);
+    assert_eq!(live.feed(turn_end(4, 2, "completed")), Admission::Pending);
+    assert_eq!(live.feed(spliced(5, "receipt")), Admission::Admitted);
+    let seqs: Vec<_> = live
+        .candidate
+        .events
+        .iter()
+        .map(|event| event.seq)
+        .collect();
+    assert_eq!(seqs, [1, 2, 3]);
+}

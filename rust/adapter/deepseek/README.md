@@ -78,8 +78,8 @@ direct user message and entered a step of an open turn as one, keeping that
 turn's events for replay, all of them when the turn has already ended. A second
 splice refuses the run, and so does a turn ending before both proofs are in;
 anything else waits. Go's `observeCandidate` has
-no counterpart, because nothing it writes survives the rescan; the ledger says
-why.
+no counterpart: the rescan overwrites everything of it that is ever read, as the
+ledger traces field by field.
 
 `prompt::native_prompt` is Go's `nativePrompt`: it turns an OAP submit into the
 native text blocks `session/prompt` carries. It refuses any unadvertised
