@@ -73,7 +73,8 @@ run's stream, and sends `session/prompt`. A notification that arrives while the
 prompt is pending belongs to that run rather than retiring the session. A
 refused prompt fails the submit, a response without a `messageId` also retires
 the session, and a reverse request or the runtime exiting fails it as Go's
-pre-start abort does. Admitting the run from the buffered notifications, with
+pre-start abort does. Close is refused with `RunActive` while a run is
+pending, as Go's is. Admitting the run from the buffered notifications, with
 `admission::Candidate::evaluate`, and emitting `run.started` come in the next
 slice; until then a prompt the runtime accepts leaves submit waiting.
 

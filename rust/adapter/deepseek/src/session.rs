@@ -203,6 +203,12 @@ impl Session {
     pub fn close(&self) -> Result<(), Error> {
         let process = {
             let mut inner = self.shared.lock();
+            if inner.process.is_none() {
+                return Ok(());
+            }
+            if inner.run.is_some() {
+                return Err(Error::RunActive);
+            }
             let Some(process) = inner.process.take() else {
                 return Ok(());
             };
