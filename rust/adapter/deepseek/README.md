@@ -112,8 +112,12 @@ start; the final message cites the call by its minted id. A second call with
 the same native id or a result for no open call fails the run with
 `deepseek_tool_lifecycle`, and a run that settles or fails with a call still
 open fails that call as `incomplete_tool` first, as Go's `settleOpenTools`
-does. Subagents, which do not yet hold settlement back, are the last part of
-Go's reducer still to come.
+does. Subagents are tracked for the whole session, as Go's `children` are: a
+started run will not settle while one of its children is still running, a
+child that finished with an error or on max tokens fails it with
+`deepseek_child_failed`, and a second start for a child id or a finish for no
+running child fails it with `deepseek_child_lifecycle`, including children
+the admission buffered.
 
 Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
 until then `submit` waits as long as the runtime neither proves nor refuses the

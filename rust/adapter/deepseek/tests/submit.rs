@@ -1002,3 +1002,108 @@ fn a_duplicate_tool_call_or_an_unmatched_result_breaks_the_tool_lifecycle() {
         session.close().unwrap();
     }
 }
+
+fn child_start(child: &str) -> String {
+    notify(
+        "subagent.started",
+        &format!(r#"{{"parentSessionId":"s","childSessionId":"{child}"}}"#),
+    )
+}
+
+fn child_end(child: &str, status: &str, stop: &str) -> String {
+    notify(
+        "subagent.finished",
+        &format!(
+            r#"{{"provider":"p","agentId":"g","parentSessionId":"s","childSessionId":"{child}","status":"{status}","stopReason":"{stop}"}}"#
+        ),
+    )
+}
+
+fn settled_turn() -> String {
+    reply(5, 1) + &turn_end(6, 1, "completed") + &idle()
+}
+
+fn still_running(session: &Session, envelopes: &[oap_protocol::Envelope]) {
+    assert_eq!(envelopes.len(), 3);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(session.state().unwrap().status, SessionStatus::RUNNING);
+    assert_eq!(session.close().err(), Some(Error::RunActive));
+}
+
+#[test]
+fn a_run_with_a_subagent_still_running_does_not_settle() {
+    let fixture = Fixture::new();
+    let (session, envelopes) =
+        run_after_admission(&fixture, &(child_start("c") + &settled_turn()), 3);
+    still_running(&session, &envelopes);
+}
+
+#[test]
+fn a_run_completes_once_its_subagent_finishes() {
+    let fixture = Fixture::new();
+    let tail = child_start("c") + &settled_turn() + &child_end("c", "ok", "completed");
+    let (session, envelopes) = run_after_admission(&fixture, &tail, 4);
+    assert_eq!(envelopes[3].envelope_type, EnvelopeType::RUN_COMPLETED);
+    session.close().unwrap();
+}
+
+#[test]
+fn a_subagent_that_errs_or_runs_out_of_tokens_fails_the_run() {
+    for (status, stop) in [("error", "error"), ("ok", "max-tokens")] {
+        let fixture = Fixture::new();
+        let tail = child_start("c") + &child_end("c", status, stop) + &settled_turn();
+        let (session, envelopes) = run_after_admission(&fixture, &tail, 4);
+        assert_eq!(
+            envelopes[3].envelope_type,
+            EnvelopeType::RUN_FAILED,
+            "{status} {stop}"
+        );
+        let payload: RunFailedPayload = envelopes[3].decode_payload().unwrap();
+        assert_eq!(payload.error.code, "deepseek_child_failed");
+        assert_eq!(payload.error.message, "subagent failed");
+        session.close().unwrap();
+    }
+}
+
+#[test]
+fn a_duplicate_subagent_start_or_an_unmatched_finish_breaks_the_child_lifecycle() {
+    let cases = [
+        (
+            child_start("c") + &child_start("c"),
+            "duplicate child start",
+        ),
+        (child_end("c", "ok", "completed"), "unmatched child finish"),
+    ];
+    for (violation, message) in cases {
+        let fixture = Fixture::new();
+        let (session, payload) = fails_after_admission(&fixture, &violation);
+        assert_eq!(payload.error.code, "deepseek_child_lifecycle", "{message}");
+        assert_eq!(payload.error.message, message);
+        session.close().unwrap();
+    }
+}
+
+#[test]
+fn a_subagent_started_before_the_receipt_holds_the_replayed_run_open() {
+    let fixture = Fixture::new();
+    let early = proof() + &child_start("c") + &receipt();
+    let session = fixture.open(&(early + &fixture.until_released() + &settled_turn()));
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    fixture.release();
+    let envelopes: Vec<_> = (0..3)
+        .map(|_| testkit::next(&mut stream, Duration::from_secs(5)))
+        .collect();
+    still_running(&session, &envelopes);
+}
+
+#[test]
+fn a_subagent_finish_buffered_for_no_started_child_fails_the_replayed_run() {
+    let fixture = Fixture::new();
+    let early = proof() + &child_end("c", "ok", "completed") + &receipt();
+    let session = fixture.open(&early);
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    let kinds = kinds(&mut stream, 2);
+    assert_eq!(kinds, [EnvelopeType::RUN_STARTED, EnvelopeType::RUN_FAILED]);
+    assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
+    session.close().unwrap();
+}

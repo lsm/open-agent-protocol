@@ -50,4 +50,5 @@ waiting for the runtime's idle status: the idle-wait test must fail; let an
 assistant event through when its step is not the open one: the grammar test
 must fail. Count a buffered idle status from before the turn ended: the
 buffered-idle test must fail. Skip failing open tools before a run fails: the
-open-tool and lifecycle tests must fail.
+open-tool and lifecycle tests must fail. Settle while a child still runs: the
+two still-running subagent tests must fail.
