@@ -5,15 +5,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use oap_adapter::{Error, EventStream, OpenRequest};
-use oap_adapter_deepseek::adapter::{Adapter, Config};
+use oap_adapter::{testkit, Error, EventStream, OpenRequest};
+use oap_adapter_deepseek::adapter::{pin, Adapter, Config};
 use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
 use oap_adapter_deepseek::process::ProcessConfig;
 use oap_adapter_deepseek::runtime::Runtime;
 use oap_adapter_deepseek::session::Session;
 use oap_protocol::{
-    Message, MessageContent, MessageRole, MessageSubmitRequest, MessageSubmitResponse, Participant,
-    SessionStatus,
+    Admission, EffectiveDeliveryMode, EnvelopeType, Message, MessageContent, MessageRole,
+    MessageSubmitRequest, MessageSubmitResponse, Participant, RequestedDeliveryMode,
+    RunStartedPayload, RunStatus, SessionStatus,
 };
 use serde_json::Value;
 
@@ -45,6 +46,24 @@ fn event(seq: i64, kind: &str, data: &str) -> String {
             r#"{{"sessionId":"s","event":{{"type":"{kind}","seq":{seq},"time":1,"data":{data}}}}}"#
         ),
     )
+}
+
+fn proof() -> String {
+    [
+        event(
+            1,
+            "agent/inbox/spliced",
+            r#"{"target":"next-turn","start":0,"inserted":[{"id":"receipt","role":"user","content":[],"source":{"kind":"user"}}]}"#,
+        ),
+        event(2, "turn/start", r#"{"turn":1}"#),
+        event(3, "step/start", r#"{"turn":1,"step":1}"#),
+        event(
+            4,
+            "user/message",
+            r#"{"id":"receipt","role":"user","content":[],"source":{"kind":"user"}}"#,
+        ),
+    ]
+    .concat()
 }
 
 fn answer(result: &str) -> String {
@@ -400,4 +419,118 @@ fn a_second_submit_waits_for_the_first_prompt_and_keeps_its_own_run() {
         second.starts_with("deepseek adapter: invalid native protocol observation: "),
         "{second}"
     );
+}
+
+#[test]
+fn submit_admits_the_run_once_the_runtime_proves_the_turn() {
+    let fixture = Fixture::new();
+    let session = fixture.open(&(receipt() + &proof()));
+    let (response, mut stream) = submit(&session, hello("s")).unwrap();
+    assert!(response.accepted);
+    assert_eq!(response.session_id.as_str(), "s");
+    assert_eq!(response.submission_id.as_str(), "receipt");
+    assert_eq!(response.requested_delivery, RequestedDeliveryMode::AUTO);
+    assert_eq!(response.effective_delivery, EffectiveDeliveryMode::START);
+    assert_eq!(response.delivery_resolution, "session_idle");
+    assert_eq!(response.admission, Admission::STARTED);
+    assert_eq!(
+        response.run_id.as_ref().map(|id| id.as_str()),
+        Some("run-minted")
+    );
+    assert_eq!(response.status, RunStatus::RUNNING);
+    assert_eq!(response.model_id, "m");
+    assert_eq!(response.message_ids, ["m1".into()]);
+    let prompts = fixture.prompts();
+    assert_eq!(
+        prompts[0]["params"],
+        serde_json::json!({"sessionId":"s","contentBlocks":[{"type":"text","text":"hello"}]})
+    );
+    let started = testkit::next(&mut stream, Duration::from_secs(5));
+    assert_eq!(started.envelope_type, EnvelopeType::RUN_STARTED);
+    assert_eq!(started.sequence, Some(1));
+    assert_eq!(started.timestamp_ms, Some(42));
+    assert_eq!(started.session_id.as_ref().map(|id| id.as_str()), Some("s"));
+    assert_eq!(
+        started.run_id.as_ref().map(|id| id.as_str()),
+        Some("run-minted")
+    );
+    assert_eq!(
+        started.capability_revision.as_deref(),
+        Some(pin().capability_revision.as_str())
+    );
+    let payload: RunStartedPayload = started.decode_payload().unwrap();
+    assert_eq!(payload.status, RunStatus::RUNNING);
+    assert_eq!(payload.model_id, "m");
+    assert_eq!(payload.started_at_ms, 42);
+    let state = session.state().unwrap();
+    assert_eq!(state.status, SessionStatus::RUNNING);
+    assert_eq!(
+        state.active_run_id.as_ref().map(|id| id.as_str()),
+        Some("run-minted")
+    );
+    assert_eq!(state.transcript_cursor, "1");
+    assert_eq!(submit(&session, hello("s")).err(), Some(Error::RunActive));
+}
+
+#[test]
+fn notifications_ahead_of_the_prompt_response_still_admit_the_run() {
+    let fixture = Fixture::new();
+    let session = fixture.open(&(proof() + &receipt()));
+    let (response, _) = submit(&session, hello("s")).unwrap();
+    assert_eq!(response.admission, Admission::STARTED);
+}
+
+#[test]
+fn a_turn_that_ends_without_ownership_proof_fails_submit() {
+    let fixture = Fixture::new();
+    let turn = [
+        event(1, "turn/start", r#"{"turn":1}"#),
+        event(2, "step/start", r#"{"turn":1,"step":1}"#),
+        event(
+            3,
+            "user/message",
+            r#"{"id":"receipt","role":"user","content":[],"source":{"kind":"user"}}"#,
+        ),
+        event(4, "turn/end", r#"{"turn":1,"reason":{"kind":"completed"}}"#),
+    ]
+    .concat();
+    let session = fixture.open(&(receipt() + &turn));
+    assert_eq!(
+        harness(submit(&session, hello("s")).err().unwrap()),
+        "deepseek adapter: invalid native protocol observation: submission ownership proof failed"
+    );
+    assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
+}
+
+#[test]
+fn a_native_sequence_that_goes_backwards_before_admission_fails_submit() {
+    let fixture = Fixture::new();
+    let replayed = [
+        event(2, "turn/start", r#"{"turn":1}"#),
+        event(2, "step/start", r#"{"turn":1,"step":1}"#),
+    ]
+    .concat();
+    let session = fixture.open(&(receipt() + &replayed));
+    assert_eq!(
+        harness(submit(&session, hello("s")).err().unwrap()),
+        "deepseek adapter: invalid native protocol observation: non-monotonic native event sequence"
+    );
+}
+
+#[test]
+fn close_is_refused_while_a_run_is_running_and_dropping_the_session_shuts_it_down() {
+    let fixture = Fixture::new();
+    let pid = format!("printf '%s' $$ > \"{}/pid\"\n", fixture.dir.display());
+    let session = fixture.open(&(pid + &receipt() + &proof()));
+    let (_, _stream) = submit(&session, hello("s")).unwrap();
+    assert_eq!(session.close().err(), Some(Error::RunActive));
+    drop(session);
+    let pid = std::fs::read_to_string(fixture.dir.join("pid")).unwrap();
+    let alive = std::process::Command::new("/bin/kill")
+        .args(["-0", &pid])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(!alive, "runtime {pid} outlived its dropped session");
 }
