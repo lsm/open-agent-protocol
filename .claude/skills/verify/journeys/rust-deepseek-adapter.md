@@ -5,6 +5,7 @@ repository root.
 
 ```sh
 (cd rust && cargo test -p oap-adapter-deepseek --test adapter)
+(cd rust && cargo test -p oap-adapter-deepseek --test session)
 (cd rust && cargo test -p oap-adapter-deepseek --all-features)
 ```
 
@@ -15,3 +16,11 @@ from a throwaway test in `go/adapter/deepseek`, and require the Rust test to
 compare equal to the new file. The other tests pin Go's construction
 refusals, the initialize params and reasoning a launch carries, and each
 compaction patch, including the token-count refusal.
+
+`tests/session.rs` opens sessions against a shell runtime that answers
+`initialize` and `shutdown` and records each request. It pins Go's open
+refusals, the reasoning and compaction patch a session starts with, the
+patch file's removal after start, the idle state, minted ids, the refused
+resolve, cancel and unknown-run resume, and a single shutdown on close. To see
+the patch check bite, keep the temporary patch file after start: the open
+test must fail.

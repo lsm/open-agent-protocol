@@ -1,21 +1,26 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use oap_adapter::{
-    Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
+    refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
+    Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNADVERTISED,
+    CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     CapabilityDescriptor, CompactionKind, CompactionPolicy, EndpointDescriptor, FeatureSupport,
-    ReasoningLevel, SupportLevel, FEATURE_COMPACTION_POLICY, FEATURE_OPEN_REOPEN,
-    FEATURE_SESSION_REASONING, MODE_SESSION_OPEN, PROFILE, VERSION,
+    ReasoningLevel, SessionState, SessionStatus, SupportLevel, FEATURE_COMPACTION_POLICY,
+    FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING, MODE_SESSION_OPEN, PROFILE, VERSION,
 };
 
 use crate::native::{validate_initialize_params, InitializeParams};
-use crate::process::ProcessConfig;
+use crate::process::{Process, ProcessConfig};
 use crate::runtime::Runtime;
 use crate::session::Session;
 
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
+
+static PATCHES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -166,9 +171,58 @@ impl Adapter {
         Ok(Launch { process, patch })
     }
 
-    pub fn open(&self, _: OpenRequest) -> Result<Session, Error> {
-        Err(harness(""))
+    pub fn open(&self, request: OpenRequest) -> Result<Session, Error> {
+        if request.reopen {
+            return Err(Error::UnsupportedControl(Box::new(UnsupportedControl {
+                feature: FEATURE_OPEN_REOPEN.into(),
+                reason: CONTROL_UNADVERTISED,
+                detail: "the pinned SDK wire has no request to load a stored session".into(),
+                ..UnsupportedControl::default()
+            })));
+        }
+        refuse_unadvertised_tool_sources(&request, &[])?;
+        refuse_unadvertised_tools(&request, &[])?;
+        refuse_unadvertised_settings(&request, &self.describe().capabilities)?;
+        let process = start(self.launch(&request)?)?;
+        let session_id = if request.session_id.as_str().is_empty() {
+            self.config.runtime.new_id("session").into()
+        } else {
+            request.session_id
+        };
+        let state = SessionState {
+            session_id,
+            status: SessionStatus::IDLE,
+            current_model_id: self.config.model.clone(),
+            updated_at_ms: self.config.runtime.now_ms(),
+            reasoning_level: request.reasoning_level,
+            compaction_policy: request.compaction_policy,
+            ..SessionState::default()
+        };
+        Ok(Session::new(process, state, self.config.journal_capacity))
     }
+}
+
+fn start(launch: Launch) -> Result<Process, Error> {
+    let mut process = launch.process;
+    let Some(patch) = launch.patch else {
+        return Process::start(process, None).map_err(|error| harness(&error.to_string()));
+    };
+    let path = std::env::temp_dir().join(format!(
+        "oap-deepseek-{}-{}.patch.yml",
+        std::process::id(),
+        PATCHES.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, patch.as_bytes()))
+        .map_err(|error| harness(&error.to_string()))?;
+    process.args.push("--patch".into());
+    process.args.push(path.to_string_lossy().into_owned());
+    let started = Process::start(process, None);
+    let _ = std::fs::remove_file(&path);
+    started.map_err(|error| harness(&error.to_string()))
 }
 
 pub fn compaction_patch(policy: Option<&CompactionPolicy>) -> Result<Option<String>, Error> {

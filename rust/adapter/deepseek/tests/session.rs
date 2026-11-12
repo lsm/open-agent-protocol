@@ -12,6 +12,7 @@ use oap_adapter_deepseek::process::ProcessConfig;
 use oap_adapter_deepseek::runtime::Runtime;
 use oap_protocol::{
     CompactionKind, CompactionPolicy, Participant, ReasoningLevel, SessionStatus, ToolDefinition,
+    FEATURE_OPEN_REOPEN,
 };
 use serde_json::Value;
 
@@ -109,7 +110,7 @@ fn a_reopen_or_attached_tools_are_refused_before_any_spawn() {
     reopen.reopen = true;
     assert_eq!(
         refused_feature(adapter.open(reopen).err().unwrap()),
-        ("open.reopen".into(), "unadvertised")
+        (FEATURE_OPEN_REOPEN.into(), "unadvertised")
     );
     let mut tools = request("s");
     tools.tools = vec![ToolDefinition {
