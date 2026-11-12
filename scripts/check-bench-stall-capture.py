@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -20,8 +21,8 @@ def main():
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     benchmark = Path(__file__).with_name('bench-resources.py')
-    cases = [('capture', 'hold-model', True), ('disabled', 'hold-model', False),
-             ('completed', 'empty', True)]
+    cases = [('capture', 'hold-model', True), ('capture-error', 'hold-model', True),
+             ('disabled', 'hold-model', False), ('completed', 'empty', True)]
     observations = []
     with tempfile.TemporaryDirectory(prefix='oap-stall-check-') as temporary:
         root = Path(temporary)
@@ -55,6 +56,8 @@ def main():
                        '--timeout', '30' if scenario == 'empty' else '1',
                        '--model-workers', '1', '--no-build', '--loop-binary', str(binary),
                        '--git-revision', 'verification', '--out', str(result_dir)]
+            if name == 'capture-error':
+                capture_dir.write_text('capture-unavailable')
             if enabled:
                 command += ['--capture-stalls', str(capture_dir)]
             child = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=240)
@@ -66,7 +69,7 @@ def main():
             if scenario == 'empty':
                 assert row['status'] == 'ok', 'ordinary completion failed'
             else:
-                assert row['status'].startswith('timeout after '), 'forced hold did not time out'
+                assert row['status'].startswith('timeout after '), 'timeout status was lost'
             if name == 'capture':
                 capture = Path(row['stall_capture'])
                 files = ['stuck.json', 'processes.txt', 'sockets.txt', 'time-wait.txt', 'sample.txt']
@@ -83,10 +86,19 @@ def main():
                 assert stack or args.allow_unavailable_stack, 'stack sampling unavailable'
                 observation.update(diagnostic_files=len(files), run_retained=True,
                                    live_stack_captured=stack, time_wait_count=time_wait_count)
+            elif name == 'capture-error':
+                assert row.get('stall_capture_error'), 'capture error was omitted'
+                retained = Path(row['stall_run'])
+                assert (retained / 'hub-stderr.txt').is_file(), 'hub log was deleted after capture failure'
+                assert (retained / 'data/sessions.jsonl').is_file(), 'session history was deleted after capture failure'
+                kept = output / 'capture-error-run'
+                shutil.move(str(retained), kept)
+                observation['run_retained'] = True
+                assert capture_dir.read_text() == 'capture-unavailable', 'capture path was overwritten'
             else:
                 assert 'stall_capture' not in row, 'capture recorded for an ineligible case'
                 assert not capture_dir.exists(), 'diagnostics were written for an ineligible case'
-            assert not list(scratch.glob('oap-bench-*')), 'benchmark scratch directory leaked'
+            assert not any(scratch.iterdir()), 'benchmark scratch directory leaked'
             observations.append(observation)
     (output / 'checks.json').write_text(json.dumps(observations, indent=2) + '\n')
     print(json.dumps({'checks_passed': len(observations), 'checks_total': len(cases),
