@@ -19,7 +19,7 @@ Ten cases compare idle and active updates, replacement catalogs and option ids,
 later model switches, removed model/reasoning options, placeholders, unknown
 reasoning and case-folded aliases, current-value priority, multiple model
 categories, wrong-session updates and malformed config. Comparison normalizes
-only clock fields and the staged capability revision. Parsed native frames,
+only clock fields and the capability revision. Parsed native frames,
 including the option id a later switch actually writes, must agree exactly.
 All three validators must accept every trace built from the Rust results.
 

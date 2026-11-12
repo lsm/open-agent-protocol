@@ -15,7 +15,7 @@ capacity one. It retains both native directions, raw public results, admission,
 state and actual Rust run events. Every native child must be reaped.
 
 The public differential comparison normalizes wall-clock timestamps and the
-declared staged capability revision. Other parsed JSON fields and native host
+capability revision. Other parsed JSON fields and native host
 frames must agree. Original outputs remain intact. Byte-for-byte corpus replay
 retains its approved final slice.
 

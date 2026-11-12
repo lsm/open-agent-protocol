@@ -14,7 +14,7 @@ The `session_owner` public consumer opens an OAP session through the normal
 adapter contract, using a credential-free synthetic ACP process with native
 queue capacity one. Its real child emits 256 idle notifications and an unknown
 reverse request. The recorded native response must be method-not-supported.
-The latest model snapshot stays observable throughout this staged layer.
+The latest model snapshot stays observable throughout this layer.
 
 Five lifecycle cases exercise explicit close, dropping the session, cancelling
 a quiet model switch, cancelling quiet close and closing while a quiet model

@@ -16,7 +16,7 @@ close, slow-follower overflow, a 102-event snapshot closed before consumption,
 and fresh native reopen isolation. No live provider, MCP server or port is used.
 
 Compare actual recovery state/ranges, original and replayed envelopes and both
-native wire directions. Normalize only clocks and the staged revision. Raw
+native wire directions. Normalize only clocks and the capability revision. Raw
 shutdown errors stay retained; the quiet native child ignores EOF, so close
 must retain its bounded timeout, reap it and release followers. All recorded
 native PIDs, including both sides of reopen, must be absent after completion.

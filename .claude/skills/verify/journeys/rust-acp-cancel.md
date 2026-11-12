@@ -11,7 +11,7 @@ python3 .claude/skills/verify/scripts/rust-acp-cancel-ownership.py --output-dir 
 The first command uses normal public Go/Rust Adapter and Session consumers
 against the same credential-free synthetic native fixture. Compare admission,
 accepted intent, duplicate/retry results, active/final state and all events,
-normalizing only clock fields and the staged revision. Parsed host frames must
+normalizing only clock fields and the capability revision. Parsed host frames must
 match exactly; only one native session/cancel may be sent. Both native wire
 directions and raw consumer results are retained.
 

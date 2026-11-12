@@ -36,19 +36,24 @@ The catalog retains cagent v1.150.0 as the separately tested agent pin; its
 previous process-gate evidence is recorded in the v1.12.0 ledger. No new
 cagent or Devin live test is claimed by this pin update.
 
-Rust ACP corpus replay remains an existing documented gap in
-`rust/adapter/acp/README.md`; the Go and Zig corpus checks do not establish
-Rust corpus parity.
+The Rust adapter replays every prompted case of this corpus byte for byte
+through a real child process, under the catalog revision and Go's descriptor
+(`rust/adapter/acp/tests/corpus.rs`). For open-with-tool-sources it also checks
+the native `mcpServers` array and the published source descriptors, and for
+replay-degradation the `replay_after` resume evidence, as Go's driver does.
+The one substitution is the process-exit message: Go's fake client names the
+lost transport `fixture process exited`, and a real pipe reports `EOF`. The
+session-reopen case has its own driver in Go and is not replayed by this test.
 
 ## Staged Rust tool and permission projection
 
-The Rust `-rust-attachments` stage projects observed native tool calls and sparse
+The Rust adapter projects observed native tool calls and sparse
 patches through the normal session submit stream. Tool identity is session-wide,
 terminal events synthesize a missing start, and unfinished children settle in
 creation order before the parent. The synthetic tools journey compares public
 Go/Rust results and native host frames, then validates actual Rust traces with
-all three validators. It normalizes wall clocks and the declared staged revision.
-Byte-for-byte corpus replay retains its final approved ACP slice.
+all three validators. It normalizes wall clocks; the byte corpus above compares
+every byte.
 
 The degraded tool rows describe observed native execution. Permission
 publication/resolution uses the native support described below. Native host cancellation and live config are described below. Reload and opening configuration are described below. Closing or abandoning an active session
@@ -83,7 +88,7 @@ described below. The byte-for-byte corpus remains a later gate.
 
 Normal Session publication, resolution, admission and close now use the owned
 controller. The descriptor exposes native action.permissions and interactive
-gates under -rust-attachments. Immediate control answers serialize behind
+gates. Immediate control answers serialize behind
 publication, and state reads reflect the current projection. Live permission routes are pruned
 at commit or settlement. A bounded cache of 64 resolved ids preserves recent
 late-answer refusals across subsequent admissions. Idle native asks receive
@@ -91,14 +96,15 @@ cancellation or malformed-request errors. Accepted native replies consume
 their bindings before a local commit that can fail after close.
 
 The normal public Go/Rust consumer comparison retains raw outputs and host
-frames. It normalizes wall-clock values and the declared staged revision for
+frames. It normalizes wall-clock values and the capability revision for
 event comparison. Actual Rust traces use the actual Rust descriptor/admission
 and pass all three validators. Close/drop proof uses native quiet peers and
 OS thread inventories. Full byte-for-byte corpus replay remains a later gate.
 
 ## Rust native cancellation
 
-The -rust-attachments stage accepts run-targeted native session/cancel intent,
+The Rust adapter advertises run.cancel as degraded, as Go does, and accepts
+run-targeted native session/cancel intent,
 preserves cancelling through streamed events and waits for a cancelled stop
 or remote -32800 confirmation. Completion or another error may win. Pending
 permissions settle with native cancellation and correlated local resolutions;
@@ -121,15 +127,15 @@ Malformed active updates retain `acp_invalid_update`; malformed idle or foreign
 session updates leave recorded settings alone.
 
 The synthetic public Go/Rust comparison retains both directions of native wire,
-snapshots and run events, normalizing only clocks and the staged revision. All
+snapshots and run events, normalizing only clocks and the capability revision. All
 three validators judge wrapped Rust exchanges. This adds no capability support
-level. The current stage uses `-rust-attachments` for native reopen, described below.
-Confirmed opening config/reasoning is described below, followed by full ACP
-byte corpus replay. No served-parity or live-agent claim is made.
+level. Native reopen is described below.
+Confirmed opening config/reasoning is described below; the byte corpus is
+described above. No served-parity or live-agent claim is made.
 
 ## Rust capability-gated reload
 
-The -rust-attachments stage advertises native session.open.reopen. It follows the
+The Rust adapter advertises native session.open.reopen. It follows the
 existing native mapping: loadSession=true selects session/load first, otherwise
 a sessionCapabilities.resume object selects session/resume. It refuses absent
 bindings and unsupported agents, preserves omitted/null bound ids, and refuses
@@ -150,7 +156,7 @@ byte corpus replay remains the next approved slice. This is not a C8 served-pari
 
 ## Rust confirmed opening settings
 
-The -rust-attachments stage adds emulated session.reasoning in session_open mode
+The Rust adapter adds emulated session.reasoning in session_open mode
 and a private Config.session_config map. It follows Go's opening sequence:
 sorted option writes with unique/select advertised-value checks, immediate
 confirmation, full-set confirmation, reasoning mapping/confirmation, then
@@ -170,7 +176,7 @@ retained separately and can exceed 50 ms. No full byte corpus, served parity
 or live-provider interoperability claim is made.
 
 
-The Rust -rust-attachments stage adds bounded Session.resume and live-follow over
+The Rust adapter adds bounded Session.resume and live-follow over
 canonical OAP events, using the shared journal and bounded subscriber. Zero
 capacity selects 256 records; scope is session/process_memory. Run.resume and
 run.replay are degraded; reconciliation is emulated. Missing runs, future
@@ -184,7 +190,7 @@ described below. Deterministic clocks/ids and the complete byte corpus remain
 the next approved C1 prerequisite; C8 remains a later served-parity gate.
 
 
-The Rust -rust-attachments stage adds native action.tool_sources.attach in
+The Rust adapter adds native action.tool_sources.attach in
 session_open mode with transports [process], matching Go's advertisement.
 Names share the configured MCP namespace; duplicate ids/environments and other
 transports refuse before native startup. Missing commands retain Rust's typed

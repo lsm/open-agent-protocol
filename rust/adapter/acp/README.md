@@ -212,7 +212,7 @@ Run `.claude/skills/verify/journeys/rust-acp-text.md` for native wire, Go/Rust
 event comparison, bounded overflow, cleanup and three-validator event proof.
 
 
-## Public staged text submission
+## Public text submission
 
 `Session.submit` accepts user messages with string content and automatic delivery.
 `session.message.submit` is emulated and `run.streaming` is native, so neither
@@ -226,7 +226,7 @@ the session owns the completion worker. Default close immediately refuses an act
 Close and final session drop release the native child, dispatcher and completion
 workers. A submission interrupted by close reports session closed. Cancelled close joins the same owned workers. An EOF-ignoring child can
 report a shutdown timeout after being killed and reaped. Abandonment closes the
-subscriber's retained prefix. Later mapping slices extend the staged engine.
+subscriber's retained prefix. Later mapping slices extend the engine.
 
 Run `.claude/skills/verify/journeys/rust-acp-submit.md` for public API traces,
 bounded overflow, child/thread ownership and three-validator proof.
@@ -596,9 +596,8 @@ envelope timestamps without adding an offset to caller-supplied times.
 The clock/identity regression replays the pinned `new-prompt-completed` native
 frames through a real synthetic child with an empty environment. It compares
 all event clocks, IDs, payloads and positions directly with the recorded values,
-and separately verifies the Rust adapter's staged capability revision. The
-complete byte corpus, descriptor graduation and other adapter cases remain a
-later slice of #1439; this check does not claim their completion.
+and separately verifies the capability revision the adapter cites. The byte
+corpus below covers the other prompted cases.
 
 ## Byte corpus
 
@@ -610,6 +609,14 @@ the corpus clock and ids: clocks count from 1 and ids are `<kind>-a`,
 `<kind>-b` and so on. The OAP trace must equal the expected file byte for byte
 after Go's JSON escaping. One substitution is made: Go's fake client reports a
 lost transport as `fixture process exited`, and a real pipe reports `EOF`.
+
+The driver also makes Go's case-specific checks. For a case that attaches tool
+sources, the `session/new` request the child received must carry exactly the
+case's `expected_mcp_servers`, and the session state must publish each
+attachment's descriptor projection with no `command`, `args` or `environment`.
+For a case with `replay_after`, resuming the run after that sequence must
+replay exactly the later events. The child fails a frame action it does not
+know instead of skipping it.
 
 A transport lost during a prompt fails the run with `acp_transport_failure`,
 as Go's session does; a prompt the agent answers with an error still fails with

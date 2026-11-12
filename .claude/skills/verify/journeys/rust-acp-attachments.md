@@ -21,7 +21,7 @@ empty ids/kinds/commands, process transport limits, duplicate environment names,
 missing/bare/literal/empty/escaped values, last configured value, opaque protocol
 metadata, validation priority and repeated independent opens. Compare complete
 typed control metadata, standard error categories, returned state and both
-parsed native wire directions. Normalize only clocks/staged revision; retain
+parsed native wire directions. Normalize only clocks/capability revision; retain
 raw diagnostic wording. Go wraps missing-command InvalidResolution with source
 context, while Rust's shared error is a unit variant; do not claim those raw
 strings are identical. Rust admission must agree with its actual open outcome,

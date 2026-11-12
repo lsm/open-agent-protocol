@@ -19,7 +19,7 @@ Keep signed failing CLI reproduction `756f728755` before the registration fix.
 The script drives `oap-rust-hub serve agent` through an explicitly named ACP
 entry containing executable, args, environment and an absolute working_directory.
 It observes real child cwd, a literal and a resolved synthetic environment value,
-the returned staged descriptor, and a host-named session with native identity in
+the returned descriptor, and a host-named session with native identity in
 history. Model listing and text/stream submission must refuse missing degraded
 opt-ins. The accepted submission must precede its contiguous sequenced events;
 a wrong participant must be refused before the actual permission answer reaches

@@ -13,7 +13,7 @@ The tools suite uses the same standalone public Rust and Go Adapter/Session
 consumers as the results journey. Real credential-free synthetic stdio agents
 run at native queue capacity one. It records both native directions, actual
 admission/state/events and native PIDs. Every child must be reaped. Parsed JSON
-comparison normalizes only wall clocks and the staged descriptor revision.
+comparison normalizes only wall clocks and the capability revision.
 The standalone engine journey compares fixed-clock/id event JSON exactly.
 
 Cases exercise sparse progress, presentation titles and native string names,

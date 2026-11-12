@@ -22,7 +22,7 @@ reasoning stays unspecified; concrete model ids still follow the model option.
 Configured/reopened metadata is derived from returned options.
 
 Twenty-eight Go/Rust cases compare successful state/catalog snapshots and
-structured refusal metadata, normalizing only clocks and the staged revision.
+structured refusal metadata, normalizing only clocks and the capability revision.
 Full error/parser wording is retained separately. Parsed native frames in both
 directions must match exactly, including ordered setting ids/values. The agent
 sends 320 notifications and an unknown reverse RPC before every setting reply,

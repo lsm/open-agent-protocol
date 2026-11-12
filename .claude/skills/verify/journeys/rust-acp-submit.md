@@ -9,7 +9,7 @@ python3 .claude/skills/verify/scripts/rust-acp-submit.py --output-dir /tmp/oap-s
 ```
 
 The standalone `submit_owner` consumer uses normal `Adapter.open` and
-`Session.submit` with explicit staged submit/streaming degradation opt-ins.
+`Session.submit` with submit/streaming degradation opt-ins, which the descriptor no longer requires but still accepts.
 Credential-free synthetic native processes run over stdio at queue capacity
 one. The script retains actual admission responses, session states, envelopes,
 native requests, native PIDs and OS thread inventories.
