@@ -48,3 +48,11 @@ policy becomes the `--patch` layer `compaction_patch` writes. Go also accepts a
 caller-supplied client factory, which refuses either setting; the Rust adapter
 always starts its own process, so it has no such branch. The session itself,
 and the `Adapter` contract over it, are later slices.
+
+`prompt::native_prompt` is Go's `nativePrompt`: it turns an OAP submit into the
+native text blocks `session/prompt` carries. It refuses any unadvertised
+control, including a `queue`, `steer` or `btw` delivery, then refuses as an
+invalid submission an unscoped or empty request, an unknown delivery, a
+message that is not from the user, and any content that is neither a string
+nor a list of text parts. A message without an id gets one minted from the
+session's id source.

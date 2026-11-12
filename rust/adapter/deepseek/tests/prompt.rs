@@ -69,13 +69,13 @@ fn every_shape_go_refuses_is_an_invalid_submission() {
         ..user(MessageContent::from_text("x"), None)
     };
     let mut queued = request(vec![user(MessageContent::from_text("x"), None)]);
-    queued.delivery = RequestedDeliveryMode::QUEUE;
+    queued.delivery = "later".into();
     let mut unscoped = request(vec![user(MessageContent::from_text("x"), None)]);
     unscoped.session_id = "".into();
     for (name, submitted) in [
         ("empty", request(Vec::new())),
         ("unscoped", unscoped),
-        ("queued", queued),
+        ("unknown delivery", queued),
         ("assistant", request(vec![assistant])),
         ("image", request(vec![user(image, None)])),
         (
@@ -95,10 +95,17 @@ fn every_shape_go_refuses_is_an_invalid_submission() {
 
 #[test]
 fn an_unadvertised_control_is_refused_before_the_messages_are_read() {
-    let mut submitted = request(Vec::new());
-    submitted.instructions = Some("be brief".into());
-    assert!(matches!(
-        native_prompt(&submitted, &counter()),
-        Err(Error::UnsupportedControl(_))
-    ));
+    let mut instructed = request(Vec::new());
+    instructed.instructions = Some("be brief".into());
+    let mut queued = request(Vec::new());
+    queued.delivery = RequestedDeliveryMode::QUEUE;
+    for (submitted, feature) in [
+        (instructed, "run.instructions"),
+        (queued, "session.message.delivery.queue"),
+    ] {
+        match native_prompt(&submitted, &counter()) {
+            Err(Error::UnsupportedControl(control)) => assert_eq!(control.feature, feature),
+            other => panic!("{feature}: {other:?}"),
+        }
+    }
 }

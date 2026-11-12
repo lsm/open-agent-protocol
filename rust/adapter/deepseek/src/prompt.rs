@@ -1,11 +1,53 @@
-use oap_adapter::Error;
-use oap_protocol::{MessageId, MessageSubmitRequest};
+use oap_adapter::{refuse_unadvertised_controls, Error};
+use oap_protocol::{
+    ContentPartType, MessageId, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
+};
 
 use crate::native::ContentBlock;
 
+fn text(text: String) -> ContentBlock {
+    ContentBlock {
+        kind: "text".into(),
+        text,
+        ..ContentBlock::default()
+    }
+}
+
 pub fn native_prompt(
-    _request: &MessageSubmitRequest,
-    _mint: &dyn Fn(&str) -> String,
+    request: &MessageSubmitRequest,
+    mint: &dyn Fn(&str) -> String,
 ) -> Result<(Vec<ContentBlock>, Vec<MessageId>), Error> {
-    Ok((Vec::new(), Vec::new()))
+    refuse_unadvertised_controls(request, &[])?;
+    if request.session_id.as_str().is_empty()
+        || request.messages.is_empty()
+        || !(request.delivery.is_empty() || request.delivery == RequestedDeliveryMode::AUTO)
+    {
+        return Err(Error::InvalidSubmission);
+    }
+    let mut blocks = Vec::new();
+    let mut ids = Vec::with_capacity(request.messages.len());
+    for message in &request.messages {
+        if message.role != MessageRole::USER {
+            return Err(Error::InvalidSubmission);
+        }
+        ids.push(
+            message
+                .id
+                .clone()
+                .filter(|id| !id.as_str().is_empty())
+                .unwrap_or_else(|| mint("message").into()),
+        );
+        if let Some(body) = message.content.text() {
+            blocks.push(text(body));
+            continue;
+        }
+        let parts = message.content.parts().ok_or(Error::InvalidSubmission)?;
+        for part in parts {
+            if part.part_type != ContentPartType::TEXT {
+                return Err(Error::InvalidSubmission);
+            }
+            blocks.push(text(part.text));
+        }
+    }
+    Ok((blocks, ids))
 }
