@@ -12,9 +12,10 @@ use oap_adapter_deepseek::process::ProcessConfig;
 use oap_adapter_deepseek::runtime::Runtime;
 use oap_adapter_deepseek::session::Session;
 use oap_protocol::{
-    Admission, EffectiveDeliveryMode, EnvelopeType, Message, MessageContent, MessageRole,
-    MessageSubmitRequest, MessageSubmitResponse, Participant, RequestedDeliveryMode,
-    RunFailedPayload, RunStartedPayload, RunStatus, SessionStatus, SETTLED_BY_INFERRED,
+    Admission, ContentDeltaPayload, EffectiveDeliveryMode, EnvelopeType, Message, MessageContent,
+    MessageRole, MessageSubmitRequest, MessageSubmitResponse, Participant, RequestedDeliveryMode,
+    RunCompletedPayload, RunFailedPayload, RunStartedPayload, RunStatus, SessionStatus,
+    SETTLED_BY_INFERRED,
 };
 use serde_json::Value;
 
@@ -613,4 +614,164 @@ fn a_runtime_that_exits_after_admission_fails_the_started_run_as_inferred() {
     assert_eq!(payload.settled_by, SETTLED_BY_INFERRED);
     assert!(settles_closed(&session));
     session.close().unwrap();
+}
+
+fn reply(seq: i64, step: i64) -> String {
+    event(
+        seq,
+        "assistant/message",
+        &format!(
+            r#"{{"turn":1,"step":{step},"message":{{"id":"a","role":"assistant","content":[{{"type":"text","text":"hi"}}],"source":{{"kind":"model","provider":"p","model":"m"}}}},"stream":[{{"type":"text-chunks","time0":0,"index":0,"dt":[5],"texts":["h","i"]}}],"usage":{{"inputTokens":3,"outputTokens":2}}}}"#
+        ),
+    )
+}
+
+fn turn_end(seq: i64, turn: i64, kind: &str) -> String {
+    event(
+        seq,
+        "turn/end",
+        &format!(r#"{{"turn":{turn},"reason":{{"kind":"{kind}"}}}}"#),
+    )
+}
+
+fn idle() -> String {
+    notify("session.status", r#"{"sessionId":"s","status":"idle"}"#)
+}
+
+fn completes(held: bool) {
+    let fixture = Fixture::new();
+    let hold = if held {
+        fixture.until_released()
+    } else {
+        String::new()
+    };
+    let tail = reply(5, 1)
+        + &event(6, "step/end", r#"{"turn":1,"step":1}"#)
+        + &turn_end(7, 1, "completed")
+        + &idle();
+    let session = fixture.open(&(receipt() + &proof() + &hold + &tail));
+    let (response, mut stream) = submit(&session, hello("s")).unwrap();
+    fixture.release();
+    let envelopes = testkit::drain(&mut stream, Duration::from_secs(5));
+    let kinds: Vec<_> = envelopes.iter().map(|e| e.envelope_type.clone()).collect();
+    assert_eq!(
+        kinds,
+        [
+            EnvelopeType::RUN_STARTED,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::RUN_COMPLETED
+        ],
+        "held {held}"
+    );
+    for (envelope, text) in envelopes[1..3].iter().zip(["h", "i"]) {
+        let delta: ContentDeltaPayload = envelope.decode_payload().unwrap();
+        assert_eq!(delta.part.text, text, "held {held}");
+        assert_eq!(
+            delta.message_id,
+            Some("message-minted".into()),
+            "held {held}"
+        );
+    }
+    let completed = &envelopes[3];
+    assert_eq!(completed.sequence, Some(4), "held {held}");
+    assert_eq!(completed.run_id, response.run_id, "held {held}");
+    let payload: RunCompletedPayload = completed.decode_payload().unwrap();
+    assert_eq!(payload.stop_reason, "completed", "held {held}");
+    assert_eq!(payload.final_response.id, Some("message-minted".into()));
+    assert_eq!(payload.final_response.role, MessageRole::ASSISTANT);
+    assert_eq!(payload.final_response.content.text().as_deref(), Some("hi"));
+    let usage = payload.usage.unwrap();
+    assert_eq!(
+        (usage.input_tokens, usage.output_tokens, usage.total_tokens),
+        (Some(3), Some(2), Some(5)),
+        "held {held}"
+    );
+    let state = session.state().unwrap();
+    assert_eq!(state.status, SessionStatus::IDLE, "held {held}");
+    assert_eq!(state.active_run_id, None, "held {held}");
+    assert_eq!(state.transcript_cursor, "4", "held {held}");
+    session.close().unwrap();
+}
+
+#[test]
+fn a_completed_turn_that_goes_idle_after_submit_returns_completes_the_run() {
+    completes(true);
+}
+
+#[test]
+fn a_completed_turn_stays_running_until_the_runtime_reports_idle() {
+    let fixture = Fixture::new();
+    let tail = reply(5, 1) + &turn_end(6, 1, "completed");
+    let session = fixture.open(&(receipt() + &proof() + &fixture.until_released() + &tail));
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    fixture.release();
+    let kinds: Vec<_> = (0..3)
+        .map(|_| testkit::next(&mut stream, Duration::from_secs(5)).envelope_type)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            EnvelopeType::RUN_STARTED,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::CONTENT_DELTA
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(session.state().unwrap().status, SessionStatus::RUNNING);
+    assert_eq!(session.close().err(), Some(Error::RunActive));
+}
+
+#[test]
+fn a_turn_that_does_not_complete_fails_the_run_with_its_kind() {
+    for kind in ["blocked", "max-tokens", "interrupted"] {
+        let fixture = Fixture::new();
+        let (session, payload) = fails_after_admission(&fixture, &(turn_end(5, 1, kind) + &idle()));
+        assert_eq!(payload.error.code, format!("deepseek_{kind}"));
+        assert_eq!(payload.error.message, format!("native turn ended: {kind}"));
+        session.close().unwrap();
+    }
+}
+
+#[test]
+fn a_completed_turn_without_an_assistant_message_fails_the_run() {
+    let fixture = Fixture::new();
+    let (session, payload) =
+        fails_after_admission(&fixture, &(turn_end(5, 1, "completed") + &idle()));
+    assert_eq!(payload.error.code, "deepseek_missing_final_message");
+    assert_eq!(
+        payload.error.message,
+        "completed turn omitted assistant message"
+    );
+    session.close().unwrap();
+}
+
+#[test]
+fn an_event_that_breaks_the_turn_grammar_fails_the_run() {
+    let cases = [
+        (reply(5, 2), "event outside open owned step"),
+        (
+            event(5, "step/end", r#"{"turn":1,"step":2}"#),
+            "invalid step end",
+        ),
+        (
+            event(5, "step/start", r#"{"turn":1,"step":1}"#),
+            "invalid step start",
+        ),
+        (
+            event(5, "turn/start", r#"{"turn":2}"#),
+            "overlapping foreign turn",
+        ),
+        (turn_end(5, 2, "completed"), "invalid turn end"),
+    ];
+    for (violation, message) in cases {
+        let fixture = Fixture::new();
+        let (session, payload) = fails_after_admission(&fixture, &violation);
+        assert_eq!(
+            payload.error.code, "deepseek_invalid_grammar",
+            "{violation}"
+        );
+        assert_eq!(payload.error.message, message, "{violation}");
+        session.close().unwrap();
+    }
 }
