@@ -1043,6 +1043,8 @@ name = "oap-adapter-deepseek"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "futures",
+ "futures-channel",
  "oap-adapter",
  "oap-harness",
  "oap-protocol",

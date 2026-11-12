@@ -1,8 +1,12 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crossbeam_channel::{select, Receiver, Sender};
+use futures_channel::oneshot;
 use oap_adapter::journal::{Journal, Reservation};
-use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
+use oap_adapter::{
+    BoxFuture, Error, EventStream, InteractionResolution, Recovery, ResumeRequest,
+    Session as SessionContract, SubmitRequest,
+};
 use oap_protocol::{
     ActionCallPayload, Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode,
     Envelope, EnvelopeId, EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest,
@@ -144,7 +148,7 @@ impl Session {
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let prompted = self.shared.prompted(request)?;
+        let prompted = self.shared.prompted(request, &Arc::default())?;
         let outcome = prompted.started.recv().unwrap_or(Err(Error::SessionClosed));
         self.shared.respond(prompted, outcome)
     }
@@ -210,6 +214,95 @@ struct Prompted {
     started: Receiver<Result<RunId, Error>>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Waiting,
+    Sent,
+    Answered,
+    Cancelled,
+}
+
+#[derive(Default)]
+struct Gate(Mutex<Phase>);
+
+impl Gate {
+    fn advance(&self, from: Phase, to: Phase) -> bool {
+        let mut phase = hold(&self.0);
+        if *phase != from {
+            return false;
+        }
+        *phase = to;
+        true
+    }
+
+    fn is(&self, phase: Phase) -> bool {
+        *hold(&self.0) == phase
+    }
+}
+
+struct Cancel {
+    gate: Arc<Gate>,
+}
+
+impl Drop for Cancel {
+    fn drop(&mut self) {
+        self.gate.advance(Phase::Waiting, Phase::Cancelled);
+    }
+}
+
+impl SessionContract for Session {
+    fn submit(
+        &self,
+        request: SubmitRequest,
+    ) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let guard = Cancel {
+                gate: Arc::default(),
+            };
+            let (reply, replied) = oneshot::channel();
+            let (worker, gate) = (shared.clone(), guard.gate.clone());
+            std::thread::spawn(move || {
+                let _ = reply.send(worker.prompted(request.request, &gate));
+            });
+            let prompted = replied.await.unwrap_or(Err(Error::SessionClosed))?;
+            drop(guard);
+            let (forward, forwarded) = oneshot::channel();
+            let started = prompted.started.clone();
+            std::thread::spawn(move || {
+                let _ = forward.send(started.recv().unwrap_or(Err(Error::SessionClosed)));
+            });
+            let outcome = forwarded.await.unwrap_or(Err(Error::SessionClosed));
+            shared.respond(prompted, outcome)
+        })
+    }
+
+    fn state(&self) -> BoxFuture<'_, SessionState> {
+        Box::pin(async move { Session::state(self) })
+    }
+
+    fn resolve(&self, resolution: InteractionResolution) -> BoxFuture<'_, ()> {
+        Box::pin(async move { Session::resolve(self, resolution) })
+    }
+
+    fn cancel(&self, run_id: RunId) -> BoxFuture<'_, RunCancelResponse> {
+        Box::pin(async move { Session::cancel(self, &run_id) })
+    }
+
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
+        Box::pin(async move { Session::resume(self, request) })
+    }
+
+    fn close(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move { Session::close(self) })
+    }
+
+    fn native_session_id(&self) -> Option<String> {
+        Some(self.shared.native_id.clone())
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.shut_down(self.shared.lock());
@@ -217,7 +310,7 @@ impl Drop for Session {
 }
 
 impl Shared {
-    fn prompted(&self, request: MessageSubmitRequest) -> Result<Prompted, Error> {
+    fn prompted(&self, request: MessageSubmitRequest, gate: &Arc<Gate>) -> Result<Prompted, Error> {
         let runtime = &self.runtime;
         let (blocks, message_ids) = native_prompt(&request, &|kind| runtime.new_id(kind))?;
         let _prompting = hold(&self.prompting);
@@ -232,6 +325,9 @@ impl Shared {
             }
             if inner.run.is_some() || inner.state.status != SessionStatus::IDLE {
                 return Err(Error::RunActive);
+            }
+            if !gate.advance(Phase::Waiting, Phase::Sent) {
+                return Err(Error::SessionClosed);
             }
             let (start, started) = crossbeam_channel::bounded(1);
             let stream = Arc::new(Mutex::new(self.journal.reserve()));
@@ -256,7 +352,11 @@ impl Shared {
             (client, stream, started)
         };
         let receipt = self
-            .prompt(client, blocks)
+            .prompt(client, blocks, gate.clone())
+            .and_then(|receipt| match gate.is(Phase::Cancelled) {
+                true => Err(Error::SessionClosed),
+                false => Ok(receipt),
+            })
             .inspect_err(|error| self.abort_own(&mut self.lock(), &stream, error.clone()))?;
         let mut inner = self.lock();
         if receipt.is_empty() {
@@ -308,6 +408,7 @@ impl Shared {
         &self,
         client: crate::rpc::RpcClient,
         blocks: Vec<crate::native::ContentBlock>,
+        gate: Arc<Gate>,
     ) -> Result<String, Error> {
         let params = serde_json::value::to_raw_value(&SessionPromptParams {
             session_id: self.native_id.clone(),
@@ -317,7 +418,9 @@ impl Shared {
         let (report, reported) = crossbeam_channel::bounded(1);
         let (answer, answered) = crossbeam_channel::bounded(1);
         std::thread::spawn(move || {
-            let _ = answer.send(client.call_started(METHOD_SESSION_PROMPT, Some(params), report));
+            let result = client.call_started(METHOD_SESSION_PROMPT, Some(params), report);
+            gate.advance(Phase::Sent, Phase::Answered);
+            let _ = answer.send(result);
         });
         if let Ok(Some(refused)) = reported.recv() {
             return Err(Error::Harness(refused));

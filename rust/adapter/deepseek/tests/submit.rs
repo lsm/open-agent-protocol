@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use oap_adapter::{testkit, Error, EventStream, OpenRequest};
+use oap_adapter::{testkit, Error, EventStream, OpenRequest, ResumeRequest, SubmitRequest};
 use oap_adapter_deepseek::adapter::{pin, Adapter, Config};
 use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
 use oap_adapter_deepseek::process::ProcessConfig;
@@ -1105,5 +1105,89 @@ fn a_subagent_finish_buffered_for_no_started_child_fails_the_replayed_run() {
     let kinds = kinds(&mut stream, 2);
     assert_eq!(kinds, [EnvelopeType::RUN_STARTED, EnvelopeType::RUN_FAILED]);
     assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
+    session.close().unwrap();
+}
+
+fn contract_submit(
+    session: &Arc<Session>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Submitted> + Send + '_>> {
+    oap_adapter::Session::submit(
+        &**session,
+        SubmitRequest {
+            request: hello("s"),
+            envelope_id: "e1".into(),
+        },
+    )
+}
+
+fn journaled(session: &Session) -> Result<Vec<EnvelopeType>, Error> {
+    let (_, mut replay) = session.resume(ResumeRequest {
+        run_id: "run-minted".into(),
+        after_sequence: 0,
+    })?;
+    Ok(testkit::drain(&mut replay, Duration::from_secs(5))
+        .into_iter()
+        .map(|envelope| envelope.envelope_type)
+        .collect())
+}
+
+#[test]
+fn dropping_submit_before_the_receipt_closes_the_connection_and_journals_no_run() {
+    let fixture = Fixture::new();
+    let dir = fixture.dir.display();
+    let session = fixture.open(&format!(
+        "touch \"{dir}/read\"\nif ! read more; then touch \"{dir}/eof\"; fi\nexit 0\n"
+    ));
+    let mut submitted = contract_submit(&session);
+    let polled = futures::executor::block_on(futures::future::poll_immediate(&mut submitted));
+    assert!(polled.is_none());
+    fixture.wait_for("read");
+    drop(submitted);
+    fixture.wait_for("eof");
+    assert!(settles_closed(&session), "{:?}", session.state());
+    assert_eq!(
+        submit(&session, hello("s")).err(),
+        Some(Error::SessionClosed)
+    );
+    assert_eq!(journaled(&session).err(), Some(Error::RunNotFound));
+    assert_eq!(fixture.prompts().len(), 1);
+}
+
+#[test]
+fn dropping_submit_after_the_receipt_keeps_the_connection_and_the_run_still_completes() {
+    let fixture = Fixture::new();
+    let tail = proof()
+        + &reply(5, 1)
+        + &event(6, "step/end", r#"{"turn":1,"step":1}"#)
+        + &turn_end(7, 1, "completed")
+        + &idle();
+    let session = fixture.open(&(receipt() + &fixture.until_released() + &tail));
+    let mut submitted = contract_submit(&session);
+    let polled = futures::executor::block_on(futures::future::poll_immediate(&mut submitted));
+    assert!(polled.is_none());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fixture.prompts().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(submit(&session, hello("s")).err(), Some(Error::RunActive));
+    drop(submitted);
+    fixture.release();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while journaled(&session).is_err() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        journaled(&session).unwrap(),
+        [
+            EnvelopeType::RUN_STARTED,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::RUN_COMPLETED
+        ]
+    );
+    let state = session.state().unwrap();
+    assert_eq!(state.status, SessionStatus::IDLE);
+    assert_eq!(state.transcript_cursor, "4");
+    assert_eq!(fixture.prompts().len(), 1);
     session.close().unwrap();
 }
