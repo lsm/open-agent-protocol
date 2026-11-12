@@ -4,19 +4,21 @@ use crossbeam_channel::{select, Receiver, Sender};
 use oap_adapter::journal::{Journal, Reservation};
 use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
 use oap_protocol::{
-    Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode, Envelope,
-    EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest, MessageSubmitResponse,
-    ProtocolError, RequestedDeliveryMode, RunCancelResponse, RunCompletedPayload, RunFailedPayload,
-    RunId, RunStartedPayload, RunStatus, SessionState, SessionStatus, SubmissionId, Usage,
-    SETTLED_BY_INFERRED,
+    ActionCallPayload, Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode,
+    Envelope, EnvelopeId, EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest,
+    MessageSubmitResponse, ProtocolError, RequestedDeliveryMode, RunCancelResponse,
+    RunCompletedPayload, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionState,
+    SessionStatus, SubmissionId, ToolCallId, Usage, SETTLED_BY_INFERRED,
 };
+use serde_json::value::RawValue;
 
+use crate::adapter::ENDPOINT_ID;
 use crate::admission::{Admission, Candidate};
 use crate::content::{final_content, stream_parts};
 use crate::native::{
     decode_notification, observed_only, AssistantAttempt, AssistantMessageEvent, Event,
-    Notification, SessionPromptParams, SessionPromptResult, StepBoundary, TurnEnd, TurnStart,
-    METHOD_SESSION_PROMPT,
+    Notification, SessionPromptParams, SessionPromptResult, StepBoundary, ToolCall, ToolResult,
+    TurnEnd, TurnStart, METHOD_SESSION_PROMPT,
 };
 use crate::process::Process;
 use crate::prompt::native_prompt;
@@ -57,6 +59,7 @@ struct Run {
     idle_after_end: bool,
     end_kind: String,
     reply: Option<AssistantMessageEvent>,
+    tools: Vec<Tool>,
     stream: Arc<Mutex<Reservation>>,
     start: Sender<Result<RunId, Error>>,
 }
@@ -72,6 +75,15 @@ struct EndReason {
 const MISMATCH: &str = "deepseek_session_mismatch";
 const EXTERNAL: &str = "deepseek_external_activity";
 const GRAMMAR: &str = "deepseek_invalid_grammar";
+const LIFECYCLE: &str = "deepseek_tool_lifecycle";
+
+struct Tool {
+    native: String,
+    id: ToolCallId,
+    name: String,
+    started: Option<EnvelopeId>,
+    terminal: bool,
+}
 
 fn native_protocol(detail: &str) -> Error {
     Error::Harness(format!(
@@ -153,6 +165,7 @@ impl Session {
                 idle_after_end: false,
                 end_kind: String::new(),
                 reply: None,
+                tools: Vec::new(),
                 stream: stream.clone(),
                 start,
             });
@@ -464,6 +477,20 @@ impl Shared {
                     let _ = self.emit(inner, EnvelopeType::CONTENT_DELTA, &payload, false);
                 }
             }
+            "tool/call" => {
+                let call: ToolCall = event.data_as().unwrap_or_default();
+                if !run.in_step(call.turn, call.step) {
+                    return grammar("event outside open owned step");
+                }
+                return self.start_tool(inner, call);
+            }
+            "tool/result" => {
+                let result: ToolResult = event.data_as().unwrap_or_default();
+                if !run.in_step(result.turn, result.step) {
+                    return grammar("event outside open owned step");
+                }
+                return self.end_tool(inner, result);
+            }
             "turn/end" => {
                 let end: TurnEnd = event.data_as().unwrap_or_default();
                 if end.turn != run.turn || run.turn_ended {
@@ -497,11 +524,15 @@ impl Shared {
     }
 
     fn try_settle(&self, inner: &mut Inner) {
-        let Some(run) = inner
+        if !inner
             .run
             .as_ref()
-            .filter(|run| run.started && run.turn_ended && run.idle_after_end)
-        else {
+            .is_some_and(|run| run.started && run.turn_ended && run.idle_after_end)
+        {
+            return;
+        }
+        self.settle_open_tools(inner);
+        let Some(run) = inner.run.as_ref() else {
             return;
         };
         let kind = run.end_kind.clone();
@@ -513,7 +544,10 @@ impl Shared {
             let detail = "completed turn omitted assistant message";
             return self.fail(inner, ("deepseek_missing_final_message", detail));
         };
-        let content = match final_content(&reply.message.content, &|_| None) {
+        let content = match final_content(&reply.message.content, &|native| {
+            let tool = run.tools.iter().find(|tool| tool.native == native)?;
+            Some((tool.id.clone(), tool.name.clone()))
+        }) {
             Ok(content) => content,
             Err(detail) => return self.fail(inner, ("deepseek_invalid_final_message", &detail)),
         };
@@ -620,9 +654,23 @@ impl Shared {
         payload: &impl serde::Serialize,
         terminal: bool,
     ) -> Result<(), Error> {
+        self.append(inner, kind, payload, terminal, |_| {})
+            .map(drop)
+    }
+
+    fn append(
+        &self,
+        inner: &mut Inner,
+        kind: EnvelopeType,
+        payload: &impl serde::Serialize,
+        terminal: bool,
+        address: impl FnOnce(&mut Envelope),
+    ) -> Result<EnvelopeId, Error> {
         let run = inner.run.as_mut().ok_or(Error::RunNotFound)?;
         let mut envelope =
             Envelope::new(kind, self.runtime.new_id("event"), payload).map_err(Error::harness)?;
+        address(&mut envelope);
+        let id = envelope.id.clone();
         let now = self.runtime.now_ms();
         envelope.sequence = Some(run.next);
         envelope.timestamp_ms = Some(now);
@@ -638,7 +686,124 @@ impl Shared {
             inner.state.status = SessionStatus::IDLE;
             inner.state.active_run_id = None;
         }
+        Ok(id)
+    }
+
+    fn start_tool(&self, inner: &mut Inner, call: ToolCall) -> Result<(), (&'static str, String)> {
+        let Some(run) = inner.run.as_mut() else {
+            return Ok(());
+        };
+        if run.tools.iter().any(|tool| tool.native == call.call_id) {
+            return Err((LIFECYCLE, "duplicate tool call".into()));
+        }
+        let id = ToolCallId::from(self.runtime.new_id("tool-call"));
+        let mut payload = self.tool_payload(inner, &id, &call.name);
+        payload.arguments_json = RawValue::from_string(call.arguments).ok();
+        let requested = self.emit_reply(inner, EnvelopeType::ACTION_CALL_REQUESTED, &payload, None);
+        payload.arguments_json = None;
+        let kind = EnvelopeType::ACTION_CALL_STARTED;
+        let started = self.emit_reply(inner, kind, &payload, requested);
+        if let Some(run) = inner.run.as_mut() {
+            run.tools.push(Tool {
+                native: call.call_id,
+                id,
+                name: call.name,
+                started,
+                terminal: false,
+            });
+        }
         Ok(())
+    }
+
+    fn end_tool(
+        &self,
+        inner: &mut Inner,
+        result: ToolResult,
+    ) -> Result<(), (&'static str, String)> {
+        let native = &result.message.source.call_id;
+        let Some(tool) = inner.run.as_mut().and_then(|run| {
+            let tool = run.tools.iter_mut().find(|tool| &tool.native == native)?;
+            (!tool.terminal).then_some(tool)
+        }) else {
+            return Err((LIFECYCLE, "unmatched tool result".into()));
+        };
+        tool.terminal = true;
+        let (id, name, started) = (tool.id.clone(), tool.name.clone(), tool.started.clone());
+        let mut payload = self.tool_payload(inner, &id, &name);
+        let kind = match result.error {
+            Some(error) => {
+                let mut failure = ProtocolError {
+                    code: error.code.clone(),
+                    message: error.name.clone(),
+                    ..ProtocolError::default()
+                };
+                if let Some(reason) = error.reason_text().filter(|reason| !reason.is_empty()) {
+                    failure.message = reason;
+                    failure.details.insert("name".into(), error.name.into());
+                }
+                payload.error = Some(failure);
+                EnvelopeType::ACTION_CALL_FAILED
+            }
+            None => {
+                let content = serde_json::to_string(&result.message.content).unwrap_or_default();
+                payload.result = RawValue::from_string(content).ok();
+                EnvelopeType::ACTION_CALL_COMPLETED
+            }
+        };
+        self.emit_reply(inner, kind, &payload, started);
+        Ok(())
+    }
+
+    fn settle_open_tools(&self, inner: &mut Inner) {
+        let open: Vec<(ToolCallId, String, Option<EnvelopeId>)> = inner
+            .run
+            .iter_mut()
+            .flat_map(|run| run.tools.iter_mut())
+            .filter(|tool| !tool.terminal)
+            .map(|tool| {
+                tool.terminal = true;
+                (tool.id.clone(), tool.name.clone(), tool.started.clone())
+            })
+            .collect();
+        for (id, name, started) in open {
+            let mut payload = self.tool_payload(inner, &id, &name);
+            payload.error = Some(ProtocolError {
+                code: "incomplete_tool".into(),
+                message: "turn settled with an unfinished deepseek tool".into(),
+                ..ProtocolError::default()
+            });
+            self.emit_reply(inner, EnvelopeType::ACTION_CALL_FAILED, &payload, started);
+        }
+    }
+
+    fn tool_payload(&self, inner: &Inner, id: &ToolCallId, name: &str) -> ActionCallPayload {
+        ActionCallPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id: inner
+                .run
+                .as_ref()
+                .and_then(|run| run.id.clone())
+                .unwrap_or_default(),
+            tool_call_id: id.clone(),
+            requested_by: Some(ENDPOINT_ID.into()),
+            execution_owner: "deepseek-harness".into(),
+            name: name.into(),
+            ..ActionCallPayload::default()
+        }
+    }
+
+    fn emit_reply(
+        &self,
+        inner: &mut Inner,
+        kind: EnvelopeType,
+        payload: &ActionCallPayload,
+        reply: Option<EnvelopeId>,
+    ) -> Option<EnvelopeId> {
+        self.append(inner, kind, payload, false, |envelope| {
+            envelope.in_reply_to = reply;
+            envelope.tool_call_id = Some(payload.tool_call_id.clone());
+        })
+        .ok()
     }
 
     fn fail(&self, inner: &mut Inner, failure: Failure) {
@@ -649,6 +814,7 @@ impl Shared {
         let Some(run_id) = inner.run.as_ref().and_then(|run| run.id.clone()) else {
             return self.abort(inner, native_protocol(detail));
         };
+        self.settle_open_tools(inner);
         let payload = RunFailedPayload {
             session_id: inner.state.session_id.clone(),
             run_id,

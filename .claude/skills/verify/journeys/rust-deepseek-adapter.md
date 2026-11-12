@@ -49,4 +49,5 @@ runtime exit without `inferred`: the exit test must fail. Settle without
 waiting for the runtime's idle status: the idle-wait test must fail; let an
 assistant event through when its step is not the open one: the grammar test
 must fail. Count a buffered idle status from before the turn ended: the
-buffered-idle test must fail.
+buffered-idle test must fail. Skip failing open tools before a run fails: the
+open-tool and lifecycle tests must fail.
