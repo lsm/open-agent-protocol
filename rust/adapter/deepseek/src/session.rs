@@ -7,8 +7,8 @@ use oap_protocol::{
     ActionCallPayload, Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode,
     Envelope, EnvelopeId, EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest,
     MessageSubmitResponse, ProtocolError, RequestedDeliveryMode, RunCancelResponse,
-    RunCompletedPayload, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionState,
-    SessionStatus, SubmissionId, ToolCallId, Usage, SETTLED_BY_INFERRED,
+    RunCompletedPayload, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionId,
+    SessionState, SessionStatus, SubmissionId, ToolCallId, Usage, SETTLED_BY_INFERRED,
 };
 use serde_json::value::RawValue;
 
@@ -144,110 +144,9 @@ impl Session {
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let runtime = &self.shared.runtime;
-        let (blocks, message_ids) = native_prompt(&request, &|kind| runtime.new_id(kind))?;
-        let prompting = hold(&self.shared.prompting);
-        let (client, stream, started) = {
-            let mut inner = self.shared.lock();
-            let client = match &inner.process {
-                Some(process) if !inner.unusable => process.client.clone(),
-                _ => return Err(Error::SessionClosed),
-            };
-            if request.session_id != inner.state.session_id {
-                return Err(Error::RunNotFound);
-            }
-            if inner.run.is_some() || inner.state.status != SessionStatus::IDLE {
-                return Err(Error::RunActive);
-            }
-            let (start, started) = crossbeam_channel::bounded(1);
-            let stream = Arc::new(Mutex::new(self.shared.journal.reserve()));
-            inner.run = Some(Run {
-                id: None,
-                receipt: String::new(),
-                started: false,
-                next: 1,
-                buffered: Vec::new(),
-                candidate: Candidate::default(),
-                message_id: MessageId::from(self.shared.runtime.new_id("message")),
-                turn: 0,
-                step: 0,
-                turn_ended: false,
-                idle_after_end: false,
-                end_kind: String::new(),
-                reply: None,
-                tools: Vec::new(),
-                stream: stream.clone(),
-                start,
-            });
-            (client, stream, started)
-        };
-        let receipt = self.prompt(client, blocks).inspect_err(|error| {
-            self.shared
-                .abort_own(&mut self.shared.lock(), &stream, error.clone());
-        })?;
-        {
-            let mut inner = self.shared.lock();
-            if receipt.is_empty() {
-                inner.unusable = true;
-                let error = native_protocol("prompt response omitted messageId");
-                self.shared.abort_own(&mut inner, &stream, error.clone());
-                return Err(error);
-            }
-            if let Some(run) = inner.run.as_mut().filter(|run| run.owns(&stream)) {
-                run.receipt.clone_from(&receipt);
-                self.shared.admit(&mut inner);
-            }
-        }
-        drop(prompting);
-        let run_id = started.recv().unwrap_or(Err(Error::SessionClosed))?;
-        let stream = hold(&stream).stream();
-        Ok((
-            MessageSubmitResponse {
-                session_id: request.session_id,
-                accepted: true,
-                submission_id: SubmissionId::from(receipt),
-                requested_delivery: RequestedDeliveryMode::AUTO,
-                effective_delivery: EffectiveDeliveryMode::START,
-                delivery_resolution: "session_idle".into(),
-                admission: SubmitAdmission::STARTED,
-                run_id: Some(run_id),
-                status: RunStatus::RUNNING,
-                model_id: self.shared.lock().state.current_model_id.clone(),
-                message_ids,
-                ..MessageSubmitResponse::default()
-            },
-            stream,
-        ))
-    }
-
-    fn prompt(
-        &self,
-        client: crate::rpc::RpcClient,
-        blocks: Vec<crate::native::ContentBlock>,
-    ) -> Result<String, Error> {
-        let params = serde_json::value::to_raw_value(&SessionPromptParams {
-            session_id: self.shared.native_id.clone(),
-            content_blocks: Some(blocks),
-        })
-        .map_err(Error::harness)?;
-        let (report, reported) = crossbeam_channel::bounded(1);
-        let (answer, answered) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = answer.send(client.call_started(METHOD_SESSION_PROMPT, Some(params), report));
-        });
-        if let Ok(Some(refused)) = reported.recv() {
-            return Err(Error::Harness(refused));
-        }
-        let raw = answered
-            .recv()
-            .map_err(|_| Error::SessionClosed)?
-            .map_err(Error::harness)?;
-        if raw.get() == "null" {
-            return Ok(String::new());
-        }
-        serde_json::from_str::<SessionPromptResult>(raw.get())
-            .map(|result| result.message_id)
-            .map_err(Error::harness)
+        let prompted = self.shared.prompted(request)?;
+        let outcome = prompted.started.recv().unwrap_or(Err(Error::SessionClosed));
+        self.shared.respond(prompted, outcome)
     }
 
     pub fn resolve(&self, _: InteractionResolution) -> Result<(), Error> {
@@ -303,6 +202,14 @@ impl Session {
     }
 }
 
+struct Prompted {
+    session_id: SessionId,
+    receipt: String,
+    message_ids: Vec<MessageId>,
+    stream: Arc<Mutex<Reservation>>,
+    started: Receiver<Result<RunId, Error>>,
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.shut_down(self.shared.lock());
@@ -310,6 +217,123 @@ impl Drop for Session {
 }
 
 impl Shared {
+    fn prompted(&self, request: MessageSubmitRequest) -> Result<Prompted, Error> {
+        let runtime = &self.runtime;
+        let (blocks, message_ids) = native_prompt(&request, &|kind| runtime.new_id(kind))?;
+        let _prompting = hold(&self.prompting);
+        let (client, stream, started) = {
+            let mut inner = self.lock();
+            let client = match &inner.process {
+                Some(process) if !inner.unusable => process.client.clone(),
+                _ => return Err(Error::SessionClosed),
+            };
+            if request.session_id != inner.state.session_id {
+                return Err(Error::RunNotFound);
+            }
+            if inner.run.is_some() || inner.state.status != SessionStatus::IDLE {
+                return Err(Error::RunActive);
+            }
+            let (start, started) = crossbeam_channel::bounded(1);
+            let stream = Arc::new(Mutex::new(self.journal.reserve()));
+            inner.run = Some(Run {
+                id: None,
+                receipt: String::new(),
+                started: false,
+                next: 1,
+                buffered: Vec::new(),
+                candidate: Candidate::default(),
+                message_id: MessageId::from(self.runtime.new_id("message")),
+                turn: 0,
+                step: 0,
+                turn_ended: false,
+                idle_after_end: false,
+                end_kind: String::new(),
+                reply: None,
+                tools: Vec::new(),
+                stream: stream.clone(),
+                start,
+            });
+            (client, stream, started)
+        };
+        let receipt = self
+            .prompt(client, blocks)
+            .inspect_err(|error| self.abort_own(&mut self.lock(), &stream, error.clone()))?;
+        let mut inner = self.lock();
+        if receipt.is_empty() {
+            inner.unusable = true;
+            let error = native_protocol("prompt response omitted messageId");
+            self.abort_own(&mut inner, &stream, error.clone());
+            return Err(error);
+        }
+        if let Some(run) = inner.run.as_mut().filter(|run| run.owns(&stream)) {
+            run.receipt.clone_from(&receipt);
+            self.admit(&mut inner);
+        }
+        Ok(Prompted {
+            session_id: request.session_id,
+            receipt,
+            message_ids,
+            stream,
+            started,
+        })
+    }
+
+    fn respond(
+        &self,
+        prompted: Prompted,
+        outcome: Result<RunId, Error>,
+    ) -> Result<(MessageSubmitResponse, EventStream), Error> {
+        let run_id = outcome?;
+        let stream = hold(&prompted.stream).stream();
+        Ok((
+            MessageSubmitResponse {
+                session_id: prompted.session_id,
+                accepted: true,
+                submission_id: SubmissionId::from(prompted.receipt),
+                requested_delivery: RequestedDeliveryMode::AUTO,
+                effective_delivery: EffectiveDeliveryMode::START,
+                delivery_resolution: "session_idle".into(),
+                admission: SubmitAdmission::STARTED,
+                run_id: Some(run_id),
+                status: RunStatus::RUNNING,
+                model_id: self.lock().state.current_model_id.clone(),
+                message_ids: prompted.message_ids,
+                ..MessageSubmitResponse::default()
+            },
+            stream,
+        ))
+    }
+
+    fn prompt(
+        &self,
+        client: crate::rpc::RpcClient,
+        blocks: Vec<crate::native::ContentBlock>,
+    ) -> Result<String, Error> {
+        let params = serde_json::value::to_raw_value(&SessionPromptParams {
+            session_id: self.native_id.clone(),
+            content_blocks: Some(blocks),
+        })
+        .map_err(Error::harness)?;
+        let (report, reported) = crossbeam_channel::bounded(1);
+        let (answer, answered) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = answer.send(client.call_started(METHOD_SESSION_PROMPT, Some(params), report));
+        });
+        if let Ok(Some(refused)) = reported.recv() {
+            return Err(Error::Harness(refused));
+        }
+        let raw = answered
+            .recv()
+            .map_err(|_| Error::SessionClosed)?
+            .map_err(Error::harness)?;
+        if raw.get() == "null" {
+            return Ok(String::new());
+        }
+        serde_json::from_str::<SessionPromptResult>(raw.get())
+            .map(|result| result.message_id)
+            .map_err(Error::harness)
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         hold(&self.inner)
     }
