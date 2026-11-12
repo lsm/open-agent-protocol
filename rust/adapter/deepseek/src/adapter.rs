@@ -1,7 +1,19 @@
-use oap_adapter::{Descriptor, Error, OpenRequest};
-use oap_protocol::CompactionPolicy;
+use std::collections::BTreeMap;
+use std::path::Path;
 
+use oap_adapter::{
+    Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
+};
+use oap_protocol::{
+    CapabilityDescriptor, CompactionKind, CompactionPolicy, EndpointDescriptor, FeatureSupport,
+    ReasoningLevel, SupportLevel, FEATURE_COMPACTION_POLICY, FEATURE_OPEN_REOPEN,
+    FEATURE_SESSION_REASONING, MODE_SESSION_OPEN, PROFILE, VERSION,
+};
+
+use crate::native::{validate_initialize_params, InitializeParams};
 use crate::process::ProcessConfig;
+
+const DEFAULT_JOURNAL_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -22,23 +34,153 @@ pub struct Adapter {
     config: Config,
 }
 
+pub fn pin() -> &'static oap_harness::Version {
+    oap_harness::current("deepseek-harness").expect("embedded catalog pins deepseek-harness")
+}
+
+fn harness(text: &str) -> Error {
+    Error::Harness(text.into())
+}
+
+fn unsatisfiable(feature: &str, field: &str, detail: &str) -> Error {
+    Error::UnsupportedControl(Box::new(UnsupportedControl {
+        feature: feature.into(),
+        reason: CONTROL_UNSATISFIABLE,
+        field: field.into(),
+        detail: detail.into(),
+        ..UnsupportedControl::default()
+    }))
+}
+
 impl Adapter {
-    pub fn new(config: Config) -> Result<Self, Error> {
+    pub fn new(mut config: Config) -> Result<Self, Error> {
+        if config.process.path.is_empty() {
+            return Err(harness(
+                "deepseek adapter: factory or executable is required",
+            ));
+        }
+        if !Path::new(&config.process.dir).is_absolute() {
+            return Err(harness(
+                "deepseek adapter: absolute working directory is required",
+            ));
+        }
+        config.process.initialize = InitializeParams {
+            cwd: config.process.dir.clone(),
+            provider: config.provider.clone(),
+            model: config.model.clone(),
+            max_tokens: config.max_tokens,
+            reasoning_effort: String::new(),
+        };
+        validate_initialize_params(&config.process.initialize).map_err(|text| harness(&text))?;
+        if config.journal_capacity == 0 {
+            config.journal_capacity = DEFAULT_JOURNAL_CAPACITY;
+        }
         Ok(Self { config })
     }
 
     pub fn describe(&self) -> Descriptor {
-        Descriptor::default()
+        let feature = |level, reason: &str| FeatureSupport {
+            level,
+            reason: reason.into(),
+            ..FeatureSupport::default()
+        };
+        let opening = |level, reason: &str| FeatureSupport {
+            modes: vec![MODE_SESSION_OPEN.into()],
+            ..feature(level, reason)
+        };
+        let features: BTreeMap<String, FeatureSupport> = [
+            ("protocol.initialize", feature(SupportLevel::EMULATED, "adapter-owned one-shot initialization freeze")),
+            ("capabilities", feature(SupportLevel::EMULATED, "conservative descriptor for pinned SDK wire")),
+            ("session.open", feature(SupportLevel::EMULATED, "one process and native session per OAP session")),
+            (FEATURE_OPEN_REOPEN, feature(SupportLevel::UNAVAILABLE, "the harness stores sessions, but the pinned SDK wire has no request to load one, so a reopen is declined rather than read behind the harness")),
+            ("session.state", feature(SupportLevel::DEGRADED, "reducer-owned live projection; no native query")),
+            (FEATURE_SESSION_REASONING, opening(SupportLevel::NATIVE, "initialize carries reasoningEffort for the runtime this session starts; the DeepSeek route takes off, low, high and max")),
+            (FEATURE_COMPACTION_POLICY, opening(SupportLevel::EMULATED, "a --patch layer on this session's runtime sets compaction-basic's thresholdRatio for share, or disables it for off; its headroom still caps the threshold, and tokens is refused")),
+            ("session.message.submit", feature(SupportLevel::DEGRADED, "receipt plus entered direct-user message proves start")),
+            ("session.message.delivery.auto", feature(SupportLevel::DEGRADED, "accepted only for known idle sessions and normalized to start")),
+            ("session.message.delivery.queue", feature(SupportLevel::UNAVAILABLE, "overlapping native followups are outside the adapter contract")),
+            ("session.message.delivery.steer", feature(SupportLevel::UNAVAILABLE, "selected SDK wire has no steer request")),
+            ("run.streaming", feature(SupportLevel::NATIVE, "")),
+            ("run.status", feature(SupportLevel::EMULATED, "")),
+            ("run.cancel", feature(SupportLevel::UNAVAILABLE, "selected SDK wire has no cancel request")),
+            ("run.resume", feature(SupportLevel::DEGRADED, "selected SDK wire has no resume request; OAP resume replays the adapter journal")),
+            ("run.reconciliation", feature(SupportLevel::DEGRADED, "live status corroboration only")),
+            ("run.replay", feature(SupportLevel::DEGRADED, "bounded adapter journal; gaps are explicit and there is no native replay request")),
+            ("action.tools", feature(SupportLevel::DEGRADED, "call/result only; started is synthesized")),
+            ("action.tools.execute", feature(SupportLevel::UNAVAILABLE, "Harness executes tools internally")),
+            ("action.permissions", feature(SupportLevel::UNAVAILABLE, "selected SDK wire has no interaction channel")),
+        ]
+        .into_iter()
+        .map(|(key, support)| (key.to_owned(), support))
+        .collect();
+        Descriptor {
+            capabilities: CapabilityDescriptor {
+                endpoint: EndpointDescriptor {
+                    id: "deepseek.harness".into(),
+                    name: "DeepSeek Harness SDK Adapter".into(),
+                    version: pin().endpoint_version.clone(),
+                    adapter: "deepseek-harness-jsonrpc".into(),
+                },
+                protocol_versions: vec![VERSION.into()],
+                profiles: vec![PROFILE.into()],
+                features,
+                ..CapabilityDescriptor::default()
+            },
+            capability_revision: pin().capability_revision.clone(),
+            journal: JournalDescriptor {
+                scope: "session".into(),
+                persistence: "process_memory".into(),
+                replay: SupportLevel::DEGRADED,
+                capacity: self.config.journal_capacity,
+            },
+            max_active_runs_per_session: 1,
+            interactive_gates: false,
+            cancellation_target: "none".into(),
+            cancellation_implementation: "unavailable".into(),
+        }
     }
 
-    pub fn launch(&self, _request: &OpenRequest) -> Result<Launch, Error> {
-        Ok(Launch {
-            process: self.config.process.clone(),
-            patch: None,
-        })
+    pub fn launch(&self, request: &OpenRequest) -> Result<Launch, Error> {
+        let mut process = self.config.process.clone();
+        let level = &request.reasoning_level;
+        if !level.is_empty()
+            && ![
+                ReasoningLevel::OFF,
+                ReasoningLevel::LOW,
+                ReasoningLevel::HIGH,
+                ReasoningLevel::MAX,
+            ]
+            .contains(level)
+        {
+            return Err(unsatisfiable(
+                FEATURE_SESSION_REASONING,
+                "reasoning_level",
+                "the DeepSeek route takes off, low, high and max",
+            ));
+        }
+        process.initialize.reasoning_effort = level.as_str().into();
+        let patch = compaction_patch(request.compaction_policy.as_ref())?;
+        Ok(Launch { process, patch })
     }
 }
 
-pub fn compaction_patch(_policy: Option<&CompactionPolicy>) -> Result<Option<String>, Error> {
-    Ok(None)
+pub fn compaction_patch(policy: Option<&CompactionPolicy>) -> Result<Option<String>, Error> {
+    let Some(policy) = policy else {
+        return Ok(None);
+    };
+    match policy.kind.as_str() {
+        kind if kind == CompactionKind::AUTO.as_str() => Ok(None),
+        kind if kind == CompactionKind::OFF.as_str() => {
+            Ok(Some("- id: compaction-basic\n  disabled: true\n".into()))
+        }
+        kind if kind == CompactionKind::SHARE.as_str() => Ok(Some(format!(
+            "- id: compaction-basic\n  config:\n    thresholdRatio: {}\n",
+            policy.share_percent as f64 / 100.0
+        ))),
+        _ => Err(unsatisfiable(
+            FEATURE_COMPACTION_POLICY,
+            "compaction_policy",
+            "compaction-basic sets its threshold from the window, so a token count is refused",
+        )),
+    }
 }
