@@ -6,7 +6,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, Session, SubmitRequest};
+use oap_adapter::{
+    Adapter as _, InteractionResolution, OpenRequest, ResumeRequest, Session, SubmitRequest,
+};
 use oap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config, Runtime};
 use oap_protocol::{
     Envelope, Message, MessageContent, MessageRole, MessageSubmitRequest, Participant,
@@ -168,7 +170,11 @@ impl Case {
                 .unwrap_or_default(),
             ..OpenRequest::default()
         };
+        let sources = open.tool_sources.clone();
         let session = wait(self.adapter().open(open)).unwrap();
+        if !sources.is_empty() {
+            self.assert_attachment(&*session, &sources);
+        }
         let (admission, mut stream) = wait(session.submit(SubmitRequest {
             request: MessageSubmitRequest {
                 session_id: "session".into(),
@@ -203,8 +209,88 @@ impl Case {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+        let unsupported = std::fs::read_to_string(self.directory.join("unsupported")).ok();
+        assert_eq!(
+            unsupported, None,
+            "{}: the agent met an unsupported frame action",
+            self.id
+        );
+        if let Some(after) = self.definition["replay_after"].as_u64() {
+            self.assert_replay(&*session, &run_id, after, &events);
+        }
         wait(session.close()).unwrap();
         events
+    }
+
+    fn assert_attachment(
+        &self,
+        session: &dyn Session,
+        sources: &[oap_protocol::ToolSourceAttachment],
+    ) {
+        let host = std::fs::read_to_string(self.directory.join("host.jsonl")).unwrap();
+        let opened: Value = host
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|request| request["method"] == "session/new")
+            .unwrap();
+        assert_eq!(
+            opened["params"]["mcpServers"], self.definition["expected_mcp_servers"],
+            "{}: session/new mcpServers",
+            self.id
+        );
+        let state = wait(session.state()).unwrap();
+        let published = serde_json::to_value(&state.sources).unwrap();
+        let wanted = serde_json::to_value(
+            sources
+                .iter()
+                .map(|attachment| attachment.descriptor())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(published, wanted, "{}: published sources", self.id);
+        let encoded = published.to_string();
+        for member in ["command", "args", "environment"] {
+            assert!(
+                !encoded.contains(&format!("\"{member}\"")),
+                "{}: state leaked {member}: {encoded}",
+                self.id
+            );
+        }
+    }
+
+    fn assert_replay(
+        &self,
+        session: &dyn Session,
+        run_id: &oap_protocol::RunId,
+        after: u64,
+        events: &[Envelope],
+    ) {
+        let (recovery, mut replay) = wait(session.resume(ResumeRequest {
+            run_id: run_id.clone(),
+            after_sequence: after,
+        }))
+        .unwrap();
+        let wanted = &events[after as usize..];
+        let mut replayed = Vec::new();
+        while replayed.len() < wanted.len() {
+            match wait(replay.next()) {
+                Some(event) => replayed.push(event.unwrap()),
+                None => break,
+            }
+        }
+        assert_eq!(recovery.replayed_from, after + 1, "{}", self.id);
+        assert_eq!(
+            recovery.replayed_through,
+            events.len() as u64,
+            "{}",
+            self.id
+        );
+        assert_eq!(
+            serde_json::to_string(&replayed).unwrap(),
+            serde_json::to_string(wanted).unwrap(),
+            "{}: replayed events",
+            self.id
+        );
     }
 
     fn resolve(

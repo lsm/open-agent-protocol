@@ -22,6 +22,13 @@ demands a degradation opt-in Go's descriptor does not, because every event
 carries a staged revision suffix, and because the process-exit case settles as
 `acp_prompt_error` instead of `acp_transport_failure`.
 
+The driver also checks the open-with-tool-sources native `mcpServers` array and
+published sources, the replay-degradation `replay_after` resume, and that the
+child knew every frame action. To see each check bite, empty the attachment's
+`env` in `src/attachments.rs`, drop `update` from the agent's sent actions, or
+start the journal's replay one sequence late: each must fail the test with its
+own message, and the test must pass again once restored.
+
 The only substitution is the process-exit message. Go's fake client names the
 loss `fixture process exited`; a real pipe reports `EOF`. Every other byte is
 compared as recorded. The session-reopen case has its own Go driver and is not

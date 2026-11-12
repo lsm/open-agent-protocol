@@ -47,6 +47,8 @@ while True:
                 assert cancelled.get('method') == 'session/cancel', cancelled
             elif action == 'process-exit':
                 sys.exit(0)
+            elif action in ('', 'observe'):
+                pass
             elif action in sent:
                 is_response = 'result' in raw or 'error' in raw
                 send(raw, request['id'] if is_response else None)
@@ -54,4 +56,7 @@ while True:
                     read()
                 if action == 'complete-await':
                     wait('drained')
+            else:
+                (root / 'unsupported').write_text(action)
+                sys.exit(1)
         (root / 'replayed').write_text('')
