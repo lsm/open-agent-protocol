@@ -27,6 +27,7 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        let _ = std::fs::write(self.dir.join("release"), "");
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -116,9 +117,9 @@ done"#
     }
 
     fn held_until_released(&self) -> String {
+        let dir = self.dir.display();
         format!(
-            "until [ -f \"{}/release\" ]; do sleep 0.05; done; exit 0\n",
-            self.dir.display()
+            "n=0; until [ -f \"{dir}/release\" ] || [ ! -d \"{dir}\" ] || [ $n -ge 200 ]; do sleep 0.05; n=$((n+1)); done; exit 0\n"
         )
     }
 
@@ -233,14 +234,14 @@ fn a_notification_while_the_prompt_is_pending_does_not_retire_the_session() {
     assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
 }
 
-fn pending(
-    fixture: &Fixture,
-    session: &Arc<Session>,
-) -> std::thread::JoinHandle<Result<(MessageSubmitResponse, EventStream), Error>> {
-    let first = {
-        let session = session.clone();
-        std::thread::spawn(move || session.submit(hello("s")))
-    };
+type Submitted = Result<(MessageSubmitResponse, EventStream), Error>;
+
+fn pending(fixture: &Fixture, session: &Arc<Session>) -> std::sync::mpsc::Receiver<Submitted> {
+    let (send, first) = std::sync::mpsc::channel();
+    let session = session.clone();
+    std::thread::spawn(move || {
+        let _ = send.send(session.submit(hello("s")));
+    });
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while fixture.prompts().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
@@ -257,7 +258,10 @@ fn a_second_submit_or_a_close_while_the_prompt_is_pending_is_refused() {
     assert_eq!(submit(&session, hello("s")).err(), Some(Error::RunActive));
     assert_eq!(session.close().err(), Some(Error::RunActive));
     fixture.release();
-    assert!(first.join().unwrap().is_err());
+    assert!(first
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the released submit did not return")
+        .is_err());
     assert_eq!(fixture.prompts().len(), 1);
 }
 
@@ -274,5 +278,8 @@ fn close_is_refused_after_the_runtime_answers_the_prompt_with_its_receipt() {
     assert!(fixture.dir.join("answered").exists());
     assert_eq!(session.close().err(), Some(Error::RunActive));
     fixture.release();
-    assert!(first.join().unwrap().is_err());
+    assert!(first
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the released submit did not return")
+        .is_err());
 }
