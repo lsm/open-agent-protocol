@@ -45,4 +45,7 @@ failing the run: the backwards-sequence test must fail. Make `Drop` call
 `close` instead of shutting down: the drop test must fail, because the runtime
 outlives a session dropped with its run still running. Keep the run after a
 terminal `run.failed`: the three after-admission tests must fail; settle a
-runtime exit without `inferred`: the exit test must fail.
+runtime exit without `inferred`: the exit test must fail. Settle without
+waiting for the runtime's idle status: the idle-wait test must fail; let an
+assistant event through when its step is not the open one: the grammar test
+must fail.

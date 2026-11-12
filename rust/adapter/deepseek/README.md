@@ -89,9 +89,21 @@ subagent checks, a reverse request, or the runtime exiting end the started run
 with `run.failed` and Go's error code (`deepseek_session_mismatch`,
 `deepseek_invalid_sequence`, `deepseek_external_activity`, or
 `deepseek_process_exit` settled as `inferred`), which leaves the session idle
-again. Reducing a started run's own events, and ending it normally, come in
-the next slice; until then a run that does not fail stays running and close
-is refused.
+again.
+
+A started run's own events then run through Go's `applyOwnedEvent` grammar:
+a step must open after the current one and close as itself, assistant events
+must fall in the open step of the open turn, and a second turn or turn end
+breaks it, each failing the run with `deepseek_invalid_grammar`. An assistant
+message streams its text and reasoning as `content.delta` under the run's
+minted message id. Once the turn has ended and the runtime reports this
+session idle, the run settles as Go's `trySettle` does: a turn that ended
+other than `completed` fails with `deepseek_<kind>`, a completed one without
+an assistant message fails, and otherwise `run.completed` carries the final
+message and usage. Three parts of Go's reducer are still to come: replaying
+the events the admission buffered, so a turn that ended before the receipt
+was handled still settles; tool calls, which fail the run as unknown events
+until then; and subagents, which do not yet hold settlement back.
 
 Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
 until then `submit` waits as long as the runtime neither proves nor refuses the
