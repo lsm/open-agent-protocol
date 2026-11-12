@@ -104,6 +104,7 @@ fn the_server_version_comes_from_the_catalog_and_observed_events_are_pinned() {
         oap_harness::current("deepseek-harness").unwrap().admits[0]
     );
     assert!(observed_only("compaction/start"));
+    assert!(observed_only("team/mode"));
     assert!(!observed_only("turn/start"));
 }
 

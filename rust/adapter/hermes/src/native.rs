@@ -172,6 +172,12 @@ pub struct DeltaPayload {
     pub rendered: String,
     #[serde(default, deserialize_with = "zero")]
     pub verbose: bool,
+    #[serde(default, deserialize_with = "zero")]
+    pub turn_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub segment: i64,
+    #[serde(default, deserialize_with = "zero")]
+    pub offset: i64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -181,6 +187,10 @@ pub struct InterimPayload {
     pub text: String,
     #[serde(default, deserialize_with = "zero")]
     pub already_streamed: bool,
+    #[serde(default, deserialize_with = "zero")]
+    pub turn_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub segment: i64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -218,6 +228,10 @@ pub struct MessageCompletePayload {
     pub partial: bool,
     #[serde(default, deserialize_with = "raw")]
     pub persisted_turn: Raw,
+    #[serde(default, deserialize_with = "zero")]
+    pub user_row_ids: Vec<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub submission_id: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -271,6 +285,54 @@ pub struct Usage {
 pub struct UsageTickPayload {
     #[serde(default, deserialize_with = "tick_usage")]
     pub usage: Usage,
+    #[serde(default, deserialize_with = "zero")]
+    pub input_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub output_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub cache_read_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub cache_write_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub prompt_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub completion_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub total_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub reasoning_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub api_calls: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub last_prompt_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub context_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub context_length: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub config_context_length: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub context_source: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub compression_count: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub avg_latency_s: Option<f64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub tokens_per_s: Option<f64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub last_turn_tokens: Option<i64>,
+    #[serde(default, deserialize_with = "raw")]
+    pub rate_limit: Raw,
+    #[serde(default, deserialize_with = "zero")]
+    pub active_subagents: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub model: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub provider: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub fallback_model: String,
+    #[serde(default, deserialize_with = "raw")]
+    pub plan_gauge: Raw,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

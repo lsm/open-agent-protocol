@@ -56,8 +56,8 @@ func TestSessionSequencingRules(t *testing.T) {
 	if _, err := decodeEvent(t, `{"type":"skin.changed","payload":{},"seq":1}`); err == nil {
 		t.Fatal("session-less event with seq accepted")
 	}
-	if _, err := decodeEvent(t, `{"type":"message.start","session_id":"abcd1234","seq":1,"payload":{"text":"x"}}`); err == nil {
-		t.Fatal("message.start with payload accepted")
+	if _, err := decodeEvent(t, `{"type":"message.start","session_id":"abcd1234","seq":1,"payload":{"text":"x","undeclared":true}}`); err == nil {
+		t.Fatal("message.start with an undeclared payload member accepted")
 	}
 	if _, err := decodeEvent(t, `{"type":"message.start","session_id":"abcd1234","seq":1}`); err != nil {
 		t.Fatal(err)
@@ -207,6 +207,53 @@ func TestTheEventsV0216AddsAreAdmittedAsObserved(t *testing.T) {
 func TestTheEventV0222AddsIsAdmittedAsObserved(t *testing.T) {
 	if _, err := decodeEvent(t, `{"type":"onboarding.ended","session_id":"s","seq":4,"payload":{"anything":true}}`); err != nil {
 		t.Fatalf("onboarding.ended rejected: %v", err)
+	}
+}
+
+func TestTheEventsV0231AddsAreAdmittedAsObserved(t *testing.T) {
+	for _, observed := range []string{"agent.print", "skills.changed", "tool.progress"} {
+		if _, err := decodeEvent(t, `{"type":"`+observed+`","session_id":"s","seq":4,"payload":{"anything":true}}`); err != nil {
+			t.Fatalf("observed %s rejected: %v", observed, err)
+		}
+	}
+}
+
+func TestAV023DeltaCarriesTurnIdentityAndANullTextBoundary(t *testing.T) {
+	event, err := decodeEvent(t, `{"type":"message.delta","session_id":"s","seq":4,"payload":{"text":null,"turn_id":"t1","segment":2,"offset":18}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload DeltaPayload
+	if err := DecodeStrict(event.Payload, &payload); err != nil || payload.Text != "" || payload.TurnID != "t1" || payload.Segment != 2 || payload.Offset != 18 {
+		t.Fatalf("payload = %+v err=%v", payload, err)
+	}
+}
+
+func TestAV023MessageStartMayCarryAnAdmissionCard(t *testing.T) {
+	if _, err := decodeEvent(t, `{"type":"message.start","session_id":"s","seq":2,"payload":{"display_kind":"background","display_text":"done","notification_category":"task","text":"card","turn_id":"t1"}}`); err != nil {
+		t.Fatalf("message.start payload rejected: %v", err)
+	}
+}
+
+func TestAV023UsageTickAdmitsTheDeprecatedCountersAndANullUsage(t *testing.T) {
+	event, err := decodeEvent(t, `{"type":"session.usage","session_id":"s","seq":6,"payload":{"usage":null,"input_tokens":7,"output_tokens":8,"model":"m","plan_gauge":{"id":"g"}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload UsageTickPayload
+	if err := DecodeStrict(event.Payload, &payload); err != nil || payload.Usage != nil || payload.InputTokens == nil || *payload.InputTokens != 7 || payload.Model != "m" || payload.PlanGauge == nil {
+		t.Fatalf("payload = %+v err=%v", payload, err)
+	}
+}
+
+func TestAV023CompletionCarriesUserRowIDsAndASubmissionID(t *testing.T) {
+	event, err := decodeEvent(t, `{"type":"message.complete","session_id":"s","seq":5,"payload":{"text":"hi","status":"complete","user_row_ids":[3,4],"submission_id":"sub-1"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload MessageCompletePayload
+	if err := DecodeStrict(event.Payload, &payload); err != nil || len(payload.UserRowIDs) != 2 || payload.UserRowIDs[0] != 3 || payload.SubmissionID != "sub-1" {
+		t.Fatalf("payload = %+v err=%v", payload, err)
 	}
 }
 

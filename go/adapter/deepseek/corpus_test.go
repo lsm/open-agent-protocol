@@ -56,7 +56,7 @@ var dshPreviousSources = dshCorpusSources{
 	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
 	SDKServer:            "726f430f155190922bdce21807da26b6e1a7b127",
 	CoreSessionTypes:     "e0931f22405b25cf1e9090929fb9f5f45852d6bc",
-	CoreKnownEvents:      "a0f5c17795be074e3c521c525a0eb59ee25248d6",
+	CoreKnownEvents:      "466e76bb80845580ae24b2e72cc1bafbea88fc2b",
 	CoreAgentTypes:       "5cbc81df38c81be4f5c4d85e6a2c8acd5108ed95",
 	CoreAgentInbox:       "ef00887a544c2dededb484ff7b9ce0efe83dea21",
 	CoreAgentRuntime:     "0fa89afc054a819493206cef65dd7907092cdd7f",
@@ -64,23 +64,23 @@ var dshPreviousSources = dshCorpusSources{
 	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
 	LLMTypes:             "8001ab81d8f4e159f1b5e02e12af4f7f6223f625",
 	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
-	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
+	CoreSessionSurface:   "7a13bc1d7c1c87bae96a52ed7b160f8d6a635e3c",
 }
 
 var dshCurrentSources = dshCorpusSources{
 	SDKProtocolTypes:     "6bcd2de7045e58c0fab0e5bacf956724d1ff6e68",
 	SDKProtocolTransport: "4ee65555c0342b276e43b03186659acb623cb6fe",
-	SDKServer:            "1879b23e2eeb57d080f2d38401ab5a0a81ba03d7",
-	CoreSessionTypes:     "7787dd9bd073217825356b9c6b419d2e153d2537",
-	CoreKnownEvents:      "a0f5c17795be074e3c521c525a0eb59ee25248d6",
+	SDKServer:            "bccfa6634e071c5bf1fad2f6b2fde80b0c8e503b",
+	CoreSessionTypes:     "0cf13c86a0313ba8869f36bb48004e61dc4cb685",
+	CoreKnownEvents:      "466e76bb80845580ae24b2e72cc1bafbea88fc2b",
 	CoreAgentTypes:       "06d2c88ab1e5ada455214555aaae542077caa571",
 	CoreAgentInbox:       "affe0c6b2f653888dc2177fd2987c6082a93f758",
-	CoreAgentRuntime:     "2b1698e39c663f4d8d7760ebdaef647bed693257",
-	CoreAgentLoop:        "c4daa50c47c13fb86b94466774dfcac32b214076",
+	CoreAgentRuntime:     "7012dfdf50b7c78b07697fbe0cdc9defec7bb957",
+	CoreAgentLoop:        "7ec43dd1323edc6e2b488d7c9d35fdd2d323abbd",
 	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
 	LLMTypes:             "8a48b89895db0ddb8908ec6359eb67af60fe0f54",
 	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
-	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
+	CoreSessionSurface:   "7a13bc1d7c1c87bae96a52ed7b160f8d6a635e3c",
 }
 
 func dshCurrentProvenance() dshCorpusProvenance {

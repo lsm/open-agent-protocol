@@ -36,7 +36,7 @@ pub static SERVER_VERSION: LazyLock<String> = LazyLock::new(|| {
         .expect("the harness catalog pins deepseek-harness with an admitted server version")
 });
 
-const OBSERVED_ONLY_EVENTS: [&str; 47] = [
+const OBSERVED_ONLY_EVENTS: [&str; 48] = [
     "agent-preset/selected",
     "approval/asked",
     "approval/decided",
@@ -74,6 +74,7 @@ const OBSERVED_ONLY_EVENTS: [&str; 47] = [
     "team/member",
     "team/message/delivered",
     "team/message/queued",
+    "team/mode",
     "team/task",
     "tool-workflow/agent-end",
     "tool-workflow/agent-start",

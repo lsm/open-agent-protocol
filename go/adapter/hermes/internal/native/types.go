@@ -50,11 +50,24 @@ type DeltaPayload struct {
 	Text     string `json:"text"`
 	Rendered string `json:"rendered,omitempty"`
 	Verbose  bool   `json:"verbose,omitempty"`
+	TurnID   string `json:"turn_id,omitempty"`
+	Segment  int64  `json:"segment,omitempty"`
+	Offset   int64  `json:"offset,omitempty"`
 }
 
 type InterimPayload struct {
 	Text            string `json:"text"`
 	AlreadyStreamed bool   `json:"already_streamed"`
+	TurnID          string `json:"turn_id,omitempty"`
+	Segment         int64  `json:"segment,omitempty"`
+}
+
+type MessageStartPayload struct {
+	DisplayKind          string `json:"display_kind,omitempty"`
+	DisplayText          string `json:"display_text,omitempty"`
+	NotificationCategory string `json:"notification_category,omitempty"`
+	Text                 string `json:"text,omitempty"`
+	TurnID               string `json:"turn_id,omitempty"`
 }
 
 type MessageCompletePayload struct {
@@ -74,6 +87,8 @@ type MessageCompletePayload struct {
 	ErrorSurface        *ErrorSurface   `json:"error_surface,omitempty"`
 	Partial             bool            `json:"partial,omitempty"`
 	PersistedTurn       json.RawMessage `json:"persisted_turn,omitempty"`
+	UserRowIDs          []int64         `json:"user_row_ids,omitempty"`
+	SubmissionID        string          `json:"submission_id,omitempty"`
 }
 
 type ErrorSurface struct {
@@ -124,7 +139,31 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 }
 
 type UsageTickPayload struct {
-	Usage Usage `json:"usage"`
+	Usage            *Usage          `json:"usage,omitempty"`
+	InputTokens      *int64          `json:"input_tokens,omitempty"`
+	OutputTokens     *int64          `json:"output_tokens,omitempty"`
+	CacheReadTokens  *int64          `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int64          `json:"cache_write_tokens,omitempty"`
+	PromptTokens     *int64          `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int64          `json:"completion_tokens,omitempty"`
+	TotalTokens      *int64          `json:"total_tokens,omitempty"`
+	ReasoningTokens  *int64          `json:"reasoning_tokens,omitempty"`
+	APICalls         *int64          `json:"api_calls,omitempty"`
+	LastPromptTokens *int64          `json:"last_prompt_tokens,omitempty"`
+	ContextTokens    *int64          `json:"context_tokens,omitempty"`
+	ContextLength    *int64          `json:"context_length,omitempty"`
+	ConfigContextLen *int64          `json:"config_context_length,omitempty"`
+	ContextSource    string          `json:"context_source,omitempty"`
+	CompressionCount *int64          `json:"compression_count,omitempty"`
+	AvgLatencyS      *float64        `json:"avg_latency_s,omitempty"`
+	TokensPerS       *float64        `json:"tokens_per_s,omitempty"`
+	LastTurnTokens   *int64          `json:"last_turn_tokens,omitempty"`
+	RateLimit        json.RawMessage `json:"rate_limit,omitempty"`
+	ActiveSubagents  *int64          `json:"active_subagents,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	Provider         string          `json:"provider,omitempty"`
+	FallbackModel    string          `json:"fallback_model,omitempty"`
+	PlanGauge        json.RawMessage `json:"plan_gauge,omitempty"`
 }
 
 type ToolStartPayload struct {
@@ -400,7 +439,7 @@ const (
 )
 
 var observedEvents = map[string]bool{
-	"agent.terminal.output": true, "approval.cancelled": true, "billing.step_up.verification": true, "bot_relay.outbox.pending": true,
+	"agent.print": true, "agent.terminal.output": true, "approval.cancelled": true, "billing.step_up.verification": true, "bot_relay.outbox.pending": true,
 	"browser.controller.cancel": true, "browser.controller.command": true, "browser.progress": true,
 	"connection.request": true, "connection.update": true, "cron.changed": true,
 	"display.install.done": true, "display.install.log": true, "display.lease": true, "display.status": true,
@@ -413,10 +452,10 @@ var observedEvents = map[string]bool{
 	"preview.restart.progress": true, "projects.changed": true, "reaction": true, "reasoning.available": true,
 	"review.summary": true, "session.control.update": true, "session.reclaimed": true,
 	"session.resume_progress": true, "session.title": true, "sessions.changed": true,
-	"setup.ready": true, "skin.changed": true, "status.update": true, "subagent.progress": true,
+	"setup.ready": true, "skills.changed": true, "skin.changed": true, "status.update": true, "subagent.progress": true,
 	"subagent.spawn_requested": true, "subagent.start": true, "subagent.thinking": true,
 	"subagent.tool": true, "terminal.close": true, "tip.show": true, "todo.updated": true,
-	"tool.generating": true, "tool.output_risk": true, "voice.interrupted": true,
+	"tool.generating": true, "tool.output_risk": true, "tool.progress": true, "voice.interrupted": true,
 	"voice.partial": true, "voice.status": true, "voice.transcript": true, "wake.detected": true,
 }
 
@@ -449,7 +488,12 @@ func (event Event) Validate() error {
 		return fmt.Errorf("%w: unknown event type %q", ErrInvalid, event.Type)
 	}
 	if event.Type == EventMessageStart && len(event.Payload) > 0 {
-		return fmt.Errorf("%w: message.start carries no payload", ErrInvalid)
+
+		var start MessageStartPayload
+		if err := DecodeStrict(event.Payload, &start); err != nil {
+			return fmt.Errorf("%w: invalid message.start payload: %v", ErrInvalid, err)
+		}
+		return nil
 	}
 	if event.Type == EventSessionInfo {
 

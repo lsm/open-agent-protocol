@@ -65,6 +65,7 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"team/member":                            true,
 	"team/message/delivered":                 true,
 	"team/message/queued":                    true,
+	"team/mode":                              true,
 	"team/task":                              true,
 	"tool-workflow/agent-end":                true,
 	"tool-workflow/agent-start":              true,

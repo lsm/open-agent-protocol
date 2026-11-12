@@ -26,12 +26,12 @@ import (
 var opencodeCommitTree = pin.Source("opencode").Tree
 
 const (
-	opencodeSessionEvent  = "0b6af19e6e420abfc767f207ed7b5b3172893d14"
+	opencodeSessionEvent  = "51608b6cf620a426b3f7f62ee6c0506eea2bc35e"
 	opencodeSessionInput  = "16e900189369130b6ed690b82866fc09f1006c81"
 	opencodeDeliveryBlob  = "ce11a7a0f97dc235bcd351eca3e60ebc02a02588"
-	opencodeSessionGroup  = "2816f25bf1e75f42c28477fae0d19bc2a2919241"
-	opencodeServerHandler = "2b7f8b990337320845c1566fdf6ffbcc85591ee7"
-	opencodeCoreSession   = "8c1f40b76792aaf60fdadea6049d88313de25550"
+	opencodeSessionGroup  = "b0f8be8dc5cbcff5ab4da664ef009315f9caf41a"
+	opencodeServerHandler = "6092f5f19e602c21c181409407ea484ce1d57829"
+	opencodeCoreSession   = "76b2b7b279e79d7c8280f3ca73b31d9c714a7149"
 )
 
 var opencodeLedgerFixtures = map[string]bool{

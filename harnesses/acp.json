@@ -3,13 +3,31 @@
   "name": "Agent Client Protocol",
   "versions": [
     {
-      "label": "v1.15.1",
+      "label": "v1.17.0",
       "status": "current",
-      "endpoint_version": "1.15.1",
-      "capability_revision": "acp-v1.15.1-schema-v1.29.1-oap-v7",
-      "ledgers": ["research/acp-v1.15.1-mapping.md", "research/acp-v1.12.0-mapping.md", "research/acp-v1.11.0-mapping.md", "research/acp-v1.10.2-mapping.md", "research/acp-v1.9.1-mapping.md", "research/acp-v1.7.0-mapping.md"],
-      "corpus": "fixtures/adapters/acp-v1.15.1",
+      "endpoint_version": "1.17.0",
+      "capability_revision": "acp-v1.17.0-schema-v1.31.0-oap-v7",
+      "ledgers": ["research/acp-v1.17.0-mapping.md", "research/acp-v1.15.1-mapping.md", "research/acp-v1.12.0-mapping.md", "research/acp-v1.11.0-mapping.md", "research/acp-v1.10.2-mapping.md", "research/acp-v1.9.1-mapping.md", "research/acp-v1.7.0-mapping.md"],
+      "corpus": "fixtures/adapters/acp-v1.17.0",
       "corpus_from": "v1.7.0",
+      "components": [
+        { "name": "agent-client-protocol", "version": "v1.17.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
+        { "name": "agent-client-protocol-schema", "version": "schema-v1.31.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
+        { "name": "cagent", "version": "v1.160.0", "repository": "https://github.com/docker/cagent" }
+      ],
+      "artifacts": [
+        { "component": "agent-client-protocol", "platform": "any", "kind": "source-tree", "name": "schema/v1 agent-client-protocol-schema/src/v1 docs/protocol/v1", "sha256": "6012cdb342da0d728e5ccee79d48a1186d3346d961bc260f84d7d21607eb01eb" },
+        { "component": "agent-client-protocol-schema", "platform": "any", "kind": "source-tree", "name": "schema/v1", "sha256": "56aef9797f56121f619737ccbcf37cd4983b52a5430b55157d0927d6c3bf8f66" }
+      ],
+      "sources": [
+        { "component": "agent-client-protocol", "tag": "v1.17.0", "commit": "0849001ca66fb975fc01111ddab9093bc8304e98" },
+        { "component": "cagent", "tag": "v1.160.0", "commit": "f5cb1d66d67e274c2ec7cd22726614d5fffe98e8", "tree": "b938200392e643ac0424531c13bc5ec19b236fd7" }
+      ]
+    },
+    {
+      "label": "v1.15.1",
+      "status": "retired",
+      "ledgers": ["research/acp-v1.15.1-mapping.md", "research/acp-v1.12.0-mapping.md", "research/acp-v1.11.0-mapping.md", "research/acp-v1.10.2-mapping.md", "research/acp-v1.9.1-mapping.md", "research/acp-v1.7.0-mapping.md"],
       "components": [
         { "name": "agent-client-protocol", "version": "v1.15.1", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
         { "name": "agent-client-protocol-schema", "version": "schema-v1.29.1", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },

@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "adapter": "codex-appserver-stdio",
+  "codex_commit": "ce21072c90d32c40af7a55b60b2fb35c84a43a6a",
+  "schema_tree_sha256": "15a28c10689057d59a02fc041bd2841a1b733b7021e8256857ca7627b9cde956",
+  "cases": [
+    {
+      "id": "completed-text",
+      "path": "cases/completed-text",
+      "ledger_fixtures": [
+        "completed-text"
+      ]
+    },
+    {
+      "id": "failed-turn",
+      "path": "cases/failed-turn",
+      "ledger_fixtures": [
+        "failed-turn"
+      ]
+    },
+    {
+      "id": "interrupted-turn",
+      "path": "cases/interrupted-turn",
+      "ledger_fixtures": [
+        "interrupted-turn"
+      ]
+    },
+    {
+      "id": "command-completed",
+      "path": "cases/command-completed",
+      "ledger_fixtures": [
+        "command-completed"
+      ]
+    },
+    {
+      "id": "file-change-completed",
+      "path": "cases/file-change-completed",
+      "ledger_fixtures": [
+        "file-change-completed"
+      ]
+    },
+    {
+      "id": "mcp-completed",
+      "path": "cases/mcp-completed",
+      "ledger_fixtures": [
+        "mcp-completed"
+      ]
+    },
+    {
+      "id": "command-approval",
+      "path": "cases/command-approval",
+      "ledger_fixtures": [
+        "command-approval"
+      ]
+    },
+    {
+      "id": "file-approval",
+      "path": "cases/file-approval",
+      "ledger_fixtures": [
+        "file-approval"
+      ]
+    },
+    {
+      "id": "user-input",
+      "path": "cases/user-input",
+      "ledger_fixtures": [
+        "user-input"
+      ]
+    },
+    {
+      "id": "permissions-approval-unsupported",
+      "path": "cases/permissions-approval-unsupported",
+      "ledger_fixtures": [
+        "permissions-approval"
+      ]
+    },
+    {
+      "id": "duplicate-terminal",
+      "path": "cases/duplicate-terminal",
+      "ledger_fixtures": [
+        "duplicate-terminal"
+      ]
+    },
+    {
+      "id": "process-exit",
+      "path": "cases/process-exit",
+      "ledger_fixtures": [
+        "process-exit"
+      ]
+    },
+    {
+      "id": "model-per-turn",
+      "path": "cases/model-per-turn",
+      "ledger_fixtures": [
+        "model-per-turn"
+      ]
+    },
+    {
+      "id": "structured-output",
+      "path": "cases/structured-output",
+      "ledger_fixtures": [
+        "structured-output"
+      ]
+    },
+    {
+      "id": "structured-output-nonconforming",
+      "path": "cases/structured-output-nonconforming",
+      "ledger_fixtures": [
+        "structured-output-nonconforming"
+      ]
+    },
+    {
+      "id": "token-usage",
+      "path": "cases/token-usage",
+      "ledger_fixtures": [
+        "token-usage"
+      ]
+    }
+  ]
+}

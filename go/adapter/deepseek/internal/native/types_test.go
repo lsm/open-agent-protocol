@@ -276,6 +276,16 @@ func TestAWorkingDirectoryChangeIsObservedOnlyAndDecodesWithoutAnIgnorableMarker
 	}
 }
 
+func TestTeamModeIsObservedOnlyAndDecodesWithoutAnIgnorableMarker(t *testing.T) {
+	if !ObservedOnly("team/mode") {
+		t.Fatal("team/mode is required at dsh-v0.2.2-rc.2, and this adapter maps nothing of it")
+	}
+	frame := []byte(`{"sessionId":"session","event":{"type":"team/mode","seq":17,"time":1,"data":{"mode":"team"}}}`)
+	if _, err := DecodeNotification(NotifySessionEvent, frame); err != nil {
+		t.Fatalf("team/mode refused: %v", err)
+	}
+}
+
 func TestWorkspaceChangesIsObservedOnlyAndImageOffloadIsNot(t *testing.T) {
 	if !ObservedOnly("workspace/changes") {
 		t.Fatal("workspace/changes is required, and this adapter maps nothing of it")

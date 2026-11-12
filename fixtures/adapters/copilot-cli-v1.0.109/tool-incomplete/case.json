@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "tool-incomplete",
+  "native": "native.jsonl",
+  "expected_oap": "expected-oap.json",
+  "mapping": "mapping.json",
+  "omissions": "omissions.json",
+  "provenance": {
+    "repository": "https://github.com/github/copilot-cli",
+    "tag": "v1.0.109",
+    "commit": "a73dd6977439f238e66e5328a131ef783fee30d4",
+    "commit_tree": "2971d0b703abf0bb2ec4eaa23adb918c57361e29",
+    "kind": "synthetic",
+    "basis": "research/copilot-cli-1.0.109-mapping.md; not a live capture"
+  },
+  "identity_map": {
+    "native.sessionId": "private native session binding; s1 is OAP id",
+    "native.messageId": "private admission binding; run-1 is OAP id"
+  },
+  "advertised_capabilities": {
+    "run.streaming": "native",
+    "action.tools": "native"
+  },
+  "codec_only": false,
+  "prefix_oap": "prefix-oap.json"
+}

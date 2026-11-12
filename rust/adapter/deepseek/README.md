@@ -3,7 +3,7 @@
 The Rust port of `go/adapter/deepseek`: an OAP adapter over the DeepSeek
 harness SDK runtime's JSON-RPC on stdio, pinned by
 `harnesses/deepseek-harness.json` and judged by the corpus in
-`fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.1`.
+`fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.2`.
 
 So far it holds the native handshake, prompt, notification and event payload
 types, including Go's `MessageSource` rules for closed source kinds and its

@@ -9,29 +9,29 @@
   "rows": [
     {
       "harness": "acp",
-      "pin": "v1.15.1",
-      "capability_revision": "acp-v1.15.1-schema-v1.29.1-oap-v7",
-      "corpus": "fixtures/adapters/acp-v1.15.1",
+      "pin": "v1.17.0",
+      "capability_revision": "acp-v1.17.0-schema-v1.31.0-oap-v7",
+      "corpus": "fixtures/adapters/acp-v1.17.0",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "a new prompt is admitted and the run completes",
           "evidence": [
-            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/new-prompt-completed", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.15.1/cases/new-prompt-completed" }
+            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/new-prompt-completed", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.17.0/cases/new-prompt-completed" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "one content.delta is delivered from the pinned wire",
           "evidence": [
-            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/new-prompt-completed", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.15.1/cases/new-prompt-completed" }
+            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/new-prompt-completed", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.17.0/cases/new-prompt-completed" }
           ]
         },
         {
           "column": "cancel",
           "claim": "a confirmed session.cancel settles run.cancelled",
           "evidence": [
-            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/cancel-confirmed", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.15.1/cases/cancel-confirmed" }
+            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/cancel-confirmed", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.17.0/cases/cancel-confirmed" }
           ]
         },
         {
@@ -45,72 +45,72 @@
           "column": "tool-observation",
           "claim": "the call lifecycle is observed behind a permission gate",
           "evidence": [
-            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/tool-lifecycle-permission", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.15.1/cases/tool-lifecycle-permission" }
+            { "package": "go/adapter/acp", "test": "TestACPEvidenceCorpus/tool-lifecycle-permission", "kind": "positive", "fixture": "fixtures/adapters/acp-v1.17.0/cases/tool-lifecycle-permission" }
           ]
         }
       ]
     },
     {
       "harness": "claude-code",
-      "pin": "2.1.319",
-      "capability_revision": "claude-code-2.1.319-oap-v1",
-      "corpus": "fixtures/adapters/claude-code-2.1.319",
+      "pin": "2.1.322",
+      "capability_revision": "claude-code-2.1.322-oap-v1",
+      "corpus": "fixtures/adapters/claude-code-2.1.322",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "a submitted prompt streams provenance-tagged deltas and completes",
           "evidence": [
-            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.319/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.319/streaming-provenance" }
+            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.322/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.322/streaming-provenance" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "three provenance-tagged content.delta envelopes",
           "evidence": [
-            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.319/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.319/streaming-provenance" }
+            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.322/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.322/streaming-provenance" }
           ]
         },
         {
           "column": "cancel",
           "claim": "the interrupt control flow settles run.cancelled",
           "evidence": [
-            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.319/interrupt-cancel", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.319/interrupt-cancel" }
+            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.322/interrupt-cancel", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.322/interrupt-cancel" }
           ]
         },
         {
           "column": "reopen",
           "claim": "rebinds the stored native session and reports its current model",
           "evidence": [
-            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.319/session-reopen", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.319/session-reopen" }
+            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.322/session-reopen", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.322/session-reopen" }
           ]
         },
         {
           "column": "tool-observation",
           "claim": "calls requested, started, completed and failed are observed",
           "evidence": [
-            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.319/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.319/tool-lifecycle" }
+            { "package": "go/adapter/claude", "test": "TestClaudeEvidenceCorpus/claude-code-2.1.322/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/claude-code-2.1.322/tool-lifecycle" }
           ]
         }
       ]
     },
     {
       "harness": "codex-app-server",
-      "pin": "rust-v0.167.0",
-      "capability_revision": "codex-appserver-0.167.0-oap-v1",
-      "corpus": "fixtures/adapters/codex-appserver-0.167.0",
+      "pin": "rust-v0.167.2",
+      "capability_revision": "codex-appserver-0.167.2-oap-v1",
+      "corpus": "fixtures/adapters/codex-appserver-0.167.2",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "a turn is admitted and completes",
           "evidence": [
-            { "package": "go/adapter/codex/appserver", "test": "TestCodexEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/codex-appserver-0.167.0/cases/completed-text" }
+            { "package": "go/adapter/codex/appserver", "test": "TestCodexEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/codex-appserver-0.167.2/cases/completed-text" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "content.delta is delivered from the pinned turn",
           "evidence": [
-            { "package": "go/adapter/codex/appserver", "test": "TestCodexEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/codex-appserver-0.167.0/cases/completed-text" }
+            { "package": "go/adapter/codex/appserver", "test": "TestCodexEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/codex-appserver-0.167.2/cases/completed-text" }
           ]
         },
         {
@@ -131,22 +131,22 @@
           "column": "tool-observation",
           "claim": "an executed command's output is observed as a completed call",
           "evidence": [
-            { "package": "go/adapter/codex/appserver", "test": "TestCodexEvidenceCorpus/command-completed", "kind": "positive", "fixture": "fixtures/adapters/codex-appserver-0.167.0/cases/command-completed" }
+            { "package": "go/adapter/codex/appserver", "test": "TestCodexEvidenceCorpus/command-completed", "kind": "positive", "fixture": "fixtures/adapters/codex-appserver-0.167.2/cases/command-completed" }
           ]
         }
       ]
     },
     {
       "harness": "copilot-cli",
-      "pin": "v1.0.107",
-      "capability_revision": "copilot-cli-1.0.107-oap-v1",
-      "corpus": "fixtures/adapters/copilot-cli-v1.0.107",
+      "pin": "v1.0.109",
+      "capability_revision": "copilot-cli-1.0.109-oap-v1",
+      "corpus": "fixtures/adapters/copilot-cli-v1.0.109",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "the pinned synthetic server opens, submits and completes, and the reducer completes the captured text",
           "evidence": [
-            { "package": "go/adapter/copilot", "test": "TestLifecycleCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/copilot-cli-v1.0.107/completed-text" },
+            { "package": "go/adapter/copilot", "test": "TestLifecycleCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/copilot-cli-v1.0.109/completed-text" },
             { "package": "go/adapter/copilot", "test": "TestPublicAdapterOpensThePinnedSyntheticServerAndRuns", "kind": "positive" }
           ]
         },
@@ -154,7 +154,7 @@
           "column": "text-deltas",
           "claim": "the reducer delivers the captured delta and completion",
           "evidence": [
-            { "package": "go/adapter/copilot", "test": "TestLifecycleCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/copilot-cli-v1.0.107/completed-text" }
+            { "package": "go/adapter/copilot", "test": "TestLifecycleCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/copilot-cli-v1.0.109/completed-text" }
           ]
         },
         {
@@ -175,29 +175,29 @@
           "column": "tool-observation",
           "claim": "a tool execution start, progress and completion are observed; Copilot executes its own tools",
           "evidence": [
-            { "package": "go/adapter/copilot", "test": "TestToolCorpus/tool-success", "kind": "positive", "fixture": "fixtures/adapters/copilot-cli-v1.0.107/tool-success" }
+            { "package": "go/adapter/copilot", "test": "TestToolCorpus/tool-success", "kind": "positive", "fixture": "fixtures/adapters/copilot-cli-v1.0.109/tool-success" }
           ]
         }
       ]
     },
     {
       "harness": "deepseek-harness",
-      "pin": "dsh-v0.2.2-rc.1",
-      "capability_revision": "deepseek-harness-dsh-v0.2.2-rc.1-oap-v3",
-      "corpus": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.1",
+      "pin": "dsh-v0.2.2-rc.2",
+      "capability_revision": "deepseek-harness-dsh-v0.2.2-rc.2-oap-v3",
+      "corpus": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.2",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "an owned start admits the run and the turn completes",
           "evidence": [
-            { "package": "go/adapter/deepseek", "test": "TestDSHEvidenceCorpus/owned-start-completed", "kind": "positive", "fixture": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.1/owned-start-completed" }
+            { "package": "go/adapter/deepseek", "test": "TestDSHEvidenceCorpus/owned-start-completed", "kind": "positive", "fixture": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.2/owned-start-completed" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "three streamed chunks arrive as content.delta",
           "evidence": [
-            { "package": "go/adapter/deepseek", "test": "TestDSHEvidenceCorpus/streaming-chunks", "kind": "positive", "fixture": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.1/streaming-chunks" }
+            { "package": "go/adapter/deepseek", "test": "TestDSHEvidenceCorpus/streaming-chunks", "kind": "positive", "fixture": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.2/streaming-chunks" }
           ]
         },
         {
@@ -218,29 +218,29 @@
           "column": "tool-observation",
           "claim": "completed and failed tool turns are observed",
           "evidence": [
-            { "package": "go/adapter/deepseek", "test": "TestDSHEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.1/tool-lifecycle" }
+            { "package": "go/adapter/deepseek", "test": "TestDSHEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/deepseek-harness-dsh-v0.2.2-rc.2/tool-lifecycle" }
           ]
         }
       ]
     },
     {
       "harness": "hermes",
-      "pin": "v0.22.2",
-      "capability_revision": "hermes-v0.22.2-oap-v1",
-      "corpus": "fixtures/adapters/hermes-v0.22.2",
+      "pin": "v0.23.1",
+      "capability_revision": "hermes-v0.23.1-oap-v1",
+      "corpus": "fixtures/adapters/hermes-v0.23.1",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "a submitted prompt streams provenance-tagged deltas and completes",
           "evidence": [
-            { "package": "go/adapter/hermes", "test": "TestHermesEvidenceCorpus/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/hermes-v0.22.2/streaming-provenance" }
+            { "package": "go/adapter/hermes", "test": "TestHermesEvidenceCorpus/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/hermes-v0.23.1/streaming-provenance" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "three provenance-tagged content.delta envelopes",
           "evidence": [
-            { "package": "go/adapter/hermes", "test": "TestHermesEvidenceCorpus/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/hermes-v0.22.2/streaming-provenance" }
+            { "package": "go/adapter/hermes", "test": "TestHermesEvidenceCorpus/streaming-provenance", "kind": "positive", "fixture": "fixtures/adapters/hermes-v0.23.1/streaming-provenance" }
           ]
         },
         {
@@ -261,29 +261,29 @@
           "column": "tool-observation",
           "claim": "two completed tool calls are observed",
           "evidence": [
-            { "package": "go/adapter/hermes", "test": "TestHermesEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/hermes-v0.22.2/tool-lifecycle" }
+            { "package": "go/adapter/hermes", "test": "TestHermesEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/hermes-v0.23.1/tool-lifecycle" }
           ]
         }
       ]
     },
     {
       "harness": "opencode",
-      "pin": "v2.2.6",
-      "capability_revision": "opencode-v2.2.6-oap-v5",
-      "corpus": "fixtures/adapters/opencode-v2.2.6",
+      "pin": "v2.2.7",
+      "capability_revision": "opencode-v2.2.7-oap-v5",
+      "corpus": "fixtures/adapters/opencode-v2.2.7",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "a prompt is admitted and the run completes",
           "evidence": [
-            { "package": "go/adapter/opencode", "test": "TestOpenCodeEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/opencode-v2.2.6/completed-text" }
+            { "package": "go/adapter/opencode", "test": "TestOpenCodeEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/opencode-v2.2.7/completed-text" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "text parts stream as four content.delta envelopes",
           "evidence": [
-            { "package": "go/adapter/opencode", "test": "TestOpenCodeEvidenceCorpus/text-streaming", "kind": "positive", "fixture": "fixtures/adapters/opencode-v2.2.6/text-streaming" }
+            { "package": "go/adapter/opencode", "test": "TestOpenCodeEvidenceCorpus/text-streaming", "kind": "positive", "fixture": "fixtures/adapters/opencode-v2.2.7/text-streaming" }
           ]
         },
         {
@@ -304,50 +304,50 @@
           "column": "tool-observation",
           "claim": "call progress and completion are observed",
           "evidence": [
-            { "package": "go/adapter/opencode", "test": "TestOpenCodeEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/opencode-v2.2.6/tool-lifecycle" }
+            { "package": "go/adapter/opencode", "test": "TestOpenCodeEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/opencode-v2.2.7/tool-lifecycle" }
           ]
         }
       ]
     },
     {
       "harness": "pi",
-      "pin": "v1.5.0",
-      "capability_revision": "pi-v1.5.0-oap-v1",
-      "corpus": "fixtures/adapters/pi-v1.5.0",
+      "pin": "v1.5.2",
+      "capability_revision": "pi-v1.5.2-oap-v1",
+      "corpus": "fixtures/adapters/pi-v1.5.2",
       "cells": [
         {
           "column": "open-submit-complete",
           "claim": "the run goes from started to completed",
           "evidence": [
-            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.0/completed-text" }
+            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/completed-text", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.2/completed-text" }
           ]
         },
         {
           "column": "text-deltas",
           "claim": "two content.delta envelopes are delivered",
           "evidence": [
-            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/streaming-deltas", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.0/streaming-deltas" }
+            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/streaming-deltas", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.2/streaming-deltas" }
           ]
         },
         {
           "column": "cancel",
           "claim": "cancel settles the run cancelled through a status update",
           "evidence": [
-            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/cancel-settled", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.0/cancel-settled" }
+            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/cancel-settled", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.2/cancel-settled" }
           ]
         },
         {
           "column": "reopen",
           "claim": "rebinds the stored session and reports its model and policy",
           "evidence": [
-            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/session-reopen", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.0/session-reopen" }
+            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/session-reopen", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.2/session-reopen" }
           ]
         },
         {
           "column": "tool-observation",
           "claim": "parallel calls with progress are observed, one completing and one failing",
           "evidence": [
-            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.0/tool-lifecycle" }
+            { "package": "go/adapter/pi", "test": "TestPiEvidenceCorpus/tool-lifecycle", "kind": "positive", "fixture": "fixtures/adapters/pi-v1.5.2/tool-lifecycle" }
           ]
         }
       ]

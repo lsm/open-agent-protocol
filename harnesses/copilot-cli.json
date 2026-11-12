@@ -3,15 +3,49 @@
   "name": "GitHub Copilot CLI",
   "versions": [
     {
-      "label": "v1.0.107",
+      "label": "v1.0.109",
       "status": "current",
-      "endpoint_version": "1.0.107",
-      "capability_revision": "copilot-cli-1.0.107-oap-v1",
+      "endpoint_version": "1.0.109",
+      "capability_revision": "copilot-cli-1.0.109-oap-v1",
+      "ledgers": [
+        "research/copilot-cli-1.0.109-mapping.md",
+        "research/copilot-cli-1.0.107-mapping.md",
+        "research/copilot-cli-1.0.98-mapping.md"
+      ],
+      "corpus": "fixtures/adapters/copilot-cli-v1.0.109",
+      "components": [
+        {
+          "name": "copilot-cli",
+          "version": "v1.0.109",
+          "repository": "https://github.com/github/copilot-cli"
+        }
+      ],
+      "sources": [
+        {
+          "component": "copilot-cli",
+          "tag": "v1.0.109",
+          "commit": "a73dd6977439f238e66e5328a131ef783fee30d4",
+          "tree": "2971d0b703abf0bb2ec4eaa23adb918c57361e29"
+        }
+      ],
+      "artifacts": [
+        {
+          "component": "copilot-cli",
+          "platform": "darwin-arm64",
+          "kind": "npm-tarball",
+          "name": "github-copilot-1.0.109-darwin-arm64.tgz",
+          "sha256": "0e315203a2a90f78dd11def8b44c02083518ac7a94276aa56ca3584a630ff083",
+          "bytes": 100847453
+        }
+      ]
+    },
+    {
+      "label": "v1.0.107",
+      "status": "retired",
       "ledgers": [
         "research/copilot-cli-1.0.107-mapping.md",
         "research/copilot-cli-1.0.98-mapping.md"
       ],
-      "corpus": "fixtures/adapters/copilot-cli-v1.0.107",
       "components": [
         {
           "name": "copilot-cli",

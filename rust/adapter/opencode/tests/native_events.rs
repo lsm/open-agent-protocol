@@ -10,7 +10,7 @@ const STARTED: &str = r#"{"id":"evt_1","type":"session.execution.started","durab
 
 fn corpus_frames() -> Vec<String> {
     let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/adapters/opencode-v2.2.6");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/adapters/opencode-v2.2.7");
     let mut frames = Vec::new();
     for case in std::fs::read_dir(root).unwrap() {
         let Ok(native) = std::fs::read_to_string(case.unwrap().path().join("native.jsonl")) else {
