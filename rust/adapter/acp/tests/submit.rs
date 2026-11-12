@@ -467,3 +467,29 @@ fn graceful_close_accepts_cooperative_interpreter_exit_delay() {
     block_on(session.close()).unwrap();
     fixture.reaped();
 }
+
+#[test]
+fn lone_surrogates_and_null_content_reach_the_prompt_as_go_decodes_them() {
+    let fixture = Fixture::new();
+    let session = fixture.open("complete");
+    for content in [r#""a\ud800b""#, "null"] {
+        let mut request = submit("");
+        request.request.messages[0].content = serde_json::from_str(content).unwrap();
+        let (_, stream) = block_on(session.submit(request)).unwrap();
+        block_on(stream.collect::<Vec<_>>());
+    }
+    let prompts = std::fs::read_to_string(fixture.0.join("wire"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|request| request["method"] == "session/prompt")
+        .map(|request| {
+            request["params"]["prompt"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, ["a\u{fffd}b", ""]);
+    block_on(session.close()).unwrap();
+}
