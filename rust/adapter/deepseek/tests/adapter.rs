@@ -181,3 +181,61 @@ fn compaction_patches_follow_go() {
         )
     );
 }
+
+#[cfg(unix)]
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[cfg(unix)]
+#[test]
+fn dropping_open_before_the_handshake_reaps_the_runtime() {
+    let dir = std::env::temp_dir().join(format!("oap-deepseek-open-drop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let adapter = Adapter::new(Config {
+        process: ProcessConfig {
+            path: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo $$ > pid.tmp && mv pid.tmp pid; while read line; do :; done".into(),
+                "sh".into(),
+            ],
+            dir: dir.to_string_lossy().into_owned(),
+            env: Some(vec!["PATH=/usr/bin:/bin".into()]),
+            ..ProcessConfig::default()
+        },
+        start_timeout: std::time::Duration::from_secs(60),
+        ..config()
+    })
+    .unwrap();
+    let mut opened = oap_adapter::Adapter::open(
+        &adapter,
+        OpenRequest {
+            session_id: "s".into(),
+            ..OpenRequest::default()
+        },
+    );
+    let polled = futures::executor::block_on(futures::future::poll_immediate(&mut opened));
+    assert!(polled.is_none());
+    let bound = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !dir.join("pid").exists() && std::time::Instant::now() < bound {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+    let pid = pid.trim();
+    assert!(alive(pid));
+    drop(opened);
+    let bound = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while alive(pid) && std::time::Instant::now() < bound {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let reaped = !alive(pid);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(reaped, "runtime {pid} outlived the dropped open");
+}

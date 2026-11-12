@@ -1,8 +1,12 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crossbeam_channel::{select, Receiver, Sender};
+use crossbeam_channel::{select, Receiver};
+use futures_channel::oneshot;
 use oap_adapter::journal::{Journal, Reservation};
-use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
+use oap_adapter::{
+    BoxFuture, Error, EventStream, InteractionResolution, Recovery, ResumeRequest,
+    Session as SessionContract, SubmitRequest,
+};
 use oap_protocol::{
     ActionCallPayload, Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode,
     Envelope, EnvelopeId, EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest,
@@ -69,7 +73,7 @@ struct Run {
     reply: Option<AssistantMessageEvent>,
     tools: Vec<Tool>,
     stream: Arc<Mutex<Reservation>>,
-    start: Sender<Result<RunId, Error>>,
+    start: Option<oneshot::Sender<Result<RunId, Error>>>,
 }
 
 type Failure<'a> = (&'a str, &'a str);
@@ -144,8 +148,8 @@ impl Session {
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let prompted = self.shared.prompted(request)?;
-        let outcome = prompted.started.recv().unwrap_or(Err(Error::SessionClosed));
+        let mut prompted = self.shared.prompted(request, &Arc::default())?;
+        let outcome = block_on(&mut prompted.started).unwrap_or(Err(Error::SessionClosed));
         self.shared.respond(prompted, outcome)
     }
 
@@ -202,12 +206,133 @@ impl Session {
     }
 }
 
+struct Unpark(std::thread::Thread);
+
+impl std::task::Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+fn block_on<F: std::future::Future + Unpin>(mut future: F) -> F::Output {
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    loop {
+        if let std::task::Poll::Ready(output) = std::pin::Pin::new(&mut future).poll(&mut context) {
+            return output;
+        }
+        std::thread::park();
+    }
+}
+
 struct Prompted {
     session_id: SessionId,
     receipt: String,
     message_ids: Vec<MessageId>,
     stream: Arc<Mutex<Reservation>>,
-    started: Receiver<Result<RunId, Error>>,
+    started: oneshot::Receiver<Result<RunId, Error>>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Waiting,
+    Sent,
+    Answered,
+    Cancelled,
+}
+
+#[derive(Default)]
+struct Gate(Mutex<Phase>);
+
+impl Gate {
+    fn advance(&self, from: Phase, to: Phase) -> bool {
+        let mut phase = hold(&self.0);
+        if *phase != from {
+            return false;
+        }
+        *phase = to;
+        true
+    }
+
+    fn is(&self, phase: Phase) -> bool {
+        *hold(&self.0) == phase
+    }
+}
+
+struct Cancel {
+    shared: Arc<Shared>,
+    gate: Arc<Gate>,
+}
+
+impl Drop for Cancel {
+    fn drop(&mut self) {
+        if self.gate.advance(Phase::Waiting, Phase::Cancelled) {
+            return;
+        }
+        if !self.gate.advance(Phase::Sent, Phase::Cancelled) {
+            return;
+        }
+        let client = self
+            .shared
+            .lock()
+            .process
+            .as_ref()
+            .map(|process| process.client.clone());
+        if let Some(client) = client {
+            client.close();
+        }
+    }
+}
+
+impl SessionContract for Session {
+    fn submit(
+        &self,
+        request: SubmitRequest,
+    ) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let guard = Cancel {
+                shared: shared.clone(),
+                gate: Arc::default(),
+            };
+            let (reply, replied) = oneshot::channel();
+            let (worker, gate) = (shared.clone(), guard.gate.clone());
+            std::thread::spawn(move || {
+                let _ = reply.send(worker.prompted(request.request, &gate));
+            });
+            let mut prompted = replied.await.unwrap_or(Err(Error::SessionClosed))?;
+            drop(guard);
+            let outcome = (&mut prompted.started)
+                .await
+                .unwrap_or(Err(Error::SessionClosed));
+            shared.respond(prompted, outcome)
+        })
+    }
+
+    fn state(&self) -> BoxFuture<'_, SessionState> {
+        Box::pin(async move { Session::state(self) })
+    }
+
+    fn resolve(&self, resolution: InteractionResolution) -> BoxFuture<'_, ()> {
+        Box::pin(async move { Session::resolve(self, resolution) })
+    }
+
+    fn cancel(&self, run_id: RunId) -> BoxFuture<'_, RunCancelResponse> {
+        Box::pin(async move { Session::cancel(self, &run_id) })
+    }
+
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
+        Box::pin(async move { Session::resume(self, request) })
+    }
+
+    fn close(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move { Session::close(self) })
+    }
+
+    fn native_session_id(&self) -> Option<String> {
+        Some(self.shared.native_id.clone())
+    }
 }
 
 impl Drop for Session {
@@ -217,7 +342,7 @@ impl Drop for Session {
 }
 
 impl Shared {
-    fn prompted(&self, request: MessageSubmitRequest) -> Result<Prompted, Error> {
+    fn prompted(&self, request: MessageSubmitRequest, gate: &Arc<Gate>) -> Result<Prompted, Error> {
         let runtime = &self.runtime;
         let (blocks, message_ids) = native_prompt(&request, &|kind| runtime.new_id(kind))?;
         let _prompting = hold(&self.prompting);
@@ -233,7 +358,10 @@ impl Shared {
             if inner.run.is_some() || inner.state.status != SessionStatus::IDLE {
                 return Err(Error::RunActive);
             }
-            let (start, started) = crossbeam_channel::bounded(1);
+            if !gate.advance(Phase::Waiting, Phase::Sent) {
+                return Err(Error::SessionClosed);
+            }
+            let (start, started) = oneshot::channel();
             let stream = Arc::new(Mutex::new(self.journal.reserve()));
             inner.run = Some(Run {
                 id: None,
@@ -251,12 +379,16 @@ impl Shared {
                 reply: None,
                 tools: Vec::new(),
                 stream: stream.clone(),
-                start,
+                start: Some(start),
             });
             (client, stream, started)
         };
         let receipt = self
-            .prompt(client, blocks)
+            .prompt(client, blocks, gate.clone())
+            .and_then(|receipt| match gate.is(Phase::Cancelled) {
+                true => Err(Error::SessionClosed),
+                false => Ok(receipt),
+            })
             .inspect_err(|error| self.abort_own(&mut self.lock(), &stream, error.clone()))?;
         let mut inner = self.lock();
         if receipt.is_empty() {
@@ -308,6 +440,7 @@ impl Shared {
         &self,
         client: crate::rpc::RpcClient,
         blocks: Vec<crate::native::ContentBlock>,
+        gate: Arc<Gate>,
     ) -> Result<String, Error> {
         let params = serde_json::value::to_raw_value(&SessionPromptParams {
             session_id: self.native_id.clone(),
@@ -317,7 +450,9 @@ impl Shared {
         let (report, reported) = crossbeam_channel::bounded(1);
         let (answer, answered) = crossbeam_channel::bounded(1);
         std::thread::spawn(move || {
-            let _ = answer.send(client.call_started(METHOD_SESSION_PROMPT, Some(params), report));
+            let result = client.call_started(METHOD_SESSION_PROMPT, Some(params), report);
+            gate.advance(Phase::Sent, Phase::Answered);
+            let _ = answer.send(result);
         });
         if let Ok(Some(refused)) = reported.recv() {
             return Err(Error::Harness(refused));
@@ -735,8 +870,8 @@ impl Shared {
                     ..RunStartedPayload::default()
                 };
                 let emitted = self.emit(inner, EnvelopeType::RUN_STARTED, &payload, false);
-                if let Some(run) = &inner.run {
-                    let _ = run.start.send(emitted.map(|()| id));
+                if let Some(start) = inner.run.as_mut().and_then(|run| run.start.take()) {
+                    let _ = start.send(emitted.map(|()| id));
                 }
                 self.replay(inner);
             }
@@ -949,7 +1084,9 @@ impl Run {
 
     fn end(self, error: Error) {
         hold(&self.stream).release();
-        let _ = self.start.send(Err(error));
+        if let Some(start) = self.start {
+            let _ = start.send(Err(error));
+        }
     }
 }
 

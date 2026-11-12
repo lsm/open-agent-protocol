@@ -119,10 +119,15 @@ child that finished with an error or on max tokens fails it with
 running child fails it with `deepseek_child_lifecycle`, including children
 the admission buffered.
 
-Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
-until then `submit` waits as long as the runtime neither proves nor refuses the
-turn. The slice that implements the `Adapter` and `Session` contracts brings
-that cancellation.
+`Session` implements the `oap_adapter::Session` contract, where cancelling
+means dropping the future. Dropping a `submit` while its `session/prompt` still
+awaits the receipt closes the JSON-RPC connection: the run is aborted before
+admission, with no `run.started` or `run.failed`, and the session is closed. A
+result already returned wins over the drop, as in Go. Once the receipt is in,
+dropping the wait for admission leaves the run with the session, which still
+admits and settles it. `Adapter` implements `oap_adapter::Adapter`: dropping
+an `open` before the runtime answers `initialize` kills and reaps the runtime,
+as Go's `Open` stops when its context is cancelled.
 
 `admission::Candidate::evaluate` is Go's `evaluateAdmission`: given the
 runtime's receipt for a submitted prompt and every native event buffered since
