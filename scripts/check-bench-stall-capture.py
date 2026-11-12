@@ -34,16 +34,6 @@ def main():
         scratch.mkdir()
         environment = {'HOME': str(home), 'TMPDIR': str(scratch), 'NODE_ENV': 'test',
                        'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
-        with socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            listener.listen(1)
-            outbound = socket.create_connection(listener.getsockname())
-            inbound, _ = listener.accept()
-            with inbound, outbound:
-                inbound.shutdown(socket.SHUT_WR)
-                assert outbound.recv(1) == b''
-                outbound.close()
-                assert inbound.recv(1) == b''
         commands = root / 'commands'
         commands.mkdir()
         process_listing = commands / 'ps'
@@ -82,6 +72,17 @@ def main():
                 lsof.write_text("#!/bin/sh\nprintf '\\377'\n")
                 lsof.chmod(0o755)
                 case_environment['PATH'] = str(malformed) + ':' + environment['PATH']
+            if name in ('capture', 'diagnostic-bytes'):
+                with socket.socket() as listener:
+                    listener.bind(('127.0.0.1', 0))
+                    listener.listen(1)
+                    outbound = socket.create_connection(listener.getsockname())
+                    inbound, _ = listener.accept()
+                    with inbound, outbound:
+                        inbound.shutdown(socket.SHUT_WR)
+                        assert outbound.recv(1) == b''
+                        outbound.close()
+                        assert inbound.recv(1) == b''
             child = subprocess.run(command, env=case_environment, capture_output=True, text=True, timeout=240)
             (output / (name + '.log')).write_text(child.stdout + child.stderr)
             assert child.returncode == 0, name + ' CLI failed'

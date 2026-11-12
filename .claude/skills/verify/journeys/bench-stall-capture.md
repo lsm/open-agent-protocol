@@ -5,9 +5,9 @@ tree. This check holds one synthetic model request and exercises the normal
 benchmark CLI, its timeout, the retained diagnostics and run directory. It also
 checks an unusable capture destination, a timeout without capture and an
 ordinary completed case. The failed capture must retain the timeout, hub log
-and session history after the benchmark exits. A controlled
-loopback connection creates TIME_WAIT state. On Linux an unavailable netstat
-fixture verifies that capture uses the portable counter instead of recording
+and session history after the benchmark exits. Each case that checks TIME_WAIT
+creates a fresh controlled loopback connection immediately before invoking the
+benchmark. On Linux an unavailable netstat fixture verifies that capture uses the portable counter instead of recording
 a silent zero. Controlled process output must exclude unrelated arguments and
 limit metadata to the hub. Invalid diagnostic bytes must be saved with
 replacement decoding while the timeout and run directory survive.
