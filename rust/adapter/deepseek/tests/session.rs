@@ -319,3 +319,16 @@ fn a_runtime_that_never_answers_fails_open_at_the_start_deadline_and_is_reaped()
     let patch = std::fs::read_to_string(fixture.dir.join("patch-path")).unwrap();
     assert!(!PathBuf::from(patch).exists());
 }
+
+#[test]
+fn a_start_timeout_past_the_clock_fails_open_before_any_spawn() {
+    let fixture = Fixture::new();
+    let adapter = fixture.adapter_with(true, Duration::MAX);
+    assert_eq!(
+        adapter.open(compacted("s")).err(),
+        Some(Error::Harness(
+            "deepseek adapter: start timeout is out of range".into()
+        ))
+    );
+    assert!(!fixture.dir.join("pid").exists());
+}
