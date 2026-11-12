@@ -4,16 +4,18 @@ use crossbeam_channel::{select, Receiver, Sender};
 use oap_adapter::journal::{Journal, Reservation};
 use oap_adapter::{Error, EventStream, InteractionResolution, Recovery, ResumeRequest};
 use oap_protocol::{
-    Admission as SubmitAdmission, EffectiveDeliveryMode, Envelope, EnvelopeType,
-    MessageSubmitRequest, MessageSubmitResponse, ProtocolError, RequestedDeliveryMode,
-    RunCancelResponse, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionState,
-    SessionStatus, SubmissionId, SETTLED_BY_INFERRED,
+    Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode, Envelope,
+    EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest, MessageSubmitResponse,
+    ProtocolError, RequestedDeliveryMode, RunCancelResponse, RunCompletedPayload, RunFailedPayload,
+    RunId, RunStartedPayload, RunStatus, SessionState, SessionStatus, SubmissionId, Usage,
+    SETTLED_BY_INFERRED,
 };
 
 use crate::admission::{Admission, Candidate};
-
+use crate::content::{final_content, stream_parts};
 use crate::native::{
-    decode_notification, Notification, SessionPromptParams, SessionPromptResult,
+    decode_notification, observed_only, AssistantAttempt, AssistantMessageEvent, Event,
+    Notification, SessionPromptParams, SessionPromptResult, StepBoundary, TurnEnd, TurnStart,
     METHOD_SESSION_PROMPT,
 };
 use crate::process::Process;
@@ -48,14 +50,28 @@ struct Run {
     next: u64,
     buffered: Vec<Notification>,
     candidate: Candidate,
+    message_id: MessageId,
+    turn: i64,
+    step: i64,
+    turn_ended: bool,
+    idle_after_end: bool,
+    end_kind: String,
+    reply: Option<AssistantMessageEvent>,
     stream: Arc<Mutex<Reservation>>,
     start: Sender<Result<RunId, Error>>,
 }
 
-type Failure<'a> = (&'static str, &'a str);
+type Failure<'a> = (&'a str, &'a str);
+
+#[derive(Default, serde::Deserialize)]
+struct EndReason {
+    #[serde(default)]
+    kind: String,
+}
 
 const MISMATCH: &str = "deepseek_session_mismatch";
 const EXTERNAL: &str = "deepseek_external_activity";
+const GRAMMAR: &str = "deepseek_invalid_grammar";
 
 fn native_protocol(detail: &str) -> Error {
     Error::Harness(format!(
@@ -130,6 +146,13 @@ impl Session {
                 next: 1,
                 buffered: Vec::new(),
                 candidate: Candidate::default(),
+                message_id: MessageId::from(self.shared.runtime.new_id("message")),
+                turn: 0,
+                step: 0,
+                turn_ended: false,
+                idle_after_end: false,
+                end_kind: String::new(),
+                reply: None,
                 stream: stream.clone(),
                 start,
             });
@@ -328,10 +351,161 @@ impl Shared {
         if let Some(failure) = self.foreign(inner, notification) {
             return self.fail(inner, failure);
         }
-        if let Notification::SessionEvent(event) = notification {
-            inner.last_seq = Some(event.event.seq);
-            self.admit(inner);
+        let started = inner.run.as_ref().is_some_and(|run| run.started);
+        match notification {
+            Notification::SessionEvent(event) => {
+                inner.last_seq = Some(event.event.seq);
+                if started {
+                    self.apply_owned(inner, &event.event);
+                } else {
+                    self.admit(inner);
+                }
+            }
+            Notification::SessionStatus(status) if started && status.status == "idle" => {
+                if let Some(run) = inner.run.as_mut().filter(|run| run.turn_ended) {
+                    run.idle_after_end = true;
+                }
+                self.try_settle(inner);
+            }
+            _ => {}
         }
+    }
+
+    fn begin(&self, inner: &mut Inner) {
+        if let Some(run) = inner.run.as_mut() {
+            run.turn = run.candidate.turn;
+            run.step = run.candidate.step;
+        }
+    }
+
+    fn apply_owned(&self, inner: &mut Inner, event: &Event) {
+        if let Err((code, detail)) = self.owned(inner, event) {
+            self.fail(inner, (code, &detail));
+        }
+    }
+
+    fn owned(&self, inner: &mut Inner, event: &Event) -> Result<(), (&'static str, String)> {
+        let grammar = |detail: &str| Err((GRAMMAR, detail.to_owned()));
+        let Some(run) = inner.run.as_mut() else {
+            return Ok(());
+        };
+        match event.kind.as_str() {
+            "turn/start" => {
+                if event.data_as::<TurnStart>().unwrap_or_default().turn != run.turn {
+                    return grammar("overlapping foreign turn");
+                }
+            }
+            "step/start" => {
+                let boundary: StepBoundary = event.data_as().unwrap_or_default();
+                if boundary.turn != run.turn || boundary.step <= run.step {
+                    return grammar("invalid step start");
+                }
+                run.step = boundary.step;
+            }
+            "step/end" => {
+                let boundary: StepBoundary = event.data_as().unwrap_or_default();
+                if boundary.turn != run.turn || boundary.step != run.step {
+                    return grammar("invalid step end");
+                }
+            }
+            "assistant/attempt" => {
+                let attempt: AssistantAttempt = event.data_as().unwrap_or_default();
+                if !run.in_step(attempt.turn, attempt.step) {
+                    return grammar("event outside open owned step");
+                }
+            }
+            "assistant/message" => {
+                let reply: AssistantMessageEvent = event.data_as().unwrap_or_default();
+                if !run.in_step(reply.turn, reply.step) {
+                    return grammar("event outside open owned step");
+                }
+                let parts = stream_parts(&reply.stream);
+                let message_id = Some(run.message_id.clone());
+                let run_id = run.id.clone().unwrap_or_default();
+                run.reply = Some(reply);
+                for part in parts {
+                    let payload = ContentDeltaPayload {
+                        session_id: inner.state.session_id.clone(),
+                        run_id: run_id.clone(),
+                        message_id: message_id.clone(),
+                        part,
+                    };
+                    let _ = self.emit(inner, EnvelopeType::CONTENT_DELTA, &payload, false);
+                }
+            }
+            "turn/end" => {
+                let end: TurnEnd = event.data_as().unwrap_or_default();
+                if end.turn != run.turn || run.turn_ended {
+                    return grammar("invalid turn end");
+                }
+                let reason = end.reason.as_ref().map_or("", |raw| raw.get());
+                run.end_kind = serde_json::from_str::<EndReason>(reason)
+                    .unwrap_or_default()
+                    .kind;
+                run.turn_ended = true;
+                self.try_settle(inner);
+            }
+            "user/message"
+            | "agent/inbox/spliced"
+            | "todo/write"
+            | "request/header"
+            | "request/context"
+            | "session/end-seed" => {}
+            kind if observed_only(kind) || event.ignorable == Some(true) => {}
+            kind => {
+                return Err((
+                    "deepseek_unknown_event",
+                    format!(
+                        "unknown required event {}",
+                        oap_adapter::gojson::go_quote(kind)
+                    ),
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn try_settle(&self, inner: &mut Inner) {
+        let Some(run) = inner
+            .run
+            .as_ref()
+            .filter(|run| run.started && run.turn_ended && run.idle_after_end)
+        else {
+            return;
+        };
+        let kind = run.end_kind.clone();
+        if kind != "completed" {
+            let code = format!("deepseek_{kind}");
+            return self.fail(inner, (&code, &format!("native turn ended: {kind}")));
+        }
+        let Some(reply) = &run.reply else {
+            let detail = "completed turn omitted assistant message";
+            return self.fail(inner, ("deepseek_missing_final_message", detail));
+        };
+        let content = match final_content(&reply.message.content, &|_| None) {
+            Ok(content) => content,
+            Err(detail) => return self.fail(inner, ("deepseek_invalid_final_message", &detail)),
+        };
+        let usage = reply.usage.as_ref().map(|usage| Usage {
+            input_tokens: Some(usage.input_tokens as u64),
+            output_tokens: Some(usage.output_tokens as u64),
+            total_tokens: Some(usage.input_tokens as u64 + usage.output_tokens as u64),
+            ..Usage::default()
+        });
+        let payload = RunCompletedPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id: run.id.clone().unwrap_or_default(),
+            final_response: Message {
+                id: Some(run.message_id.clone()),
+                role: MessageRole::ASSISTANT,
+                content,
+                ..Message::default()
+            },
+            stop_reason: "completed".into(),
+            usage,
+            ..RunCompletedPayload::default()
+        };
+        let _ = self.emit(inner, EnvelopeType::RUN_COMPLETED, &payload, true);
     }
 
     fn foreign(&self, inner: &Inner, notification: &Notification) -> Option<Failure<'static>> {
@@ -403,6 +577,7 @@ impl Shared {
                 if let Some(run) = &inner.run {
                     let _ = run.start.send(emitted.map(|()| id));
                 }
+                self.begin(inner);
             }
         }
     }
@@ -471,6 +646,10 @@ impl Shared {
 }
 
 impl Run {
+    fn in_step(&self, turn: i64, step: i64) -> bool {
+        turn == self.turn && step == self.step && !self.turn_ended
+    }
+
     fn owns(&self, stream: &Arc<Mutex<Reservation>>) -> bool {
         !self.started && Arc::ptr_eq(&self.stream, stream)
     }
