@@ -50,13 +50,14 @@ always starts its own process, so it has no such branch.
 
 `Adapter::open` is Go's `Open`. It refuses a reopen, attached tool sources and
 tools, and unadvertised settings before starting anything, then starts the
-runtime through `launch`, writing a compaction patch to a temporary file that
-is removed once the runtime has started. The `session::Session` it returns is
+runtime through `launch`, writing a compaction patch to a temporary file under
+a fresh name that is removed once the runtime has started. The `session::Session` it returns is
 idle under the request's session id, or one minted from `runtime::Runtime`, and
 that id is also the native session id. It refuses resolve and cancel, resumes
 only a run its journal has ended, and closes by shutting the runtime down once.
-Submitting, the reducer over native notifications, and the `Adapter` and
-`Session` contracts over them are later slices.
+The handshake has no deadline yet: Go's `Open` takes the caller's context, and
+the slice that implements the `Adapter` and `Session` contracts brings that
+cancellation along with submitting and the reducer over native notifications.
 
 `prompt::native_prompt` is Go's `nativePrompt`: it turns an OAP submit into the
 native text blocks `session/prompt` carries. It refuses any unadvertised

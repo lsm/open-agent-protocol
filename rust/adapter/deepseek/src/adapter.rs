@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use oap_adapter::{
@@ -207,22 +207,35 @@ fn start(launch: Launch) -> Result<Process, Error> {
     let Some(patch) = launch.patch else {
         return Process::start(process, None).map_err(|error| harness(&error.to_string()));
     };
-    let path = std::env::temp_dir().join(format!(
-        "oap-deepseek-{}-{}.patch.yml",
-        std::process::id(),
-        PATCHES.fetch_add(1, Ordering::SeqCst)
-    ));
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .and_then(|mut file| std::io::Write::write_all(&mut file, patch.as_bytes()))
-        .map_err(|error| harness(&error.to_string()))?;
+    let path = write_patch(&patch).map_err(|error| harness(&error.to_string()))?;
     process.args.push("--patch".into());
     process.args.push(path.to_string_lossy().into_owned());
     let started = Process::start(process, None);
     let _ = std::fs::remove_file(&path);
     started.map_err(|error| harness(&error.to_string()))
+}
+
+fn write_patch(patch: &str) -> std::io::Result<PathBuf> {
+    loop {
+        let path = std::env::temp_dir().join(format!(
+            "oap-deepseek-{}-{}.patch.yml",
+            std::process::id(),
+            PATCHES.fetch_add(1, Ordering::SeqCst)
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            opened => opened?,
+        };
+        if let Err(error) = std::io::Write::write_all(&mut file, patch.as_bytes()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        return Ok(path);
+    }
 }
 
 pub fn compaction_patch(policy: Option<&CompactionPolicy>) -> Result<Option<String>, Error> {
