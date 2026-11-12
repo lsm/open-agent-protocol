@@ -14,7 +14,7 @@ use oap_adapter_deepseek::session::Session;
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, EnvelopeType, Message, MessageContent, MessageRole,
     MessageSubmitRequest, MessageSubmitResponse, Participant, RequestedDeliveryMode,
-    RunStartedPayload, RunStatus, SessionStatus,
+    RunFailedPayload, RunStartedPayload, RunStatus, SessionStatus, SETTLED_BY_INFERRED,
 };
 use serde_json::Value;
 
@@ -533,4 +533,84 @@ fn close_is_refused_while_a_run_is_running_and_dropping_the_session_shuts_it_dow
         .status
         .success();
     assert!(!alive, "runtime {pid} outlived its dropped session");
+}
+
+fn fails_after_admission(fixture: &Fixture, violation: &str) -> (Arc<Session>, RunFailedPayload) {
+    let session = fixture.open(&(receipt() + &proof() + &fixture.until_released() + violation));
+    let (response, mut stream) = submit(&session, hello("s")).unwrap();
+    let started = testkit::next(&mut stream, Duration::from_secs(5));
+    assert_eq!(started.envelope_type, EnvelopeType::RUN_STARTED);
+    fixture.release();
+    let failed = testkit::next(&mut stream, Duration::from_secs(5));
+    assert_eq!(failed.envelope_type, EnvelopeType::RUN_FAILED);
+    assert_eq!(failed.sequence, Some(2));
+    assert_eq!(failed.run_id, response.run_id);
+    let payload: RunFailedPayload = failed.decode_payload().unwrap();
+    assert_eq!(payload.session_id.as_str(), "s");
+    assert_eq!(payload.run_id.as_str(), "run-minted");
+    (session, payload)
+}
+
+#[test]
+fn a_violation_after_admission_fails_the_started_run_with_gos_code_and_frees_the_session() {
+    let cases = [
+        (
+            event(5, "turn/end", r#"{"turn":1,"reason":{"kind":"completed"}}"#)
+                .replace(r#""sessionId":"s""#, r#""sessionId":"other""#),
+            "deepseek_session_mismatch",
+            "session.event for foreign session",
+        ),
+        (
+            notify("session.status", r#"{"sessionId":"other","status":"idle"}"#),
+            "deepseek_session_mismatch",
+            "session.status for foreign session",
+        ),
+        (
+            event(4, "turn/end", r#"{"turn":1,"reason":{"kind":"completed"}}"#),
+            "deepseek_invalid_sequence",
+            "non-monotonic native event sequence",
+        ),
+        (
+            notify(
+                "subagent.started",
+                r#"{"parentSessionId":"other","childSessionId":"c"}"#,
+            ),
+            "deepseek_external_activity",
+            "foreign or recursive subagent",
+        ),
+    ];
+    for (violation, code, message) in cases {
+        let fixture = Fixture::new();
+        let (session, payload) = fails_after_admission(&fixture, &violation);
+        assert_eq!(payload.error.code, code, "{violation}");
+        assert_eq!(payload.error.message, message, "{violation}");
+        assert_eq!(payload.settled_by, "", "{violation}");
+        let state = session.state().unwrap();
+        assert_eq!(state.status, SessionStatus::IDLE, "{violation}");
+        assert_eq!(state.active_run_id, None, "{violation}");
+        assert_eq!(state.transcript_cursor, "2", "{violation}");
+        session.close().unwrap();
+    }
+}
+
+#[test]
+fn a_reverse_request_after_admission_fails_the_started_run_and_retires_the_session() {
+    let fixture = Fixture::new();
+    let request = r#"printf '%s\n' '{"jsonrpc":"2.0","id":"r1","method":"session/permission","params":{}}'
+"#;
+    let (session, payload) = fails_after_admission(&fixture, request);
+    assert_eq!(payload.error.code, "deepseek_external_activity");
+    assert_eq!(payload.error.message, "reverse request");
+    assert!(settles_closed(&session));
+    session.close().unwrap();
+}
+
+#[test]
+fn a_runtime_that_exits_after_admission_fails_the_started_run_as_inferred() {
+    let fixture = Fixture::new();
+    let (session, payload) = fails_after_admission(&fixture, "exit 0\n");
+    assert_eq!(payload.error.code, "deepseek_process_exit");
+    assert_eq!(payload.settled_by, SETTLED_BY_INFERRED);
+    assert!(settles_closed(&session));
+    session.close().unwrap();
 }

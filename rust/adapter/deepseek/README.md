@@ -84,9 +84,14 @@ event whose `seq` does not rise fails it. Once the receipt is in, each event
 reruns `admission::Candidate::evaluate` over the buffer: a refusal fails the
 submit, and an admission mints the run id, marks the session running, and
 journals `run.started` at sequence 1 with the pinned capability revision
-before submit returns. What happens to a started run after that, its events,
-its failures and its end, comes in the next slice; until then it stays
-running and close is refused.
+before submit returns. After that, the same foreign-session, sequence and
+subagent checks, a reverse request, or the runtime exiting end the started run
+with `run.failed` and Go's error code (`deepseek_session_mismatch`,
+`deepseek_invalid_sequence`, `deepseek_external_activity`, or
+`deepseek_process_exit` settled as `inferred`), which leaves the session idle
+again. Reducing a started run's own events, and ending it normally, come in
+the next slice; until then a run that does not fail stays running and close
+is refused.
 
 Go's `Open` and `Submit` also stop when the caller's context is cancelled, and
 until then `submit` waits as long as the runtime neither proves nor refuses the
