@@ -116,11 +116,23 @@ done"#
         .unwrap()
     }
 
-    fn held_until_released(&self) -> String {
+    fn until_released(&self) -> String {
         let dir = self.dir.display();
         format!(
-            "n=0; until [ -f \"{dir}/release\" ] || [ ! -d \"{dir}\" ] || [ $n -ge 200 ]; do sleep 0.05; n=$((n+1)); done; exit 0\n"
+            "n=0; until [ -f \"{dir}/release\" ] || [ ! -d \"{dir}\" ] || [ $n -ge 200 ]; do sleep 0.05; n=$((n+1)); done\n"
         )
+    }
+
+    fn held_until_released(&self) -> String {
+        self.until_released() + "exit 0\n"
+    }
+
+    fn wait_for(&self, name: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !self.dir.join(name).exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(self.dir.join(name).exists(), "{name} never appeared");
     }
 
     fn release(&self) {
@@ -327,5 +339,55 @@ fn a_foreign_or_recursive_subagent_before_the_receipt_fails_submit() {
     assert_eq!(
         harness(submit(&session, hello("s")).err().unwrap()),
         "deepseek adapter: invalid native protocol observation: foreign or recursive subagent"
+    );
+}
+
+#[test]
+fn a_second_submit_waits_for_the_first_prompt_and_keeps_its_own_run() {
+    let fixture = Fixture::new();
+    let dir = fixture.dir.display().to_string();
+    let first = format!("touch \"{dir}/first\"\n")
+        + &notify(
+            "session.status",
+            r#"{"sessionId":"other","status":"running"}"#,
+        )
+        + &format!("touch \"{dir}/foreign\"\n")
+        + &fixture.until_released()
+        + &answer(r#""error":{"code":-32000,"message":"first refused"}"#);
+    let second = receipt() + "exit 0\n";
+    let session = fixture.open(&format!(
+        "if [ -f \"{dir}/first\" ]; then\n{second}else\n{first}fi\n"
+    ));
+    let first = pending(&fixture, &session);
+    fixture.wait_for("foreign");
+    std::thread::sleep(Duration::from_millis(200));
+    let (send, second) = std::sync::mpsc::channel();
+    {
+        let session = session.clone();
+        std::thread::spawn(move || {
+            let _ = send.send(session.submit(hello("s")));
+        });
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.release();
+    let first = harness(
+        first
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first submit did not return")
+            .err()
+            .unwrap(),
+    );
+    assert!(first.contains("first refused"), "{first}");
+    let second = harness(
+        second
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the second submit did not return")
+            .err()
+            .unwrap(),
+    );
+    assert!(!second.contains("first refused"), "{second}");
+    assert!(
+        second.starts_with("deepseek adapter: invalid native protocol observation: "),
+        "{second}"
     );
 }
