@@ -1045,6 +1045,7 @@ dependencies = [
  "crossbeam-channel",
  "oap-adapter",
  "oap-harness",
+ "oap-protocol",
  "serde",
  "serde_json",
 ]

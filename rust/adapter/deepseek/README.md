@@ -34,3 +34,17 @@ the first `initialize` response, refusing any observation before it. A `null`
 result decodes as an empty one, as Go's does. It closes by asking for
 `shutdown`, releasing stdin only once the server acknowledges it, and kills the
 child at the shutdown timeout.
+
+`adapter::Adapter` holds what Go's `adapter.go` decides before a session
+exists. `Adapter::new` refuses a missing executable, a relative working
+directory and initialize params Go's validator refuses, and builds the
+`initialize` params from the working directory, provider, model and token
+cap. `describe` returns Go's descriptor for the catalog revision: the same
+features, levels, reasons and modes, a 256-entry session journal by default,
+no interactive gates and no cancellation. `launch` turns an open request into
+the process configuration that session would start: the reasoning level
+becomes `reasoningEffort` when the DeepSeek route takes it, and a compaction
+policy becomes the `--patch` layer `compaction_patch` writes. Go also accepts a
+caller-supplied client factory, which refuses either setting; the Rust adapter
+always starts its own process, so it has no such branch. The session itself,
+and the `Adapter` contract over it, are later slices.

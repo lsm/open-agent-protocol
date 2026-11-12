@@ -1,0 +1,100 @@
+{
+  "endpoint": {
+    "id": "deepseek.harness",
+    "name": "DeepSeek Harness SDK Adapter",
+    "version": "0.0.1",
+    "adapter": "deepseek-harness-jsonrpc"
+  },
+  "protocol_versions": [
+    "0.1"
+  ],
+  "profiles": [
+    "open-agent-protocol.agent-control-core"
+  ],
+  "features": {
+    "action.permissions": {
+      "level": "unavailable",
+      "reason": "selected SDK wire has no interaction channel"
+    },
+    "action.tools": {
+      "level": "degraded",
+      "reason": "call/result only; started is synthesized"
+    },
+    "action.tools.execute": {
+      "level": "unavailable",
+      "reason": "Harness executes tools internally"
+    },
+    "capabilities": {
+      "level": "emulated",
+      "reason": "conservative descriptor for pinned SDK wire"
+    },
+    "protocol.initialize": {
+      "level": "emulated",
+      "reason": "adapter-owned one-shot initialization freeze"
+    },
+    "run.cancel": {
+      "level": "unavailable",
+      "reason": "selected SDK wire has no cancel request"
+    },
+    "run.reconciliation": {
+      "level": "degraded",
+      "reason": "live status corroboration only"
+    },
+    "run.replay": {
+      "level": "degraded",
+      "reason": "bounded adapter journal; gaps are explicit and there is no native replay request"
+    },
+    "run.resume": {
+      "level": "degraded",
+      "reason": "selected SDK wire has no resume request; OAP resume replays the adapter journal"
+    },
+    "run.status": {
+      "level": "emulated"
+    },
+    "run.streaming": {
+      "level": "native"
+    },
+    "session.compaction.policy": {
+      "level": "emulated",
+      "reason": "a --patch layer on this session's runtime sets compaction-basic's thresholdRatio for share, or disables it for off; its headroom still caps the threshold, and tokens is refused",
+      "modes": [
+        "session_open"
+      ]
+    },
+    "session.message.delivery.auto": {
+      "level": "degraded",
+      "reason": "accepted only for known idle sessions and normalized to start"
+    },
+    "session.message.delivery.queue": {
+      "level": "unavailable",
+      "reason": "overlapping native followups are outside the adapter contract"
+    },
+    "session.message.delivery.steer": {
+      "level": "unavailable",
+      "reason": "selected SDK wire has no steer request"
+    },
+    "session.message.submit": {
+      "level": "degraded",
+      "reason": "receipt plus entered direct-user message proves start"
+    },
+    "session.open": {
+      "level": "emulated",
+      "reason": "one process and native session per OAP session"
+    },
+    "session.open.reopen": {
+      "level": "unavailable",
+      "reason": "the harness stores sessions, but the pinned SDK wire has no request to load one, so a reopen is declined rather than read behind the harness"
+    },
+    "session.reasoning": {
+      "level": "native",
+      "reason": "initialize carries reasoningEffort for the runtime this session starts; the DeepSeek route takes off, low, high and max",
+      "modes": [
+        "session_open"
+      ]
+    },
+    "session.state": {
+      "level": "degraded",
+      "reason": "reducer-owned live projection; no native query"
+    }
+  }
+}
