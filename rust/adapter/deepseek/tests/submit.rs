@@ -796,3 +796,47 @@ fn a_completed_turn_whose_usage_sums_past_i64_max_still_completes_the_run() {
     assert_eq!(usage.total_tokens, Some(i64::MAX as u64 + 2));
     session.close().unwrap();
 }
+
+fn kinds(stream: &mut EventStream, count: usize) -> Vec<EnvelopeType> {
+    (0..count)
+        .map(|_| testkit::next(stream, Duration::from_secs(5)).envelope_type)
+        .collect()
+}
+
+#[test]
+fn a_turn_that_ends_before_its_receipt_is_handled_is_replayed_and_completes_the_run() {
+    let fixture = Fixture::new();
+    let turn = reply(5, 1) + &turn_end(6, 1, "completed") + &idle();
+    let session = fixture.open(&(proof() + &turn + &receipt()));
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    assert_eq!(
+        kinds(&mut stream, 4),
+        [
+            EnvelopeType::RUN_STARTED,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::RUN_COMPLETED
+        ]
+    );
+    assert_eq!(session.state().unwrap().status, SessionStatus::IDLE);
+    session.close().unwrap();
+}
+
+#[test]
+fn an_idle_status_buffered_before_the_turn_ended_does_not_settle_the_replayed_run() {
+    let fixture = Fixture::new();
+    let turn = idle() + &reply(5, 1) + &turn_end(6, 1, "completed");
+    let session = fixture.open(&(proof() + &turn + &receipt()));
+    let (_, mut stream) = submit(&session, hello("s")).unwrap();
+    assert_eq!(
+        kinds(&mut stream, 3),
+        [
+            EnvelopeType::RUN_STARTED,
+            EnvelopeType::CONTENT_DELTA,
+            EnvelopeType::CONTENT_DELTA
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(session.state().unwrap().status, SessionStatus::RUNNING);
+    assert_eq!(session.close().err(), Some(Error::RunActive));
+}
