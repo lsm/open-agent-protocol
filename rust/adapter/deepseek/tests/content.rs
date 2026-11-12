@@ -140,3 +140,20 @@ fn invalid_tool_arguments_are_refused_rather_than_dropping_the_terminal() {
         r#"final message carries invalid arguments for tool "native-call""#
     );
 }
+
+#[test]
+fn null_chunk_members_decode_as_zero_values_as_in_go() {
+    assert_eq!(
+        json(&chunk_part(&raw(r#"{"type":"text-delta","index":0,"text":null}"#)).unwrap()),
+        r#"{"type":"text"}"#
+    );
+    assert_eq!(
+        json(
+            &chunk_part(&raw(
+                r#"{"type":"reasoning-delta","index":null,"text":"why"}"#
+            ))
+            .unwrap()
+        ),
+        r#"{"type":"reasoning","reasoning":"why"}"#
+    );
+}

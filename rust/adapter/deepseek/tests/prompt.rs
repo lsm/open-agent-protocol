@@ -109,3 +109,17 @@ fn an_unadvertised_control_is_refused_before_the_messages_are_read() {
         }
     }
 }
+
+#[test]
+fn null_content_becomes_an_empty_text_block_as_in_go() {
+    let (blocks, _) = native_prompt(
+        &request(vec![user(content(serde_json::Value::Null), Some("m"))]),
+        &counter(),
+    )
+    .unwrap();
+    let texts: Vec<_> = blocks
+        .iter()
+        .map(|block| (block.kind.as_str(), block.text.as_str()))
+        .collect();
+    assert_eq!(texts, [("text", "")]);
+}
