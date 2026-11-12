@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Exercise stall capture through the resource benchmark CLI."""
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--allow-unavailable-stack', action='store_true')
+    args = parser.parse_args()
+    binary = args.binary.resolve()
+    output = args.output_dir.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    benchmark = Path(__file__).with_name('bench-resources.py')
+    cases = [('capture', 'hold-model', True), ('disabled', 'hold-model', False),
+             ('completed', 'empty', True)]
+    observations = []
+    with tempfile.TemporaryDirectory(prefix='oap-stall-check-') as temporary:
+        root = Path(temporary)
+        home, scratch = root / 'home', root / 'scratch'
+        home.mkdir()
+        scratch.mkdir()
+        environment = {'HOME': str(home), 'TMPDIR': str(scratch), 'NODE_ENV': 'test',
+                       'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+        for name, scenario, enabled in cases:
+            result_dir = output / (name + '-result')
+            capture_dir = output / (name + '-capture')
+            command = [sys.executable, str(benchmark), '--targets', 'zig-loop',
+                       '--scenarios', scenario, '--n', '1', '--hold', '120',
+                       '--timeout', '30' if scenario == 'empty' else '1',
+                       '--model-workers', '1', '--no-build', '--loop-binary', str(binary),
+                       '--git-revision', 'verification', '--out', str(result_dir)]
+            if enabled:
+                command += ['--capture-stalls', str(capture_dir)]
+            child = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=240)
+            (output / (name + '.log')).write_text(child.stdout + child.stderr)
+            assert child.returncode == 0, name + ' CLI failed'
+            rows = json.loads((result_dir / 'results.json').read_text())
+            row = rows[0]
+            observation = {'case': name, 'cli_exit': child.returncode, 'status': row['status']}
+            if scenario == 'empty':
+                assert row['status'] == 'ok', 'ordinary completion failed'
+            else:
+                assert row['status'].startswith('timeout after '), 'forced hold did not time out'
+            if name == 'capture':
+                capture = Path(row['stall_capture'])
+                files = ['stuck.json', 'processes.txt', 'sockets.txt', 'time-wait.txt', 'sample.txt']
+                assert all((capture / item).stat().st_size > 0 for item in files), 'missing diagnostic'
+                stuck = json.loads((capture / 'stuck.json').read_text())
+                assert 's0' in stuck['left'] and stuck['left']['s0'] > 0, 'unfinished session was not retained'
+                assert stuck['states']['s0']['active_runs'], 'last state omitted the active run'
+                assert (capture / 'run/hub.json').is_file(), 'run directory was deleted'
+                assert (capture / 'run/hub-stderr.txt').is_file(), 'hub log was deleted'
+                sample = (capture / 'sample.txt').read_text()
+                stack = 'Call graph:' in sample or re.search(r'^#0\s', sample, re.MULTILINE) is not None
+                assert stack or args.allow_unavailable_stack, 'stack sampling unavailable'
+                observation.update(diagnostic_files=len(files), run_retained=True,
+                                   live_stack_captured=stack)
+            else:
+                assert 'stall_capture' not in row, 'capture recorded for an ineligible case'
+                assert not capture_dir.exists(), 'diagnostics were written for an ineligible case'
+            assert not list(scratch.glob('oap-bench-*')), 'benchmark scratch directory leaked'
+            observations.append(observation)
+    (output / 'checks.json').write_text(json.dumps(observations, indent=2) + '\n')
+    print(json.dumps({'checks_passed': len(observations), 'checks_total': len(cases),
+                      'live_stack_captured': observations[0]['live_stack_captured']}))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
