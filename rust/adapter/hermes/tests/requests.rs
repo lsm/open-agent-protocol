@@ -59,9 +59,10 @@ fn a_clarify_batch_decodes_strictly_and_needs_identified_questions() {
     };
     assert_eq!(request.questions[0].qid, "q");
     assert_eq!(request.answers.unwrap().get("q"), Some(&None));
-    assert!(outcome("clarify", r#"{"session_id":"s","questions":[],"extra":1}"#)
-        .unwrap_err()
-        .starts_with("hermes native: invalid pinned message: invalid clarify request: unknown field `extra`"));
+    assert_eq!(
+        outcome("clarify", r#"{"session_id":"s","questions":[],"extra":1}"#).unwrap_err(),
+        "hermes native: invalid pinned message: invalid clarify request: json: unknown field \"extra\""
+    );
     assert_eq!(
         error("clarify", r#"{"session_id":"s","questions":null}"#),
         refused("clarify request needs a session and at least one question")
