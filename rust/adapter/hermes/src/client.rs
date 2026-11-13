@@ -14,6 +14,7 @@ use crate::process::{Process, ProcessConfig};
 use crate::rpc::{self, error, Fault, Inbound, RpcClient};
 
 pub const NATIVE_PROTOCOL: &str = "hermes adapter: invalid native protocol observation";
+pub const PENDING_AUTO_CONTINUE: &str = "Hermes would restart the turn a crash interrupted, which a reopen must not do; open it in Hermes to settle the turn, or wait for Hermes to retire the marker";
 const RELAY_CAPACITY: usize = 256;
 
 pub trait Client: Send + Sync {
