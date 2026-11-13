@@ -1,15 +1,15 @@
 use crossbeam_channel::select;
 use oap_adapter::gojson::{decode, Decode};
 use oap_protocol::{
-    Envelope, EnvelopeType, Message, MessageContent, MessageRole, ProtocolError,
-    RunCancelledPayload, RunCompletedPayload, RunFailedPayload, RunId, RunStartedPayload,
-    RunStatus, SessionStatus,
+    ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType, Message,
+    MessageContent, MessageRole, ProtocolError, RunCancelledPayload, RunCompletedPayload,
+    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, SETTLED_BY_INFERRED,
 };
 use serde::Serialize;
 
 use crate::native::{
-    TurnNotification, METHOD_TURN_COMPLETED, METHOD_TURN_STARTED, TURN_COMPLETED, TURN_FAILED,
-    TURN_INTERRUPTED,
+    AgentMessageDeltaNotification, TurnNotification, METHOD_AGENT_DELTA, METHOD_TURN_COMPLETED,
+    METHOD_TURN_STARTED, TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
 };
 use crate::rpc::{Inbound, NotificationMessage};
 use crate::session::{hold, Inner, Shared};
@@ -25,12 +25,22 @@ impl Shared {
             select! {
                 recv(inbound) -> message => match message {
                     Ok(message) => self.reduce(message),
-                    Err(_) => return,
+                    Err(_) => break,
                 },
-                recv(done) -> _ => return,
+                recv(done) -> _ => break,
                 recv(stop) -> _ => return,
             }
         }
+        let _operating = hold(&self.operating);
+        let message = self.client.err().unwrap_or_else(|| {
+            "Codex app-server transport closed before terminal settlement".into()
+        });
+        self.fail_active(
+            &mut self.lock(),
+            "native_transport_closed",
+            &message,
+            SETTLED_BY_INFERRED,
+        );
     }
 
     fn reduce(&self, message: Inbound) {
@@ -70,6 +80,10 @@ impl Shared {
             METHOD_TURN_STARTED => match read::<TurnNotification>(notification) {
                 Some(value) => self.started(&mut inner, &value),
                 None => invalid(&mut inner, "invalid turn/started payload"),
+            },
+            METHOD_AGENT_DELTA => match read::<AgentMessageDeltaNotification>(notification) {
+                Some(value) => self.delta(&mut inner, &value),
+                None => invalid(&mut inner, "invalid agent message delta"),
             },
             METHOD_TURN_COMPLETED => match read::<TurnNotification>(notification) {
                 Some(value) => self.completed(&mut inner, &value),
@@ -113,6 +127,31 @@ impl Shared {
         self.emit(inner, &id, EnvelopeType::RUN_STARTED, &payload, false);
     }
 
+    fn delta(&self, inner: &mut Inner, value: &AgentMessageDeltaNotification) {
+        let Some(id) = self.run_for(inner, &value.thread_id, &value.turn_id) else {
+            return;
+        };
+        let Some(run) = inner
+            .runs
+            .get_mut(&id)
+            .filter(|run| run.started && !run.terminal)
+        else {
+            return;
+        };
+        run.text.push_str(&value.delta);
+        let payload = ContentDeltaPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id: id.clone(),
+            message_id: Some(run.message_id.clone()),
+            part: ContentPart {
+                part_type: ContentPartType::TEXT,
+                text: value.delta.clone(),
+                ..ContentPart::default()
+            },
+        };
+        self.emit(inner, &id, EnvelopeType::CONTENT_DELTA, &payload, false);
+    }
+
     fn completed(&self, inner: &mut Inner, value: &TurnNotification) {
         let Some(id) = self.run_for(inner, &value.thread_id, &value.turn.id) else {
             return;
@@ -129,7 +168,7 @@ impl Shared {
                     final_response: Message {
                         id: Some(run.message_id.clone()),
                         role: MessageRole::ASSISTANT,
-                        content: MessageContent::from_text(""),
+                        content: MessageContent::from_text(&run.text),
                         ..Message::default()
                     },
                     stop_reason: "end_turn".into(),

@@ -94,3 +94,11 @@ Treat an empty turn error as a message: the terminal-status test must fail.
 What Codex sends ahead of the `turn/start` answer must produce the same
 events and answers as when it comes after it. Handle such a message at once,
 or skip its replay: the ahead-of-answer test must fail.
+
+The same file pins each agent message delta as `content.delta`, the joined
+text in the completion, and a closed transport or inbound queue failing the
+active run as inferred with the client's error. A resume replays the run's
+journal and reports a gap once a small journal has dropped the events it
+asks for. To see it bite, return without failing when the inbound queue
+closes: the transport test must fail. Skip the gap check: the gap test
+must fail.

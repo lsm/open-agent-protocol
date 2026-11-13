@@ -27,6 +27,7 @@ pub(crate) struct Run {
     pub(crate) started: bool,
     pub(crate) terminal: bool,
     pub(crate) next: u64,
+    pub(crate) text: String,
 }
 
 pub(crate) struct Inner {
@@ -214,6 +215,7 @@ impl Shared {
                     started: false,
                     terminal: false,
                     next: 1,
+                    text: String::new(),
                 },
             );
             drop(inner);
@@ -243,8 +245,23 @@ impl Shared {
         outcome
     }
 
-    pub fn resume(&self, _request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
-        Err(Error::RunNotFound)
+    pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        let inner = self.lock();
+        let run = inner.runs.get(&request.run_id).ok_or(Error::RunNotFound)?;
+        let latest = run.next - 1;
+        if request.after_sequence > latest {
+            return Err(Error::ReplayCursorFuture);
+        }
+        let (recovery, replay) = self.journal.resume(
+            inner.state.clone(),
+            request.run_id.as_str(),
+            request.after_sequence,
+            latest,
+        );
+        if let Some(gap) = recovery.replay_gap {
+            return Err(Error::ReplayGap(gap));
+        }
+        Ok((recovery, replay))
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
