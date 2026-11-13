@@ -203,10 +203,14 @@ impl Session {
     }
 
     pub fn close(&self) -> Result<(), Error> {
+        let _operating = hold(&self.operating);
         {
             let mut inner = self.lock();
             if inner.closed {
                 return Ok(());
+            }
+            if inner.active.is_some() {
+                return Err(Error::RunActive);
             }
             inner.closed = true;
             inner.state.status = SessionStatus::CLOSED;

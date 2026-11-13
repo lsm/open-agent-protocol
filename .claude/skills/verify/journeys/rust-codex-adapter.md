@@ -66,4 +66,4 @@ Go makes before any native call, and what a refused or turn-less `turn/start`
 leaves. To see it bite, read a null content as missing: the null-content test
 must fail. Ignore a failed transport after a refused `turn/start`, drop the
 active-run check, or leave the session queued after a refusal: one test each
-must fail.
+must fail. Let close skip the active-run check: the close-refusal test must fail.
