@@ -3,11 +3,11 @@
 import argparse
 import hashlib
 import http.server
-import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import threading
 
 ROOT = Path(__file__).resolve().parents[4]
 NODE = shutil.which("node")
@@ -152,8 +152,6 @@ def main():
 
     payloads = Payloads()
     server = http.server.HTTPServer(("127.0.0.1", 0), payloads.handler())
-    import threading
-
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
