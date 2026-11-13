@@ -128,7 +128,8 @@ jobs:
             ASSET="$ASSET_OAPX"
             expected="$(awk -v name="$ASSET" '$2 == name { print $1 }' SHA256SUMS.txt)"
           fi
-          echo "binary=$(basename "$ASSET" | cut -d- -f1)" >> "$GITHUB_OUTPUT"
+          prefix="$(basename "$ASSET" | cut -d- -f1)"
+          echo "binary=$prefix" >> "$GITHUB_OUTPUT"
           if [ -z "$expected" ]; then
             case "$ASSET_OXAP" in
               *-macos-*)
@@ -156,11 +157,11 @@ jobs:
             *) tar -xzf "$ASSET" -C bin ;;
           esac
           binary_name="${{ matrix.binary }}"
-          if [ "${{ steps.asset.outputs.binary }}" = "oapx" ]; then binary_name="${{ matrix.legacy_binary }}"; fi
+          if [ "$prefix" = "oapx" ]; then binary_name="${{ matrix.legacy_binary }}"; fi
           binary="$dir/bin/$binary_name"
           test -f "$binary"
           echo "BINARY=$binary" >> "$GITHUB_ENV"
-          if [ "${{ steps.asset.outputs.binary }}" = "oxap" ]; then
+          if [ "$prefix" = "oxap" ]; then
             alias_binary="$dir/bin/${{ matrix.alias }}"
             test -f "$alias_binary"
             echo "ALIAS_BINARY=$alias_binary" >> "$GITHUB_ENV"
