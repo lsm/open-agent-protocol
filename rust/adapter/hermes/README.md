@@ -6,7 +6,10 @@ the corpus in `fixtures/adapters/hermes-v0.23.1`.
 
 So far it holds the gateway's event envelope, the payloads of its run events,
 and its server requests (approval, clarify, sudo, secret) with Go's
-`DecodeServerRequest` and `RequestSessionID`. An approval request and
+`DecodeServerRequest` and `RequestSessionID`, and `rpc::DIALECT`, the
+gateway's JSON-RPC over `oap_adapter::jsonrpc`: strict framing, params only as
+an object or null, and an empty string id that parses but never marshals, as in
+Go's `internal/rpc`. An approval request and
 `session.info` decode leniently, as Go's `json.Unmarshal` does; everything else
 decodes as Go's `DecodeStrict` does: unknown members refused, a null
 member read as its zero value, a trailing value refused, only JSON's four
