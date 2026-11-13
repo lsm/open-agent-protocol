@@ -29,6 +29,7 @@ pub struct Fake {
     done: (Sender<()>, Receiver<()>),
     activated: AtomicBool,
     barriers: AtomicBool,
+    ahead: Mutex<Vec<Inbound>>,
 }
 
 impl Fake {
@@ -42,6 +43,7 @@ impl Fake {
             done: crossbeam_channel::unbounded(),
             activated: AtomicBool::new(false),
             barriers: AtomicBool::new(false),
+            ahead: Mutex::default(),
         })
     }
 
@@ -60,17 +62,14 @@ impl Fake {
     }
 
     pub fn request(&self, method: &str, params: &str) -> Arc<Answers> {
-        let answers = Arc::new(Answers::default());
-        self.inbound
-            .0
-            .send(Inbound::Request(Arc::new(IncomingRequest::new(
-                DIALECT,
-                RequestId::Integer(90),
-                method,
-                Some(RawValue::from_string(params.into()).unwrap()),
-                answers.clone(),
-            ))))
-            .unwrap();
+        let (request, answers) = incoming(method, params);
+        self.inbound.0.send(request).unwrap();
+        answers
+    }
+
+    pub fn request_ahead_of_next_reply(&self, method: &str, params: &str) -> Arc<Answers> {
+        let (request, answers) = incoming(method, params);
+        self.ahead.lock().unwrap().push(request);
         answers
     }
 
@@ -89,6 +88,9 @@ impl Fake {
     fn barrier(&self) -> Result<(), rpc::Error> {
         if !self.barriers.load(Ordering::SeqCst) || !self.activated() {
             return Ok(());
+        }
+        for message in self.ahead.lock().unwrap().drain(..) {
+            self.inbound.0.send(message).unwrap();
         }
         let (ack, acked) = crossbeam_channel::bounded::<()>(0);
         self.inbound.0.send(Inbound::Barrier(ack)).unwrap();
@@ -146,6 +148,18 @@ impl Client for Fake {
         self.closes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+}
+
+fn incoming(method: &str, params: &str) -> (Inbound, Arc<Answers>) {
+    let answers = Arc::new(Answers::default());
+    let request = Inbound::Request(Arc::new(IncomingRequest::new(
+        DIALECT,
+        RequestId::Integer(90),
+        method,
+        Some(RawValue::from_string(params.into()).unwrap()),
+        answers.clone(),
+    )));
+    (request, answers)
 }
 
 pub fn adapter(fake: &Arc<Fake>, configure: impl FnOnce(&mut Config)) -> Adapter {
