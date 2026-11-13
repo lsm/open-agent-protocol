@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::client::ClientFactory;
 use crate::process::ProcessConfig;
+use crate::session::Session;
 
 pub(crate) const ENDPOINT_ID: &str = "codex.app-server";
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
@@ -51,6 +52,10 @@ impl Adapter {
             config.journal_capacity = DEFAULT_JOURNAL_CAPACITY;
         }
         Ok(Self { config })
+    }
+
+    pub fn open(&self, _request: OpenRequest) -> Result<Session, Error> {
+        Err(Error::UnsupportedInput)
     }
 
     pub fn describe(&self) -> Descriptor {
