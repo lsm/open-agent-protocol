@@ -3,5 +3,6 @@
 pub mod adapter;
 pub mod client;
 pub mod native;
+pub mod permissions;
 pub mod process;
 pub mod rpc;
