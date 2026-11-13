@@ -6,6 +6,7 @@ repository root.
 ```sh
 (cd rust && cargo test -p oxap-adapter-hermes --test rpc)
 (cd rust && cargo test -p oxap-adapter-hermes --test notifications)
+(cd rust && cargo test -p oxap-adapter-hermes --test process)
 (cd rust && cargo test -p oxap-adapter-hermes --all-features)
 ```
 
@@ -26,3 +27,12 @@ printing `DecodeNotification` from a throwaway test in
 `native/events.rs`: the skin, epoch, sequencing, session-less ready, status,
 delta, cancel, error and task checks, the decode of any typed payload, an
 observed event or a run-scoped one. One test must fail for each.
+
+`tests/process.rs` drives shell gateways through the handshake and teardown,
+with each refusal's text printed from Go's `Start` over the same scripts. A
+gateway that ignores stdin EOF traps the interrupt and exits 7, so the test
+can tell an interrupt from a kill on any `/bin/sh`. To see it bite, drop the
+interrupt, the kill, the stdin release, the cached close, the exit status,
+the barrier, request or event-type refusal, the deadline or cancel arm, the
+stderr in the refusal, abort's stderr grace, the notification check or
+strict response ids: one test must fail for each.
