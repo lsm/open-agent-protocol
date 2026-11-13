@@ -33,7 +33,9 @@ A run submitted with an `output_schema` completes with a structured result
 read from the last `agentMessage` item Codex completes, trimmed, compacted
 as Go's `json.Compact` compacts and checked against the schema. A missing,
 non-JSON or nonconforming message fails the run as
-`structured_output_failed`. Other items are not mapped yet.
+`structured_output_failed`. An `item/started` or `item/completed` that
+cannot be decoded fails the active run as `invalid_native_event`. Other
+items are not mapped yet.
 
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While
