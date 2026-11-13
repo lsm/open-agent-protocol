@@ -19,19 +19,28 @@ use crate::adapter::{call, native_protocol};
 use crate::client::Client;
 use crate::native::{TurnStartParams, TurnStartResponse, UserInput, METHOD_TURN_START};
 
-struct Inner {
-    state: SessionState,
-    closed: bool,
-    active: Option<RunId>,
-    turns: HashMap<String, RunId>,
+pub(crate) struct Run {
+    pub(crate) model: String,
+    pub(crate) message_id: MessageId,
+    pub(crate) started: bool,
+    pub(crate) terminal: bool,
+    pub(crate) next: u64,
+}
+
+pub(crate) struct Inner {
+    pub(crate) state: SessionState,
+    pub(crate) closed: bool,
+    pub(crate) active: Option<RunId>,
+    pub(crate) runs: HashMap<RunId, Run>,
+    pub(crate) turns: HashMap<String, RunId>,
 }
 
 pub(crate) struct Shared {
     pub(crate) client: Arc<dyn Client>,
-    thread_id: String,
+    pub(crate) thread_id: String,
     model: String,
-    runtime: Runtime,
-    journal: Journal,
+    pub(crate) runtime: Runtime,
+    pub(crate) journal: Journal,
     pub(crate) operating: Mutex<()>,
     inner: Mutex<Inner>,
     stop: Mutex<Option<Sender<()>>>,
@@ -67,6 +76,7 @@ impl Shared {
                 state,
                 closed: false,
                 active: None,
+                runs: HashMap::new(),
                 turns: HashMap::new(),
             }),
             stop: Mutex::new(Some(stop)),
@@ -74,7 +84,7 @@ impl Shared {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         hold(&self.inner)
     }
 
@@ -152,7 +162,7 @@ impl Shared {
             output_schema: request.output_schema.clone(),
         };
         let run_id = RunId::from(self.runtime.new_id("run"));
-        self.runtime.new_id("message");
+        let message_id = MessageId::from(self.runtime.new_id("message"));
         {
             let mut inner = self.lock();
             inner.active = Some(run_id.clone());
@@ -184,6 +194,16 @@ impl Shared {
             }
         };
         inner.turns.insert(turn, run_id.clone());
+        inner.runs.insert(
+            run_id.clone(),
+            Run {
+                model: model.clone(),
+                message_id,
+                started: false,
+                terminal: false,
+                next: 1,
+            },
+        );
         drop(inner);
         let stream = self.journal.follow(run_id.as_str(), 0);
         Ok((

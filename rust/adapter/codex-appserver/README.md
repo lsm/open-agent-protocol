@@ -18,8 +18,12 @@ executable with `open-agent-protocol` as its client name.
 
 `Session::submit` starts a Codex turn for user text and answers with the run
 it admitted. It refuses what Go refuses before any native call, and a
-`turn/start` with no turn id closes the session. A session with an active
-run refuses to close. The run's events are not mapped yet.
+`turn/start` with no turn id closes the session. Codex's `turn/started`
+becomes `run.started`, and `turn/completed` settles the run by the turn's
+status: completed, interrupted as `run.cancelled`, failed with the turn's
+error, or anything else as `invalid_native_terminal`. An undecodable start
+or completion fails the active run. A session with an active run refuses to
+close. Text deltas are not mapped yet.
 
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data.
