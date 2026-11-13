@@ -13,6 +13,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test open)
 (cd rust && cargo test -p oap-adapter-hermes --test reopen)
 (cd rust && cargo test -p oap-adapter-hermes --test reduce)
+(cd rust && cargo test -p oap-adapter-hermes --test submit)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -75,3 +76,10 @@ must fail for each.
 printed from Go's reducer over the same messages. To see it bite, drop the
 session-less, foreign-session, sequence or run-scoped check, or the non-string
 id check: one test must fail for each.
+
+`tests/submit.rs` compares every admission and envelope byte for byte with
+Go's `Submit` over the same fake gateway, using Go's test ids and clock. To
+see it bite, start the run without `message.start` or without the reply, drop
+the transcript cursor, the transport-death deferral or the abort on a refused
+reply, join text parts other than by a newline, or let a second run in:
+one test must fail or hang for each.

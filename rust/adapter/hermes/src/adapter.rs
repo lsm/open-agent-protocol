@@ -104,7 +104,13 @@ impl Adapter {
             reasoning_level: request.reasoning_level,
             ..SessionState::default()
         };
-        let session = Session::new(client, native_id, self.config.journal_capacity, state);
+        let session = Session::new(
+            client,
+            native_id,
+            self.config.runtime.clone(),
+            self.config.journal_capacity,
+            state,
+        );
         if let Some(resumed) = resumed {
             session.restore_state(resumed.info.as_deref());
         }

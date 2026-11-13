@@ -30,7 +30,16 @@ for another session, out of sequence, or run-scoped makes the session
 unusable, as does a server request with a non-string id, for another
 session, or with no run to own it; an unmapped request is answered
 `-32601 method not found`, and a closed transport makes the session
-unusable. A session-less event is ignored. Submitting arrives next. `client::ProcessFactory` is Go's process client factory: it
+unusable. A session-less event is ignored. `Session::submit` is
+Go's `Submit`: it takes one user message of text, refuses any control Hermes
+does not advertise, calls `prompt.submit`, and starts the run only once
+Hermes has both answered `streaming` and opened the turn with
+`message.start`, in either order; events seen before then are held and
+replayed. A second open fails the run as `hermes_invalid_grammar`, foreign
+activity as `hermes_external_activity`, and a transport that dies after the
+turn opened as `hermes_process_exit` settled by inference. A server request
+that reaches a running turn is answered method not found until the
+interactions slice maps it; settlement, deltas and tools arrive next. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -98,3 +107,10 @@ printed from Go's reducer over the same messages. To see it bite, drop the
 session-less, foreign-session, sequence or run-scoped check, or the non-string
 id check: one test must fail for each. The foreign-session check on a server
 request is only observable once a run exists, so the submit slice pins it.
+
+`tests/submit.rs` compares every admission and envelope byte for byte with
+Go's `Submit` over the same fake gateway, using Go's test ids and clock. To
+see it bite, start the run without `message.start` or without the reply, drop
+the transcript cursor, the transport-death deferral or the abort on a refused
+reply, join text parts other than by a newline, or let a second run in:
+one test must fail or hang for each.
