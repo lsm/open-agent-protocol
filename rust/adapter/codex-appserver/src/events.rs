@@ -12,8 +12,8 @@ use serde_json::value::RawValue;
 
 use crate::native::{
     AgentMessageDeltaNotification, ItemNotification, TurnNotification, METHOD_AGENT_DELTA,
-    METHOD_ITEM_COMPLETED, METHOD_ITEM_STARTED, METHOD_TURN_COMPLETED, METHOD_TURN_STARTED,
-    TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
+    METHOD_COMMAND_APPROVAL, METHOD_FILE_APPROVAL, METHOD_ITEM_COMPLETED, METHOD_ITEM_STARTED,
+    METHOD_TURN_COMPLETED, METHOD_TURN_STARTED, TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
 };
 use crate::rpc::{Inbound, NotificationMessage};
 use crate::session::{hold, Inner, Shared};
@@ -97,6 +97,12 @@ impl Shared {
     pub(crate) fn handle(&self, message: Inbound) {
         match message {
             Inbound::Barrier(ack) => drop(ack),
+            Inbound::Request(request)
+                if request.method == METHOD_COMMAND_APPROVAL
+                    || request.method == METHOD_FILE_APPROVAL =>
+            {
+                self.approval(&request)
+            }
             Inbound::Request(request) => {
                 let data =
                     serde_json::value::to_raw_value(&serde_json::json!({"method": request.method}))
@@ -136,7 +142,7 @@ impl Shared {
         }
     }
 
-    fn run_for(&self, inner: &Inner, thread: &str, turn: &str) -> Option<RunId> {
+    pub(crate) fn run_for(&self, inner: &Inner, thread: &str, turn: &str) -> Option<RunId> {
         if thread != self.thread_id {
             return None;
         }
@@ -220,7 +226,9 @@ impl Shared {
         if inner.runs.get(&id).is_none_or(|run| run.terminal) {
             return;
         }
-        self.close_pending(inner, &id, value.turn.status == TURN_INTERRUPTED);
+        let interrupted = value.turn.status == TURN_INTERRUPTED;
+        self.close_interactions(inner, &id, interrupted);
+        self.close_pending(inner, &id, interrupted);
         let run = &inner.runs[&id];
         let session_id = inner.state.session_id.clone();
         match value.turn.status.as_str() {
@@ -293,6 +301,7 @@ impl Shared {
         message: &str,
         settled_by: &str,
     ) {
+        self.close_interactions(inner, id, false);
         self.close_pending(inner, id, false);
         let payload = RunFailedPayload {
             session_id: inner.state.session_id.clone(),
@@ -315,8 +324,18 @@ impl Shared {
         kind: EnvelopeType,
         payload: &ActionCallPayload,
     ) {
-        let tool_call = Some(payload.tool_call_id.clone());
-        self.stamp(inner, id, kind, payload, false, tool_call);
+        self.emit_call(inner, id, kind, payload, &payload.tool_call_id);
+    }
+
+    pub(crate) fn emit_call(
+        &self,
+        inner: &mut Inner,
+        id: &RunId,
+        kind: EnvelopeType,
+        payload: &impl Serialize,
+        tool_call: &ToolCallId,
+    ) {
+        self.stamp(inner, id, kind, payload, false, Some(tool_call.clone()));
     }
 
     fn emit(

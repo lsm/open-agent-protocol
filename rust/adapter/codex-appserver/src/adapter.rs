@@ -176,6 +176,7 @@ impl Adapter {
         Ok(Session::new(Shared::new(
             client,
             thread_id,
+            request.participant.id.clone(),
             model,
             self.config.runtime.clone(),
             self.config.journal_capacity,

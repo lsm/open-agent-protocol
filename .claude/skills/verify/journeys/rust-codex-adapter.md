@@ -13,6 +13,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test events)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test structured)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test items)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test approvals)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -127,3 +128,11 @@ the bytes as Go marshals them. Regenerate it by running a throwaway test in
 writes the drained envelopes with `json.MarshalIndent`. To see it bite,
 drop the duplicate-start check, the pending-action sort, or the `failed`
 status check: the replay test must fail.
+
+`tests/go_approvals.json` is the same kind of record for approvals: each
+scenario's steps (notifications, approval requests and waits) with Go's
+events and its answer to every request, and `tests/approvals.rs` replays
+them. Its generator drives requests through the package's `request` helper.
+To see it bite, drop the thread check on a request's scope, accept a
+decision Codex does not define, or settle pending actions before pending
+approvals: the replay test must fail.

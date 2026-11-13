@@ -355,3 +355,7 @@ impl oap_adapter::gojson::Decode for TurnNotification {}
 impl oap_adapter::gojson::Decode for AgentMessageDeltaNotification {}
 
 impl oap_adapter::gojson::Decode for ItemNotification {}
+
+impl oap_adapter::gojson::Decode for CommandApprovalParams {}
+
+impl oap_adapter::gojson::Decode for FileApprovalParams {}

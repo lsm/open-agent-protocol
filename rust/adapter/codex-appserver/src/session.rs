@@ -10,9 +10,9 @@ use oap_adapter::{
     CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
-    Admission, EffectiveDeliveryMode, MessageId, MessageRole, MessageSubmitRequest,
-    MessageSubmitResponse, RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus,
-    SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
+    Admission, EffectiveDeliveryMode, InteractionId, MessageId, MessageRole, MessageSubmitRequest,
+    MessageSubmitResponse, ParticipantId, RequestedDeliveryMode, RunId, RunStatus, SessionState,
+    SessionStatus, SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
 };
 use oap_validation::OutputSchema;
 use serde_json::value::RawValue;
@@ -20,7 +20,7 @@ use serde_json::value::RawValue;
 use crate::adapter::{call, native_protocol};
 use crate::client::Client;
 use crate::native::{TurnStartParams, TurnStartResponse, UserInput, METHOD_TURN_START};
-use crate::rpc::Inbound;
+use crate::rpc::{Inbound, IncomingRequest};
 
 pub(crate) struct Run {
     pub(crate) model: String,
@@ -43,6 +43,15 @@ pub(crate) struct Binding {
     pub(crate) order: u64,
 }
 
+#[derive(Clone)]
+pub(crate) struct Interaction {
+    pub(crate) run: RunId,
+    pub(crate) tool_call: ToolCallId,
+    pub(crate) request: Arc<IncomingRequest>,
+    pub(crate) resolved: bool,
+    pub(crate) order: u64,
+}
+
 pub(crate) struct Inner {
     pub(crate) state: SessionState,
     pub(crate) closed: bool,
@@ -50,12 +59,14 @@ pub(crate) struct Inner {
     pub(crate) runs: HashMap<RunId, Run>,
     pub(crate) turns: HashMap<String, RunId>,
     pub(crate) items: HashMap<String, Binding>,
+    pub(crate) interactions: HashMap<InteractionId, Interaction>,
     pub(crate) next_order: u64,
 }
 
 pub(crate) struct Shared {
     pub(crate) client: Arc<dyn Client>,
     pub(crate) thread_id: String,
+    pub(crate) participant: ParticipantId,
     model: String,
     pub(crate) runtime: Runtime,
     pub(crate) journal: Journal,
@@ -102,6 +113,7 @@ impl Shared {
     pub(crate) fn new(
         client: Arc<dyn Client>,
         thread_id: String,
+        participant: ParticipantId,
         model: String,
         runtime: Runtime,
         capacity: usize,
@@ -111,6 +123,7 @@ impl Shared {
         Self {
             client,
             thread_id,
+            participant,
             model,
             runtime,
             journal: Journal::new(capacity),
@@ -123,6 +136,7 @@ impl Shared {
                 runs: HashMap::new(),
                 turns: HashMap::new(),
                 items: HashMap::new(),
+                interactions: HashMap::new(),
                 next_order: 0,
             }),
             stop: Mutex::new(Some(stop)),

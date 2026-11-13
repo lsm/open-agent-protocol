@@ -1,0 +1,1308 @@
+[
+  {
+    "name": "an_approval_go_cannot_scope_is_refused",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "item/started",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "item": {
+              "type": "commandExecution",
+              "id": "c1",
+              "command": "ls"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn"
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 2,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "other-thread",
+            "turnId": "native-turn",
+            "itemId": "c1"
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 3,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "other-turn",
+            "itemId": "c1"
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 4,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c9"
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 5,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1",
+            "availableDecisions": [
+              "bogus"
+            ]
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 6,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1",
+            "availableDecisions": []
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 7,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1",
+            "availableDecisions": "accept"
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 8,
+          "method": "item/fileChange/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn"
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 9,
+          "method": "item/commandExecution/requestApproval",
+          "params": []
+        }
+      },
+      {
+        "notify": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "item": {
+              "type": "commandExecution",
+              "id": "c1",
+              "command": "ls"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 10,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1"
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.requested",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.started",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 3,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.completed",
+        "id": "event-09",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "result": {
+            "command": "ls",
+            "cwd": "",
+            "exitCode": null,
+            "output": ""
+          }
+        },
+        "sequence": 4,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-10",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 5,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 2,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 3,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "approval request does not target the active run"
+        }
+      },
+      {
+        "id": 4,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "approval request does not target an active action"
+        }
+      },
+      {
+        "id": 5,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 6,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 7,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 8,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 9,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "invalid approval request scope"
+        }
+      },
+      {
+        "id": 10,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "approval request does not target an active action"
+        }
+      }
+    ],
+    "resolutions": []
+  },
+  {
+    "name": "an_approval_pending_when_the_turn_completes_fails",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "item/started",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "item": {
+              "type": "commandExecution",
+              "id": "c1",
+              "command": "ls"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1",
+            "availableDecisions": null
+          }
+        }
+      },
+      {
+        "await": 4
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.requested",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.started",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 3,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.permission.requested",
+        "id": "event-10",
+        "payload": {
+          "interaction_id": "interaction-09",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "title": "Allow Codex action",
+          "choices": [
+            {
+              "id": "accept",
+              "label": "Approve once"
+            },
+            {
+              "id": "acceptForSession",
+              "label": "Approve for session"
+            },
+            {
+              "id": "decline",
+              "label": "Deny"
+            },
+            {
+              "id": "cancel",
+              "label": "Deny and cancel run"
+            }
+          ],
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 4,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.permission.resolved",
+        "id": "event-11",
+        "payload": {
+          "interaction_id": "interaction-09",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "outcome": "failed",
+          "reason": {
+            "code": "run_terminated",
+            "message": "run terminated before permission resolution"
+          }
+        },
+        "sequence": 5,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.failed",
+        "id": "event-12",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "error": {
+            "code": "native_action_incomplete",
+            "message": "native turn ended before the action completed"
+          }
+        },
+        "sequence": 6,
+        "timestamp_ms": 10,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-13",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 7,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": null,
+        "error": {
+          "code": -32800,
+          "message": "OAP run terminated before interaction resolution"
+        }
+      }
+    ],
+    "resolutions": []
+  },
+  {
+    "name": "an_approval_pending_when_the_turn_is_interrupted_is_cancelled",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "item/started",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "item": {
+              "type": "commandExecution",
+              "id": "c1",
+              "command": "ls"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/fileChange/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1",
+            "reason": "r"
+          }
+        }
+      },
+      {
+        "await": 4
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "interrupted"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.requested",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.started",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 3,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.permission.requested",
+        "id": "event-10",
+        "payload": {
+          "interaction_id": "interaction-09",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "title": "Allow Codex file changes",
+          "description": "r",
+          "choices": [
+            {
+              "id": "accept",
+              "label": "Approve once"
+            },
+            {
+              "id": "acceptForSession",
+              "label": "Approve for session"
+            },
+            {
+              "id": "decline",
+              "label": "Deny"
+            },
+            {
+              "id": "cancel",
+              "label": "Deny and cancel run"
+            }
+          ],
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 4,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.permission.resolved",
+        "id": "event-11",
+        "payload": {
+          "interaction_id": "interaction-09",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "outcome": "cancelled",
+          "reason": {
+            "code": "run_terminated",
+            "message": "run terminated before permission resolution"
+          }
+        },
+        "sequence": 5,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.cancelled",
+        "id": "event-12",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command"
+        },
+        "sequence": 6,
+        "timestamp_ms": 10,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.cancelled",
+        "id": "event-13",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "reason": "native turn interrupted"
+        },
+        "sequence": 7,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": null,
+        "error": {
+          "code": -32800,
+          "message": "OAP run terminated before interaction resolution"
+        }
+      }
+    ],
+    "resolutions": []
+  },
+  {
+    "name": "an_approval_pending_when_the_run_fails_fails",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "item/started",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "item": {
+              "type": "commandExecution",
+              "id": "c1",
+              "command": "ls"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1"
+          }
+        }
+      },
+      {
+        "await": 4
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": []
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.requested",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.started",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 3,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.permission.requested",
+        "id": "event-10",
+        "payload": {
+          "interaction_id": "interaction-09",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "title": "Allow Codex action",
+          "choices": [
+            {
+              "id": "accept",
+              "label": "Approve once"
+            },
+            {
+              "id": "acceptForSession",
+              "label": "Approve for session"
+            },
+            {
+              "id": "decline",
+              "label": "Deny"
+            },
+            {
+              "id": "cancel",
+              "label": "Deny and cancel run"
+            }
+          ],
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 4,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.permission.resolved",
+        "id": "event-11",
+        "payload": {
+          "interaction_id": "interaction-09",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "outcome": "failed",
+          "reason": {
+            "code": "run_terminated",
+            "message": "run terminated before permission resolution"
+          }
+        },
+        "sequence": 5,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.failed",
+        "id": "event-12",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "error": {
+            "code": "native_action_incomplete",
+            "message": "native turn ended before the action completed"
+          }
+        },
+        "sequence": 6,
+        "timestamp_ms": 10,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.failed",
+        "id": "event-13",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "error": {
+            "code": "invalid_native_event",
+            "message": "invalid turn/completed payload"
+          }
+        },
+        "sequence": 7,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": null,
+        "error": {
+          "code": -32800,
+          "message": "OAP run terminated before interaction resolution"
+        }
+      }
+    ],
+    "resolutions": []
+  },
+  {
+    "name": "an_approval_after_the_run_settled_is_refused",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "item/started",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "item": {
+              "type": "commandExecution",
+              "id": "c1",
+              "command": "ls"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/commandExecution/requestApproval",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "c1"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.requested",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.started",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "arguments_json": {
+            "command": "ls",
+            "cwd": ""
+          }
+        },
+        "sequence": 3,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "action.call.failed",
+        "id": "event-09",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "tool_call_id": "tool-call-06",
+          "requested_by": "codex.app-server",
+          "execution_owner": "codex.app-server",
+          "name": "codex.command",
+          "error": {
+            "code": "native_action_incomplete",
+            "message": "native turn ended before the action completed"
+          }
+        },
+        "sequence": 4,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "tool_call_id": "tool-call-06",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-10",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 5,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": null,
+        "error": {
+          "code": -32602,
+          "message": "approval request does not target the active run"
+        }
+      }
+    ],
+    "resolutions": []
+  }
+]

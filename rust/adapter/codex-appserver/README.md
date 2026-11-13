@@ -42,6 +42,12 @@ still open when the turn settles is cancelled on an interruption and fails
 as `native_action_incomplete` otherwise, in the order its items started. A
 completion with no matching start fails the run as `invalid_native_action`.
 
+A command or file-change approval for an active action becomes
+`action.permission.requested`, offering the decisions Codex lists. An
+approval still pending when the run settles is answered with `-32800` and
+resolved as failed, or cancelled on an interruption. Resolving an approval
+is not mapped yet, and neither are user input requests.
+
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While
 `turn/start` is in flight, the reader sets aside what Codex sends and the
