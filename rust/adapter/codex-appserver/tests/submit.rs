@@ -14,6 +14,8 @@ use oap_protocol::{
 use serde_json::value::RawValue;
 use support::{adapter, request, Fake, Reply};
 
+type Refusal = fn(&Error) -> bool;
+
 const STARTED: &str = r#"{"thread":{"id":"t-1"}}"#;
 const TURN: &str = r#"{"turn":{"id":"turn-1","status":"inProgress"}}"#;
 
@@ -109,7 +111,7 @@ fn a_submit_runs_under_a_requested_model_and_passes_its_output_schema() {
 #[test]
 fn a_submit_go_refuses_starts_no_turn() {
     let schema = |text: &str| Some(RawValue::from_string(text.into()).unwrap());
-    let cases: Vec<(MessageSubmitRequest, fn(&Error) -> bool)> = vec![
+    let cases: Vec<(MessageSubmitRequest, Refusal)> = vec![
         (
             MessageSubmitRequest {
                 model_id: Some(String::new()),
@@ -241,7 +243,7 @@ fn a_turn_start_without_a_turn_id_closes_the_session() {
 fn a_null_content_is_empty_text_as_go_reads_it() {
     let (fake, session) = open([Ok(TURN)]);
     let null: Message = serde_json::from_str(r#"{"role":"user","content":null}"#).unwrap();
-    session.submit(submission(vec![null])).unwrap();
+    let (_response, _stream) = session.submit(submission(vec![null])).unwrap();
     assert_eq!(
         last_call(&fake).1,
         r#"{"threadId":"t-1","input":[{"type":"text"}],"model":"gpt-test"}"#

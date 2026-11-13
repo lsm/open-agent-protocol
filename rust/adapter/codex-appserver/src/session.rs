@@ -1,37 +1,70 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use oap_adapter::{Error, EventStream};
-use oap_protocol::{MessageSubmitRequest, MessageSubmitResponse, SessionState, SessionStatus};
+use oap_adapter::journal::Journal;
+use oap_adapter::runtime::Runtime;
+use oap_adapter::{
+    refuse_unadvertised_controls, Error, EventStream, UnsupportedControl, CONTROL_UNSATISFIABLE,
+};
+use oap_protocol::{
+    Admission, EffectiveDeliveryMode, MessageId, MessageRole, MessageSubmitRequest,
+    MessageSubmitResponse, RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus,
+    SubmissionId, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
+};
+use oap_validation::OutputSchema;
 
+use crate::adapter::{call, native_protocol};
 use crate::client::Client;
+use crate::native::{TurnStartParams, TurnStartResponse, UserInput, METHOD_TURN_START};
 
 struct Inner {
     state: SessionState,
     closed: bool,
+    active: Option<RunId>,
+    turns: HashMap<String, RunId>,
 }
 
 pub struct Session {
     client: Arc<dyn Client>,
     thread_id: String,
+    model: String,
+    runtime: Runtime,
+    journal: Journal,
+    operating: Mutex<()>,
     inner: Mutex<Inner>,
 }
 
+fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
 impl Session {
-    pub(crate) fn new(client: Arc<dyn Client>, thread_id: String, state: SessionState) -> Self {
+    pub(crate) fn new(
+        client: Arc<dyn Client>,
+        thread_id: String,
+        model: String,
+        runtime: Runtime,
+        capacity: usize,
+        state: SessionState,
+    ) -> Self {
         Self {
             client,
             thread_id,
+            model,
+            runtime,
+            journal: Journal::new(capacity),
+            operating: Mutex::new(()),
             inner: Mutex::new(Inner {
                 state,
                 closed: false,
+                active: None,
+                turns: HashMap::new(),
             }),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        hold(&self.inner)
     }
 
     pub fn native_session_id(&self) -> String {
@@ -40,10 +73,124 @@ impl Session {
 
     pub fn submit(
         &self,
-        _request: MessageSubmitRequest,
+        request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        Err(Error::Harness(
-            "codex app-server adapter: submit unavailable".into(),
+        let _operating = hold(&self.operating);
+        refuse_unadvertised_controls(
+            &request,
+            &[FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT],
+        )?;
+        let model = match &request.model_id {
+            Some(model) if model.is_empty() => return Err(Error::ModelNotFound(String::new())),
+            Some(model) => model.clone(),
+            None => self.model.clone(),
+        };
+        if let Some(schema) = &request.output_schema {
+            OutputSchema::compile(schema.get()).map_err(|detail| {
+                Error::UnsupportedControl(Box::new(UnsupportedControl {
+                    feature: FEATURE_STRUCTURED_OUTPUT.into(),
+                    reason: CONTROL_UNSATISFIABLE,
+                    field: "output_schema".into(),
+                    detail,
+                    ..UnsupportedControl::default()
+                }))
+            })?;
+        }
+        let session_id = self.lock().state.session_id.clone();
+        if request.session_id != session_id
+            || request.messages.is_empty()
+            || !(request.delivery.is_empty() || request.delivery == RequestedDeliveryMode::AUTO)
+            || !request.allow_degraded_features.is_empty()
+            || !request.metadata.is_empty()
+        {
+            return Err(Error::InvalidSubmission);
+        }
+        let mut input = Vec::with_capacity(request.messages.len());
+        let mut message_ids = Vec::with_capacity(request.messages.len());
+        for message in &request.messages {
+            let text = message
+                .content
+                .raw()
+                .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok());
+            let (true, Some(text)) = (message.role == MessageRole::USER, text) else {
+                return Err(Error::UnsupportedInput);
+            };
+            input.push(UserInput {
+                kind: "text".into(),
+                text: text.unwrap_or_default(),
+            });
+            message_ids.push(match &message.id {
+                Some(id) if !id.as_str().is_empty() => id.clone(),
+                _ => MessageId::from(self.runtime.new_id("message")),
+            });
+        }
+        {
+            let inner = self.lock();
+            if inner.closed {
+                return Err(Error::SessionClosed);
+            }
+            if inner.active.is_some() {
+                return Err(Error::RunActive);
+            }
+        }
+        let params = TurnStartParams {
+            thread_id: self.thread_id.clone(),
+            input,
+            model: model.clone(),
+            effort: String::new(),
+            output_schema: request.output_schema.clone(),
+        };
+        let run_id = RunId::from(self.runtime.new_id("run"));
+        self.runtime.new_id("message");
+        {
+            let mut inner = self.lock();
+            inner.active = Some(run_id.clone());
+            inner.state.status = SessionStatus::QUEUED;
+            inner.state.active_run_id = Some(run_id.clone());
+            inner.state.updated_at_ms = self.runtime.now_ms();
+        }
+        let started = call::<TurnStartResponse>(&*self.client, METHOD_TURN_START, &params);
+        let mut inner = self.lock();
+        let turn = match started {
+            Ok(response) if !response.turn.id.is_empty() => response.turn.id,
+            outcome => {
+                inner.active = None;
+                inner.state.active_run_id = None;
+                let (error, closes) = match outcome {
+                    Err(failure) => (
+                        Error::Harness(format!("start Codex turn: {failure}")),
+                        self.client.err().is_some(),
+                    ),
+                    Ok(_) => (native_protocol("turn/start returned no turn id"), true),
+                };
+                if closes {
+                    inner.closed = true;
+                    inner.state.status = SessionStatus::CLOSED;
+                } else {
+                    inner.state.status = SessionStatus::IDLE;
+                }
+                return Err(error);
+            }
+        };
+        inner.turns.insert(turn, run_id.clone());
+        drop(inner);
+        let stream = self.journal.follow(run_id.as_str(), 0);
+        Ok((
+            MessageSubmitResponse {
+                session_id,
+                accepted: true,
+                submission_id: SubmissionId::from(self.runtime.new_id("submission")),
+                requested_delivery: RequestedDeliveryMode::AUTO,
+                effective_delivery: EffectiveDeliveryMode::START,
+                delivery_resolution: "session_idle".into(),
+                admission: Admission::STARTED,
+                run_id: Some(run_id),
+                status: RunStatus::RUNNING,
+                model_id: model,
+                message_ids,
+                ..MessageSubmitResponse::default()
+            },
+            stream,
         ))
     }
 
@@ -65,6 +212,7 @@ impl Session {
             inner.state.status = SessionStatus::CLOSED;
             inner.state.active_run_id = None;
         }
+        self.journal.close();
         self.client.close().map_err(Error::harness)
     }
 }

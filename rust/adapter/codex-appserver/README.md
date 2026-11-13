@@ -16,6 +16,11 @@ its client once. A resume keeps the model and effort Codex reports, and a
 reopen reports itself recovered. The default factory launches the configured
 executable with `open-agent-protocol` as its client name.
 
+`Session::submit` starts a Codex turn for user text and answers with the run
+it admitted. It refuses what Go refuses before any native call, and a
+`turn/start` with no turn id closes the session. The run's events are not
+mapped yet.
+
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured
 approval policy, and the configured working directory. The directories are
