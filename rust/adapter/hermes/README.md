@@ -78,6 +78,12 @@ a settings change sets the reasoning level through `config.set` on an idle
 session; a resume replays a live or ended run from the journal. Go also
 refuses settings when the session is not idle, which only holds while a run
 is open, so only the run is checked.
+`Adapter::native_list` is Go's `NativeList` over a factory that can list:
+it reads each stored session's id, its title or preview, and its start time
+in seconds as milliseconds. Go also trims the start time and refuses an
+empty, infinite or not-a-number one before its bound; the decoder never
+keeps whitespace and the bound refuses the rest, so only the bound is
+ported.
 `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
@@ -197,3 +203,13 @@ the interrupt failure, the live-settings refusal, the closed or unusable
 check, the session check, the active-run check, the empty-level guard, the
 timestamp, the closed check or started filter on resume, the cursor
 arithmetic or comparison, or the gap refusal: one test must fail for each.
+
+`tests/native_list.rs` compares every page a factory's `session.list`
+answers with Go's `NativeList`: the limit, rows that are not objects or
+name no id, a title falling back to the preview, duplicate and
+case-folded keys, a page that is not a list, a failed listing, a factory
+that cannot list, and the start time read as seconds, saturated or
+refused. To see it bite, drop the limit, the id check, the preview
+fallback, the long-s or case fold, the last-key rule on the page or on a
+row, the integer path or its saturation, the float bound or its
+arithmetic: one test must fail for each.

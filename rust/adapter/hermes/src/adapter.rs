@@ -33,7 +33,7 @@ pub struct Config {
 #[derive(Clone)]
 pub struct Adapter {
     config: Config,
-    factory: Arc<dyn ClientFactory>,
+    pub(crate) factory: Arc<dyn ClientFactory>,
 }
 
 pub fn pin() -> &'static oap_harness::Version {

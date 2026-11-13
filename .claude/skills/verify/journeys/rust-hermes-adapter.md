@@ -19,6 +19,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test gates)
 (cd rust && cargo test -p oap-adapter-hermes --test resolve)
 (cd rust && cargo test -p oap-adapter-hermes --test controls)
+(cd rust && cargo test -p oap-adapter-hermes --test native_list)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -132,3 +133,13 @@ the interrupt failure, the live-settings refusal, the closed or unusable
 check, the session check, the active-run check, the empty-level guard, the
 timestamp, the closed check or started filter on resume, the cursor
 arithmetic or comparison, or the gap refusal: one test must fail for each.
+
+`tests/native_list.rs` compares every page a factory's `session.list`
+answers with Go's `NativeList`: the limit, rows that are not objects or
+name no id, a title falling back to the preview, duplicate and
+case-folded keys, a page that is not a list, a failed listing, a factory
+that cannot list, and the start time read as seconds, saturated or
+refused. To see it bite, drop the limit, the id check, the preview
+fallback, the long-s or case fold, the last-key rule on the page or on a
+row, the integer path or its saturation, the float bound or its
+arithmetic: one test must fail for each.
