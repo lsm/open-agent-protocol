@@ -1,6 +1,6 @@
 use std::path::{Component, Path};
 
-use oap_adapter::gojson::go_quote;
+use oap_adapter::gojson::{go_quote, members};
 
 use crate::native::{ThreadResumeParams, ThreadResumeResponse};
 
@@ -11,6 +11,18 @@ fn sandbox_policy(sandbox: &str) -> Option<&'static str> {
         "danger-full-access" => Some("dangerFullAccess"),
         _ => None,
     }
+}
+
+fn sandbox_type(raw: &crate::native::Raw) -> Option<String> {
+    let mut found = String::new();
+    for (name, value) in members(raw.as_deref()?.get()).ok()? {
+        if name.eq_ignore_ascii_case("type") {
+            if let Some(text) = serde_json::from_str::<Option<String>>(value.get()).ok()? {
+                found = text;
+            }
+        }
+    }
+    Some(found)
 }
 
 fn raw_text(raw: &crate::native::Raw) -> &str {
@@ -43,12 +55,7 @@ pub fn confirm(sent: &ThreadResumeParams, answered: &ThreadResumeResponse) -> Re
                 sent.sandbox
             ));
         };
-        let answered_type = answered
-            .sandbox
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
-            .and_then(|value| value.get("type")?.as_str().map(String::from));
-        if answered_type.as_deref() != Some(wanted) {
+        if sandbox_type(&answered.sandbox).as_deref() != Some(wanted) {
             return Err(format!(
                 "Codex resumed the thread under sandbox {}, not the configured {}",
                 raw_text(&answered.sandbox),

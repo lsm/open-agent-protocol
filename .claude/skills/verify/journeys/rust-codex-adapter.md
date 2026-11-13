@@ -27,3 +27,7 @@ and the empty text for an absent member. To see it bite, stop folding `..` in
 a working directory: the confirmed-resume test must fail. Compare the whole
 sandbox instead of its `type`: the same test must fail. Show an explicit null
 as empty: the sandbox and approval-policy tests must fail.
+The sandbox's `type` is read as Go reads a struct member: any ASCII casing of
+the key matches, the last match wins, a null leaves it unchanged, and other
+members are skipped unconverted. Match the key exactly, or keep the first
+match: the member test must fail.
