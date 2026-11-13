@@ -6,8 +6,8 @@ use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{
-    refuse_unadvertised_controls, Error, EventStream, Recovery, ResumeRequest, UnsupportedControl,
-    CONTROL_UNSATISFIABLE,
+    refuse_unadvertised_controls, Error, EventStream, InteractionResolution, Recovery,
+    ResumeRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, InteractionId, MessageId, MessageRole, MessageSubmitRequest,
@@ -389,6 +389,10 @@ impl Session {
 
     pub fn close(&self) -> Result<(), Error> {
         self.shared.close()
+    }
+
+    pub fn resolve(&self, _resolution: InteractionResolution) -> Result<(), Error> {
+        Err(Error::InteractionNotFound)
     }
 }
 

@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 use oap_adapter::gojson::go_marshal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::testkit::{drain, next, RunTrace};
-use oap_adapter::OpenRequest;
+use oap_adapter::{Error, InteractionResolution, OpenRequest};
 use oap_protocol::{
-    EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest, Participant,
-    RequestedDeliveryMode,
+    Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
+    Participant, PermissionResolveRequest, RequestedDeliveryMode,
 };
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -31,11 +31,19 @@ struct Request {
 }
 
 #[derive(Deserialize)]
+struct Resolve {
+    run_id: String,
+    responded_by: String,
+    permission: Option<PermissionResolveRequest>,
+}
+
+#[derive(Deserialize)]
 struct Step {
     notify: Option<Notify>,
     request: Option<Request>,
     #[serde(default)]
     r#await: usize,
+    resolve: Option<Resolve>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +52,7 @@ struct Scenario {
     steps: Vec<Step>,
     events: Box<RawValue>,
     answers: Value,
+    resolutions: Vec<String>,
 }
 
 fn submission() -> MessageSubmitRequest {
@@ -57,6 +66,29 @@ fn submission() -> MessageSubmitRequest {
         delivery: RequestedDeliveryMode::AUTO,
         ..MessageSubmitRequest::default()
     }
+}
+
+fn outcome(result: Result<(), Error>) -> String {
+    match result {
+        Ok(()) => "ok".into(),
+        Err(Error::InvalidResolution) => "invalid_resolution".into(),
+        Err(Error::InteractionNotFound) => "interaction_not_found".into(),
+        Err(Error::InteractionResolved) => "interaction_resolved".into(),
+        Err(Error::WrongResponder) => "wrong_responder".into(),
+        Err(other) => format!("error: {other}"),
+    }
+}
+
+fn latest_interaction(events: &[Envelope]) -> String {
+    events
+        .iter()
+        .rev()
+        .filter(|event| event.envelope_type == EnvelopeType::ACTION_PERMISSION_REQUESTED)
+        .find_map(|event| {
+            let payload: Value = serde_json::from_str(event.payload.as_ref()?.get()).ok()?;
+            Some(payload["interaction_id"].as_str()?.to_owned())
+        })
+        .unwrap_or_default()
 }
 
 fn answer(id: i64, answers: &Answers) -> Value {
@@ -83,9 +115,9 @@ fn answer(id: i64, answers: &Answers) -> Value {
 }
 
 #[test]
-fn each_approval_request_is_scoped_and_settled_as_go_does() {
+fn each_approval_scenario_round_trips_as_go_does() {
     let scenarios: Vec<Scenario> = serde_json::from_str(include_str!("go_approvals.json")).unwrap();
-    assert_eq!(scenarios.len(), 5);
+    assert_eq!(scenarios.len(), 8);
     for scenario in scenarios {
         let fake = Fake::new([
             Ok(r#"{"thread":{"id":"native-thread"}}"#),
@@ -114,12 +146,26 @@ fn each_approval_request_is_scoped_and_settled_as_go_does() {
         let (admission, mut stream) = session.submit(submission()).unwrap();
         let mut events = Vec::new();
         let mut requests = Vec::new();
+        let mut resolutions = Vec::new();
         for step in scenario.steps {
             if let Some(notify) = step.notify {
                 fake.notify(&notify.method, notify.params.get());
             } else if let Some(request) = step.request {
                 let answers = fake.request_with(request.id, &request.method, request.params.get());
                 requests.push((request.id, answers));
+            } else if let Some(resolve) = step.resolve {
+                let mut permission = resolve.permission;
+                if let Some(permission) = permission.as_mut() {
+                    if permission.interaction_id.as_str().is_empty() {
+                        permission.interaction_id = latest_interaction(&events).into();
+                    }
+                }
+                resolutions.push(outcome(session.resolve(InteractionResolution {
+                    run_id: resolve.run_id.into(),
+                    responded_by: resolve.responded_by.into(),
+                    permission,
+                    input: None,
+                })));
             } else {
                 for _ in 0..step.r#await {
                     events.push(next(&mut stream, Duration::from_secs(5)));
@@ -133,6 +179,7 @@ fn each_approval_request_is_scoped_and_settled_as_go_does() {
             "{}",
             scenario.name
         );
+        assert_eq!(resolutions, scenario.resolutions, "{}", scenario.name);
         let answered: Vec<Value> = requests
             .iter()
             .map(|(id, answers)| answer(*id, answers))
