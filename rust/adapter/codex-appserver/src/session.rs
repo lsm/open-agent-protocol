@@ -65,6 +65,24 @@ pub(crate) fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+struct Starting<'a>(&'a Shared);
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        let mut operating = hold(&self.0.operating);
+        {
+            let mut inner = self.0.lock();
+            inner.active = None;
+            inner.closed = true;
+            inner.state.active_run_id = None;
+            inner.state.status = SessionStatus::CLOSED;
+        }
+        operating.deferred.clear();
+        operating.starting = false;
+        self.0.idle.notify_all();
+    }
+}
+
 impl Shared {
     pub(crate) fn new(
         client: Arc<dyn Client>,
@@ -194,6 +212,7 @@ impl Shared {
         }
         operating.starting = true;
         drop(operating);
+        let starting = Starting(self);
         let started = call::<TurnStartResponse>(&*self.client, METHOD_TURN_START, &params);
         let mut operating = hold(&self.operating);
         let outcome = (|| -> Result<(MessageSubmitResponse, EventStream), Error> {
@@ -256,6 +275,7 @@ impl Shared {
         }
         operating.starting = false;
         self.idle.notify_all();
+        std::mem::forget(starting);
         outcome
     }
 

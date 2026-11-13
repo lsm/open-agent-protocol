@@ -77,10 +77,12 @@ barrier once the reader is running, as the real client does, so a submit
 returns only if the reader acknowledges without waiting for the operation
 lock, including when Codex asks something ahead of its answer. A transport
 that closes while `turn/start` is held at a gate must still fail the run
-the submit admits, as Go printed from its fake. To see it bite, answer with
-another code or data member, take the operation lock before acknowledging
-a barrier, take it to answer a reverse request, or let the closed-transport
-path run during `turn/start`: one test each must fail.
+the submit admits, as Go printed from its fake. A client that panics in
+`turn/start` closes the session, and `close` still returns. To see it bite,
+answer with another code or data member, take the operation lock before
+acknowledging a barrier, take it to answer a reverse request, let the
+closed-transport path run during `turn/start`, or forget the start guard
+before the call: one test each must fail.
 
 `tests/events.rs` drives a run's notifications through the same client and
 checks each trace against the shared run validator, with the submit the run
