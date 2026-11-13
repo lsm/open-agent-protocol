@@ -21,6 +21,7 @@ const RESOLVER_ENV = [
   ENV_BINARY_URL,
   ENV_BINARY_SHA256_OXAP,
   ENV_BINARY_SHA256,
+  "PATH",
 ];
 
 function clearResolverEnv(): () => void {
