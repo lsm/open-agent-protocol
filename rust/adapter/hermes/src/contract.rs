@@ -45,10 +45,7 @@ impl AdapterContract for Adapter {
 impl NativeLister for Adapter {
     fn native_list(&self, request: NativeListRequest) -> BoxFuture<'_, Vec<NativeListing>> {
         let adapter = self.clone();
-        background(move || {
-            drop((adapter, request));
-            Ok(Vec::new())
-        })
+        background(move || Adapter::native_list(&adapter, request))
     }
 }
 
@@ -87,7 +84,7 @@ impl SessionContract for Session {
     }
 
     fn native_session_id(&self) -> Option<String> {
-        None
+        Some(Session::native_session_id(self))
     }
 
     fn settings_updater(&self) -> Option<&dyn SettingsUpdater> {
