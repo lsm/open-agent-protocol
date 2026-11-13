@@ -71,7 +71,14 @@ and checks for answers in flight before flushing a waiting settlement; none
 of these changes an outcome, since the settlement cancels the gate,
 indexing refuses a missing or extra answer, a responder must already be the
 participant, and the settlement checks again itself, so they are not
-ported. `client::ProcessFactory` is Go's process client factory: it
+ported. `Session::cancel`, `update_settings` and `resume` are Go's
+`Cancel`, `UpdateSettings` and `Resume`: a cancel interrupts Hermes for a
+started run and reports it cancelling, and the interruption settles the run;
+a settings change sets the reasoning level through `config.set` on an idle
+session; a resume replays a live or ended run from the journal. Go also
+refuses settings when the session is not idle, which only holds while a run
+is open, so only the run is checked.
+`client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -179,3 +186,14 @@ the five ownership checks, the answer validation, the multi-choice encoding,
 the deferral or the settling flag, the withdrawal, its refusal or its
 cancelled status, the flush after a failed write, the submitted answers, or
 the running update: one test must fail for each.
+
+`tests/controls.rs` compares cancel, settings and resume with Go's
+`Cancel`, `UpdateSettings` and `Resume` over the same gateway: the
+interrupt and its failure, the interrupted settlement, a cancel or resume
+before the turn opens, a level change and its refusal, a live, ended and
+caught-up replay, a cursor past the run, a journal gap, and a closed or
+dead session. To see it bite, drop the started or run-id check on cancel,
+the interrupt failure, the live-settings refusal, the closed or unusable
+check, the session check, the active-run check, the empty-level guard, the
+timestamp, the closed check or started filter on resume, the cursor
+arithmetic or comparison, or the gap refusal: one test must fail for each.

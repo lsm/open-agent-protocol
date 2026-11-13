@@ -18,6 +18,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test tools)
 (cd rust && cargo test -p oap-adapter-hermes --test gates)
 (cd rust && cargo test -p oap-adapter-hermes --test resolve)
+(cd rust && cargo test -p oap-adapter-hermes --test controls)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -120,3 +121,14 @@ the five ownership checks, the answer validation, the multi-choice encoding,
 the deferral or the settling flag, the withdrawal, its refusal or its
 cancelled status, the flush after a failed write, the submitted answers, or
 the running update: one test must fail for each.
+
+`tests/controls.rs` compares cancel, settings and resume with Go's
+`Cancel`, `UpdateSettings` and `Resume` over the same gateway: the
+interrupt and its failure, the interrupted settlement, a cancel or resume
+before the turn opens, a level change and its refusal, a live, ended and
+caught-up replay, a cursor past the run, a journal gap, and a closed or
+dead session. To see it bite, drop the started or run-id check on cancel,
+the interrupt failure, the live-settings refusal, the closed or unusable
+check, the session check, the active-run check, the empty-level guard, the
+timestamp, the closed check or started filter on resume, the cursor
+arithmetic or comparison, or the gap refusal: one test must fail for each.
