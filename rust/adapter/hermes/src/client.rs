@@ -58,6 +58,10 @@ pub trait ClientFactory: Send + Sync {
     ) -> Result<(Arc<dyn Client>, SessionResumeResult), String> {
         Err("this client factory cannot reload a stored session".into())
     }
+
+    fn list(&self, _limit: usize) -> Option<Result<Box<RawValue>, Error>> {
+        None
+    }
 }
 
 pub fn native_protocol() -> Error {
