@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{select, Receiver, Sender};
+use crossbeam_channel::{select, Receiver, Sender, TryRecvError};
 use oap_adapter::gojson::{decode, go_quote, Decode};
 use oap_adapter::Error;
 use serde::Serialize;
@@ -18,6 +18,8 @@ pub const NATIVE_PROTOCOL: &str = "hermes adapter: invalid native protocol obser
 pub const PENDING_AUTO_CONTINUE: &str = "Hermes would restart the turn a crash interrupted, which a reopen must not do; open it in Hermes to settle the turn, or wait for Hermes to retire the marker";
 const RELAY_CAPACITY: usize = 256;
 const SESSION_NOT_FOUND: i64 = 4007;
+const METHOD_SESSION_LIST: &str = "session.list";
+const LIST_CALL_LIMIT: Duration = Duration::from_secs(60);
 
 pub trait Client: Send + Sync {
     fn call(
@@ -198,6 +200,83 @@ pub struct ProcessFactory {
     pub kept: Kept,
 }
 
+#[derive(Serialize)]
+struct SessionListParams {
+    limit: usize,
+}
+
+fn list_on(
+    process: &Process,
+    limit: usize,
+    deadline: Option<Instant>,
+) -> Result<Box<RawValue>, rpc::Error> {
+    let params = serde_json::value::to_raw_value(&SessionListParams { limit })
+        .map_err(|failure| error(Fault::Encode(failure.to_string())))?;
+    process
+        .client
+        .call(METHOD_SESSION_LIST, Some(params), deadline)
+}
+
+fn settle(
+    kept: &mut Option<Process>,
+    process: Process,
+    answered: &Result<Box<RawValue>, rpc::Error>,
+) -> bool {
+    match answered {
+        Err(failure)
+            if failure.remote_code().is_none()
+                || !matches!(process.exited().try_recv(), Err(TryRecvError::Empty)) =>
+        {
+            true
+        }
+        _ => {
+            *kept = Some(process);
+            false
+        }
+    }
+}
+
+impl ProcessFactory {
+    fn keep(&self, deadline: Option<Instant>) -> Result<Process, Error> {
+        let process = Process::start(&self.config, deadline).map_err(Error::harness)?;
+        let (inbound, done) = (process.client.inbound(), process.client.done());
+        std::thread::spawn(move || loop {
+            select! {
+                recv(inbound) -> message => if message.is_err() {
+                    return;
+                },
+                recv(done) -> _ => return,
+            }
+        });
+        Ok(process)
+    }
+
+    fn listing(&self, limit: usize) -> Result<Box<RawValue>, Error> {
+        let mut kept = match self.kept.0.try_lock() {
+            Ok(kept) => kept,
+            Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                let process = self.keep(None)?;
+                return list_on(&process, limit, None).map_err(Error::harness);
+            }
+        };
+        let deadline = Some(Instant::now() + LIST_CALL_LIMIT);
+        let reused = kept.is_some();
+        let process = match kept.take() {
+            Some(process) => process,
+            None => self.keep(deadline)?,
+        };
+        let answered = list_on(&process, limit, deadline);
+        if !settle(&mut kept, process, &answered) || !reused {
+            return answered.map_err(Error::harness);
+        }
+        let process = self.keep(deadline)?;
+        let answered = list_on(&process, limit, deadline);
+        settle(&mut kept, process, &answered);
+        answered.map_err(Error::harness)
+    }
+}
+
 impl ClientFactory for ProcessFactory {
     fn start(&self, deadline: Option<Instant>) -> Result<(Arc<dyn Client>, String), Error> {
         self.start_with_reasoning("", deadline)
@@ -234,6 +313,10 @@ impl ClientFactory for ProcessFactory {
         let resumed = resume_stored(&client, stored, deadline)?;
         client.stored = stored.into();
         Ok((Arc::new(client), resumed))
+    }
+
+    fn list(&self, limit: usize) -> Option<Result<Box<RawValue>, Error>> {
+        Some(self.listing(limit))
     }
 
     fn close(&self) -> Result<(), Error> {

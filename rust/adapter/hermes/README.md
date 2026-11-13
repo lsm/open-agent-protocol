@@ -84,6 +84,16 @@ in seconds as milliseconds. Go also trims the start time and refuses an
 empty, infinite or not-a-number one before its bound; the decoder never
 keeps whitespace and the bound refuses the rest, so only the bound is
 ported.
+`client::ProcessFactory` lists as Go's process factory does: one gateway
+kept for every listing, its messages drained, replaced once when a reused
+one breaks, a busy one leaving the listing a gateway of its own, and
+`Adapter::close` stopping it. A listing takes no deadline, so each call
+gives up after Go's sixty-second listing limit, which no test waits out.
+Go also checks that a kept gateway has exited before reusing it and closes
+each gateway it drops; here a gateway reports its exit only after its
+output ends, so a call to it fails and is replaced the same way, and a
+gateway closes when it is dropped. Go's check that a gateway which answered
+an error has exited races that exit, so no test pins it.
 `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
@@ -213,3 +223,12 @@ refused. To see it bite, drop the limit, the id check, the preview
 fallback, the long-s or case fold, the last-key rule on the page or on a
 row, the integer path or its saturation, the float bound or its
 arithmetic: one test must fail for each.
+
+`tests/kept_list.rs` drives scripted gateways through Go's listing rules:
+one gateway serves every listing and drains what it sends, an error it
+answers keeps it, a broken one is replaced once only when it was reused, a
+busy one leaves the listing a gateway of its own, a gateway that cannot
+start fails the listing, and closing the adapter stops the kept one. To see
+it bite, drop the drain, the busy branch, the remote-error check, the
+reuse check, the retry's keeping, the kept gateway, the adapter's close or
+the limit: one test must fail for each.

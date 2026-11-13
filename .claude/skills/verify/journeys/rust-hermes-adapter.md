@@ -20,6 +20,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test resolve)
 (cd rust && cargo test -p oap-adapter-hermes --test controls)
 (cd rust && cargo test -p oap-adapter-hermes --test native_list)
+(cd rust && cargo test -p oap-adapter-hermes --test kept_list)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -143,3 +144,12 @@ refused. To see it bite, drop the limit, the id check, the preview
 fallback, the long-s or case fold, the last-key rule on the page or on a
 row, the integer path or its saturation, the float bound or its
 arithmetic: one test must fail for each.
+
+`tests/kept_list.rs` drives scripted gateways through Go's listing rules:
+one gateway serves every listing and drains what it sends, an error it
+answers keeps it, a broken one is replaced once only when it was reused, a
+busy one leaves the listing a gateway of its own, a gateway that cannot
+start fails the listing, and closing the adapter stops the kept one. To see
+it bite, drop the drain, the busy branch, the remote-error check, the
+reuse check, the retry's keeping, the kept gateway, the adapter's close or
+the limit: one test must fail for each.
