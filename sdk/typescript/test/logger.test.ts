@@ -67,7 +67,8 @@ test("binary resolver logs auto resolution candidate checks", async (t) => {
   const logger = createCapturingLogger();
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
   t.after(() => fs.promises.rm(emptyCwd, { recursive: true, force: true }));
-  const binaryName = process.platform === "win32" ? "oapx.exe" : "oapx";
+  const binaryName = process.platform === "win32" ? "oxap.exe" : "oxap";
+  const legacyName = process.platform === "win32" ? "oapx.exe" : "oapx";
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
   };
@@ -92,6 +93,8 @@ test("binary resolver logs auto resolution candidate checks", async (t) => {
       [
         path.join(emptyCwd, "zig-out", "bin", binaryName),
         path.join(emptyCwd, "zig", "zig-out", "bin", binaryName),
+        path.join(emptyCwd, "zig-out", "bin", legacyName),
+        path.join(emptyCwd, "zig", "zig-out", "bin", legacyName),
       ],
     );
 
@@ -159,7 +162,7 @@ test("binary resolver ignores an install predating the rename on PATH", async (t
   delete process.env.OAP_SDK_BINARY_URL;
   process.env.PATH = pathDir;
   try {
-    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), process.platform === "win32" ? "oapx.exe" : "oapx");
+    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), process.platform === "win32" ? "oxap.exe" : "oxap");
   } finally {
     if (prevBinaryPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
     else process.env.OAP_SDK_BINARY_PATH = prevBinaryPath;
@@ -172,7 +175,8 @@ test("binary resolver ignores an install predating the rename on PATH", async (t
 
 test("binary resolver logs resolution from the bundled package", async (t) => {
   const logger = createCapturingLogger();
-  const bundledPath = path.join(path.sep, "bundled", "bin", process.platform === "win32" ? "oapx.exe" : "oapx");
+  const binaryName = process.platform === "win32" ? "oxap.exe" : "oxap";
+  const bundledPath = path.join(path.sep, "bundled", "bin", binaryName);
   const specifiers: string[] = [];
   const resolveModule = (specifier: string): string => {
     specifiers.push(specifier);
@@ -188,7 +192,7 @@ test("binary resolver logs resolution from the bundled package", async (t) => {
     const resolved = await resolveMakaiBinary({ logger, resolveModule });
     assert.equal(resolved, bundledPath);
     assert.deepEqual(specifiers, [
-      `@oap-sdk/cli-${process.platform}-${process.arch}/bin/${process.platform === "win32" ? "oapx.exe" : "oapx"}`,
+      `@oap-sdk/cli-${process.platform}-${process.arch}/bin/${binaryName}`,
     ]);
 
     const bundledLog = logger.entries.find((e) => e.message === "binary: resolved from bundled package");

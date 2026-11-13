@@ -42,9 +42,39 @@ export type BinaryResolverOptions =
 const ENV_BINARY_PATH = "OAP_SDK_BINARY_PATH";
 const ENV_BINARY_URL = "OAP_SDK_BINARY_URL";
 const ENV_BINARY_SHA256 = "OAP_SDK_BINARY_SHA256";
+const ENV_BINARY_PATH_OXAP = "OXAP_SDK_BINARY_PATH";
+const ENV_BINARY_URL_OXAP = "OXAP_SDK_BINARY_URL";
+const ENV_BINARY_SHA256_OXAP = "OXAP_SDK_BINARY_SHA256";
+
+function binaryNamesForPlatform(platform = process.platform): string[] {
+  if (platform === "win32") return ["oxap.exe", "oapx.exe"];
+  return ["oxap", "oapx"];
+}
 
 function binaryNameForPlatform(platform = process.platform): string {
-  return platform === "win32" ? "oapx.exe" : "oapx";
+  return binaryNamesForPlatform(platform)[0];
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value !== undefined && value !== "");
+}
+
+function binaryURLAndChecksum(options: BinaryResolverOptions): { url?: string; checksum?: string } {
+  const oxapURL = firstNonEmpty(process.env[ENV_BINARY_URL_OXAP]);
+  if (oxapURL) return { url: oxapURL, checksum: firstNonEmpty(process.env[ENV_BINARY_SHA256_OXAP]) };
+  const legacyURL = firstNonEmpty(process.env[ENV_BINARY_URL]);
+  if (legacyURL) return { url: legacyURL, checksum: firstNonEmpty(process.env[ENV_BINARY_SHA256]) };
+  if (options.binaryUrl) {
+    return {
+      url: options.binaryUrl,
+      checksum: firstNonEmpty(
+        process.env[ENV_BINARY_SHA256_OXAP],
+        process.env[ENV_BINARY_SHA256],
+        options.checksumSha256,
+      ),
+    };
+  }
+  return {};
 }
 
 async function ensureFileExists(filePath: string): Promise<void> {
@@ -123,7 +153,7 @@ async function downloadToCache(url: string, targetPath: string, checksumSha256: 
 export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): Promise<string> {
   const logger = options.logger ?? getNoopLogger();
 
-  const explicitBinaryPath = process.env[ENV_BINARY_PATH] ?? options.binaryPath;
+  const explicitBinaryPath = firstNonEmpty(process.env[ENV_BINARY_PATH_OXAP], process.env[ENV_BINARY_PATH], options.binaryPath);
   if (explicitBinaryPath) {
     const resolved = path.resolve(explicitBinaryPath);
     logger.debug("binary: resolving from explicit path", { path: resolved });
@@ -132,8 +162,7 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     return resolved;
   }
 
-  const binaryUrl = process.env[ENV_BINARY_URL] ?? options.binaryUrl;
-  const checksumSha256 = process.env[ENV_BINARY_SHA256] ?? options.checksumSha256;
+  const { url: binaryUrl, checksum: checksumSha256 } = binaryURLAndChecksum(options);
   if (binaryUrl) {
     const requiredChecksumSha256 = requireChecksumForUrl(binaryUrl, checksumSha256);
     const binaryName = binaryNameForPlatform();
@@ -168,24 +197,24 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     return cachePath;
   }
 
-  const binaryName = binaryNameForPlatform();
-
   const platformKey = `${process.platform}-${process.arch}`;
   const bundledPackage = `@oap-sdk/cli-${platformKey}`;
   const resolveModule = options.resolveModule ?? ((specifier: string) => require.resolve(specifier));
-  try {
-    const bundledPath = resolveModule(`${bundledPackage}/bin/${binaryName}`);
-    logger.debug("binary: resolved from bundled package", { path: bundledPath, package: bundledPackage });
-    return bundledPath;
-  } catch {
-    logger.debug("binary: bundled package not found", { package: bundledPackage });
+  for (const name of binaryNamesForPlatform()) {
+    try {
+      const bundledPath = resolveModule(`${bundledPackage}/bin/${name}`);
+      logger.debug("binary: resolved from bundled package", { path: bundledPath, package: bundledPackage });
+      return bundledPath;
+    } catch {
+      logger.debug("binary: bundled package not found", { package: bundledPackage, binary: name });
+    }
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const localCandidates = [
-    path.resolve(cwd, "zig-out", "bin", binaryName),
-    path.resolve(cwd, "zig", "zig-out", "bin", binaryName),
-  ];
+  const localCandidates = binaryNamesForPlatform().flatMap((name) => [
+    path.resolve(cwd, "zig-out", "bin", name),
+    path.resolve(cwd, "zig", "zig-out", "bin", name),
+  ]);
   for (const candidate of localCandidates) {
     logger.debug("binary: checking local candidate", { path: candidate });
     if (await isExecutableFile(candidate)) {
@@ -194,12 +223,15 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     }
   }
 
-  const onPath = await findOnPath(binaryName);
-  if (onPath !== undefined) {
-    logger.debug("binary: resolved from PATH", { path: onPath });
-    return onPath;
+  for (const name of binaryNamesForPlatform()) {
+    const onPath = await findOnPath(name);
+    if (onPath !== undefined) {
+      logger.debug("binary: resolved from PATH", { path: onPath, binary: name });
+      return onPath;
+    }
   }
 
+  const binaryName = binaryNameForPlatform();
   logger.debug("binary: falling back to PATH lookup", { binary: binaryName });
   return binaryName;
 }
