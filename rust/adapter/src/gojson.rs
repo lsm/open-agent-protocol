@@ -11,6 +11,37 @@ pub use value::{go_float, remarshal_any};
 
 pub const NESTING_LIMIT: usize = 10_000;
 
+struct Members(Vec<(String, Box<serde_json::value::RawValue>)>);
+
+impl<'de> serde::Deserialize<'de> for Members {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Members;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry()? {
+                    members.push(member);
+                }
+                Ok(Members(members))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+pub fn members(
+    json: &str,
+) -> Result<Vec<(String, Box<serde_json::value::RawValue>)>, serde_json::Error> {
+    serde_json::from_str::<Members>(&replace_lone_surrogates(json)).map(|Members(members)| members)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WalkError {
     Duplicate(String),

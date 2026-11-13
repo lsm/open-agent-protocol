@@ -1,0 +1,227 @@
+[
+  {
+    "path": "",
+    "unix": ".",
+    "windows": "."
+  },
+  {
+    "path": ".",
+    "unix": ".",
+    "windows": "."
+  },
+  {
+    "path": "/",
+    "unix": "/",
+    "windows": "\\"
+  },
+  {
+    "path": "//",
+    "unix": "/",
+    "windows": "\\\\"
+  },
+  {
+    "path": "a/b/../c",
+    "unix": "a/c",
+    "windows": "a\\c"
+  },
+  {
+    "path": "/a/b/../../..",
+    "unix": "/",
+    "windows": "\\"
+  },
+  {
+    "path": "../a",
+    "unix": "../a",
+    "windows": "..\\a"
+  },
+  {
+    "path": "a/../..",
+    "unix": "..",
+    "windows": ".."
+  },
+  {
+    "path": "/work/./",
+    "unix": "/work",
+    "windows": "\\work"
+  },
+  {
+    "path": "/x/../work",
+    "unix": "/work",
+    "windows": "\\work"
+  },
+  {
+    "path": "a//b",
+    "unix": "a/b",
+    "windows": "a\\b"
+  },
+  {
+    "path": "./a",
+    "unix": "a",
+    "windows": "a"
+  },
+  {
+    "path": "abc/def/..",
+    "unix": "abc",
+    "windows": "abc"
+  },
+  {
+    "path": "/../a",
+    "unix": "/a",
+    "windows": "\\a"
+  },
+  {
+    "path": "a\\b/../c",
+    "unix": "c",
+    "windows": "a\\c"
+  },
+  {
+    "path": "C:\\work",
+    "unix": "C:\\work",
+    "windows": "C:\\work"
+  },
+  {
+    "path": "c:\\work",
+    "unix": "c:\\work",
+    "windows": "c:\\work"
+  },
+  {
+    "path": "C:/work",
+    "unix": "C:/work",
+    "windows": "C:\\work"
+  },
+  {
+    "path": "C:",
+    "unix": "C:",
+    "windows": "C:."
+  },
+  {
+    "path": "C:.",
+    "unix": "C:.",
+    "windows": "C:."
+  },
+  {
+    "path": "C:..\\a",
+    "unix": "C:..\\a",
+    "windows": "C:..\\a"
+  },
+  {
+    "path": "C:\\..\\a",
+    "unix": "C:\\..\\a",
+    "windows": "C:\\a"
+  },
+  {
+    "path": "\\\\server\\share",
+    "unix": "\\\\server\\share",
+    "windows": "\\\\server\\share"
+  },
+  {
+    "path": "//server/share/x/../y",
+    "unix": "/server/share/y",
+    "windows": "\\\\server\\share\\y"
+  },
+  {
+    "path": "\\\\server\\share\\..",
+    "unix": "\\\\server\\share\\..",
+    "windows": "\\\\server\\share\\"
+  },
+  {
+    "path": "\\\\server",
+    "unix": "\\\\server",
+    "windows": "\\\\server"
+  },
+  {
+    "path": "\\\\..\\x",
+    "unix": "\\\\..\\x",
+    "windows": "\\x"
+  },
+  {
+    "path": "\\\\?\\C:\\x\\..",
+    "unix": "\\\\?\\C:\\x\\..",
+    "windows": "\\\\?\\C:\\"
+  },
+  {
+    "path": "\\\\?\\c:\\",
+    "unix": "\\\\?\\c:\\",
+    "windows": "\\\\?\\c:\\"
+  },
+  {
+    "path": "\\\\.\\UNC\\h\\s\\a\\..\\b",
+    "unix": "\\\\.\\UNC\\h\\s\\a\\..\\b",
+    "windows": "\\\\.\\UNC\\h\\s\\b"
+  },
+  {
+    "path": "\\\\?",
+    "unix": "\\\\?",
+    "windows": "\\\\?"
+  },
+  {
+    "path": "\\??\\c:\\x",
+    "unix": "\\??\\c:\\x",
+    "windows": "\\??\\c:\\x"
+  },
+  {
+    "path": "a/../c:",
+    "unix": "c:",
+    "windows": ".\\c:"
+  },
+  {
+    "path": "c:",
+    "unix": "c:",
+    "windows": "c:."
+  },
+  {
+    "path": "\\a\\..\\??\\c:\\x",
+    "unix": "\\a\\..\\??\\c:\\x",
+    "windows": "\\.\\??\\c:\\x"
+  },
+  {
+    "path": "a:b",
+    "unix": "a:b",
+    "windows": "a:b"
+  },
+  {
+    "path": "/a/b",
+    "unix": "/a/b",
+    "windows": "\\a\\b"
+  },
+  {
+    "path": "a\\b/c",
+    "unix": "a\\b/c",
+    "windows": "a\\b\\c"
+  },
+  {
+    "path": "C:\\a\\.\\b\\",
+    "unix": "C:\\a\\.\\b\\",
+    "windows": "C:\\a\\b"
+  },
+  {
+    "path": "\\\\.\\unc\\h\\..\\x",
+    "unix": "\\\\.\\unc\\h\\..\\x",
+    "windows": "\\unc\\x"
+  },
+  {
+    "path": "\\\\.\\UNC\\h\\..\\x",
+    "unix": "\\\\.\\UNC\\h\\..\\x",
+    "windows": "\\UNC\\x"
+  },
+  {
+    "path": "\\\\?\\Unc\\h\\s\\a\\..\\b",
+    "unix": "\\\\?\\Unc\\h\\s\\a\\..\\b",
+    "windows": "\\\\?\\Unc\\h\\s\\b"
+  },
+  {
+    "path": "1:a/../b",
+    "unix": "b",
+    "windows": "1:b"
+  },
+  {
+    "path": "1:2",
+    "unix": "1:2",
+    "windows": "1:2"
+  },
+  {
+    "path": "::x",
+    "unix": "::x",
+    "windows": "::x"
+  }
+]
