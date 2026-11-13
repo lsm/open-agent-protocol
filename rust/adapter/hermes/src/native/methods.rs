@@ -1,4 +1,4 @@
-use oap_adapter::gojson::{raw, zero};
+use oap_adapter::gojson::{raw, zero, Decode};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::Raw;
@@ -105,3 +105,13 @@ pub struct InterruptResult {
     #[serde(default, deserialize_with = "zero")]
     pub turn_isolation: bool,
 }
+
+impl Decode for SessionCreateResult {}
+
+impl Decode for SessionResumeResult {}
+
+impl Decode for ConfigSetResult {}
+
+impl Decode for PromptSubmitResult {}
+
+impl Decode for InterruptResult {}

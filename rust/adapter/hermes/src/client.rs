@@ -1,14 +1,18 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{select, Receiver, Sender};
+use oap_adapter::gojson::{decode, Decode};
 use oap_adapter::Error;
+use serde::Serialize;
 use serde_json::value::RawValue;
 
-use crate::process::ProcessConfig;
-use crate::rpc::{self, Inbound};
+use crate::native::{SessionCreateParams, SessionCreateResult, METHOD_SESSION_CREATE};
+use crate::process::{Process, ProcessConfig};
+use crate::rpc::{self, error, Fault, Inbound, RpcClient};
 
 pub const NATIVE_PROTOCOL: &str = "hermes adapter: invalid native protocol observation";
+const RELAY_CAPACITY: usize = 256;
 
 pub trait Client: Send + Sync {
     fn call(
@@ -43,6 +47,120 @@ pub trait ClientFactory: Send + Sync {
     }
 }
 
+pub fn native_protocol() -> Error {
+    Error::Harness(NATIVE_PROTOCOL.into())
+}
+
+pub fn call<T: Decode>(
+    client: &dyn Client,
+    method: &str,
+    params: &impl Serialize,
+    deadline: Option<Instant>,
+) -> Result<T, rpc::Error> {
+    let params = serde_json::value::to_raw_value(params)
+        .map_err(|failure| error(Fault::Encode(failure.to_string())))?;
+    let result = client.call(method, params, deadline)?;
+    decode(result.get().as_bytes()).map_err(|failure| {
+        error(Fault::Decode {
+            method: method.into(),
+            detail: failure.to_string(),
+        })
+    })
+}
+
+pub struct ProcessClient {
+    process: Process,
+    stored: String,
+    relay: Receiver<Inbound>,
+}
+
+impl ProcessClient {
+    pub fn new(process: Process) -> Self {
+        let (forward, relay) = crossbeam_channel::bounded(RELAY_CAPACITY);
+        let client = &process.client;
+        let (inbound, done, read_done) = (client.inbound(), client.done(), client.read_done());
+        std::thread::spawn(move || relay_inbound(&inbound, &done, &read_done, &forward));
+        Self {
+            process,
+            stored: String::new(),
+            relay,
+        }
+    }
+
+    pub fn rpc(&self) -> &RpcClient {
+        &self.process.client
+    }
+}
+
+fn relay_inbound(
+    inbound: &Receiver<Inbound>,
+    done: &Receiver<()>,
+    read_done: &Receiver<()>,
+    forward: &Sender<Inbound>,
+) {
+    let send = |message: Inbound| match message {
+        Inbound::Barrier(ack) => {
+            drop(ack);
+            true
+        }
+        message => forward.send(message).is_ok(),
+    };
+    loop {
+        select! {
+            recv(inbound) -> message => if !message.is_ok_and(send) {
+                return;
+            },
+            recv(done) -> _ => break,
+        }
+    }
+    loop {
+        select! {
+            recv(inbound) -> message => if !message.is_ok_and(send) {
+                return;
+            },
+            recv(read_done) -> _ => break,
+        }
+    }
+    while let Ok(message) = inbound.try_recv() {
+        if !send(message) {
+            return;
+        }
+    }
+}
+
+impl Client for ProcessClient {
+    fn call(
+        &self,
+        method: &str,
+        params: Box<RawValue>,
+        deadline: Option<Instant>,
+    ) -> Result<Box<RawValue>, rpc::Error> {
+        self.process.client.call(method, Some(params), deadline)
+    }
+
+    fn inbound(&self) -> Receiver<Inbound> {
+        self.relay.clone()
+    }
+
+    fn done(&self) -> Receiver<()> {
+        self.process.exited()
+    }
+
+    fn err(&self) -> Option<String> {
+        self.process
+            .wait_error()
+            .or_else(|| self.process.client.err())
+    }
+
+    fn close(&self) -> Result<(), String> {
+        self.process.close()
+    }
+
+    fn stored_session_id(&self) -> String {
+        self.stored.clone()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ProcessFactory {
     pub config: ProcessConfig,
@@ -50,7 +168,28 @@ pub struct ProcessFactory {
 }
 
 impl ClientFactory for ProcessFactory {
-    fn start(&self, _deadline: Option<Instant>) -> Result<(Arc<dyn Client>, String), Error> {
-        Err(Error::Harness(String::new()))
+    fn start(&self, deadline: Option<Instant>) -> Result<(Arc<dyn Client>, String), Error> {
+        self.start_with_reasoning("", deadline)
+    }
+
+    fn start_with_reasoning(
+        &self,
+        effort: &str,
+        deadline: Option<Instant>,
+    ) -> Result<(Arc<dyn Client>, String), Error> {
+        let process = Process::start(&self.config, deadline).map_err(Error::harness)?;
+        let mut client = ProcessClient::new(process);
+        let params = SessionCreateParams {
+            model: self.model.clone(),
+            reasoning_effort: effort.into(),
+            ..SessionCreateParams::default()
+        };
+        let created: SessionCreateResult =
+            call(&client, METHOD_SESSION_CREATE, &params, deadline).map_err(Error::harness)?;
+        if created.session_id.is_empty() || created.stored_session_id.is_empty() {
+            return Err(native_protocol());
+        }
+        client.stored = created.stored_session_id;
+        Ok((Arc::new(client), created.session_id))
     }
 }

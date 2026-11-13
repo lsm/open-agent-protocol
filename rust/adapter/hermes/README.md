@@ -14,7 +14,15 @@ an object or null, and an empty string id that parses but never marshals, as in
 Go's `internal/rpc`. `adapter::Adapter::describe` is Go's `Probe`: the
 descriptor `tests/go_capabilities.json` holds, the catalog's revision and
 Go's journal and cancellation fields. `adapter::Config` takes the gateway's
-process settings; Go's client and process factories arrive with the session.
+process settings. `client::ProcessFactory` is Go's process client factory: it
+starts the gateway, calls `session.create` with the configured model and
+reasoning effort, and refuses a reply naming no live or stored session as
+`client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
+the gateway's inbound messages through a buffer of 256 as Go's
+`relayInbound` does, acknowledging each response barrier at once so a call's
+result never waits on the session, and reports the gateway's exit status
+before the transport's error. A result Go cannot decode is refused with
+Go's `decode session.create response: ` prefix and serde_json's detail.
 `process::Process` starts the gateway as Go's `Start`
 does: its client checks every notification with `decode_notification`,
 refuses a response to no pending call, and takes only `gateway.ready` as the
@@ -50,3 +58,9 @@ matters: Hermes reports a refused notification as the transport's error, and a
 run it closes carries it. Other refusals carry serde_json's wording. Examples
 are a mistyped member, which Go names by struct field, a trailing value, and a
 byte that cannot begin a JSON value.
+
+`tests/client.rs` drives shell gateways through `session.create`, with each
+reply's outcome printed from Go's process factory over the same scripts. To
+see it bite, drop either id check, the model or the effort from the params, or
+report the transport's error before the exit status: one test must fail for
+each.

@@ -9,6 +9,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test methods)
 (cd rust && cargo test -p oap-adapter-hermes --test notifications)
 (cd rust && cargo test -p oap-adapter-hermes --test process)
+(cd rust && cargo test -p oap-adapter-hermes --test client)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -49,3 +50,8 @@ to compare equal to the new file.
 params and what its `json.Unmarshal` reads from each result. To see it bite,
 drop an `omitempty`-matching `skip_serializing_if` from `SessionCreateParams`,
 or deny unknown members on a result: one test must fail for each.
+
+`tests/client.rs` drives shell gateways through `session.create`, with each
+outcome printed from Go's process factory over the same scripts. To see it
+bite, drop either id check, the model or the effort from the params, or report
+the transport's error before the exit status: one test must fail for each.
