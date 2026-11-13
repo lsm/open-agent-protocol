@@ -117,3 +117,36 @@ fn a_working_directory_codex_changed_is_refused_with_both_quoted() {
         Err(r#"Codex resumed the thread in "", not the configured "/work""#.into())
     );
 }
+
+#[test]
+fn the_sandbox_type_is_read_as_go_decodes_a_struct_member() {
+    for sandbox in [
+        r#"{"Type":"readOnly"}"#,
+        r#"{"TYPE":"readOnly"}"#,
+        r#"{"type":"workspaceWrite","Type":"readOnly"}"#,
+        r#"{"type":"readOnly","type":null}"#,
+        r#"{"type":"readOnly","limit":1e999}"#,
+    ] {
+        let answer = format!(r#"{{"sandbox":{sandbox}}}"#);
+        assert_eq!(
+            confirm(&sent("", "", "read-only"), &answered(&answer)),
+            Ok(()),
+            "{sandbox}"
+        );
+    }
+    for sandbox in [
+        r#"{"type":"readOnly","Type":"workspaceWrite"}"#,
+        r#"{"type":7,"Type":"readOnly"}"#,
+        r#"{"type":"readOnly","Type":7}"#,
+        "[]",
+    ] {
+        let answer = format!(r#"{{"sandbox":{sandbox}}}"#);
+        assert_eq!(
+            confirm(&sent("", "", "read-only"), &answered(&answer)),
+            Err(format!(
+                "Codex resumed the thread under sandbox {sandbox}, not the configured read-only"
+            )),
+            "{sandbox}"
+        );
+    }
+}
