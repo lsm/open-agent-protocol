@@ -33,6 +33,7 @@ pub struct Fake {
     barriers: AtomicBool,
     ahead: Mutex<Vec<Inbound>>,
     gate: Mutex<Option<Gate>>,
+    panics: Mutex<Option<&'static str>>,
 }
 
 impl Fake {
@@ -51,6 +52,7 @@ impl Fake {
             barriers: AtomicBool::new(false),
             ahead: Mutex::default(),
             gate: Mutex::default(),
+            panics: Mutex::default(),
         })
     }
 
@@ -106,6 +108,10 @@ impl Fake {
         (arrivals, release)
     }
 
+    pub fn panic_on(&self, method: &'static str) {
+        *self.panics.lock().unwrap() = Some(method);
+    }
+
     pub fn disconnect(&self) {
         self.inbound.0.lock().unwrap().take();
     }
@@ -153,6 +159,10 @@ impl Client for Fake {
             .lock()
             .unwrap()
             .push((method.into(), params.get().into()));
+        let panics = *self.panics.lock().unwrap();
+        if panics == Some(method) {
+            panic!("the fake client panics on {method}");
+        }
         let gate = self.gate.lock().unwrap().clone();
         if let Some((_, entered, released)) = gate.filter(|(held, ..)| *held == method) {
             entered.send(()).unwrap();

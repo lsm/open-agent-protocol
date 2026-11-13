@@ -134,3 +134,32 @@ fn a_transport_closed_during_turn_start_fails_the_run_it_admits_as_go_does() {
         )]
     );
 }
+
+#[test]
+fn a_client_that_panics_during_turn_start_leaves_close_free_to_return() {
+    let (fake, session) = open();
+    let session = Arc::new(session);
+    fake.panic_on("turn/start");
+    let submitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.submit(MessageSubmitRequest {
+            session_id: "s".into(),
+            messages: vec![Message {
+                role: MessageRole::USER,
+                content: MessageContent::from_text("hi"),
+                ..Message::default()
+            }],
+            ..MessageSubmitRequest::default()
+        })
+    }));
+    assert!(submitted.is_err());
+    let (closed, closing) = crossbeam_channel::bounded(1);
+    {
+        let session = session.clone();
+        std::thread::spawn(move || closed.send(session.close().map_err(|error| error.to_string())));
+    }
+    assert_eq!(closing.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
+    assert_eq!(
+        session.state().map(drop).map_err(|error| error.to_string()),
+        Err("adapter: session closed".to_owned())
+    );
+}
