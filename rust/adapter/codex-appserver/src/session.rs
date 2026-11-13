@@ -6,8 +6,8 @@ use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{
-    refuse_unadvertised_controls, Error, EventStream, Recovery, ResumeRequest, UnsupportedControl,
-    CONTROL_UNSATISFIABLE,
+    refuse_unadvertised_controls, Error, EventStream, InteractionResolution, Recovery,
+    ResumeRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, InteractionId, MessageId, MessageRole, MessageSubmitRequest,
@@ -49,6 +49,7 @@ pub(crate) struct Interaction {
     pub(crate) tool_call: ToolCallId,
     pub(crate) request: Arc<IncomingRequest>,
     pub(crate) resolved: bool,
+    pub(crate) choices: Vec<String>,
     pub(crate) order: u64,
 }
 
@@ -381,6 +382,10 @@ impl Session {
 
     pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
         self.shared.resume(request)
+    }
+
+    pub fn resolve(&self, resolution: InteractionResolution) -> Result<(), Error> {
+        self.shared.resolve(resolution)
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {

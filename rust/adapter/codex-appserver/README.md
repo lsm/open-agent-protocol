@@ -43,10 +43,11 @@ as `native_action_incomplete` otherwise, in the order its items started. A
 completion with no matching start fails the run as `invalid_native_action`.
 
 A command or file-change approval for an active action becomes
-`action.permission.requested`, offering the decisions Codex lists. An
-approval still pending when the run settles is answered with `-32800` and
-resolved as failed, or cancelled on an interruption. Resolving an approval
-is not mapped yet, and neither are user input requests.
+`action.permission.requested`, offering the decisions Codex lists, and
+`Session::resolve` answers Codex with the chosen decision once, refusing
+what Go refuses. An approval still pending when the run settles is answered
+with `-32800` and resolved as failed, or cancelled on an interruption.
+User input requests are not mapped yet.
 
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While

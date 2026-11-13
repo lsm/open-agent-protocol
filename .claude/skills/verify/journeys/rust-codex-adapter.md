@@ -130,9 +130,10 @@ drop the duplicate-start check, the pending-action sort, or the `failed`
 status check: the replay test must fail.
 
 `tests/go_approvals.json` is the same kind of record for approvals: each
-scenario's steps (notifications, approval requests and waits) with Go's
-events and its answer to every request, and `tests/approvals.rs` replays
-them. Its generator drives requests through the package's `request` helper.
-To see it bite, drop the thread check on a request's scope, accept a
-decision Codex does not define, or settle pending actions before pending
-approvals: the replay test must fail.
+scenario's steps (notifications, approval requests, waits and resolutions)
+with Go's events, its answer to every request and the outcome of every
+resolution, and `tests/approvals.rs` replays them. Its generator also
+drives requests through the package's `request` helper and `Resolve`, and
+fills an empty `interaction_id` from the latest request event. To see it
+bite, accept a decision Codex did not offer, skip the responder check, or
+settle pending actions before pending approvals: the replay test must fail.

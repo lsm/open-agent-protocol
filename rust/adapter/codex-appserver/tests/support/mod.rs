@@ -96,7 +96,7 @@ impl Fake {
             }));
     }
 
-    fn deliver(&self, message: Inbound) -> Result<(), ()> {
+    pub fn deliver(&self, message: Inbound) -> Result<(), ()> {
         self.inbound
             .0
             .lock()
