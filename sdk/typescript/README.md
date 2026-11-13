@@ -12,7 +12,7 @@ npm install oap-sdk
 
 No release has been published yet; until one is, install from a checkout of this repository.
 
-The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
+The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oxap` or `zig/zig-out/bin/oxap`, then `oxap` on `PATH`; the `oapx` names keep resolving in every step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -284,7 +284,8 @@ async function main(): Promise<void> {
 void main();
 ```
 
-You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`.
+You can also set `OXAP_SDK_BINARY_PATH=/opt/oxap/bin/oxap`, which outranks the
+legacy `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`.
 
 ### Download from URL with checksum
 
@@ -310,19 +311,25 @@ async function main(): Promise<void> {
 void main();
 ```
 
-Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SHA256`.
+Environment variable equivalents are `OXAP_SDK_BINARY_URL` and
+`OXAP_SDK_BINARY_SHA256`, with the legacy `OAP_SDK_BINARY_URL` and
+`OAP_SDK_BINARY_SHA256` still read. Each environment URL takes the checksum
+written beside it, so a checksum is never borrowed across the two pairs;
+`checksumSha256` from the resolver options is the fallback for any URL, and a
+URL passed as `resolver.binaryUrl` takes either environment checksum, the OXAP
+one first, then `checksumSha256`.
 
 ### PATH lookup and local builds
 
 With no resolver options, the SDK checks, in order:
 
-1. The `@oap-sdk/cli-<platform>-<arch>` package, when it is installed
-2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-3. `oapx` on `PATH`
+1. The `@oap-sdk/cli-<platform>-<arch>` package, when it is installed: `oxap`, then `oapx`
+2. `./zig-out/bin/oxap`, `./zig/zig-out/bin/oxap`, `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
+3. `oxap` on `PATH`, then `oapx`
 
-On Windows the executable name is `oapx.exe`.
+On Windows each name carries an `.exe` suffix.
 
-Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
+Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OXAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary; the legacy `OAP_SDK_BINARY_PATH` still resolves.
 
 The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds the reply to each request; `frameTimeoutMs` bounds auth event waits. A running agent run or provider inference has no idle limit by default, because a tool or a reasoning model can be silent for minutes; set `idleTimeoutMs` to give up after that long without an event, which also cancels the run, or pass an `AbortSignal` to stop it yourself. A failed connection closes the spawned process.
 
