@@ -71,15 +71,39 @@ Each migration needs its own observable compatibility proof before examples
 or installation instructions switch to the new names. No global replacement
 of `OAP`, `oap` or `oapx` is authorized by this decision.
 
-### Repository, publication and historical names
+### Repository, publication and release matrix
 
-The intended future repository is `oxap-dev/oxap`; intended publication names
-are `oxap` and `@oxap-dev/cli-*` on npm, `oxap-sdk` on PyPI, `oxap-*` crates,
-and the Go module path `oxap.dev`. These are migration targets, not claims
-that accounts, domains or package names have been acquired or published.
-Repository transfer, domain setup and registry publication require separate
-owner actions. Go imports change only after the vanity endpoint is working;
-existing imports and published versions are not rewritten by this decision.
+The repository target is **`lsm/oxap`**: an in-place rename of this repository,
+not a new organization. The Go module follows the repository URL as
+`github.com/lsm/oxap` once the rename lands; no vanity domain is required.
+GitHub redirects and immutable old tags keep older pinned Go versions working;
+existing imports and published versions are not rewritten.
+
+Publication names were re-checked against the registries on 2026-11-13 (all
+unclaimed at that date; re-check before the first publish):
+
+| Surface | Target name |
+| --- | --- |
+| GitHub repository | `lsm/oxap` |
+| Go module and Go SDK | `github.com/lsm/oxap` (Git tag + Go proxy) |
+| Zig package | `.oxap` in `zig/build.zig.zon` |
+| Runtime, CLI and TUI | `oxap`, with `oapx` kept as a compatibility alias; release assets `oxap-<version>-<os>-<arch>` |
+| npm CLI | `@oxap/cli`, resolving platform packages through optional dependencies |
+| npm platform packages | `@oxap/cli-darwin-arm64`, `@oxap/cli-darwin-x64`, `@oxap/cli-linux-arm64`, `@oxap/cli-linux-x64`, `@oxap/cli-win32-arm64`, `@oxap/cli-win32-x64` |
+| TypeScript SDK | `@oxap/sdk` |
+| TypeScript daemon client | `@oxap/client` |
+| Python SDK | distribution `oxap-sdk`, import `oxap_sdk` |
+| Rust crates (17) | `oxap-protocol`, `oxap-validation`, `oxap-harness`, `oxap-provider-catalog`, `oxap-binding`, `oxap-adapter`, `oxap-adapter-acp`, `oxap-adapter-claude`, `oxap-adapter-codex-appserver`, `oxap-adapter-copilot`, `oxap-adapter-deepseek`, `oxap-adapter-hermes`, `oxap-adapter-opencode`, `oxap-adapter-pi`, `oxap-serve`, `oxap-conformance`, `oxap-sdk` |
+| Homebrew | formula `oxap`, submitted to homebrew-core at the first stable release |
+
+All npm names use the existing `@oxap` organization scope; the unscoped `oxap`
+package is not claimed. The `nocomment` tool, `goap`, `oap-rust-hub` and
+bench/probe binaries stay internal and unpublished. PyPI's existing `oap-sdk`
+belongs to another project and is left alone; no compatibility `oap_sdk` import
+is added.
+
+The first OXAP release is `v0.1.0-alpha.33` (`0.1.0a33` for Python). Homebrew
+waits for the first stable release; the alpha adds no tap.
 
 Keep identifiers in `research/` ledgers and `fixtures/adapters/` corpora as
 recorded. They describe pinned upstream vocabulary and wire evidence, not
