@@ -104,9 +104,14 @@ impl Adapter {
             reasoning_level: request.reasoning_level,
             ..SessionState::default()
         };
+        let participant = match request.participant.id.as_str() {
+            "" => "user".into(),
+            _ => request.participant.id.clone(),
+        };
         let session = Session::new(
             client,
             native_id,
+            participant,
             self.config.runtime.clone(),
             self.config.journal_capacity,
             state,

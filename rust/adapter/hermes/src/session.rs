@@ -6,9 +6,9 @@ use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{refuse_unadvertised_controls, Error, EventStream};
 use oap_protocol::{
-    Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, MessageId, MessageRole,
-    MessageSubmitRequest, MessageSubmitResponse, RecoveryMetadata, RequestedDeliveryMode, RunId,
-    RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
+    Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, InteractionId, MessageId,
+    MessageRole, MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RecoveryMetadata,
+    RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
 };
 use serde_json::value::RawValue;
 
@@ -34,6 +34,13 @@ pub(crate) struct Tool {
     pub(crate) terminal: bool,
 }
 
+pub(crate) struct Interaction {
+    pub(crate) id: InteractionId,
+    pub(crate) request_id: String,
+    pub(crate) requested: EnvelopeId,
+    pub(crate) resolved: bool,
+}
+
 pub(crate) struct Run {
     pub(crate) id: RunId,
     pub(crate) message_id: MessageId,
@@ -45,6 +52,7 @@ pub(crate) struct Run {
     pub(crate) submitting: bool,
     pub(crate) buffered: Vec<Observation>,
     pub(crate) tools: Vec<Tool>,
+    pub(crate) interactions: Vec<Interaction>,
     pub(crate) start: Option<Sender<Result<RunId, String>>>,
 }
 
@@ -60,6 +68,7 @@ pub(crate) struct Inner {
 pub(crate) struct Shared {
     pub(crate) client: Arc<dyn Client>,
     pub(crate) native_id: String,
+    pub(crate) participant: ParticipantId,
     stored_id: String,
     pub(crate) runtime: Runtime,
     pub(crate) journal: Journal,
@@ -159,6 +168,7 @@ impl Shared {
                 submitting: true,
                 buffered: Vec::new(),
                 tools: Vec::new(),
+                interactions: Vec::new(),
                 start: Some(start),
             });
             message_id
@@ -251,6 +261,7 @@ impl Session {
     pub(crate) fn new(
         client: Arc<dyn Client>,
         native_id: String,
+        participant: ParticipantId,
         runtime: Runtime,
         capacity: usize,
         state: SessionState,
@@ -260,6 +271,7 @@ impl Session {
             stored_id: client.stored_session_id(),
             client,
             native_id,
+            participant,
             runtime,
             journal: Journal::new(capacity),
             prompt: Mutex::new(()),

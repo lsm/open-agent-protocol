@@ -37,9 +37,16 @@ Hermes has both answered `streaming` and opened the turn with
 `message.start`, in either order; events seen before then are held and
 replayed. A second open fails the run as `hermes_invalid_grammar`, foreign
 activity as `hermes_external_activity`, and a transport that dies after the
-turn opened as `hermes_process_exit` settled by inference. A server request
-that reaches a running turn is answered method not found until the
-interactions slice maps it. `message.complete` settles the run: `complete`
+turn opened as `hermes_process_exit` settled by inference. An approval,
+clarify, sudo or secret request that reaches a running turn surfaces as
+`user.input.requested` for the session's participant (`user` when the open
+named none), followed by `run.status.updated` waiting for that input; it is
+not answered until it is resolved. A `request.cancel` naming its request id
+resolves it as cancelled and puts the run back to running. A gate that does
+not decode fails the run as `invalid <method> gate`, and a clarify choice
+that is empty as a question nobody can answer; Go's other answerability
+checks cannot fail once the request decodes, so they are not ported.
+`message.complete` settles the run: `complete`
 emits `run.completed` with the turn's text and usage, any other status
 `run.failed` coded `hermes_` plus the error surface's code or the status,
 and a status-less settlement, which only a child turn's mirror sends, fails
@@ -49,8 +56,9 @@ emits `action.call.requested`, carrying the arguments re-encoded as Go's map
 encodes them, then `action.call.started`; `tool.complete` emits
 `action.call.completed` with the result, or `null`. A reused tool id or a
 completion for no open tool fails the run as `hermes_tool_lifecycle`, and
-a settlement or failure first fails every tool still open as
-`incomplete_tool`. `client::ProcessFactory` is Go's process client factory: it
+a settlement or failure first cancels every gate still open, then fails
+every tool still open as `incomplete_tool`, each in the order it arrived.
+Resolving a gate arrives next. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -139,4 +147,13 @@ duplicate check, the argument re-encoding, the `null` default for absent
 arguments or result, the reply links, the open-tool filter on completion or
 settlement, the settlement of open tools on completion or failure, the tool
 call id on the envelope, or the requesting endpoint: one test must fail for
+each.
+
+`tests/gates.rs` compares every gate Go surfaces, expires or cancels byte
+for byte with Go's reducer over the same requests, and checks no gate is
+answered. To see it bite, drop the empty-choice check, the description
+fallback, a question kind, the request-id or resolved filter on expiry, the
+running update, the cancellation on settlement, the turn id, the reply link,
+the pending input id, the participant or its default, `allow_cancel`, the
+waiting update, or the replay of a buffered gate: one test must fail for
 each.

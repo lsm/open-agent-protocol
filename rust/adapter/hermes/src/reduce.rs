@@ -2,8 +2,10 @@ use crossbeam_channel::select;
 use oap_adapter::gojson::{go_quote, remarshal_any};
 use oap_protocol::{
     ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeId,
-    EnvelopeType, Message, MessageContent, MessageRole, ProtocolError, RunCompletedPayload,
-    RunFailedPayload, RunStartedPayload, RunStatus, SessionStatus, ToolCallId, Usage,
+    EnvelopeType, InputOption, InputQuestion, InputQuestionKind, InteractionId, Message,
+    MessageContent, MessageRole, ProtocolError, RunCompletedPayload, RunFailedPayload,
+    RunStartedPayload, RunStatus, RunStatusUpdatedPayload, SessionStatus, ToolCallId, Usage,
+    UserInputRequestedPayload, UserInputResolutionStatus, UserInputResolvedPayload,
 };
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -12,13 +14,14 @@ use std::sync::Arc;
 
 use crate::adapter::ENDPOINT_ID;
 use crate::native::{
-    decode_notification, decode_strict, is_run_scoped, request_session_id, DeltaPayload, Event,
-    MessageCompletePayload, ToolCompletePayload, ToolStartPayload, EVENT_MESSAGE_COMPLETE,
-    EVENT_MESSAGE_DELTA, EVENT_MESSAGE_START, EVENT_REASONING_DELTA, EVENT_TOOL_COMPLETE,
+    decode_notification, decode_server_request, decode_strict, is_run_scoped, request_session_id,
+    DeltaPayload, Event, MessageCompletePayload, RequestCancelPayload, ServerRequest,
+    ToolCompletePayload, ToolStartPayload, EVENT_MESSAGE_COMPLETE, EVENT_MESSAGE_DELTA,
+    EVENT_MESSAGE_START, EVENT_REASONING_DELTA, EVENT_REQUEST_CANCEL, EVENT_TOOL_COMPLETE,
     EVENT_TOOL_START, REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
 };
 use crate::rpc::{Inbound, IncomingRequest, RequestId};
-use crate::session::{native_protocol, Inner, Observation, Shared, Tool};
+use crate::session::{native_protocol, Inner, Interaction, Observation, Shared, Tool};
 
 const TERMINAL_WON: &str = "hermes adapter: terminal already selected";
 
@@ -137,8 +140,113 @@ impl Shared {
         }
     }
 
-    fn open_interaction(&self, _inner: &mut Inner, request: &IncomingRequest) {
-        let _ = request.respond_error(-32601, "method not found");
+    fn open_interaction(&self, inner: &mut Inner, request: &IncomingRequest) {
+        let method = request.method.as_str();
+        let params = request.params.as_deref().map_or("", |raw| raw.get());
+        let Ok(Some(decoded)) = decode_server_request(method, params.as_bytes()) else {
+            let message = format!("invalid {method} gate");
+            return self.fail_run(inner, "hermes_invalid_event", &message, "");
+        };
+        let id = InteractionId::from(self.runtime.new_id("interaction"));
+        let (title, description, questions) = gate(decoded);
+        if !questions.iter().all(answerable) {
+            let message = "gate with a question nobody can answer";
+            return self.fail_run(inner, "hermes_invalid_event", message, "");
+        }
+        let Some(run_id) = inner.run.as_ref().map(|run| run.id.clone()) else {
+            return;
+        };
+        let payload = UserInputRequestedPayload {
+            interaction_id: id.clone(),
+            requested_by: ENDPOINT_ID.into(),
+            responded_by: self.participant.clone(),
+            session_id: inner.state.session_id.clone(),
+            run_id: run_id.clone(),
+            title: title.into(),
+            description,
+            questions,
+            allow_cancel: true,
+            ..UserInputRequestedPayload::default()
+        };
+        let kind = EnvelopeType::USER_INPUT_REQUESTED;
+        let Some(requested) = self.emit_input(inner, kind, &payload, &id, None) else {
+            return;
+        };
+        if let Some(run) = inner.run.as_mut() {
+            run.interactions.push(Interaction {
+                id: id.clone(),
+                request_id: match &request.id {
+                    RequestId::String(id) => id.clone(),
+                    _ => String::new(),
+                },
+                requested,
+                resolved: false,
+            });
+        }
+        let waiting = RunStatusUpdatedPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id,
+            status: RunStatus::WAITING_FOR_INPUT,
+            pending_user_input_id: Some(id),
+            updated_at_ms: self.runtime.now_ms(),
+        };
+        self.emit(inner, EnvelopeType::RUN_STATUS_UPDATED, &waiting, false);
+    }
+
+    fn expire_interaction(&self, inner: &mut Inner, payload: &RequestCancelPayload) {
+        let Some(interaction) = inner.run.as_mut().and_then(|run| {
+            run.interactions
+                .iter_mut()
+                .find(|interaction| !interaction.resolved && interaction.request_id == payload.id)
+        }) else {
+            return;
+        };
+        interaction.resolved = true;
+        let (id, requested) = (interaction.id.clone(), interaction.requested.clone());
+        self.cancel_interaction(inner, &id, requested);
+        let Some(run_id) = inner.run.as_ref().map(|run| run.id.clone()) else {
+            return;
+        };
+        let running = RunStatusUpdatedPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id,
+            status: RunStatus::RUNNING,
+            updated_at_ms: self.runtime.now_ms(),
+            ..RunStatusUpdatedPayload::default()
+        };
+        self.emit(inner, EnvelopeType::RUN_STATUS_UPDATED, &running, false);
+    }
+
+    fn cancel_interaction(&self, inner: &mut Inner, id: &InteractionId, requested: EnvelopeId) {
+        let payload = UserInputResolvedPayload {
+            interaction_id: id.clone(),
+            requested_by: ENDPOINT_ID.into(),
+            responded_by: self.participant.clone(),
+            session_id: inner.state.session_id.clone(),
+            run_id: inner
+                .run
+                .as_ref()
+                .map(|run| run.id.clone())
+                .unwrap_or_default(),
+            status: UserInputResolutionStatus::CANCELLED,
+            ..UserInputResolvedPayload::default()
+        };
+        let kind = EnvelopeType::USER_INPUT_RESOLVED;
+        self.emit_input(inner, kind, &payload, id, Some(requested));
+    }
+
+    fn emit_input(
+        &self,
+        inner: &mut Inner,
+        kind: EnvelopeType,
+        payload: &impl Serialize,
+        turn: &InteractionId,
+        reply: Option<EnvelopeId>,
+    ) -> Option<EnvelopeId> {
+        self.emit_envelope(inner, kind, payload, false, |envelope| {
+            envelope.in_reply_to = reply;
+            envelope.turn_id = Some(turn.clone());
+        })
     }
 
     fn apply_run_event(&self, inner: &mut Inner, event: &Event) {
@@ -164,6 +272,12 @@ impl Shared {
             EVENT_TOOL_START => match decode_strict(event.payload_bytes()) {
                 Ok(payload) => self.start_tool(inner, &payload),
                 Err(_) => self.fail_run(inner, "hermes_invalid_event", "invalid tool start", ""),
+            },
+            EVENT_REQUEST_CANCEL => match decode_strict(event.payload_bytes()) {
+                Ok(payload) => self.expire_interaction(inner, &payload),
+                Err(_) => {
+                    self.fail_run(inner, "hermes_invalid_event", "invalid request cancel", "")
+                }
             },
             EVENT_TOOL_COMPLETE => match decode_strict(event.payload_bytes()) {
                 Ok(payload) => self.end_tool(inner, &payload),
@@ -373,6 +487,21 @@ impl Shared {
         let Some(run) = inner.run.as_mut() else {
             return;
         };
+        let gates: Vec<_> = run
+            .interactions
+            .iter_mut()
+            .filter(|interaction| !interaction.resolved)
+            .map(|interaction| {
+                interaction.resolved = true;
+                (interaction.id.clone(), interaction.requested.clone())
+            })
+            .collect();
+        for (id, requested) in gates {
+            self.cancel_interaction(inner, &id, requested);
+        }
+        let Some(run) = inner.run.as_mut() else {
+            return;
+        };
         let open: Vec<_> = run
             .tools
             .iter_mut()
@@ -520,4 +649,69 @@ impl Shared {
         let failure = self.client.err().unwrap_or_else(|| "<nil>".into());
         self.fail_run(inner, "hermes_process_exit", &failure, "inferred");
     }
+}
+
+fn gate(request: ServerRequest) -> (&'static str, String, Vec<InputQuestion>) {
+    let question =
+        |id: &str, prompt: String, kind: InputQuestionKind, options: Vec<InputOption>| {
+            InputQuestion {
+                id: id.into(),
+                prompt,
+                kind,
+                required: true,
+                options,
+            }
+        };
+    match request {
+        ServerRequest::Approval(approval) => {
+            let description = if approval.command.is_empty() {
+                approval.description
+            } else {
+                approval.command
+            };
+            let options = options(&approval.choices);
+            let kind = InputQuestionKind::SINGLE_CHOICE;
+            let choice = question("choice", description.clone(), kind, options);
+            ("Command approval", description, vec![choice])
+        }
+        ServerRequest::Clarify(clarify) => {
+            let questions = clarify
+                .questions
+                .into_iter()
+                .map(|asked| {
+                    let kind = match (asked.choices.is_empty(), asked.multi_select) {
+                        (true, _) => InputQuestionKind::TEXT,
+                        (false, true) => InputQuestionKind::MULTI_CHOICE,
+                        (false, false) => InputQuestionKind::SINGLE_CHOICE,
+                    };
+                    question(&asked.qid, asked.question, kind, options(&asked.choices))
+                })
+                .collect();
+            ("Clarification", String::new(), questions)
+        }
+        ServerRequest::Sudo(sudo) => {
+            let prompt = "Enter the sudo password".into();
+            let password = question("password", prompt, InputQuestionKind::TEXT, Vec::new());
+            ("Password required", sudo.command, vec![password])
+        }
+        ServerRequest::Secret(secret) => {
+            let value = question("value", secret.prompt, InputQuestionKind::TEXT, Vec::new());
+            ("Secret required", secret.env_var, vec![value])
+        }
+    }
+}
+
+fn options(choices: &[String]) -> Vec<InputOption> {
+    choices
+        .iter()
+        .map(|choice| InputOption {
+            id: choice.clone(),
+            label: choice.clone(),
+            ..InputOption::default()
+        })
+        .collect()
+}
+
+fn answerable(question: &InputQuestion) -> bool {
+    question.options.iter().all(|option| !option.id.is_empty())
 }

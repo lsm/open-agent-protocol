@@ -16,6 +16,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test submit)
 (cd rust && cargo test -p oap-adapter-hermes --test settle)
 (cd rust && cargo test -p oap-adapter-hermes --test tools)
+(cd rust && cargo test -p oap-adapter-hermes --test gates)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -99,4 +100,13 @@ duplicate check, the argument re-encoding, the `null` default for absent
 arguments or result, the reply links, the open-tool filter on completion or
 settlement, the settlement of open tools on completion or failure, the tool
 call id on the envelope, or the requesting endpoint: one test must fail for
+each.
+
+`tests/gates.rs` compares every gate Go surfaces, expires or cancels byte
+for byte with Go's reducer over the same requests, and checks no gate is
+answered. To see it bite, drop the empty-choice check, the description
+fallback, a question kind, the request-id or resolved filter on expiry, the
+running update, the cancellation on settlement, the turn id, the reply link,
+the pending input id, the participant or its default, `allow_cancel`, the
+waiting update, or the replay of a buffered gate: one test must fail for
 each.
