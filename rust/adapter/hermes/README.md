@@ -13,8 +13,16 @@ gateway's JSON-RPC over `oap_adapter::jsonrpc`: strict framing, params only as
 an object or null, and an empty string id that parses but never marshals, as in
 Go's `internal/rpc`. `adapter::Adapter::describe` is Go's `Probe`: the
 descriptor `tests/go_capabilities.json` holds, the catalog's revision and
-Go's journal and cancellation fields. `adapter::Config` takes the gateway's
-process settings. `client::ProcessFactory` is Go's process client factory: it
+Go's journal and cancellation fields. `adapter::Adapter::open` is Go's
+`Open`: it refuses tool sources, tools and a compaction policy, starts the
+gateway through `adapter::Config`'s factory (a `client::ProcessFactory` over
+its process settings when none is given), sets a reasoning level through
+`config.set` and refuses one Hermes rejects as unsatisfiable, and reports an
+idle `session::Session` bound to the stored session. A reopen is refused when
+the binding names no stored session or the factory cannot reload one, and
+otherwise reports the recovery and the model Hermes last ran under. The
+session so far answers `state` and `close`; submitting and the event reducer
+arrive in the slices that follow. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -64,3 +72,9 @@ reply's outcome printed from Go's process factory over the same scripts. To
 see it bite, drop either id check, the model or the effort from the params, or
 report the transport's error before the exit status: one test must fail for
 each.
+
+`tests/open.rs` opens sessions over scripted factories, with every state and
+refusal printed from Go's `Open` over the same fakes. To see it bite, send
+Hermes's reasoning level as OAP spells it, keep the client open after a
+refused level, stop trimming the stored id, ignore the reloaded model, close
+the client twice, or answer `state` once closed: one test must fail for each.

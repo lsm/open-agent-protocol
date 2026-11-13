@@ -10,6 +10,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test notifications)
 (cd rust && cargo test -p oap-adapter-hermes --test process)
 (cd rust && cargo test -p oap-adapter-hermes --test client)
+(cd rust && cargo test -p oap-adapter-hermes --test open)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -55,3 +56,9 @@ or deny unknown members on a result: one test must fail for each.
 outcome printed from Go's process factory over the same scripts. To see it
 bite, drop either id check, the model or the effort from the params, or report
 the transport's error before the exit status: one test must fail for each.
+
+`tests/open.rs` opens sessions over scripted factories, with every state and
+refusal printed from Go's `Open` over the same fakes. To see it bite, send
+Hermes's reasoning level as OAP spells it, keep the client open after a
+refused level, stop trimming the stored id, ignore the reloaded model, close
+the client twice, or answer `state` once closed: one test must fail for each.

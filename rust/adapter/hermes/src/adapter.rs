@@ -2,14 +2,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use oap_adapter::runtime::Runtime;
-use oap_adapter::{Descriptor, Error, JournalDescriptor, OpenRequest};
+use oap_adapter::{
+    refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
+    Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
+};
 use oap_protocol::{
-    CapabilityDescriptor, EndpointDescriptor, FeatureSupport, SupportLevel,
-    FEATURE_COMPACTION_POLICY, FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING, MODE_SESSION_LIVE,
-    MODE_SESSION_OPEN, PROFILE, VERSION,
+    CapabilityDescriptor, EndpointDescriptor, FeatureSupport, ReasoningLevel, SessionState,
+    SessionStatus, SupportLevel, FEATURE_COMPACTION_POLICY, FEATURE_OPEN_REOPEN,
+    FEATURE_SESSION_REASONING, MODE_SESSION_LIVE, MODE_SESSION_OPEN, PROFILE, VERSION,
 };
 
-use crate::client::{ClientFactory, ProcessFactory};
+use crate::client::{call, native_protocol, Client, ClientFactory, ProcessFactory};
+use crate::native::{ConfigSetParams, ConfigSetResult, METHOD_CONFIG_SET};
 use crate::process::ProcessConfig;
 use crate::session::Session;
 
@@ -56,8 +60,55 @@ impl Adapter {
     }
 
     pub fn open(&self, request: OpenRequest) -> Result<Session, Error> {
-        let _ = (&self.factory, request);
-        Err(Error::Harness(String::new()))
+        refuse_unadvertised_tool_sources(&request, &[])?;
+        refuse_unadvertised_tools(&request, &[])?;
+        refuse_unadvertised_settings(&request, &self.describe().capabilities)?;
+        let level = &request.reasoning_level;
+        let (client, native_id, resumed) = if request.reopen {
+            if request.native_session_id.trim().is_empty() {
+                return Err(reopen_refusal("the binding names no stored session"));
+            }
+            let (client, resumed) = self
+                .factory
+                .reopen(&request.native_session_id, None)
+                .map_err(|detail| reopen_refusal(&detail))?;
+            let native_id = resumed.session_id.clone();
+            (client, native_id, Some(resumed))
+        } else if level.is_empty() {
+            let (client, native_id) = self.factory.start(None)?;
+            (client, native_id, None)
+        } else {
+            let (client, native_id) = self.factory.start_with_reasoning(effort(level), None)?;
+            (client, native_id, None)
+        };
+        let fail = |failure: Error| {
+            let _ = client.close();
+            failure
+        };
+        if native_id.is_empty() {
+            return Err(fail(native_protocol()));
+        }
+        if !level.is_empty() {
+            set_reasoning(&*client, &native_id, level).map_err(fail)?;
+        }
+        let session_id = if request.session_id.as_str().is_empty() {
+            self.config.runtime.new_id("session").into()
+        } else {
+            request.session_id
+        };
+        let state = SessionState {
+            session_id,
+            status: SessionStatus::IDLE,
+            current_model_id: self.config.model.clone(),
+            updated_at_ms: self.config.runtime.now_ms(),
+            reasoning_level: request.reasoning_level,
+            ..SessionState::default()
+        };
+        let session = Session::new(client, self.config.journal_capacity, state);
+        if let Some(resumed) = resumed {
+            session.restore_state(resumed.info.as_deref());
+        }
+        Ok(session)
     }
 
     pub fn describe(&self) -> Descriptor {
@@ -124,4 +175,44 @@ pub(crate) fn features() -> BTreeMap<String, FeatureSupport> {
     .into_iter()
     .map(|(key, support)| (key.to_owned(), support))
     .collect()
+}
+
+pub fn effort(level: &ReasoningLevel) -> &str {
+    if *level == ReasoningLevel::OFF {
+        "none"
+    } else {
+        level.as_str()
+    }
+}
+
+pub(crate) fn set_reasoning(
+    client: &dyn Client,
+    native_id: &str,
+    level: &ReasoningLevel,
+) -> Result<(), Error> {
+    let params = ConfigSetParams {
+        session_id: native_id.into(),
+        key: "reasoning".into(),
+        value: effort(level).into(),
+    };
+    call::<ConfigSetResult>(client, METHOD_CONFIG_SET, &params, None)
+        .map(drop)
+        .map_err(|failure| {
+            Error::UnsupportedControl(Box::new(UnsupportedControl {
+                feature: FEATURE_SESSION_REASONING.into(),
+                reason: CONTROL_UNSATISFIABLE,
+                field: "reasoning_level".into(),
+                detail: format!("Hermes refused the reasoning level: {failure}"),
+                ..UnsupportedControl::default()
+            }))
+        })
+}
+
+fn reopen_refusal(detail: &str) -> Error {
+    Error::UnsupportedControl(Box::new(UnsupportedControl {
+        feature: FEATURE_OPEN_REOPEN.into(),
+        reason: CONTROL_UNSATISFIABLE,
+        detail: format!("Hermes could not reload its binding: {detail}"),
+        ..UnsupportedControl::default()
+    }))
 }
