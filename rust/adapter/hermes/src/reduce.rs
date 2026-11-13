@@ -1,16 +1,18 @@
 use crossbeam_channel::select;
 use oap_adapter::gojson::go_quote;
 use oap_protocol::{
-    Envelope, EnvelopeType, ProtocolError, RunFailedPayload, RunStartedPayload, RunStatus,
-    SessionStatus,
+    ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType, Message,
+    MessageContent, MessageRole, ProtocolError, RunCompletedPayload, RunFailedPayload,
+    RunStartedPayload, RunStatus, SessionStatus, Usage,
 };
 use serde::Serialize;
 
 use std::sync::Arc;
 
 use crate::native::{
-    decode_notification, is_run_scoped, request_session_id, Event, EVENT_MESSAGE_START,
-    REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
+    decode_notification, decode_strict, is_run_scoped, request_session_id, DeltaPayload, Event,
+    MessageCompletePayload, EVENT_MESSAGE_COMPLETE, EVENT_MESSAGE_DELTA, EVENT_MESSAGE_START,
+    EVENT_REASONING_DELTA, REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
 };
 use crate::rpc::{Inbound, IncomingRequest, RequestId};
 use crate::session::{native_protocol, Inner, Observation, Shared};
@@ -137,18 +139,121 @@ impl Shared {
     }
 
     fn apply_run_event(&self, inner: &mut Inner, event: &Event) {
-        if event.kind == EVENT_MESSAGE_START {
-            let Some(run) = inner.run.as_mut() else {
-                return;
-            };
-            let (already, accepted) = (run.open_seen, run.accepted);
-            run.open_seen = true;
-            if already {
-                self.fail_run(inner, "hermes_invalid_grammar", "turn opened twice", "");
-            } else if accepted {
-                self.start_run(inner);
+        match event.kind.as_str() {
+            EVENT_MESSAGE_START => {
+                let Some(run) = inner.run.as_mut() else {
+                    return;
+                };
+                let (already, accepted) = (run.open_seen, run.accepted);
+                run.open_seen = true;
+                if already {
+                    self.fail_run(inner, "hermes_invalid_grammar", "turn opened twice", "");
+                } else if accepted {
+                    self.start_run(inner);
+                }
             }
+            EVENT_MESSAGE_COMPLETE => match decode_strict(event.payload_bytes()) {
+                Ok(payload) => self.settle_run(inner, &payload),
+                Err(_) => self.fail_run(inner, "hermes_invalid_event", "invalid settlement", ""),
+            },
+            EVENT_MESSAGE_DELTA => self.emit_delta(inner, event, ContentPartType::TEXT),
+            EVENT_REASONING_DELTA => self.emit_delta(inner, event, ContentPartType::REASONING),
+            _ => {}
         }
+    }
+
+    fn emit_delta(&self, inner: &mut Inner, event: &Event, kind: ContentPartType) {
+        let Some(run) = inner.run.as_ref().filter(|run| run.started) else {
+            return;
+        };
+        let Ok(delta) = decode_strict::<DeltaPayload>(event.payload_bytes()) else {
+            return self.fail_run(inner, "hermes_invalid_event", "invalid delta", "");
+        };
+        if delta.text.is_empty() {
+            return;
+        }
+        let mut part = ContentPart {
+            part_type: kind.clone(),
+            ..ContentPart::default()
+        };
+        if kind == ContentPartType::TEXT {
+            part.text = delta.text;
+        } else {
+            part.reasoning = delta.text;
+        }
+        let payload = ContentDeltaPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id: run.id.clone(),
+            message_id: Some(run.message_id.clone()),
+            part,
+        };
+        self.emit(inner, EnvelopeType::CONTENT_DELTA, &payload, false);
+    }
+
+    fn settle_run(&self, inner: &mut Inner, payload: &MessageCompletePayload) {
+        let Some(run) = inner.run.as_ref() else {
+            return;
+        };
+        if !run.started {
+            let failure = native_protocol("settlement before the turn opened");
+            return self.abort_pre_start(inner, failure);
+        }
+        if payload.status.is_empty() {
+            let message = "child-mirror settlement on the parent stream";
+            return self.fail_run(inner, "hermes_invalid_settlement", message, "");
+        }
+        let (session_id, run_id) = (inner.state.session_id.clone(), run.id.clone());
+        if payload.status == "complete" {
+            let mut usage = None;
+            if let Some(reported) = &payload.usage {
+                let count = |count: Option<i64>| count.map(u64::try_from).transpose();
+                let (Ok(input), Ok(output), Ok(total)) = (
+                    count(reported.input),
+                    count(reported.output),
+                    count(reported.total),
+                ) else {
+                    return self.fail_run(inner, "hermes_invalid_event", "invalid settlement", "");
+                };
+                usage = Some(Usage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    total_tokens: total,
+                    ..Usage::default()
+                });
+            }
+            let completed = RunCompletedPayload {
+                session_id,
+                run_id,
+                final_response: Message {
+                    id: Some(run.message_id.clone()),
+                    role: MessageRole::ASSISTANT,
+                    content: MessageContent::from_text(&payload.text),
+                    ..Message::default()
+                },
+                stop_reason: "completed".into(),
+                usage,
+                ..RunCompletedPayload::default()
+            };
+            self.emit(inner, EnvelopeType::RUN_COMPLETED, &completed, true);
+            return;
+        }
+        let surface = payload
+            .error_surface
+            .as_ref()
+            .map_or("", |surface| surface.code.as_str());
+        let code = format!(
+            "hermes_{}",
+            if surface.is_empty() {
+                &payload.status
+            } else {
+                surface
+            }
+        );
+        let message = [payload.error.as_str(), payload.text.as_str()]
+            .into_iter()
+            .find(|message| !message.is_empty())
+            .map_or_else(|| format!("turn {}", payload.status), str::to_owned);
+        self.fail_run(inner, &code, &message, "");
     }
 
     pub(crate) fn start_run(&self, inner: &mut Inner) {

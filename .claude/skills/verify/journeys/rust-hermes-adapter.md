@@ -14,6 +14,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test reopen)
 (cd rust && cargo test -p oap-adapter-hermes --test reduce)
 (cd rust && cargo test -p oap-adapter-hermes --test submit)
+(cd rust && cargo test -p oap-adapter-hermes --test settle)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -83,3 +84,10 @@ see it bite, start the run without `message.start` or without the reply, drop
 the transcript cursor, the transport-death deferral or the abort on a refused
 reply, join text parts other than by a newline, or let a second run in:
 one test must fail or hang for each.
+
+`tests/settle.rs` compares the envelopes for every settlement status and
+both delta kinds byte for byte with Go's reducer over the same frames. To
+see it bite, drop the empty-delta skip, the reasoning part, the child-mirror
+check, the negative-count refusal, the error-surface code, the
+error-before-text order, the `turn <status>` fallback, the total-token count
+or the reasoning delta: one test must fail for each.

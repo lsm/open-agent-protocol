@@ -39,7 +39,13 @@ replayed. A second open fails the run as `hermes_invalid_grammar`, foreign
 activity as `hermes_external_activity`, and a transport that dies after the
 turn opened as `hermes_process_exit` settled by inference. A server request
 that reaches a running turn is answered method not found until the
-interactions slice maps it; settlement, deltas and tools arrive next. `client::ProcessFactory` is Go's process client factory: it
+interactions slice maps it. `message.complete` settles the run: `complete`
+emits `run.completed` with the turn's text and usage, any other status
+`run.failed` coded `hermes_` plus the error surface's code or the status,
+and a status-less settlement, which only a child turn's mirror sends, fails
+the run as `hermes_invalid_settlement`. `message.delta` and
+`reasoning.delta` become text and reasoning content deltas; tools arrive
+next. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -114,3 +120,10 @@ see it bite, start the run without `message.start` or without the reply, drop
 the transcript cursor, the transport-death deferral or the abort on a refused
 reply, join text parts other than by a newline, or let a second run in:
 one test must fail or hang for each.
+
+`tests/settle.rs` compares the envelopes for every settlement status and
+both delta kinds byte for byte with Go's reducer over the same frames. To
+see it bite, drop the empty-delta skip, the reasoning part, the child-mirror
+check, the negative-count refusal, the error-surface code, the
+error-before-text order, the `turn <status>` fallback, the total-token count
+or the reasoning delta: one test must fail for each.
