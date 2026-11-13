@@ -21,6 +21,9 @@ it admitted. It refuses what Go refuses before any native call, and a
 `turn/start` with no turn id closes the session. A session with an active
 run refuses to close. The run's events are not mapped yet.
 
+A session reads what Codex sends on its own thread. It answers each reverse
+request it does not handle with `-32601` and the method as data.
+
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured
 approval policy, and the configured working directory. The directories are

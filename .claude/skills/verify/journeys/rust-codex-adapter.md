@@ -9,6 +9,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test filepath)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test open)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test submit)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test dispatch)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -67,3 +68,13 @@ leaves. To see it bite, read a null content as missing: the null-content test
 must fail. Ignore a failed transport after a refused `turn/start`, drop the
 active-run check, or leave the session queued after a refusal: one test each
 must fail. Let close skip the active-run check: the close-refusal test must fail.
+
+`tests/dispatch.rs` checks the session's own reader thread. It answers a
+reverse request Go does not handle with `-32601`, `unsupported Codex server
+request` and the method as data. Its fake holds each reply behind a
+barrier once the reader is running, as the real client does, so a submit
+returns only if the reader acknowledges without waiting for the operation
+lock, including when Codex asks something ahead of its answer. To see it
+bite, answer with another code or data member, take the operation lock
+before acknowledging a barrier, or take it to answer a reverse request:
+one test each must fail.

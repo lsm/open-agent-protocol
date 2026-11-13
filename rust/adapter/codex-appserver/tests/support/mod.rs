@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::runtime::Runtime;
@@ -11,7 +11,10 @@ use oap_adapter::OpenRequest;
 use oap_adapter_codex_appserver::adapter::{Adapter, Config};
 use oap_adapter_codex_appserver::client::{Client, ClientFactory};
 use oap_adapter_codex_appserver::process::ProcessConfig;
-use oap_adapter_codex_appserver::rpc::{self, error, ErrorObject, Fault, Inbound, RequestId};
+use oap_adapter_codex_appserver::rpc::{
+    self, error, ErrorObject, Fault, Inbound, IncomingRequest, Message, NotificationMessage,
+    RequestId, Responder, DIALECT,
+};
 use oap_protocol::Participant;
 use serde_json::value::RawValue;
 
@@ -24,6 +27,9 @@ pub struct Fake {
     pub failed: Mutex<Option<String>>,
     inbound: (Sender<Inbound>, Receiver<Inbound>),
     done: (Sender<()>, Receiver<()>),
+    activated: AtomicBool,
+    barriers: AtomicBool,
+    ahead: Mutex<Vec<Inbound>>,
 }
 
 impl Fake {
@@ -35,11 +41,63 @@ impl Fake {
             failed: Mutex::default(),
             inbound: crossbeam_channel::unbounded(),
             done: crossbeam_channel::unbounded(),
+            activated: AtomicBool::new(false),
+            barriers: AtomicBool::new(false),
+            ahead: Mutex::default(),
         })
     }
 
     pub fn calls(&self) -> Vec<(String, String)> {
         self.calls.lock().unwrap().clone()
+    }
+
+    pub fn notify(&self, method: &str, params: &str) {
+        self.inbound
+            .0
+            .send(Inbound::Notification(NotificationMessage {
+                method: method.into(),
+                params: Some(RawValue::from_string(params.into()).unwrap()),
+            }))
+            .unwrap();
+    }
+
+    pub fn request(&self, method: &str, params: &str) -> Arc<Answers> {
+        let (request, answers) = incoming(method, params);
+        self.inbound.0.send(request).unwrap();
+        answers
+    }
+
+    pub fn request_ahead_of_next_reply(&self, method: &str, params: &str) -> Arc<Answers> {
+        let (request, answers) = incoming(method, params);
+        self.ahead.lock().unwrap().push(request);
+        answers
+    }
+
+    pub fn hang_up(&self) {
+        self.done.0.send(()).unwrap();
+    }
+
+    pub fn hold_replies_behind_barriers(&self) {
+        self.barriers.store(true, Ordering::SeqCst);
+    }
+
+    pub fn activated(&self) -> bool {
+        self.activated.load(Ordering::SeqCst)
+    }
+
+    fn barrier(&self) -> Result<(), rpc::Error> {
+        if !self.barriers.load(Ordering::SeqCst) || !self.activated() {
+            return Ok(());
+        }
+        for message in self.ahead.lock().unwrap().drain(..) {
+            self.inbound.0.send(message).unwrap();
+        }
+        let (ack, acked) = crossbeam_channel::bounded::<()>(0);
+        self.inbound.0.send(Inbound::Barrier(ack)).unwrap();
+        match acked.recv_timeout(Duration::from_secs(2)) {
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => Err(error(Fault::Closed)),
+            _ => Ok(()),
+        }
     }
 
     pub fn closes(&self) -> usize {
@@ -58,6 +116,7 @@ impl Client for Fake {
             .lock()
             .unwrap()
             .push((method.into(), params.get().into()));
+        self.barrier()?;
         match self.replies.lock().unwrap().pop_front() {
             Some(Ok(result)) => Ok(RawValue::from_string(result.into()).unwrap()),
             Some(Err(message)) => Err(error(Fault::Remote {
@@ -73,6 +132,7 @@ impl Client for Fake {
     }
 
     fn inbound(&self) -> Receiver<Inbound> {
+        self.activated.store(true, Ordering::SeqCst);
         self.inbound.1.clone()
     }
 
@@ -88,6 +148,18 @@ impl Client for Fake {
         self.closes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+}
+
+fn incoming(method: &str, params: &str) -> (Inbound, Arc<Answers>) {
+    let answers = Arc::new(Answers::default());
+    let request = Inbound::Request(Arc::new(IncomingRequest::new(
+        DIALECT,
+        RequestId::Integer(90),
+        method,
+        Some(RawValue::from_string(params.into()).unwrap()),
+        answers.clone(),
+    )));
+    (request, answers)
 }
 
 pub fn adapter(fake: &Arc<Fake>, configure: impl FnOnce(&mut Config)) -> Adapter {
@@ -118,5 +190,15 @@ pub fn request() -> OpenRequest {
             ..Participant::default()
         },
         ..OpenRequest::default()
+    }
+}
+
+#[derive(Default)]
+pub struct Answers(pub Mutex<Vec<Message>>);
+
+impl Responder for Answers {
+    fn send(&self, message: Message) -> Result<(), rpc::Error> {
+        self.0.lock().unwrap().push(message);
+        Ok(())
     }
 }
