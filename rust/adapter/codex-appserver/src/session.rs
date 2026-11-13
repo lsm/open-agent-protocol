@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use oap_adapter::Error;
-use oap_protocol::{SessionState, SessionStatus};
+use oap_adapter::{Error, EventStream};
+use oap_protocol::{MessageSubmitRequest, MessageSubmitResponse, SessionState, SessionStatus};
 
 use crate::client::Client;
 
@@ -36,6 +36,15 @@ impl Session {
 
     pub fn native_session_id(&self) -> String {
         self.thread_id.clone()
+    }
+
+    pub fn submit(
+        &self,
+        _request: MessageSubmitRequest,
+    ) -> Result<(MessageSubmitResponse, EventStream), Error> {
+        Err(Error::Harness(
+            "codex app-server adapter: submit unavailable".into(),
+        ))
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
