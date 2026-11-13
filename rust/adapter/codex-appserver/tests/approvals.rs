@@ -143,15 +143,14 @@ fn each_approval_request_is_scoped_and_settled_as_go_does() {
             "{}",
             scenario.name
         );
-        if events
+        let cancelled = events
             .iter()
-            .all(|event| event.envelope_type != EnvelopeType::RUN_CANCELLED)
-        {
-            RunTrace {
-                submitted: Some(submission()),
-                ..RunTrace::new(admission, adapter.describe(), events)
-            }
-            .assert_valid();
+            .any(|event| event.envelope_type == EnvelopeType::RUN_CANCELLED);
+        RunTrace {
+            submitted: Some(submission()),
+            cancelled,
+            ..RunTrace::new(admission, adapter.describe(), events)
         }
+        .assert_valid();
     }
 }
