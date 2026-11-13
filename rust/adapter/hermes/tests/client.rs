@@ -45,6 +45,7 @@ fn factory(probe: &Path, model: &str, reply: &str, rest: &str) -> ProcessFactory
             ..ProcessConfig::default()
         },
         model: model.into(),
+        ..ProcessFactory::default()
     }
 }
 

@@ -88,6 +88,7 @@ fn a_reopen_resumes_the_stored_session_and_binds_to_it() {
     let factory = ProcessFactory {
         config: gateway(&probe, RESUMED),
         model: "hermes-test".into(),
+        ..ProcessFactory::default()
     };
     let (client, resumed) = factory.reopen("st", None).unwrap();
     assert_eq!(
@@ -171,6 +172,7 @@ fn a_resume_hermes_cannot_take_safely_is_refused_with_go_s_text() {
         let factory = ProcessFactory {
             config: gateway(&probe, reply),
             model: "hermes-test".into(),
+            ..ProcessFactory::default()
         };
         let Err(refused) = factory.reopen(stored, None) else {
             panic!("{name}: the resume was accepted");
@@ -189,6 +191,7 @@ fn a_resume_hermes_cannot_take_safely_is_refused_with_go_s_text() {
     let factory = ProcessFactory {
         config: gateway(&probe, r#"{"jsonrpc":"2.0","id":1,"result":"x"}"#),
         model: String::new(),
+        ..ProcessFactory::default()
     };
     let Err(refused) = factory.reopen("st", None) else {
         panic!("the resume was accepted");

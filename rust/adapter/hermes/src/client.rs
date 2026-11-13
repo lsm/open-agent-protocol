@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crossbeam_channel::{select, Receiver, Sender};
@@ -61,6 +61,10 @@ pub trait ClientFactory: Send + Sync {
 
     fn list(&self, _limit: usize) -> Option<Result<Box<RawValue>, Error>> {
         None
+    }
+
+    fn close(&self) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -178,10 +182,20 @@ impl Client for ProcessClient {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct Kept(Arc<Mutex<Option<Process>>>);
+
+impl std::fmt::Debug for Kept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Kept")
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ProcessFactory {
     pub config: ProcessConfig,
     pub model: String,
+    pub kept: Kept,
 }
 
 impl ClientFactory for ProcessFactory {
@@ -220,6 +234,18 @@ impl ClientFactory for ProcessFactory {
         let resumed = resume_stored(&client, stored, deadline)?;
         client.stored = stored.into();
         Ok((Arc::new(client), resumed))
+    }
+
+    fn close(&self) -> Result<(), Error> {
+        let mut kept = self
+            .kept
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        match kept.take() {
+            Some(process) => process.close().map_err(Error::Harness),
+            None => Ok(()),
+        }
     }
 }
 

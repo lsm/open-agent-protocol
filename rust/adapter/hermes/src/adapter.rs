@@ -12,7 +12,7 @@ use oap_protocol::{
     FEATURE_SESSION_REASONING, MODE_SESSION_LIVE, MODE_SESSION_OPEN, PROFILE, VERSION,
 };
 
-use crate::client::{call, native_protocol, Client, ClientFactory, ProcessFactory};
+use crate::client::{call, native_protocol, Client, ClientFactory, Kept, ProcessFactory};
 use crate::native::{ConfigSetParams, ConfigSetResult, METHOD_CONFIG_SET};
 use crate::process::ProcessConfig;
 use crate::session::Session;
@@ -54,6 +54,7 @@ impl Adapter {
             Arc::new(ProcessFactory {
                 config: config.process.clone(),
                 model: config.model.clone(),
+                kept: Kept::default(),
             })
         });
         Ok(Self { config, factory })
@@ -120,6 +121,10 @@ impl Adapter {
             session.restore_state(resumed.info.as_deref());
         }
         Ok(session)
+    }
+
+    pub fn close(&self) -> Result<(), Error> {
+        self.factory.close()
     }
 
     pub fn describe(&self) -> Descriptor {
