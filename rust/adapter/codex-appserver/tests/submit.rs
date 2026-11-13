@@ -205,6 +205,15 @@ fn a_second_submit_while_a_run_is_active_or_after_close_is_refused() {
 }
 
 #[test]
+fn a_session_with_an_active_run_refuses_to_close() {
+    let (fake, session) = open([Ok(TURN)]);
+    let _run = session.submit(submission(vec![user("", "hi")])).unwrap();
+    assert!(matches!(session.close(), Err(Error::RunActive)));
+    assert_eq!(fake.closes(), 0);
+    assert!(session.state().is_ok());
+}
+
+#[test]
 fn a_refused_turn_start_leaves_the_session_idle_unless_the_transport_failed() {
     let (_fake, session) = open([Err("busy"), Ok(TURN)]);
     let error = session
