@@ -1,5 +1,6 @@
 pub use oap_adapter::jsonrpc::{
-    ClientOptions, Dialect, Error, Fault, Inbound, NotificationMessage, RpcClient,
+    ClientOptions, Dialect, Error, Fault, Inbound, IncomingRequest, NotificationMessage, RequestId,
+    RpcClient,
 };
 use serde_json::value::RawValue;
 

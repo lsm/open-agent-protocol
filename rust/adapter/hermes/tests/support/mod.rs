@@ -3,16 +3,23 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+use oap_adapter::jsonrpc::{Message, Responder};
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{Error, OpenRequest};
 use oap_adapter_hermes::adapter::{Adapter, Config};
 use oap_adapter_hermes::client::{Client, ClientFactory};
 use oap_adapter_hermes::native::SessionResumeResult;
-use oap_adapter_hermes::rpc::{self, error, Fault, Inbound};
-use oap_protocol::Participant;
+use oap_adapter_hermes::rpc::{
+    self, error, Fault, Inbound, IncomingRequest, NotificationMessage, RequestId, DIALECT,
+};
+use oap_adapter_hermes::session::Session;
+use oap_protocol::{
+    Message as OapMessage, MessageContent, MessageRole, MessageSubmitRequest, Participant,
+    RequestedDeliveryMode,
+};
 use serde_json::value::RawValue;
 
 pub type Reply = Result<&'static str, &'static str>;
@@ -23,8 +30,11 @@ pub struct Fake {
     closes: AtomicUsize,
     pub close_error: Mutex<Option<String>>,
     pub stored: String,
-    inbound: (Sender<Inbound>, Receiver<Inbound>),
+    sender: Mutex<Option<Sender<Inbound>>>,
+    inbound: Receiver<Inbound>,
     done: (Sender<()>, Receiver<()>),
+    held: Mutex<Option<Receiver<()>>>,
+    ahead: Mutex<Vec<String>>,
 }
 
 impl Fake {
@@ -33,15 +43,104 @@ impl Fake {
     }
 
     pub fn stored(replies: impl IntoIterator<Item = Reply>, stored: &str) -> Arc<Self> {
+        let (sender, inbound) = crossbeam_channel::unbounded();
         Arc::new(Self {
             replies: Mutex::new(replies.into_iter().collect()),
             calls: Mutex::default(),
             closes: AtomicUsize::new(0),
             close_error: Mutex::default(),
             stored: stored.into(),
-            inbound: crossbeam_channel::unbounded(),
+            sender: Mutex::new(Some(sender)),
+            inbound,
             done: crossbeam_channel::unbounded(),
+            held: Mutex::default(),
+            ahead: Mutex::default(),
         })
+    }
+
+    pub fn reply(&self, reply: Reply) {
+        self.replies.lock().unwrap().push_back(reply);
+    }
+
+    pub fn hold_next_reply(&self) -> Sender<()> {
+        let (release, held) = crossbeam_channel::bounded(1);
+        *self.held.lock().unwrap() = Some(held);
+        release
+    }
+
+    pub fn event_ahead_of_next_reply(&self, kind: &str, seq: i64, payload: &str) {
+        self.ahead
+            .lock()
+            .unwrap()
+            .push(frame("sess0001", kind, seq, payload));
+    }
+
+    pub fn count(&self, method: &str) -> usize {
+        self.calls()
+            .iter()
+            .filter(|(name, _)| name == method)
+            .count()
+    }
+
+    pub fn await_call(&self, method: &str, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.count(method) < count {
+            assert!(
+                Instant::now() < deadline,
+                "native call {method} was not issued"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    pub fn event(&self, kind: &str, seq: i64, payload: &str) {
+        self.raw(&frame("sess0001", kind, seq, payload));
+    }
+
+    pub fn raw(&self, params: &str) {
+        self.send(Inbound::Notification(NotificationMessage {
+            method: "event".into(),
+            params: Some(RawValue::from_string(params.into()).unwrap()),
+        }));
+        self.barrier();
+    }
+
+    pub fn request(&self, id: RequestId, method: &str, params: &str) -> Arc<Answers> {
+        let answers = Arc::new(Answers::default());
+        self.send(Inbound::Request(Arc::new(IncomingRequest::new(
+            DIALECT,
+            id,
+            method,
+            Some(RawValue::from_string(params.into()).unwrap()),
+            answers.clone(),
+        ))));
+        self.barrier();
+        answers
+    }
+
+    fn send(&self, message: Inbound) {
+        let sender = self.sender.lock().unwrap().clone();
+        sender
+            .expect("the transport is closed")
+            .send(message)
+            .unwrap();
+    }
+
+    pub fn barrier(&self) {
+        let (ack, acked) = crossbeam_channel::bounded::<()>(0);
+        self.send(Inbound::Barrier(ack));
+        assert!(
+            matches!(
+                acked.recv_timeout(Duration::from_secs(2)),
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+            ),
+            "reducer barrier timed out"
+        );
+    }
+
+    pub fn hang_up(&self) {
+        self.sender.lock().unwrap().take();
+        let _ = self.done.0.send(());
     }
 
     pub fn calls(&self) -> Vec<(String, String)> {
@@ -64,6 +163,14 @@ impl Client for Fake {
             .lock()
             .unwrap()
             .push((method.into(), params.get().into()));
+        let held = self.held.lock().unwrap().take();
+        if let Some(held) = held {
+            let _ = held.recv();
+        }
+        let ahead = std::mem::take(&mut *self.ahead.lock().unwrap());
+        for params in ahead {
+            self.raw(&params);
+        }
         match self.replies.lock().unwrap().pop_front() {
             Some(Ok(result)) => Ok(RawValue::from_string(result.into()).unwrap()),
             Some(Err(message)) => Err(error(Fault::Transport(message.into()))),
@@ -74,7 +181,7 @@ impl Client for Fake {
     }
 
     fn inbound(&self) -> Receiver<Inbound> {
-        self.inbound.1.clone()
+        self.inbound.clone()
     }
 
     fn done(&self) -> Receiver<()> {
@@ -153,6 +260,90 @@ impl ClientFactory for Factory {
             Some(Err(detail)) => Err(detail.into()),
             None => panic!("reopen was not scripted"),
         }
+    }
+}
+
+pub fn frame(session: &str, kind: &str, seq: i64, payload: &str) -> String {
+    let mut params = format!(r#"{{"type":"{kind}","session_id":"{session}","seq":{seq}"#);
+    if session.is_empty() {
+        params = format!(r#"{{"type":"{kind}""#);
+    }
+    if !payload.is_empty() {
+        params.push_str(&format!(r#","payload":{payload}"#));
+    }
+    params + "}"
+}
+
+#[derive(Default)]
+pub struct Answers(pub Mutex<Vec<Message>>);
+
+impl Answers {
+    pub fn codes(&self) -> Vec<i64> {
+        let answers = self.0.lock().unwrap();
+        answers
+            .iter()
+            .map(|message| message.error.as_ref().map_or(0, |error| error.code))
+            .collect()
+    }
+}
+
+impl Responder for Answers {
+    fn send(&self, message: Message) -> Result<(), rpc::Error> {
+        self.0.lock().unwrap().push(message);
+        Ok(())
+    }
+}
+
+pub fn go_runtime() -> Runtime {
+    let ids = AtomicUsize::new(0);
+    let clock = AtomicUsize::new(0);
+    Runtime::new(
+        move || clock.fetch_add(1, Ordering::SeqCst) as i64 + 1,
+        move |kind| {
+            let n = ids.fetch_add(1, Ordering::SeqCst);
+            format!("{kind}-{}", (b'a' + n as u8) as char)
+        },
+    )
+}
+
+pub fn go_adapter(fake: &Arc<Fake>) -> Adapter {
+    Adapter::new(Config {
+        factory: Some(Factory::new(fake, "sess0001")),
+        model: "hermes-test".into(),
+        journal_capacity: 64,
+        runtime: go_runtime(),
+        ..Config::default()
+    })
+    .unwrap()
+}
+
+pub fn opened(fake: &Arc<Fake>) -> Session {
+    go_adapter(fake)
+        .open(OpenRequest {
+            session_id: "session".into(),
+            ..request()
+        })
+        .unwrap()
+}
+
+pub fn submission() -> MessageSubmitRequest {
+    MessageSubmitRequest {
+        session_id: "session".into(),
+        delivery: RequestedDeliveryMode::AUTO,
+        messages: vec![OapMessage {
+            role: MessageRole::USER,
+            content: MessageContent::from_text("hello"),
+            ..OapMessage::default()
+        }],
+        ..MessageSubmitRequest::default()
+    }
+}
+
+pub fn wait_unusable(session: &Session) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while session.state().is_ok() {
+        assert!(Instant::now() < deadline, "the session stayed usable");
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
