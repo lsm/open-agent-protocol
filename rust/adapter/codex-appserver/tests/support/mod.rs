@@ -11,7 +11,10 @@ use oap_adapter::OpenRequest;
 use oap_adapter_codex_appserver::adapter::{Adapter, Config};
 use oap_adapter_codex_appserver::client::{Client, ClientFactory};
 use oap_adapter_codex_appserver::process::ProcessConfig;
-use oap_adapter_codex_appserver::rpc::{self, error, ErrorObject, Fault, Inbound, RequestId};
+use oap_adapter_codex_appserver::rpc::{
+    self, error, ErrorObject, Fault, Inbound, IncomingRequest, Message, NotificationMessage,
+    RequestId, Responder, DIALECT,
+};
 use oap_protocol::Participant;
 use serde_json::value::RawValue;
 
@@ -40,6 +43,35 @@ impl Fake {
 
     pub fn calls(&self) -> Vec<(String, String)> {
         self.calls.lock().unwrap().clone()
+    }
+
+    pub fn notify(&self, method: &str, params: &str) {
+        self.inbound
+            .0
+            .send(Inbound::Notification(NotificationMessage {
+                method: method.into(),
+                params: Some(RawValue::from_string(params.into()).unwrap()),
+            }))
+            .unwrap();
+    }
+
+    pub fn request(&self, method: &str, params: &str) -> Arc<Answers> {
+        let answers = Arc::new(Answers::default());
+        self.inbound
+            .0
+            .send(Inbound::Request(Arc::new(IncomingRequest::new(
+                DIALECT,
+                RequestId::Integer(90),
+                method,
+                Some(RawValue::from_string(params.into()).unwrap()),
+                answers.clone(),
+            ))))
+            .unwrap();
+        answers
+    }
+
+    pub fn hang_up(&self) {
+        self.done.0.send(()).unwrap();
     }
 
     pub fn closes(&self) -> usize {
@@ -118,5 +150,15 @@ pub fn request() -> OpenRequest {
             ..Participant::default()
         },
         ..OpenRequest::default()
+    }
+}
+
+#[derive(Default)]
+pub struct Answers(pub Mutex<Vec<Message>>);
+
+impl Responder for Answers {
+    fn send(&self, message: Message) -> Result<(), rpc::Error> {
+        self.0.lock().unwrap().push(message);
+        Ok(())
     }
 }
