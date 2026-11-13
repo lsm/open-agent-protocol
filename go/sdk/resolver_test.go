@@ -447,6 +447,54 @@ func TestResolveBinaryPrefersTheOxapURLAndChecksumOverTheLegacyOnes(t *testing.T
 	}
 }
 
+func TestResolveBinaryPairsEachURLWithTheChecksumBesideIt(t *testing.T) {
+	isolateResolverEnv(t)
+	legacyPayload := []byte("#!/bin/sh\necho legacy\n")
+	foreignPayload := []byte("#!/bin/sh\necho foreign\n")
+	legacyDigest := sha256.Sum256(legacyPayload)
+	foreignDigest := sha256.Sum256(foreignPayload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(legacyPayload)
+	}))
+	defer server.Close()
+
+	t.Setenv("OAP_SDK_BINARY_URL", server.URL+"/legacy/oapx")
+	t.Setenv("OAP_SDK_BINARY_SHA256", hex.EncodeToString(legacyDigest[:]))
+	t.Setenv("OXAP_SDK_BINARY_SHA256", hex.EncodeToString(foreignDigest[:]))
+
+	resolved, err := ResolveBinary(context.Background(), &Options{CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(legacyPayload) {
+		t.Errorf("downloaded %q, want the legacy URL's payload verified by its own checksum", content)
+	}
+}
+
+func TestResolveBinaryDoesNotBorrowALegacyChecksumForTheOxapURL(t *testing.T) {
+	isolateResolverEnv(t)
+	payload := []byte("#!/bin/sh\necho legacy\n")
+	digest := sha256.Sum256(payload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer server.Close()
+
+	t.Setenv("OXAP_SDK_BINARY_URL", server.URL+"/preferred/oxap")
+	t.Setenv("OAP_SDK_BINARY_SHA256", hex.EncodeToString(digest[:]))
+
+	_, err := ResolveBinary(context.Background(), &Options{CacheDir: t.TempDir()})
+	if !errors.Is(err, ErrChecksumRequired) {
+		t.Fatalf("expected ErrChecksumRequired, got %v", err)
+	}
+}
+
 func resolvedPath(t *testing.T, path string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(path)

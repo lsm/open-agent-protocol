@@ -25,11 +25,11 @@ const (
 
 	EnvBinarySHA256 = "OAP_SDK_BINARY_SHA256"
 
-	envBinaryPathPreferred = "OXAP_SDK_BINARY_PATH"
+	EnvBinaryPathOxap = "OXAP_SDK_BINARY_PATH"
 
-	envBinaryURLPreferred = "OXAP_SDK_BINARY_URL"
+	EnvBinaryURLOxap = "OXAP_SDK_BINARY_URL"
 
-	envBinarySHA256Preferred = "OXAP_SDK_BINARY_SHA256"
+	EnvBinarySHA256Oxap = "OXAP_SDK_BINARY_SHA256"
 )
 
 func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
@@ -39,7 +39,7 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 	logger := opts.logger()
 
 	if explicit := firstNonEmpty(
-		os.Getenv(envBinaryPathPreferred), os.Getenv(EnvBinaryPath), opts.BinaryPath,
+		os.Getenv(EnvBinaryPathOxap), os.Getenv(EnvBinaryPath), opts.BinaryPath,
 	); explicit != "" {
 		resolved, err := filepath.Abs(explicit)
 		if err != nil {
@@ -52,11 +52,8 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 		return resolved, nil
 	}
 
-	binaryURL := firstNonEmpty(os.Getenv(envBinaryURLPreferred), os.Getenv(EnvBinaryURL), opts.BinaryURL)
+	binaryURL, checksum := binaryURLAndChecksum(opts)
 	if binaryURL != "" {
-		checksum := firstNonEmpty(
-			os.Getenv(envBinarySHA256Preferred), os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256,
-		)
 		if checksum == "" {
 			return "", fmt.Errorf("%w: %s", ErrChecksumRequired, binaryURL)
 		}
@@ -80,6 +77,16 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 	return "", fmt.Errorf("%w: no %s on PATH and no local build under %s",
 		ErrBinaryNotFound, strings.Join(binaryNames(), " or "),
 		strings.Join(localCandidates(), " or "))
+}
+
+func binaryURLAndChecksum(opts *Options) (string, string) {
+	if url := os.Getenv(EnvBinaryURLOxap); url != "" {
+		return url, firstNonEmpty(os.Getenv(EnvBinarySHA256Oxap), opts.ChecksumSHA256)
+	}
+	if url := os.Getenv(EnvBinaryURL); url != "" {
+		return url, firstNonEmpty(os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256)
+	}
+	return opts.BinaryURL, opts.ChecksumSHA256
 }
 
 func localCandidates() []string {

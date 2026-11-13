@@ -23,7 +23,7 @@ if err != nil { return err }
 defer client.Close()
 ```
 
-The binary resolver checks `OXAP_SDK_BINARY_PATH`, then the legacy `OAP_SDK_BINARY_PATH`, then an explicitly configured path or checksum-verified URL, local `zig-out/bin/oxap`, `zig/zig-out/bin/oxap`, `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `PATH`. In each of those steps `oxap` wins over `oapx`, and `OXAP_SDK_BINARY_URL`/`OXAP_SDK_BINARY_SHA256` likewise outrank the `OAP_SDK_BINARY_*` pair, which stays read-compatible. To select a binary directly, pass `&sdk.Options{BinaryPath: "/path/to/oxap"}`. A context cancellation stops the current call without closing the client; `Close` owns and reaps the child process.
+The binary resolver checks `OXAP_SDK_BINARY_PATH`, then the legacy `OAP_SDK_BINARY_PATH`, then an explicitly configured path or checksum-verified URL, local `zig-out/bin/oxap`, `zig/zig-out/bin/oxap`, `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `PATH`. In each of those steps `oxap` wins over `oapx`, and an `OXAP_SDK_BINARY_URL` likewise outranks `OAP_SDK_BINARY_URL`; each URL takes the checksum written beside it (`OXAP_SDK_BINARY_SHA256` for the OXAP URL, `OAP_SDK_BINARY_SHA256` for the legacy one), falling back to `Options.ChecksumSHA256`, so a checksum is never borrowed across the two pairs. The legacy names stay read-compatible. To select a binary directly, pass `&sdk.Options{BinaryPath: "/path/to/oxap"}`. A context cancellation stops the current call without closing the client; `Close` owns and reaps the child process.
 
 ## Direct model-provider inference
 
