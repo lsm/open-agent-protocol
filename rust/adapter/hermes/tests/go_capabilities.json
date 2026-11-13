@@ -1,0 +1,103 @@
+{
+  "endpoint": {
+    "id": "hermes.gateway",
+    "name": "Hermes Gateway Adapter",
+    "version": "v0.23.1",
+    "adapter": "hermes-tui-gateway"
+  },
+  "protocol_versions": [
+    "0.1"
+  ],
+  "profiles": [
+    "open-agent-protocol.agent-control-core"
+  ],
+  "features": {
+    "action.permissions": {
+      "level": "degraded",
+      "reason": "approval gates surface as input interactions"
+    },
+    "action.tools": {
+      "level": "degraded",
+      "reason": "tool.start/complete only; started synthesized; failures ride in result without a pinned discriminator"
+    },
+    "action.tools.execute": {
+      "level": "unavailable",
+      "reason": "the gateway executes tools internally"
+    },
+    "capabilities": {
+      "level": "emulated",
+      "reason": "conservative descriptor for the pinned gateway"
+    },
+    "protocol.initialize": {
+      "level": "native",
+      "reason": "gateway.ready frame with replay epoch before any input"
+    },
+    "run.cancel": {
+      "level": "degraded",
+      "reason": "session.interrupt intent; settlement via message.complete interrupted"
+    },
+    "run.reconciliation": {
+      "level": "degraded",
+      "reason": "session.info running/turn_started_at corroboration"
+    },
+    "run.replay": {
+      "level": "degraded",
+      "reason": "bounded adapter journal; gaps are explicit and the native events.since ring is not consulted"
+    },
+    "run.resume": {
+      "level": "degraded",
+      "reason": "the native recovery family is not exercised; OAP resume replays the adapter journal"
+    },
+    "run.status": {
+      "level": "emulated"
+    },
+    "run.streaming": {
+      "level": "native",
+      "reason": "immediate frames on stdio; post-scrubber provenance disclosed"
+    },
+    "session.compaction.policy": {
+      "level": "unavailable",
+      "reason": "compression is config.yaml under HERMES_HOME, which also holds the gateway's credentials, and no gateway method sets it"
+    },
+    "session.message.delivery.auto": {
+      "level": "degraded",
+      "reason": "accepted only for known idle sessions"
+    },
+    "session.message.delivery.queue": {
+      "level": "unavailable",
+      "reason": "busy statuses are rejected rather than guessed"
+    },
+    "session.message.delivery.steer": {
+      "level": "unavailable",
+      "reason": "native session.steer not exposed in v1"
+    },
+    "session.message.submit": {
+      "level": "degraded",
+      "reason": "status-only result; ownership by construction via message.start"
+    },
+    "session.open": {
+      "level": "native",
+      "reason": "session.create mints the runtime session id"
+    },
+    "session.open.reopen": {
+      "level": "native",
+      "reason": "session.resume reloads the bound stored session; one Hermes would auto-continue after a crash is refused and its process ended, taking the scheduled turn with it"
+    },
+    "session.reasoning": {
+      "level": "native",
+      "reason": "session.create's reasoning_effort, then config.set reasoning scoped to the session, which validates it and sets it again between runs; off is Hermes's none",
+      "modes": [
+        "session_open",
+        "session_live"
+      ]
+    },
+    "session.state": {
+      "level": "degraded",
+      "reason": "reducer-owned live projection corroborated by session.info"
+    },
+    "user_input": {
+      "level": "native",
+      "reason": "approval/clarify/sudo/secret server requests, withdrawn by request.cancel"
+    }
+  }
+}
