@@ -4,7 +4,13 @@ The Rust port of `go/adapter/codex/appserver`: an OAP adapter over the Codex
 app-server's JSON-RPC on stdio, pinned by `harnesses/codex-app-server.json` and
 judged by the corpus in `fixtures/adapters/codex-appserver-0.167.2`.
 
-So far it holds the native types, with the members Go's adapter reads and
+So far it holds the adapter's configuration, its descriptor, and the
+`thread/start` config an open carries: `adapter::thread_config` sends the
+session's reasoning level as `model_reasoning_effort`, with `off` as Codex's
+`none`, and a token compaction limit as `model_auto_compact_token_limit`. It
+ignores `auto` and refuses `off` and `share`, which Codex cannot honor at open.
+
+It also holds the native types, with the members Go's adapter reads and
 writes, decoded as Go's `encoding/json` would, and the process launcher.
 `process::Process` runs `<executable> app-server --listen stdio://` and speaks the
 shared client in its unversioned dialect. It sends `initialize` with the host's
