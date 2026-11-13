@@ -15,6 +15,16 @@ import (
 	"testing"
 )
 
+func preferredBinaryName(t *testing.T) string {
+	t.Helper()
+	return binaryNames()[0]
+}
+
+func legacyBinaryName(t *testing.T) string {
+	t.Helper()
+	return binaryNames()[1]
+}
+
 func writeFakeBinary(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -239,8 +249,8 @@ func TestResolveBinaryPrefersLocalZigBuilds(t *testing.T) {
 	isolateResolverEnv(t)
 	workdir := t.TempDir()
 
-	first := writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), "oxap", "#!/bin/sh\n")
-	writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), "oxap", "#!/bin/sh\n")
+	first := writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n")
+	writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, workdir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
@@ -258,7 +268,7 @@ func TestResolveBinaryPrefersLocalZigBuilds(t *testing.T) {
 func TestResolveBinaryFallsBackToTheNestedZigBuild(t *testing.T) {
 	isolateResolverEnv(t)
 	workdir := t.TempDir()
-	nested := writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), "oxap", "#!/bin/sh\n")
+	nested := writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, workdir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
@@ -275,8 +285,8 @@ func TestResolveBinaryFallsBackToTheNestedZigBuild(t *testing.T) {
 func TestResolveBinaryPrefersOxapOverOapxInTheZigBuild(t *testing.T) {
 	isolateResolverEnv(t)
 	workdir := t.TempDir()
-	writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), "oapx", "#!/bin/sh\n")
-	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), "oxap", "#!/bin/sh\n"))
+	writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), legacyBinaryName(t), "#!/bin/sh\n")
+	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n"))
 
 	chdir(t, workdir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
@@ -291,7 +301,7 @@ func TestResolveBinaryPrefersOxapOverOapxInTheZigBuild(t *testing.T) {
 func TestResolveBinaryFallsBackToTheOapxZigBuild(t *testing.T) {
 	isolateResolverEnv(t)
 	workdir := t.TempDir()
-	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), "oapx", "#!/bin/sh\n"))
+	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), legacyBinaryName(t), "#!/bin/sh\n"))
 
 	chdir(t, workdir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
@@ -309,7 +319,7 @@ func TestResolveBinaryFallsBackToPath(t *testing.T) {
 	}
 	isolateResolverEnv(t)
 	pathDir := t.TempDir()
-	onPath := writeFakeBinary(t, pathDir, "oapx", "#!/bin/sh\n")
+	onPath := writeFakeBinary(t, pathDir, legacyBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, t.TempDir())
 	t.Setenv("PATH", pathDir)
@@ -331,8 +341,8 @@ func TestResolveBinaryPrefersOxapOnPath(t *testing.T) {
 	}
 	isolateResolverEnv(t)
 	pathDir := t.TempDir()
-	writeFakeBinary(t, pathDir, "oapx", "#!/bin/sh\n")
-	onPath := writeFakeBinary(t, pathDir, "oxap", "#!/bin/sh\n")
+	writeFakeBinary(t, pathDir, legacyBinaryName(t), "#!/bin/sh\n")
+	onPath := writeFakeBinary(t, pathDir, preferredBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, t.TempDir())
 	t.Setenv("PATH", pathDir)
@@ -357,7 +367,7 @@ func TestResolveBinaryReportsWhenNothingIsFound(t *testing.T) {
 	}
 
 	message := err.Error()
-	for _, want := range []string{"oxap", "oapx", "zig-out"} {
+	for _, want := range append(binaryNames(), "zig-out") {
 		if !strings.Contains(message, want) {
 			t.Errorf("message = %q; it should mention %q", message, want)
 		}
@@ -451,7 +461,7 @@ func TestLegacyMakaiDoesNotShadowOapx(t *testing.T) {
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "zig-out", "bin")
 	writeFakeBinary(t, binDir, "makai", "#!/bin/sh\n")
-	want := resolvedPath(t, writeFakeBinary(t, binDir, "oapx", "#!/bin/sh\n"))
+	want := resolvedPath(t, writeFakeBinary(t, binDir, legacyBinaryName(t), "#!/bin/sh\n"))
 	chdir(t, dir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
 	if err != nil {
