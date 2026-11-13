@@ -139,7 +139,7 @@ jobs:
       - name: Verify Responses proxy routing and attempt audit
         run: |
           zig build --build-file zig/build.zig install build-responses-proxy-probe -Doptimize=ReleaseSafe
-          python3 .claude/skills/verify/scripts/responses-proxy.py --binary zig/zig-out/bin/responses-proxy-probe --oapx zig/zig-out/bin/oapx --output-dir "$RUNNER_TEMP/responses-proxy"
+          python3 .claude/skills/verify/scripts/responses-proxy.py --binary zig/zig-out/bin/responses-proxy-probe --oapx zig/zig-out/bin/oxap --output-dir "$RUNNER_TEMP/responses-proxy"
 
       - name: Tests leave no credential store in the checkout
         if: always()
@@ -269,7 +269,7 @@ jobs:
 
       - name: Run TS SDK unit + E2E tests
         env:
-          OAP_SDK_BINARY_PATH: /tmp/makai-smoke/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-smoke/bin/oxap
         run: npm run test:sdk
 
       - name: Verify logger temporary-directory cleanup
@@ -314,7 +314,7 @@ jobs:
 
       - name: Require each backend to answer and write its child exactly as goap does
         env:
-          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
+          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oxap
         run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
 
       - name: Setup Rust for trace validation
@@ -336,11 +336,11 @@ jobs:
           python-version: "3.11"
 
       - name: Require command exit evidence through every public SDK
-        run: python3 .claude/skills/verify/scripts/sdk-command-result.py --oapx /tmp/oapx-parity/bin/oapx --output-dir /tmp/oap-sdk-command
+        run: python3 .claude/skills/verify/scripts/sdk-command-result.py --oapx /tmp/oapx-parity/bin/oxap --output-dir /tmp/oap-sdk-command
 
       - name: Require the Go inference layer to serve the trace oapx serve provider serves
         env:
-          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
+          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oxap
         run: go test ./go/internal/inferenceserve/ -run TestInferenceTracesMatchOapx -v
 
   pi-parity-repeat:
@@ -368,7 +368,7 @@ jobs:
 
       - name: The pi scenario must not depend on goroutine scheduling
         env:
-          OAP_OAPX_BIN: /tmp/oapx-repeat/bin/oapx
+          OAP_OAPX_BIN: /tmp/oapx-repeat/bin/oxap
         run: go test ./go/cmd/goap/ -run 'TestBackendsMatchOapx/pi$' -count=20
 
   memory-conformance:
@@ -395,11 +395,11 @@ jobs:
         run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-memory
 
       - name: Run goap conformance against oapx serve agent --backend memory
-        run: go run ./go/cmd/goap conformance --command "/tmp/oapx-memory/bin/oapx serve agent --backend memory"
+        run: go run ./go/cmd/goap conformance --command "/tmp/oapx-memory/bin/oxap serve agent --backend memory"
 
       - name: Require oapx's memory backend to answer exactly as goap's
         env:
-          OAP_OAPX_BIN: /tmp/oapx-memory/bin/oapx
+          OAP_OAPX_BIN: /tmp/oapx-memory/bin/oxap
         run: go test ./go/cmd/goap/ -run TestMemoryBackendMatchesOapx -v
 
   hub-parity:
@@ -425,15 +425,29 @@ jobs:
       - name: Build oapx
         run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub -Doptimize=ReleaseSafe
 
+      - name: Require the oapx alias to match oxap on stdout and exit code
+        run: |
+          set -euo pipefail
+          test -x /tmp/oapx-hub/bin/oxap
+          test -x /tmp/oapx-hub/bin/oapx
+          for args in "--version" "--help" "serve ghost"; do
+            /tmp/oapx-hub/bin/oxap $args </dev/null >/tmp/oxap.out 2>/tmp/oxap.err && oxap_rc=0 || oxap_rc=$?
+            /tmp/oapx-hub/bin/oapx $args </dev/null >/tmp/oapx.out 2>/tmp/oapx.err && oapx_rc=0 || oapx_rc=$?
+            [ "$oxap_rc" = "$oapx_rc" ] || { echo "'$args' exits $oxap_rc as oxap, $oapx_rc as oapx"; exit 1; }
+            cmp -s /tmp/oxap.out /tmp/oapx.out || { echo "'$args' stdout differs between oxap and oapx"; exit 1; }
+          done
+          grep -q deprecated /tmp/oapx.err || { echo "oapx carried no deprecation note on stderr"; exit 1; }
+          ! grep -q deprecated /tmp/oxap.err || { echo "oxap carried the alias's deprecation note"; exit 1; }
+
       - name: Require oapx serve --stdio to answer exactly as goap serve --stdio
         env:
-          OAP_OAPX_BIN: /tmp/oapx-hub/bin/oapx
+          OAP_OAPX_BIN: /tmp/oapx-hub/bin/oxap
         run: go test ./go/cmd/goap/ -run 'TestHub(Stdio|Refuses|Addr)' -v
 
       - name: Require oapx serve to refuse what it does not carry
         run: |
           set -euo pipefail
-          if /tmp/oapx-hub/bin/oapx serve --config=missing.json </dev/null >/dev/null 2>&1; then
+          if /tmp/oapx-hub/bin/oxap serve --config=missing.json </dev/null >/dev/null 2>&1; then
             echo "oapx serve --config=missing.json exited 0; a config it cannot read must not"
             exit 1
           fi
@@ -442,7 +456,7 @@ jobs:
         run: |
           set -euo pipefail
           bound=/tmp/oapx-hub-addr.out
-          /tmp/oapx-hub/bin/oapx serve --addr=127.0.0.1:0 </dev/null >"$bound" 2>&1 &
+          /tmp/oapx-hub/bin/oxap serve --addr=127.0.0.1:0 </dev/null >"$bound" 2>&1 &
           hub=$!
           for _ in $(seq 1 40); do
             grep -q '^listening on http://' "$bound" && break
@@ -501,7 +515,7 @@ jobs:
 
       - name: Run the clients/ts suite, the one ci.yml runs against goap serve, against oapx serve
         env:
-          OAP_TS_HUB: /tmp/oapx-hub/bin/oapx
+          OAP_TS_HUB: /tmp/oapx-hub/bin/oxap
         run: npm test
 
   rust-sdk:
@@ -553,7 +567,7 @@ jobs:
 
       - name: Run Rust SDK unit + E2E tests
         env:
-          OAP_SDK_BINARY_PATH: /tmp/makai-rs/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-rs/bin/oxap
         run: cargo test --all-features
 
       - name: Setup Go
@@ -633,7 +647,7 @@ jobs:
       - name: Run Python SDK unit + E2E tests
         working-directory: sdk/python
         env:
-          OAP_SDK_BINARY_PATH: /tmp/makai-py/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-py/bin/oxap
         run: python -m pytest -q
 
       - name: Tests leave no credential store in the checkout
@@ -684,7 +698,7 @@ jobs:
           python3 scripts/tui-fake-provider.py gen-certs "$RUNNER_TEMP/pty-tls"
           sudo cp "$RUNNER_TEMP/pty-tls/ca.pem" /usr/local/share/ca-certificates/oap-tui-pty-test.crt
           sudo update-ca-certificates
-          python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/oapx" --output-dir tui-pty-out --scenario all --tls-dir "$RUNNER_TEMP/pty-tls"
+          python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/oxap" --output-dir tui-pty-out --scenario all --tls-dir "$RUNNER_TEMP/pty-tls"
 
       - name: Tests leave no credential store in the checkout
         if: always()
@@ -750,13 +764,14 @@ jobs:
         shell: bash
         run: zig build --build-file zig/build.zig test-unit-hub --summary all
 
-      - name: Run the oapx binary
+      - name: Run the oxap binary
         shell: bash
         run: |
           set -euo pipefail
           zig build --build-file zig/build.zig install -Dtarget=x86_64-windows -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/oapx-windows"
-          "$RUNNER_TEMP/oapx-windows/bin/oapx.exe" --version
-          "$RUNNER_TEMP/oapx-windows/bin/oapx.exe" --help > /dev/null
+          "$RUNNER_TEMP/oapx-windows/bin/oxap.exe" --version
+          "$RUNNER_TEMP/oapx-windows/bin/oxap.exe" --help > /dev/null
+          test -f "$RUNNER_TEMP/oapx-windows/bin/oapx.exe"
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}
@@ -768,22 +783,28 @@ jobs:
         include:
           - runner: macos-latest
             target: aarch64-macos
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
           - runner: macos-latest
             target: x86_64-macos
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
           - runner: ubuntu-latest
             target: x86_64-linux
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
           - runner: ubuntu-latest
             target: aarch64-linux
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
           - runner: ubuntu-latest
             target: x86_64-windows
-            binary_name: oapx.exe
+            binary_name: oxap.exe
+            alias_name: oapx.exe
           - runner: windows-latest
             target: aarch64-windows
-            binary_name: oapx.exe
+            binary_name: oxap.exe
+            alias_name: oapx.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -817,6 +838,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}/bin/${{ matrix.binary_name }}"
+          test -f "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}/bin/${{ matrix.alias_name }}"
 
       # The multi-session hub is not in the oapx binary yet, so the cross-compile
       # above never reaches it: #454 would not have built on Windows and both jobs

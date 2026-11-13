@@ -41,7 +41,7 @@ def main():
     commands = {
         "go": [str(goap), "validate", "--format", "json"],
         "rust": [str(ROOT / "rust/target/debug/examples/validate")],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format", "json"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"],
     }
     cases = [
         ("semantic-invalid/capability-refresh-requires-announced-revision.json", [4, 5, 13, 14, 18, 19]),

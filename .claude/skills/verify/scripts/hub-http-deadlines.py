@@ -49,7 +49,7 @@ def serve_provider():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir")
-    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oxap"))
     parser.add_argument("--provider", action="store_true")
     parser.add_argument("--replay-only", action="store_true")
     args = parser.parse_args()

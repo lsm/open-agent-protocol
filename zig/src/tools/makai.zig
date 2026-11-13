@@ -65,7 +65,27 @@ const hub_http = @import("hub_http");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
 
+const builtin = @import("builtin");
+
 pub const VERSION = @import("version_options").version;
+
+const release_os_name = switch (builtin.target.os.tag) {
+    .macos => "macos",
+    .windows => "windows",
+    else => @tagName(builtin.target.os.tag),
+};
+const release_arch_name = switch (builtin.target.cpu.arch) {
+    .aarch64, .aarch64_be => "arm64",
+    .x86_64 => "x64",
+    else => @tagName(builtin.target.cpu.arch),
+};
+pub const RELEASE_NAME = "oxap-" ++ VERSION ++ "-" ++ release_os_name ++ "-" ++ release_arch_name;
+const legacy_invocation_note = "oapx is the deprecated name of this binary; it stays an alias of oxap with identical arguments and exit behavior, and it goes away after two minor versions\n";
+
+fn invokedAsLegacyName(program_path: []const u8) bool {
+    const stemmed = std.fs.path.stem(program_path);
+    return std.ascii.eqlIgnoreCase(stemmed, "oapx");
+}
 
 const AuthProtocolServer = auth_protocol_server.AuthProtocolServer;
 const STDIO_IDLE_SLEEP_NS = std.time.ns_per_ms;
@@ -236,7 +256,7 @@ fn unavailable(
     reason: []const u8,
 ) error{Unavailable}!void {
     var buffer: [512]u8 = undefined;
-    const message = std.fmt.bufPrint(&buffer, "oapx {s}: {s}: unavailable: {s}\n", .{ surface, flag, reason }) catch "oapx: unavailable\n";
+    const message = std.fmt.bufPrint(&buffer, "oxap {s}: {s}: unavailable: {s}\n", .{ surface, flag, reason }) catch "oxap: unavailable\n";
     compat.stdio.writeAll(stderr, message) catch {};
     return error.Unavailable;
 }
@@ -567,7 +587,7 @@ const HubRegistry = struct {
     }
 
     fn refuse(self: *HubRegistry, entry: adapter_config.AdapterEntry) adapter_contract.Failure {
-        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ self.surface.noun, entry.name, entry.kind }) catch {};
+        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oxap does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ self.surface.noun, entry.name, entry.kind }) catch {};
         return error.Unavailable;
     }
 };
@@ -593,7 +613,7 @@ fn hubConfiguredSources(
 }
 
 fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOption} {
-    compat.stdio.writeAll(stderr, "oapx serve: ") catch {};
+    compat.stdio.writeAll(stderr, "oxap serve: ") catch {};
     compat.stdio.writeAll(stderr, message) catch {};
     compat.stdio.writeAll(stderr, "\n") catch {};
     return error.InvalidHubOption;
@@ -623,14 +643,14 @@ fn runHubHttp(
     try compat.stdio.writeAll(stdout, "listening on http://");
     try compat.stdio.writeAll(stdout, try hub_http.addressText(arena, compat.net.listenAddress(&listener)));
     try compat.stdio.writeAll(stdout, "\n");
-    try compat.stdio.writeAll(stderr, "oapx: serving adapters: ");
+    try compat.stdio.writeAll(stderr, "oxap: serving adapters: ");
     try compat.stdio.writeAll(stderr, served);
     try compat.stdio.writeAll(stderr, " (restart kills all sessions)\n");
     if (allow == null) {
-        try compat.stdio.writeAll(stderr, "oapx: this bind is not loopback; the single-user model is opted out of\n");
+        try compat.stdio.writeAll(stderr, "oxap: this bind is not loopback; the single-user model is opted out of\n");
     }
     if (comptime !hub_http.pollable) {
-        try compat.stdio.writeAll(stderr, "oapx: on this platform a signal ends the process rather than the hub; the Windows path is #460\n");
+        try compat.stdio.writeAll(stderr, "oxap: on this platform a signal ends the process rather than the hub; the Windows path is #460\n");
     }
 
     var daemon = try hub_daemon.Daemon.init(allocator, core, allow orelse &.{}, hub_http.always_going);
@@ -642,12 +662,12 @@ fn runHubHttp(
     const failed = hub_daemon.serveListener(&daemon, &listener, hub_accept_poll_ms);
     if (failed) |failure| {
         sweepHubSessions(core, stderr);
-        try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+        try compat.stdio.writeAll(stderr, "oxap: stopped\n");
         return failure;
     }
-    try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
+    try compat.stdio.writeAll(stderr, "oxap: shutting down\n");
     sweepHubSessions(core, stderr);
-    try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+    try compat.stdio.writeAll(stderr, "oxap: stopped\n");
 }
 
 fn hubTakesSignals() bool {
@@ -658,13 +678,13 @@ fn sweepHubSessions(core: *hub.Hub, stderr: std.Io.File) void {
     const summary = core.closeSessions();
     if (summary.clean()) return;
     var buffer: [256]u8 = undefined;
-    const message = std.fmt.bufPrint(&buffer, "oapx: shutdown: closed {d} of {d} sessions; {d} still held a run after {d} attempts, {d} were never reached; the rest were torn down\n", .{
+    const message = std.fmt.bufPrint(&buffer, "oxap: shutdown: closed {d} of {d} sessions; {d} still held a run after {d} attempts, {d} were never reached; the rest were torn down\n", .{
         summary.closed,
         summary.sessions,
         summary.refused,
         summary.refused_attempts,
         summary.unattempted,
-    }) catch "oapx: shutdown: a session was not closed cleanly\n";
+    }) catch "oxap: shutdown: a session was not closed cleanly\n";
     compat.stdio.writeAll(stderr, message) catch {};
 }
 
@@ -721,12 +741,12 @@ fn runHub(
         } else if (std.mem.startsWith(u8, argument, "--addr=")) {
             addr = argument["--addr=".len..];
         } else {
-            try compat.stdio.writeAll(stderr, "oapx serve: unknown flag\n\n");
+            try compat.stdio.writeAll(stderr, "oxap serve: unknown flag\n\n");
             return error.InvalidHubOption;
         }
     }
     if (over_stdio and addr != null) {
-        try compat.stdio.writeAll(stderr, "oapx serve: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
+        try compat.stdio.writeAll(stderr, "oxap serve: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
 
@@ -756,10 +776,10 @@ fn runHub(
     if (save_sessions orelse true) open: {
         const store = session_store.Store.initDefault(allocator) catch |err| {
             if (save_sessions == null and err == error.HomeNotFound) {
-                compat.stdio.writeAll(stderr, "oapx: HOME is not set, so served oapx sessions are not saved\n") catch {};
+                compat.stdio.writeAll(stderr, "oxap: HOME is not set, so served sessions are not saved\n") catch {};
                 break :open;
             }
-            try surface.refuse("cannot open the oapx session store: {s}", .{@errorName(err)});
+            try surface.refuse("cannot open the oxap session store: {s}", .{@errorName(err)});
             return error.BackendRefused;
         };
         saved = ServedSessions.init(allocator, store);
@@ -775,7 +795,7 @@ fn runHub(
         bindings = hub.binding.Store.open(allocator, history) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             if (err == error.SessionHistoryInUse) {
-                try surface.refuse("another oapx hub is using the session history {s}; pass --session-history <path> to give this one its own", .{history});
+                try surface.refuse("another oxap hub is using the session history {s}; pass --session-history <path> to give this one its own", .{history});
             } else {
                 try surface.refuse("cannot open --session-history {s}: {s}", .{ history, @errorName(err) });
             }
@@ -800,11 +820,11 @@ fn runHub(
 
     if (hubTakesSignals()) {
         endpoint_signals.install() catch {
-            try compat.stdio.writeAll(stderr, "oapx serve: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
+            try compat.stdio.writeAll(stderr, "oxap serve: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
             return error.BackendRefused;
         };
     } else {
-        try compat.stdio.writeAll(stderr, "oapx serve: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
+        try compat.stdio.writeAll(stderr, "oxap serve: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
     }
 
     const served = try std.mem.join(arena, ", ", try core.names(arena));
@@ -815,7 +835,7 @@ fn runHub(
     defer frontend.deinit();
     var notices = StdoutSink{ .file = stderr, .io = hubIo() };
     frontend.notices = .{ .context = &notices, .write = StdoutSink.write };
-    try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
+    try compat.stdio.writeAll(stderr, "oxap: serving adapters over stdio: ");
     try compat.stdio.writeAll(stderr, served);
     try compat.stdio.writeAll(stderr, " (exit kills all sessions)\n");
     var input = stdin;
@@ -830,32 +850,32 @@ fn runHub(
         error.StdinFailed, error.FrameLimitTooSmall => {
             if (frontend.defect()) |line| {
                 var buffer: [640]u8 = undefined;
-                const message = std.fmt.bufPrint(&buffer, "oapx: framing defect, stopped serving: {s}{s}\n", .{
+                const message = std.fmt.bufPrint(&buffer, "oxap: framing defect, stopped serving: {s}{s}\n", .{
                     line,
                     if (frontend.recorded.cut) " (cut)" else "",
-                }) catch "oapx: framing defect, stopped serving\n";
+                }) catch "oxap: framing defect, stopped serving\n";
                 compat.stdio.writeAll(stderr, message) catch {};
             } else {
-                compat.stdio.writeAll(stderr, "oapx: framing defect, stopped serving\n") catch {};
+                compat.stdio.writeAll(stderr, "oxap: framing defect, stopped serving\n") catch {};
             }
             sweepHubSessions(&core, stderr);
             return error.FramingDefect;
         },
         error.InputFailed => {
             sweepHubSessions(&core, stderr);
-            try compat.stdio.writeAll(stderr, "oapx: the request stream failed, stopped serving\n");
+            try compat.stdio.writeAll(stderr, "oxap: the request stream failed, stopped serving\n");
             return error.InputFailed;
         },
         error.OutputStalled => {
             sweepHubSessions(&core, stderr);
-            try compat.stdio.writeAll(stderr, "oapx: the host stopped reading, stopped serving\n");
+            try compat.stdio.writeAll(stderr, "oxap: the host stopped reading, stopped serving\n");
             return error.OutputStalled;
         },
         else => return err,
     };
-    if (endpoint_signals.received()) try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
+    if (endpoint_signals.received()) try compat.stdio.writeAll(stderr, "oxap: shutting down\n");
     sweepHubSessions(&core, stderr);
-    try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+    try compat.stdio.writeAll(stderr, "oxap: stopped\n");
 }
 
 fn hubIo() std.Io {
@@ -1273,7 +1293,7 @@ fn validateFlagRefusal(arg: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, arg, "--pack") or std.mem.eql(u8, arg, "-pack")) return null;
     if (std.mem.startsWith(u8, arg, "--pack=")) return null;
     if (std.mem.eql(u8, arg, "--provider")) return "the override is not carried; a trace declaring the profile routes itself, in #367";
-    return "oapx validate does not carry this flag";
+    return "oxap validate does not carry this flag";
 }
 
 fn runValidate(
@@ -1392,30 +1412,30 @@ fn runValidate(
 fn printUsage(file: std.Io.File) !void {
     try compat.stdio.writeAll(file,
         \\Usage:
-        \\  oapx                                              Start the terminal UI
-        \\  oapx tui [--context-window <tokens>]          The terminal UI, over OAP through the in-process endpoint; what oapx alone starts
+        \\  oxap                                             Start the terminal UI
+        \\  oxap tui [--context-window <tokens>]           The terminal UI, over OAP through the in-process endpoint; what oxap alone starts
         \\                                                   --context-window takes a whole number, optionally with k or m
-        \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
-        \\  oapx opencode install                             Download the OpenCode oapx is tested with into ~/.oapx/opencode
-        \\  oapx tui --backend opencode [--config <path>]  The terminal UI over an OpenCode server oapx starts, or the entry's endpoint
-        \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
-        \\  oapx serve agent [--stdio] [--model <model-ref>]
-        \\  oapx serve agent [--stdio] --backend <name> [--config <path>]
-        \\  oapx serve provider [--stdio] [--specimens]
-        \\  oapx claude-permission-hook --endpoint <url>  A Claude Code PermissionRequest hook: asks <url>, and leaves the prompt to the session when no allow or deny comes back
-        \\  oapx serve provider --http 127.0.0.1:<port>
-        \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>] [--no-save-oapx-sessions]
+        \\  oxap tui --attach <url> [--adapter <name>]     The terminal UI over a running oxap serve's HTTP wire; adapter defaults to oapx
+        \\  oxap opencode install                            Download the OpenCode oxap is tested with into ~/.oapx/opencode
+        \\  oxap tui --backend opencode [--config <path>]  The terminal UI over an OpenCode server oxap starts, or the entry's endpoint
+        \\  oxap run [--agent] [--storage] [--model <id>] "<prompt>"
+        \\  oxap serve agent [--stdio] [--model <model-ref>]
+        \\  oxap serve agent [--stdio] --backend <name> [--config <path>]
+        \\  oxap serve provider [--stdio] [--specimens]
+        \\  oxap claude-permission-hook --endpoint <url>  A Claude Code PermissionRequest hook: asks <url>, and leaves the prompt to the session when no allow or deny comes back
+        \\  oxap serve provider --http 127.0.0.1:<port>
+        \\  oxap serve agent,provider --stdio [--model <model-ref>]
+        \\  oxap serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>] [--no-save-oapx-sessions]
         \\                  [--park-after <seconds>]         Stop an idle session's harness; its next input reopens it
-        \\                                                   Many sessions on one wire; oapx hub is its old name
-        \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
-        \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
+        \\                                                   Many sessions on one wire; hub is its old name
+        \\  oxap validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
+        \\  oxap conformance --command CMD [--session <id>] [--timeout-ms <n>]
         \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
         \\                   --timeout-ms bounds one probe: the whole correlation,
         \\                   not each line, so unrelated frames cannot extend it.
-        \\  oapx auth providers [--json]
-        \\  oapx auth login --provider <id> [--json]
-        \\  oapx --version
+        \\  oxap auth providers [--json]
+        \\  oxap auth login --provider <id> [--json]
+        \\  oxap --version                                Print the release name, oxap-<version>-<os>-<arch>
         \\
         \\Commands:
         \\  hub              The multi-session hub: one process holding many
@@ -1441,7 +1461,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
         \\                   --backend memory serves the in-memory reference script.
-        \\                   --backend oapx serves oapx's own loop as the TUI builds it.
+        \\                   --backend oapx serves the built-in loop as the TUI builds it.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
@@ -1456,7 +1476,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   non-zero on any failed check.
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
-        \\  --version        Print binary version
+        \\  --version        Print the release name
         \\
         \\Superseded flags, still accepted: -p, --oap, --oap-provider
         \\
@@ -1547,13 +1567,24 @@ fn runTuiOverBackend(allocator: std.mem.Allocator, io: std.Io, parsed: TuiArgs, 
     const surface = withSurface(tui_config_surface, arena, stderr);
     const entry = try backendEntry(surface, arena, name, parsed.config, &environ, &sources);
     if (!std.mem.eql(u8, entry.kind, "opencode")) {
-        try surface.refuse("{s} \"{s}\" is of type \"{s}\"; the terminal UI runs an opencode backend, and oapx serve agent --backend serves the others", .{ surface.noun, entry.name, entry.kind });
+        try surface.refuse("{s} \"{s}\" is of type \"{s}\"; the terminal UI runs an opencode backend, and oxap serve agent --backend serves the others", .{ surface.noun, entry.name, entry.kind });
         return error.BackendRefused;
     }
     var started: ?*opencode_server.Server = null;
     defer if (started) |server| server.deinit();
     var served = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(allocator, surface, arena, entry, &environ, &started));
     try tui_app.runWith(allocator, io, parsed.context_window, .{ .served = served.adapter() });
+}
+
+test "only the oapx spelling of the invocation name trips the alias notice" {
+    try std.testing.expect(invokedAsLegacyName("oapx"));
+    try std.testing.expect(invokedAsLegacyName("/usr/local/bin/oapx"));
+    try std.testing.expect(invokedAsLegacyName("oapx.exe"));
+    try std.testing.expect(invokedAsLegacyName("OAPX.EXE"));
+    try std.testing.expect(!invokedAsLegacyName("oxap"));
+    try std.testing.expect(!invokedAsLegacyName("/usr/local/bin/oxap.exe"));
+    try std.testing.expect(!invokedAsLegacyName("oapx-wrapper"));
+    try std.testing.expect(!invokedAsLegacyName("dir.oapx/oxap"));
 }
 
 test "the tui takes a context window and refuses anything else" {
@@ -1698,7 +1729,7 @@ fn runPrintMode(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const use_storage_auth = options.use_storage_auth;
 
     if (!servesPrintModel(model_id)) {
-        perrf("error: oapx run talks to Kimi only, and {s} is not a Kimi model; use the terminal UI or oapx serve agent --model <provider>/<api>@<model> for another provider's model\n", .{model_id});
+        perrf("error: oxap run talks to Kimi only, and {s} is not a Kimi model; use the terminal UI or oxap serve agent --model <provider>/<api>@<model> for another provider's model\n", .{model_id});
         return error.InvalidArgument;
     }
 
@@ -2290,6 +2321,10 @@ pub fn main(init: std.process.Init) !void {
 
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
+    if (args.len > 0 and invokedAsLegacyName(args[0])) {
+        compat.stdio.writeAll(stderr, legacy_invocation_note) catch {};
+    }
+
     if (args.len <= 1) {
         runTuiOverOap(allocator, init.io, &.{}, stderr) catch |err| switch (err) {
             error.InvalidArgument => return error.InvalidArgument,
@@ -2304,7 +2339,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--version")) {
-        try compat.stdio.writeAll(stdout, VERSION ++ "\n");
+        try compat.stdio.writeAll(stdout, RELEASE_NAME ++ "\n");
         return;
     }
 
@@ -2356,7 +2391,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "claude-permission-hook")) {
         if (args.len != 4 or !std.mem.eql(u8, args[2], "--endpoint")) {
-            try compat.stdio.writeAll(stderr, "usage: oapx claude-permission-hook --endpoint <url>\n");
+            try compat.stdio.writeAll(stderr, "usage: oxap claude-permission-hook --endpoint <url>\n");
             return error.InvalidArgument;
         }
         var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -2372,16 +2407,16 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "codex-bridge")) {
         if (args.len != 4 or !std.mem.eql(u8, args[2], "--sock")) {
-            try compat.stdio.writeAll(stderr, "usage: oapx codex-bridge --sock <path>\n");
+            try compat.stdio.writeAll(stderr, "usage: oxap codex-bridge --sock <path>\n");
             return error.InvalidArgument;
         }
         if (comptime @import("builtin").os.tag == .windows) {
-            try compat.stdio.writeAll(stderr, "oapx codex-bridge: Codex's control socket is a Unix socket; this platform has none\n");
+            try compat.stdio.writeAll(stderr, "oxap codex-bridge: Codex's control socket is a Unix socket; this platform has none\n");
             std.process.exit(1);
         }
         codex_adapter.bridge.run(allocator, args[3], std.posix.STDIN_FILENO, std.posix.STDOUT_FILENO) catch |err| {
             var line_buffer: [128]u8 = undefined;
-            try compat.stdio.writeAll(stderr, std.fmt.bufPrint(&line_buffer, "oapx codex-bridge: {s}\n", .{@errorName(err)}) catch "oapx codex-bridge: failed\n");
+            try compat.stdio.writeAll(stderr, std.fmt.bufPrint(&line_buffer, "oxap codex-bridge: {s}\n", .{@errorName(err)}) catch "oxap codex-bridge: failed\n");
             std.process.exit(1);
         };
         return;
@@ -2391,7 +2426,7 @@ pub fn main(init: std.process.Init) !void {
         const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.Unavailable) std.process.exit(1);
             if (err == error.UnsupportedMode) {
-                try compat.stdio.writeAll(stderr, "oapx validate: --mode: strict or tolerant\n");
+                try compat.stdio.writeAll(stderr, "oxap validate: --mode: strict or tolerant\n");
                 std.process.exit(1);
             }
             if (err == error.InvalidArgument) try printUsage(stderr);
@@ -2416,7 +2451,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--stdio")) {
-        try compat.stdio.writeAll(stderr, "oapx --stdio was the retired v1 wire; use oapx serve agent,provider --stdio\n");
+        try compat.stdio.writeAll(stderr, "oxap --stdio was the retired v1 wire; use oxap serve agent,provider --stdio\n");
         std.process.exit(2);
     }
 
@@ -2450,7 +2485,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--tui")) {
-        try compat.stdio.writeAll(stderr, "oapx --tui was removed; run oapx, which starts the terminal UI over OAP\n");
+        try compat.stdio.writeAll(stderr, "oxap --tui was removed; run oxap, which starts the terminal UI over OAP\n");
         return error.InvalidArgument;
     }
 
@@ -2761,7 +2796,7 @@ fn parseOapModeArgs(args: []const []const u8, arg_error: *OapArgError) !OapModeA
 
 const OAP_PROVIDER_PROFILE_REVISION = "ea5e5b9b29dc27a3e84eb6fe6a0f5055fb437988";
 
-const OAP_PROVIDER_EXHAUSTED_MESSAGE = "oapx --oap-provider: out of memory decoding a line on stdin; the endpoint is stopping rather than continuing in an unknown state\n";
+const OAP_PROVIDER_EXHAUSTED_MESSAGE = "oxap --oap-provider: out of memory decoding a line on stdin; the endpoint is stopping rather than continuing in an unknown state\n";
 
 test "the only failure that escapes handleLine is the one the stderr message names" {
     const E = @typeInfo(@typeInfo(@TypeOf(oap_provider_server.Server.handleLine)).@"fn".return_type.?).error_union.error_set;
@@ -5703,14 +5738,14 @@ fn writeOapAuthOutbound(
 
 const backend_config_read_limit = 1024 * 1024;
 
-const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
-const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
-const OUTPUT_STALLED_MESSAGE = "oapx serve agent: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
-const BACKEND_OUTPUT_STALLED_MESSAGE = "oapx serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
-const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
-const SERVE_MALFORMED_LINE_MESSAGE = "oapx serve agent: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
-const SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
-const SERVE_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
+const BACKEND_MALFORMED_LINE_MESSAGE = "oxap serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
+const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oxap serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const OUTPUT_STALLED_MESSAGE = "oxap serve agent: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
+const BACKEND_OUTPUT_STALLED_MESSAGE = "oxap serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
+const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oxap serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
+const SERVE_MALFORMED_LINE_MESSAGE = "oxap serve agent: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
+const SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE = "oxap serve agent: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const SERVE_FRAME_TOO_LARGE_MESSAGE = "oxap serve agent: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
 
 fn backendClock() u64 {
     return compat.time.monotonicNanos() catch 0;
@@ -5732,9 +5767,9 @@ const ConfigSurface = struct {
     }
 };
 
-const endpoint_config_surface = ConfigSurface{ .label = "oapx serve agent", .noun = "backend" };
-const hub_config_surface = ConfigSurface{ .label = "oapx serve", .noun = "adapter" };
-const tui_config_surface = ConfigSurface{ .label = "oapx tui", .noun = "backend" };
+const endpoint_config_surface = ConfigSurface{ .label = "oxap serve agent", .noun = "backend" };
+const hub_config_surface = ConfigSurface{ .label = "oxap serve", .noun = "adapter" };
+const tui_config_surface = ConfigSurface{ .label = "oxap tui", .noun = "backend" };
 
 fn withSurface(base: ConfigSurface, arena: std.mem.Allocator, stderr: std.Io.File) ConfigSurface {
     return .{ .label = base.label, .noun = base.noun, .stderr = stderr, .arena = arena };
@@ -5853,11 +5888,11 @@ fn routedCredential(
     if (from_environment == null) storage = load_storage(arena);
     const credential = from_environment orelse (try provider_credential.lookup(arena, values.items, if (storage) |*held| held else null, id)) orelse {
         const variable = if (row.credential_env.len > 0) row.credential_env[0] else "its key";
-        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which has no credential; set {s} or sign in with oapx", .{ surface.noun, entry.name, id, variable });
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which has no credential; set {s} or sign in with oxap", .{ surface.noun, entry.name, id, variable });
         return error.BackendRefused;
     };
     if (credential.source == .oauth) {
-        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key", .{ surface.noun, entry.name, id });
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", whose credential is an OAuth login, which oxap does not hand to a harness; set an API key", .{ surface.noun, entry.name, id });
         return error.BackendRefused;
     }
     return credential;
@@ -5961,7 +5996,7 @@ fn codexBackendConfig(
             return error.BackendRefused;
         }
         if (entry.model_provider.len > 0) {
-            try surface.refuse("{s} \"{s}\" names an endpoint and a model_provider; a running app-server chose its provider when it started, so route the executable oapx spawns instead", .{ surface.noun, entry.name });
+            try surface.refuse("{s} \"{s}\" names an endpoint and a model_provider; a running app-server chose its provider when it started, so route the executable oxap spawns instead", .{ surface.noun, entry.name });
             return error.BackendRefused;
         }
         const self_path = std.process.executablePathAlloc(backendIo(), arena) catch {
@@ -6108,7 +6143,7 @@ fn installOpenCode(allocator: std.mem.Allocator, stdout: std.Io.File, stderr: st
     const arena = arena_state.allocator();
     const home = compat.getEnvVarOwned(arena, "HOME") catch "";
     if (home.len == 0) {
-        try compat.stdio.writeAll(stderr, "oapx opencode install: HOME is not set\n");
+        try compat.stdio.writeAll(stderr, "oxap opencode install: HOME is not set\n");
         return error.InstallRefused;
     }
     if (try opencode_install.installed(arena, home)) |path| {
@@ -6116,14 +6151,14 @@ fn installOpenCode(allocator: std.mem.Allocator, stdout: std.Io.File, stderr: st
         return;
     }
     const pinned = opencode_install.artifact orelse {
-        try compat.stdio.writeAll(stderr, "oapx opencode install: oapx has not been tested with an OpenCode build for this platform\n");
+        try compat.stdio.writeAll(stderr, "oxap opencode install: oxap has not been tested with an OpenCode build for this platform\n");
         return error.InstallRefused;
     };
     try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(arena, "downloading OpenCode {s} ({s}, {d} MB)\n", .{ opencode_install.version, pinned.name, pinned.bytes / (1024 * 1024) }));
     var why: []const u8 = "";
     const path = opencode_install.install(allocator, arena, home, &why) catch |err| {
         if (err != error.InstallRefused) return err;
-        try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(arena, "oapx opencode install: {s}\n", .{why}));
+        try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(arena, "oxap opencode install: {s}\n", .{why}));
         return error.InstallRefused;
     };
     try compat.stdio.writeAll(stdout, try std.fmt.allocPrint(arena, "OpenCode {s} is installed at {s}\n", .{ opencode_install.version, path }));
@@ -6152,7 +6187,7 @@ fn opencodeBackendConfig(
     const wanted = if (entry.executable.len > 0) entry.executable else "opencode";
     const fetched = if (entry.executable.len > 0) null else try opencode_install.installed(arena, home);
     const executable = fetched orelse try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
-        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; run oapx opencode install, or name one with \"executable\", or a running server with \"endpoint\", in a --config entry", .{ wanted, surface.noun, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; run oxap opencode install, or name one with \"executable\", or a running server with \"endpoint\", in a --config entry", .{ wanted, surface.noun, entry.name });
         return error.BackendRefused;
     };
     var why: []const u8 = "";
@@ -6214,7 +6249,7 @@ fn serveFatalMessage(err: anyerror) ?[]const u8 {
         error.MalformedLine => SERVE_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => SERVE_FRAME_TOO_LARGE_MESSAGE,
-        error.EventStreamFailed => "oapx serve agent: the adapter event stream failed; the endpoint is closing\n",
+        error.EventStreamFailed => "oxap serve agent: the adapter event stream failed; the endpoint is closing\n",
         else => null,
     };
 }
@@ -6225,7 +6260,7 @@ fn backendFatalMessage(err: anyerror) ?[]const u8 {
         error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
-        error.EventStreamFailed => "oapx serve agent --backend: the adapter event stream failed; the endpoint is closing\n",
+        error.EventStreamFailed => "oxap serve agent --backend: the adapter event stream failed; the endpoint is closing\n",
         else => null,
     };
 }
@@ -6296,7 +6331,7 @@ fn runBackendMode(
         oapx = oapx_adapter.Adapter.init(allocator, oapx_production.?.options());
         break :oapx_served oapx.adapter();
     } else {
-        try surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ surface.noun, name, entry.kind });
+        try surface.refuse("{s} \"{s}\" is of type \"{s}\", which oxap does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ surface.noun, name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -6660,11 +6695,11 @@ test "a claude entry naming a provider it cannot route to is refused by name bef
     const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
     defer std.testing.allocator.free(complained);
     try std.testing.expectEqualStrings(
-        "oapx serve agent: backend \"a\" names model_provider \"nonesuch\", which is no catalog provider\n" ++
-            "oapx serve agent: backend \"b\" names model_provider \"openrouter\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach\n" ++
-            "oapx serve agent: backend \"c\" sets ANTHROPIC_BASE_URL in \"environment\", which model_provider sets; drop one\n" ++
-            "oapx serve agent: backend \"d\" names model_provider \"minimax-coding-plan\", which has no credential; set MINIMAX_API_KEY or sign in with oapx\n" ++
-            "oapx serve agent: backend \"e\" names model_provider \"anthropic\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key\n",
+        "oxap serve agent: backend \"a\" names model_provider \"nonesuch\", which is no catalog provider\n" ++
+            "oxap serve agent: backend \"b\" names model_provider \"openrouter\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach\n" ++
+            "oxap serve agent: backend \"c\" sets ANTHROPIC_BASE_URL in \"environment\", which model_provider sets; drop one\n" ++
+            "oxap serve agent: backend \"d\" names model_provider \"minimax-coding-plan\", which has no credential; set MINIMAX_API_KEY or sign in with oxap\n" ++
+            "oxap serve agent: backend \"e\" names model_provider \"anthropic\", whose credential is an OAuth login, which oxap does not hand to a harness; set an API key\n",
         complained,
     );
 }
@@ -6729,11 +6764,11 @@ test "a codex entry naming a provider it cannot route to is refused by name befo
     const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
     defer std.testing.allocator.free(complained);
     try std.testing.expectEqualStrings(
-        "oapx serve: adapter \"a\" names model_provider \"deepseek\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach\n" ++
-            "oapx serve: adapter \"b\" names model_provider \"azure\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach\n" ++
-            "oapx serve: adapter \"c\" sets OAPX_PROVIDER_API_KEY in \"environment\", which model_provider sets; drop one\n" ++
-            "oapx serve: adapter \"d\" names model_provider \"openai\", which has no credential; set OPENAI_API_KEY or sign in with oapx\n" ++
-            "oapx serve: adapter \"e\" names an endpoint and a model_provider; a running app-server chose its provider when it started, so route the executable oapx spawns instead\n",
+        "oxap serve: adapter \"a\" names model_provider \"deepseek\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach\n" ++
+            "oxap serve: adapter \"b\" names model_provider \"azure\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach\n" ++
+            "oxap serve: adapter \"c\" sets OAPX_PROVIDER_API_KEY in \"environment\", which model_provider sets; drop one\n" ++
+            "oxap serve: adapter \"d\" names model_provider \"openai\", which has no credential; set OPENAI_API_KEY or sign in with oxap\n" ++
+            "oxap serve: adapter \"e\" names an endpoint and a model_provider; a running app-server chose its provider when it started, so route the executable oxap spawns instead\n",
         complained,
     );
 }
@@ -6797,7 +6832,7 @@ test "the hub's registry refuses an entry of a type it does not know, naming the
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx serve: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", complained);
+    try std.testing.expectEqualStrings("oxap serve: adapter \"ghost\" is of type \"ghost\", which oxap does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", complained);
 }
 
 test "the hub's registry reports a known adapter's own requirement once, not as an unknown type" {
@@ -6818,7 +6853,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set\n", complained);
+    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {
@@ -6946,7 +6981,7 @@ test "validate names the pack directory that would not load, and judges no trace
     defer allocator.free(complained);
     const said = try tmp.dir.readFileAlloc(std.testing.io, "stdout", allocator, .limited(4096));
     defer allocator.free(said);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --pack: unavailable: storage did not load as a pack:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "oxap validate: --pack: unavailable: storage did not load as a pack:") != null);
     try std.testing.expect(said.len == 0);
 }
 
@@ -6961,7 +6996,7 @@ test "validate refuses a flag it has never heard of, by the name it was given" {
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx validate: --bogus: unavailable: oapx validate does not carry this flag\n", complained);
+    try std.testing.expectEqualStrings("oxap validate: --bogus: unavailable: oxap validate does not carry this flag\n", complained);
 }
 
 test "validate names the goap flag it is refusing rather than a generic one" {
@@ -7009,14 +7044,14 @@ test "unavailable names the surface it was called for" {
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx serve: --addr: unavailable: the HTTP and SSE transport lands with #388\n", complained);
+    try std.testing.expectEqualStrings("oxap serve: --addr: unavailable: the HTTP and SSE transport lands with #388\n", complained);
 }
 
 test "a backend oapx does not know, or a --config entry it cannot serve, is refused on stderr before any request is read" {
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", unknown);
+    try std.testing.expectEqualStrings("oxap serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oxap does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -7028,7 +7063,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
 
     const unstated = try refusedBackend(allocator, "work", path);
     defer allocator.free(unstated);
-    try std.testing.expectEqualStrings("oapx serve agent: config: adapter \"work\": state its tool posture: set \"allowed_tools\" to the tools the child may use, or \"unrestricted_tools\": true to give it the harness default\n", unstated);
+    try std.testing.expectEqualStrings("oxap serve agent: config: adapter \"work\": state its tool posture: set \"allowed_tools\" to the tools the child may use, or \"unrestricted_tools\": true to give it the harness default\n", unstated);
 
     const absent = try refusedBackend(allocator, "other", path);
     defer allocator.free(absent);
@@ -7981,7 +8016,7 @@ test "a SIGTERM shuts the idle built-in agent loop down gracefully after its ans
     try std.testing.expectEqualStrings(IDLE_GRACEFUL_NOTICE, complained);
 }
 
-const IDLE_GRACEFUL_NOTICE = "oapx: shutting down gracefully; still active: none; 0 queued run(s) lost; signal again to force\n";
+const IDLE_GRACEFUL_NOTICE = "oxap: shutting down gracefully; still active: none; 0 queued run(s) lost; signal again to force\n";
 
 test "the built-in agent loop stops once its unread stdout passes the stall bound, saying why" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;

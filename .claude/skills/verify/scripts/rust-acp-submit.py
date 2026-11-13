@@ -158,7 +158,7 @@ def main():
     run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'], output/'goap-build.log')
     run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate'], output/'validator-build.log')
     trace = str(output/'complete/trace.json')
-    for name, command in [('go',[str(output/'goap'),'validate']), ('rust',[str(ROOT/'rust/target/debug/examples/validate')]), ('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+    for name, command in [('go',[str(output/'goap'),'validate']), ('rust',[str(ROOT/'rust/target/debug/examples/validate')]), ('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
         run(command+[trace], output/f'validate-{name}.log')
     print(f'PASS normal Rust submit trace accepted by all three validators. Evidence: {output}', flush=True)
 

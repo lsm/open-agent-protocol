@@ -65,7 +65,7 @@ def validators(output):
         "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
         "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
                  "-p", "oap-validation", "--example", "validate", "--"],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate"],
     }
     cases = [({}, True), ({"input_tokens": 0}, True)]
     cases += [({"input_tokens": count}, True) for count in [2**53-1, 2**53, 2**64-1]]

@@ -49,7 +49,7 @@ def validators(output):
          "--example", "validate"], output, "rust-build")
     commands = {"go": [str(output / "goap"), "validate", "--format", "json"],
                 "rust": [str(ROOT / "rust/target/debug/examples/validate")],
-                "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate"]}
+                "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate"]}
     template = json.loads((ROOT / "fixtures/valid/core-completed.json").read_text())
     cases = [("absent", True), ("{}", True)]
     cases += [(json.dumps({field: count}), True) for field in FIELDS for count in (0, MAX)]

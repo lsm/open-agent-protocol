@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--python-sdk", default=shutil.which("python3.11") or sys.executable)
-    parser.add_argument("--oapx", type=Path, default=ROOT / "zig/zig-out/bin/oapx")
+    parser.add_argument("--oapx", type=Path, default=ROOT / "zig/zig-out/bin/oxap")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)

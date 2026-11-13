@@ -34,7 +34,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="oap-verify-") as temporary:
         root = Path(temporary).resolve()
         binary = root / "oapx"
-        shutil.copy2(ROOT / "zig/zig-out/bin/oapx", binary)
+        shutil.copy2(ROOT / "zig/zig-out/bin/oxap", binary)
         home = root / "home"
         home.mkdir()
         profile = root / "smoke.sb"

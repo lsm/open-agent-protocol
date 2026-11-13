@@ -260,7 +260,7 @@ def main():
         for index,frames in traces(observed['rust'],request):
             validated += 1
             path=case/f'trace-{index}.json';path.write_text(json.dumps(frames,ensure_ascii=False,indent=2))
-            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{index}-{language}.log')
         if name=='captured':
             host=[item['frame'] for item in wires['rust'] if item['from']=='host']

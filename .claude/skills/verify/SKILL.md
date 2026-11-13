@@ -93,8 +93,8 @@ Zig's test cache can reuse a previous result: always invoke the rebuilt binary
 on each changed trace, even after `test-unit-validation` passes:
 
 ```sh
-./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
-./zig/zig-out/bin/oapx validate <fixture>
+./zig/zig-out/bin/oxap validate fixtures/valid/core-completed.json
+./zig/zig-out/bin/oxap validate <fixture>
 ```
 
 Compare diagnostics and exit status to the manifest and known gaps. Positive

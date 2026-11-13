@@ -21,7 +21,7 @@ def digest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--candidate", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--candidate", default=str(ROOT / "zig/zig-out/bin/oxap"))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--rounds", type=int, default=3)
     args = parser.parse_args()

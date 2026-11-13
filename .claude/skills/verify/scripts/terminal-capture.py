@@ -25,7 +25,7 @@ def main():
     commands = {
         "go": [str(output / "goap"), "validate", "--format=json"],
         "rust": [str(ROOT / "rust/target/debug/examples/validate")],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format=json"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format=json"],
     }
     base = json.loads((ROOT / "fixtures/valid/queue-state-lists-run-settled-in-window.json").read_text())
     late = json.loads((ROOT / "fixtures/semantic-invalid/queue-state-terminal-capture-after-late-event.json").read_text())

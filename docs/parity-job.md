@@ -118,9 +118,9 @@ never `sequence`.
 
 ```sh
 zig build --build-file zig/build.zig install --prefix /tmp/oapx
-OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/cmd/goap/ \
+OAP_OAPX_BIN=/tmp/oapx/bin/oxap go test ./go/cmd/goap/ \
   -run 'TestBackendsMatchOapx|TestMemoryBackendMatchesOapx'
-OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/internal/inferenceserve/ \
+OAP_OAPX_BIN=/tmp/oapx/bin/oxap go test ./go/internal/inferenceserve/ \
   -run TestInferenceTracesMatchOapx
 ```
 

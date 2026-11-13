@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
         paths: []const []const u8,
         fingerprint: u64,
     } = @import("build.zig.zon");
-    const version = b.option([]const u8, "version", "The version oapx reports; defaults to build.zig.zon's") orelse manifest.version;
+    const version = b.option([]const u8, "version", "The version oxap reports; defaults to build.zig.zon's") orelse manifest.version;
     const version_options = b.addOptions();
     version_options.addOption([]const u8, "version", version);
     const version_module = version_options.createModule();
@@ -2883,7 +2883,7 @@ pub fn build(b: *std.Build) void {
     makai_cli_module.addImport("repeat", repeat_mod);
 
     const makai_cli = b.addExecutable(.{
-        .name = "oapx",
+        .name = "oxap",
         .root_module = makai_cli_module,
     });
     const makai_cli_test = b.addTest(.{ .root_module = makai_cli_module });
@@ -2893,10 +2893,12 @@ pub fn build(b: *std.Build) void {
     const auth_cli_test = b.addTest(.{ .root_module = auth_cli_mod });
     const auth_cli_test_run = b.addRunArtifact(auth_cli_test);
     b.installArtifact(makai_cli);
+    const legacy_name = if (target.result.os.tag == .windows) "oapx.exe" else "oapx";
+    b.getInstallStep().dependOn(&b.addInstallArtifact(makai_cli, .{ .dest_sub_path = legacy_name }).step);
 
     const run_cmd = b.addRunArtifact(makai_cli);
     run_cmd.addPassthruArgs();
-    const run_step = b.step("run", "Run the oapx CLI");
+    const run_step = b.step("run", "Run the oxap CLI");
     run_step.dependOn(&run_cmd.step);
 
     const run_tui_cmd = b.addRunArtifact(makai_cli);

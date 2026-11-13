@@ -131,8 +131,8 @@ scenario (its own transcript/batches plus `frames.jsonl` and `notes.json`).
 
 ```bash
 zig build install -Doptimize=ReleaseFast --prefix /tmp/makai-pty
-python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/oapx --output-dir tui-pty-out
-python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/oapx --output-dir tui-pty-out --scenario all
+python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/oxap --output-dir tui-pty-out
+python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/oxap --output-dir tui-pty-out --scenario all
 ```
 
 CI runs the `--scenario all` invocation in the `TUI PTY Harness` job on every

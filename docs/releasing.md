@@ -138,12 +138,12 @@ something narrower than it looks:
 - **an untagged `workflow_dispatch` is governed by it.** `build-binaries` and
   `checksums` carry no `if`, so they run on one, and three steps in
   `build-binaries` read `package.json`: `-Dversion` for the binary's compiled-in
-  version, and the `oapx-<version>-<os>-<arch>` names of the `.tar.gz` and the
+  version, and the `oxap-<version>-<os>-<arch>` names of the `.tar.gz` and the
   `.zip`.
 
 One more surface, which the workflow never reads but a local build does:
 `zig/build.zig.zon`'s `.version` is the *default* for `-Dversion`
-(`zig/build.zig:13`, `orelse manifest.version`), so it is what `oapx --version`
+(`zig/build.zig:13`, `orelse manifest.version`), so it is what `oxap --version`
 prints for anyone who runs `zig build` themselves. It is on the alpha line now
 for the same reason `package.json` is — a manifest left saying `0.2.0` after the
 retraction is the disagreement again, one file over. Nothing validates it; the
@@ -154,8 +154,8 @@ That second bullet is the whole reason this value is worth setting, and it is
 worth being exact about what it is: a dispatch builds binaries and names
 artifacts. It does not publish to npm. So the drift to fear is not "the wrong
 version reaches the registry" — the tag makes that impossible — it is an
-artifact and an `oapx --version` line labelled `0.2.0` when the tree is four
-alphas past it, handed to whoever asked for a build. `scripts/package-npm.ts`
+artifact and an `oxap --version` release name carrying `0.2.0` when the tree is
+four alphas past it, handed to whoever asked for a build. `scripts/package-npm.ts`
 also falls back to `package.json` when no `--version` is passed, which is
 reachable from a local shell but not from CI, since the workflow always passes
 it.

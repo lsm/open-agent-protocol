@@ -25,7 +25,7 @@ spec.loader.exec_module(bench)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oxap"))
     parser.add_argument("--hold-expiry", action="store_true")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()

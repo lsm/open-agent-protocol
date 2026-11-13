@@ -18,7 +18,7 @@ spec.loader.exec_module(driver)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', default=str(ROOT / 'zig/zig-out/bin/oapx'))
+    parser.add_argument('--binary', default=str(ROOT / 'zig/zig-out/bin/oxap'))
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--expect-alpha28-refusal', action='store_true')
     parser.add_argument('--opus55-versioned', action='store_true')

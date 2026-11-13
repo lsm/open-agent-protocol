@@ -184,7 +184,7 @@ def main():
     rust_gap = command([str(binary), str(gap)])
     assert rust_gap.returncode == 1, rust_gap.stdout
     go_gap = command([str(go_binary), "validate", "--format=json", str(gap)])
-    zig_gap = command([str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(gap)])
+    zig_gap = command([str(ROOT / "zig/zig-out/bin/oxap"), "validate", str(gap)])
     for name, result in [("rust", rust_gap), ("go", go_gap), ("zig", zig_gap)]:
         (output / f"known-unicode17-{name}.stdout").write_text(result.stdout)
         (output / f"known-unicode17-{name}.stderr").write_text(result.stderr)
@@ -196,7 +196,7 @@ def main():
     assert {d["code"] for d in diagnostics} == {"undisclosed_provide_limit"}, diagnostics
     assert all(d["phase"] == "semantic" and d["pointer"] == "/payload/error" for d in diagnostics)
     for label, path, expected in unicode_paths:
-        result = command([str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(path)])
+        result = command([str(ROOT / "zig/zig-out/bin/oxap"), "validate", str(path)])
         (output / f"{label}.zig.txt").write_text(result.stdout + result.stderr)
         assert result.returncode == int(bool(expected)), (label, result.stdout, result.stderr)
         if expected:

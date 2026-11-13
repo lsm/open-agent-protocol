@@ -7,7 +7,7 @@ repository root:
 cargo test --manifest-path rust/Cargo.toml -p oap-protocol --test vocabulary
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --lib --test packed_traces
 python3 .claude/skills/verify/scripts/rust-vocabulary.py --output-dir /tmp/oap-vocabulary-<unique>
-python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oapx --output-dir /tmp/oap-vocabulary-packed-<unique>
+python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oxap --output-dir /tmp/oap-vocabulary-packed-<unique>
 python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-vocabulary-schemas-<unique>
 python3 .claude/skills/verify/scripts/rust-go-parity.py --output-dir /tmp/oap-vocabulary-parity-<unique>
 cargo doc --manifest-path rust/Cargo.toml -p oap-protocol --no-deps

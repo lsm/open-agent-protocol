@@ -9,7 +9,7 @@ cargo build --manifest-path rust/Cargo.toml -p oap-serve
 python3 .claude/skills/verify/scripts/rust-acp-registry.py --binary rust/target/debug/oap-rust-hub --output-dir "$EVIDENCE/acp-registry"
 go run ./go/cmd/goap validate "$EVIDENCE/acp-registry/accepted.trace.json"
 cargo run --manifest-path rust/Cargo.toml -p oap-validation --example validate -- "$EVIDENCE/acp-registry/accepted.trace.json"
-zig/zig-out/bin/oapx validate "$EVIDENCE/acp-registry/accepted.trace.json"
+zig/zig-out/bin/oxap validate "$EVIDENCE/acp-registry/accepted.trace.json"
 ```
 
 The integration test skips the POSIX Python journey on non-Unix hosts or when

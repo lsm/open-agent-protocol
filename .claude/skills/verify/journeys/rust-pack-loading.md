@@ -191,7 +191,7 @@ Tolerant mode is exercised in `rust-tolerant.md`.
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --test packed_traces
-python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oapx --output-dir /tmp/oap-native-packed-<unique>
+python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oxap --output-dir /tmp/oap-native-packed-<unique>
 ```
 
 The separate public consumer constructs `Validator::with_packs` and compares

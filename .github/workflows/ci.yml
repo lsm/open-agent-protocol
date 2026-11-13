@@ -93,7 +93,7 @@ jobs:
         run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-go-sdk
       - name: Run the SDK tests
         env:
-          OAP_SDK_BINARY_PATH: /tmp/oapx-go-sdk/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/oapx-go-sdk/bin/oxap
         run: go test -race ./go/sdk/...
       - name: Tests leave no credential store in the checkout
         if: always()

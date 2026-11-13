@@ -11,7 +11,7 @@ COMMANDS = {
     "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
     "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
              "-p", "oap-validation", "--example", "validate", "--"],
-    "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format", "json"],
+    "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"],
 }
 
 

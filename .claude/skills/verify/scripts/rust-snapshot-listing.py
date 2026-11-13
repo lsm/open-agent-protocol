@@ -158,7 +158,7 @@ def main():
     commands = {
         "rust": [str(rust)],
         "go": [str(go), "validate", "--format=json"],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format=json"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format=json"],
     }
     for language, args in commands.items():
         result = command(args + paths, language)

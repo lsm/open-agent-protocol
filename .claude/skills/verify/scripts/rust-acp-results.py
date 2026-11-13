@@ -380,7 +380,7 @@ def main():
                 trace.extend(prefix+turn['events'])
             path=case/'trace.json'
             path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
-            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{language}.log')
             print(f'PASS {name}: public Go/Rust results and native frames agree, three validators accept Rust trace, children reaped',flush=True)
     print(f'PASS public {arguments.suite} mapping. Comparison normalizes wall-clock timestamps and the declared staged capability revision. Raw outputs retained at {output}',flush=True)

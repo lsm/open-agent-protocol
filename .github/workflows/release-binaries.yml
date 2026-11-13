@@ -22,42 +22,48 @@ jobs:
             os_name: macos
             arch_name: arm64
             archive: tar.gz
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
             npm_target: darwin-arm64
           - runner: macos-latest
             target: x86_64-macos
             os_name: macos
             arch_name: x64
             archive: tar.gz
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
             npm_target: darwin-x64
           - runner: ubuntu-latest
             target: aarch64-linux
             os_name: linux
             arch_name: arm64
             archive: tar.gz
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
             npm_target: linux-arm64
           - runner: ubuntu-latest
             target: x86_64-linux
             os_name: linux
             arch_name: x64
             archive: tar.gz
-            binary_name: oapx
+            binary_name: oxap
+            alias_name: oapx
             npm_target: linux-x64
           - runner: windows-latest
             target: x86_64-windows
             os_name: windows
             arch_name: x64
             archive: zip
-            binary_name: oapx.exe
+            binary_name: oxap.exe
+            alias_name: oapx.exe
             npm_target: win32-x64
           - runner: windows-latest
             target: aarch64-windows
             os_name: windows
             arch_name: arm64
             archive: zip
-            binary_name: oapx.exe
+            binary_name: oxap.exe
+            alias_name: oapx.exe
             npm_target: win32-arm64
 
     steps:
@@ -149,6 +155,7 @@ jobs:
             --sign "$APPLE_SIGNING_IDENTITY" \
             "$BINARY"
           codesign --verify --strict --verbose=2 "$BINARY"
+          cp "$BINARY" "$(dirname "$BINARY")/${{ matrix.alias_name }}"
 
           if [ -z "${APPLE_API_PRIVATE_KEY:-}" ]; then
             if [ "${{ github.event_name }}" = "push" ]; then
@@ -194,10 +201,10 @@ jobs:
           if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
             VERSION="$(node -p "require('./package.json').version")"
           fi
-          ARTIFACT="oapx-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
+          ARTIFACT="oxap-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
           BIN_DIR="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          tar -C "$BIN_DIR" -czf "$GITHUB_WORKSPACE/dist/$ARTIFACT" "${{ matrix.binary_name }}"
+          tar -C "$BIN_DIR" -czf "$GITHUB_WORKSPACE/dist/$ARTIFACT" "${{ matrix.binary_name }}" "${{ matrix.alias_name }}"
 
       - name: Package zip
         if: matrix.archive == 'zip' && env.MACOS_WITHHELD != 'true'
@@ -208,16 +215,16 @@ jobs:
           } else {
             (Get-Content package.json | ConvertFrom-Json).version
           }
-          $artifact = "oapx-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
+          $artifact = "oxap-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
           $binDir = "$env:GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/dist" | Out-Null
-          Compress-Archive -Path "$binDir/${{ matrix.binary_name }}" -DestinationPath "$env:GITHUB_WORKSPACE/dist/$artifact" -Force
+          Compress-Archive -Path "$binDir/${{ matrix.binary_name }}", "$binDir/${{ matrix.alias_name }}" -DestinationPath "$env:GITHUB_WORKSPACE/dist/$artifact" -Force
 
       - name: Upload packaged artifact
         if: env.MACOS_WITHHELD != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: oapx-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          name: oxap-${{ matrix.os_name }}-${{ matrix.arch_name }}
           path: dist/*
           if-no-files-found: error
 
@@ -253,12 +260,12 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum oapx-*.tar.gz oapx-*.zip > SHA256SUMS.txt
+          sha256sum oxap-*.tar.gz oxap-*.zip > SHA256SUMS.txt
 
       - name: Upload checksums
         uses: actions/upload-artifact@v4
         with:
-          name: oapx-checksums
+          name: oxap-checksums
           path: dist/SHA256SUMS.txt
 
   # A pull request no longer edits CHANGELOG.md, so the notes for a release are
@@ -301,8 +308,8 @@ jobs:
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            dist/oapx-*.tar.gz
-            dist/oapx-*.zip
+            dist/oxap-*.tar.gz
+            dist/oxap-*.zip
             dist/SHA256SUMS.txt
 
   package-npm:

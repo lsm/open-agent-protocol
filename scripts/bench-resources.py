@@ -977,7 +977,7 @@ def main():
     results = []
     try:
         built = {} if arguments.no_build else build(targets, scratch)
-        sources = {"zig": ROOT / "zig/zig-out/bin/oapx", "zig-loop": Path(arguments.loop_binary) if arguments.loop_binary else ROOT / "zig/zig-out/bin/oapx",
+        sources = {"zig": ROOT / "zig/zig-out/bin/oxap", "zig-loop": Path(arguments.loop_binary) if arguments.loop_binary else ROOT / "zig/zig-out/bin/oxap",
                    "rust": ROOT / "rust/target/release/oap-rust-hub",
                    "go": Path(arguments.go) if arguments.go else built.get("go")}
         binaries = {}

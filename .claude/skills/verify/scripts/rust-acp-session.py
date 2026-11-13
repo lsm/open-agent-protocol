@@ -152,7 +152,7 @@ if {mode!r} == 'close-timeout':
     for name, command in [
         ('go', [str(output / 'goap'), 'validate']),
         ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]),
-        ('zig', [str(ROOT / 'zig/zig-out/bin/oapx'), 'validate']),
+        ('zig', [str(ROOT / 'zig/zig-out/bin/oxap'), 'validate']),
     ]:
         run(command + [str(path)], output / f'trace-{name}.log')
         print(f'PASS observed opening/catalog trace validates with {name}')

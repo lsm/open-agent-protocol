@@ -71,22 +71,30 @@ jobs:
           - runner: ubuntu-latest
             platform: linux-x64
             archive: tar.gz
-            binary: oapx
+            binary: oxap
+            legacy_binary: oapx
+            alias: oapx
             sdk_tests: Smoke
           - runner: ubuntu-24.04-arm
             platform: linux-arm64
             archive: tar.gz
-            binary: oapx
+            binary: oxap
+            legacy_binary: oapx
+            alias: oapx
             sdk_tests: Smoke
           - runner: macos-latest
             platform: macos-arm64
             archive: tar.gz
-            binary: oapx
+            binary: oxap
+            legacy_binary: oapx
+            alias: oapx
             sdk_tests: TestSmokeHandshakeAndClose|TestSmokeModelsList$
           - runner: windows-latest
             platform: windows-x64
             archive: zip
-            binary: oapx.exe
+            binary: oxap.exe
+            legacy_binary: oapx.exe
+            alias: oapx.exe
             sdk_tests: TestSmokeHandshakeAndClose|TestSmokeModelsList$
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +112,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
-          ASSET: oapx-${{ needs.resolve.outputs.version }}-${{ matrix.platform }}.${{ matrix.archive }}
+          ASSET_OXAP: oxap-${{ needs.resolve.outputs.version }}-${{ matrix.platform }}.${{ matrix.archive }}
+          ASSET_OAPX: oapx-${{ needs.resolve.outputs.version }}-${{ matrix.platform }}.${{ matrix.archive }}
         run: |
           set -euo pipefail
           temp="$RUNNER_TEMP"
@@ -113,16 +122,22 @@ jobs:
           mkdir -p "$dir"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern SHA256SUMS.txt
           cd "$dir"
+          ASSET="$ASSET_OXAP"
           expected="$(awk -v name="$ASSET" '$2 == name { print $1 }' SHA256SUMS.txt)"
           if [ -z "$expected" ]; then
-            case "$ASSET" in
+            ASSET="$ASSET_OAPX"
+            expected="$(awk -v name="$ASSET" '$2 == name { print $1 }' SHA256SUMS.txt)"
+          fi
+          echo "binary=$(basename "$ASSET" | cut -d- -f1)" >> "$GITHUB_OUTPUT"
+          if [ -z "$expected" ]; then
+            case "$ASSET_OXAP" in
               *-macos-*)
-                echo "::warning::$ASSET is not in this release; release-binaries withholds an unsigned macOS build on a prerelease"
+                echo "::warning::$ASSET_OXAP is not in this release; release-binaries withholds an unsigned macOS build on a prerelease"
                 echo "withheld=true" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;
             esac
-            echo "::error::$ASSET is not listed in SHA256SUMS.txt"
+            echo "::error::neither $ASSET_OXAP nor $ASSET_OAPX is listed in SHA256SUMS.txt"
             exit 1
           fi
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern "$ASSET"
@@ -140,9 +155,16 @@ jobs:
             *.zip) pwsh -NoProfile -Command "Expand-Archive -Path '$ASSET' -DestinationPath bin" ;;
             *) tar -xzf "$ASSET" -C bin ;;
           esac
-          binary="$dir/bin/${{ matrix.binary }}"
+          binary_name="${{ matrix.binary }}"
+          if [ "${{ steps.asset.outputs.binary }}" = "oapx" ]; then binary_name="${{ matrix.legacy_binary }}"; fi
+          binary="$dir/bin/$binary_name"
           test -f "$binary"
           echo "BINARY=$binary" >> "$GITHUB_ENV"
+          if [ "${{ steps.asset.outputs.binary }}" = "oxap" ]; then
+            alias_binary="$dir/bin/${{ matrix.alias }}"
+            test -f "$alias_binary"
+            echo "ALIAS_BINARY=$alias_binary" >> "$GITHUB_ENV"
+          fi
           if command -v cygpath >/dev/null; then binary="$(cygpath -w "$binary")"; fi
           echo "OAP_SDK_BINARY_PATH=$binary" >> "$GITHUB_ENV"
 
@@ -154,8 +176,35 @@ jobs:
         run: |
           set -euo pipefail
           reported="$("$BINARY" --version | tr -d '\r')"
-          if [ "$reported" != "$VERSION" ]; then
-            echo "::error::the released binary reports '$reported', the release is $VERSION"
+          want_oxap="oxap-$VERSION-${{ matrix.platform }}"
+          if [ "$reported" != "$VERSION" ] && [ "$reported" != "$want_oxap" ]; then
+            echo "::error::the released binary reports '$reported', the release is $VERSION ($want_oxap)"
+            exit 1
+          fi
+
+      - name: The oapx alias answers the same and warns on stderr
+        if: steps.asset.outputs.binary == 'oxap' && steps.asset.outputs.withheld != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for args in "--version" "--help" "serve ghost"; do
+            "$BINARY" $args > /tmp/oxap.out 2>/tmp/oxap.err && oxap_rc=0 || oxap_rc=$?
+            "$ALIAS_BINARY" $args > /tmp/oapx.out 2>/tmp/oapx.err && oapx_rc=0 || oapx_rc=$?
+            if [ "$oxap_rc" != "$oapx_rc" ]; then
+              echo "::error::'$args' exits $oxap_rc as oxap and $oapx_rc as oapx"
+              exit 1
+            fi
+            if ! cmp -s /tmp/oxap.out /tmp/oapx.out; then
+              echo "::error::'$args' stdout differs between oxap and oapx"
+              exit 1
+            fi
+          done
+          if ! grep -q "deprecated" /tmp/oapx.err; then
+            echo "::error::oapx carried no deprecation note on stderr"
+            exit 1
+          fi
+          if grep -q "deprecated" /tmp/oxap.err; then
+            echo "::error::oxap carried the alias's deprecation note on stderr"
             exit 1
           fi
 

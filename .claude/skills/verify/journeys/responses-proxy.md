@@ -4,7 +4,7 @@ Run on the designated test host after the authenticated CONNECT transport lands.
 
 ```sh
 zig build --build-file zig/build.zig install build-responses-proxy-probe -Doptimize=ReleaseSafe
-python3 .claude/skills/verify/scripts/responses-proxy.py --binary zig/zig-out/bin/responses-proxy-probe --oapx zig/zig-out/bin/oapx --output-dir /tmp/oap-responses-proxy-evidence
+python3 .claude/skills/verify/scripts/responses-proxy.py --binary zig/zig-out/bin/responses-proxy-probe --oapx zig/zig-out/bin/oxap --output-dir /tmp/oap-responses-proxy-evidence
 ```
 
 Require 22/22 checks and exit 0. The native probe calls the real Codex Responses

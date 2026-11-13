@@ -63,7 +63,7 @@ in `.github/workflows/release-binaries.yml`, so a change to one is not a change
 to the other.
 
 ```sh
-zig build --build-file zig/build.zig             # -> zig/zig-out/bin/oapx
+zig build --build-file zig/build.zig             # -> zig/zig-out/bin/oxap
 zig build --build-file zig/build.zig test
 zig build --build-file zig/build.zig test-unit-<group>
 ```
