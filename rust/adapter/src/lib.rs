@@ -10,6 +10,7 @@ pub mod process;
 mod prompt;
 mod quote_table;
 mod refuse;
+pub mod runtime;
 pub mod subscriber;
 #[cfg(feature = "testkit")]
 pub mod testkit;

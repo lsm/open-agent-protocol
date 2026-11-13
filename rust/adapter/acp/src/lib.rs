@@ -11,8 +11,7 @@ mod attachments;
 mod operation;
 pub use operation::Operation;
 
-mod runtime;
-pub use runtime::Runtime;
+pub use oap_adapter::runtime::Runtime;
 
 mod session;
 
