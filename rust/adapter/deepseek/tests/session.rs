@@ -55,8 +55,9 @@ impl Fixture {
             *SERVER_VERSION
         );
         let script = format!(
-            r#"printf '%s' $$ > "{dir}/pid"
-if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; printf '%s' "$2" > "{dir}/patch-path"; ls -l "$2" | cut -c1-10 > "{dir}/patch-mode"; fi
+            r#"if [ "$1" = --patch ]; then printf '%s' "$2" > "{dir}/patch-path"; fi
+printf '%s' $$ > "{dir}/pid"
+if [ "$1" = --patch ]; then cp "$2" "{dir}/patch"; ls -l "$2" | cut -c1-10 > "{dir}/patch-mode"; fi
 {silence}read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{info}}}'
 {after}read line; printf '%s\n' "$line" >> "{dir}/wire"; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
 cat >/dev/null"#,
