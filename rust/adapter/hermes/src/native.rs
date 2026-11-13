@@ -1,4 +1,5 @@
 mod events;
+mod methods;
 mod requests;
 
 use oap_adapter::gojson::{go_quote, raw, zero};
@@ -6,6 +7,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
 
 pub use events::{decode_notification, is_run_scoped, MessageStartPayload, OBSERVED_EVENTS};
+pub use methods::{
+    ConfigSetParams, ConfigSetResult, InterruptParams, InterruptResult, PromptSubmitParams,
+    PromptSubmitResult, SessionCreateParams, SessionCreateResult, SessionResumeParams,
+    SessionResumeResult,
+};
 pub use requests::{
     decode_server_request, request_session_id, ApprovalRequestParams, ApprovalResult,
     ClarifyAnswersResult, ClarifyQuestion, ClarifyRequestParams, ErrorPayload,
