@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crossbeam_channel::{Receiver, Sender};
+
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{
@@ -24,21 +26,27 @@ struct Inner {
     turns: HashMap<String, RunId>,
 }
 
-pub struct Session {
-    client: Arc<dyn Client>,
+pub(crate) struct Shared {
+    pub(crate) client: Arc<dyn Client>,
     thread_id: String,
     model: String,
     runtime: Runtime,
     journal: Journal,
-    operating: Mutex<()>,
+    pub(crate) operating: Mutex<()>,
     inner: Mutex<Inner>,
+    stop: Mutex<Option<Sender<()>>>,
+    pub(crate) stopped: Receiver<()>,
 }
 
-fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub struct Session {
+    shared: Arc<Shared>,
+}
+
+pub(crate) fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-impl Session {
+impl Shared {
     pub(crate) fn new(
         client: Arc<dyn Client>,
         thread_id: String,
@@ -47,6 +55,7 @@ impl Session {
         capacity: usize,
         state: SessionState,
     ) -> Self {
+        let (stop, stopped) = crossbeam_channel::bounded(0);
         Self {
             client,
             thread_id,
@@ -60,6 +69,8 @@ impl Session {
                 active: None,
                 turns: HashMap::new(),
             }),
+            stop: Mutex::new(Some(stop)),
+            stopped,
         }
     }
 
@@ -215,8 +226,43 @@ impl Session {
             inner.closed = true;
             inner.state.status = SessionStatus::CLOSED;
             inner.state.active_run_id = None;
+            hold(&self.stop).take();
         }
         self.journal.close();
         self.client.close().map_err(Error::harness)
+    }
+}
+
+impl Session {
+    pub(crate) fn new(shared: Shared) -> Self {
+        let shared = Arc::new(shared);
+        let dispatching = shared.clone();
+        std::thread::spawn(move || dispatching.dispatch());
+        Self { shared }
+    }
+
+    pub fn native_session_id(&self) -> String {
+        self.shared.native_session_id()
+    }
+
+    pub fn submit(
+        &self,
+        request: MessageSubmitRequest,
+    ) -> Result<(MessageSubmitResponse, EventStream), Error> {
+        self.shared.submit(request)
+    }
+
+    pub fn state(&self) -> Result<SessionState, Error> {
+        self.shared.state()
+    }
+
+    pub fn close(&self) -> Result<(), Error> {
+        self.shared.close()
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        hold(&self.shared.stop).take();
     }
 }

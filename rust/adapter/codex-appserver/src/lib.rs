@@ -2,6 +2,7 @@
 
 pub mod adapter;
 pub mod client;
+mod events;
 pub mod filepath;
 pub mod native;
 pub mod permissions;

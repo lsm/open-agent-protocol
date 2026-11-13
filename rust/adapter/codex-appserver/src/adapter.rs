@@ -25,7 +25,7 @@ use crate::native::{
 use crate::permissions::confirm;
 use crate::process::{ClientInfo, ProcessConfig, ProcessFactory};
 use crate::rpc::{self, error, Fault};
-use crate::session::Session;
+use crate::session::{Session, Shared};
 
 pub(crate) const ENDPOINT_ID: &str = "codex.app-server";
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
@@ -173,14 +173,14 @@ impl Adapter {
             compaction_policy: request.compaction_policy,
             ..SessionState::default()
         };
-        Ok(Session::new(
+        Ok(Session::new(Shared::new(
             client,
             thread_id,
             model,
             self.config.runtime.clone(),
             self.config.journal_capacity,
             state,
-        ))
+        )))
     }
 
     pub fn describe(&self) -> Descriptor {
