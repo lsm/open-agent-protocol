@@ -21,6 +21,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test controls)
 (cd rust && cargo test -p oap-adapter-hermes --test native_list)
 (cd rust && cargo test -p oap-adapter-hermes --test kept_list)
+(cd rust && cargo test -p oap-adapter-hermes --test corpus)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -153,3 +154,13 @@ start fails the listing, and closing the adapter stops the kept one. To see
 it bite, drop the drain, the busy branch, the remote-error check, the
 reuse check, the retry's keeping, the kept gateway, the adapter's close or
 the limit: one test must fail for each.
+
+`tests/corpus.rs` replays every in-process case of the catalog's current
+Hermes corpus the way Go's `TestHermesEvidenceCorpus` does, against the same
+ids and clock, and each trace matches Go's `expected-oap.json` byte for
+byte. It also checks the manifest and case pins, decodes every frame through
+the production codec, checks each frame's classification, the prompts and
+answers the adapter writes, each resume, and that no corpus file goes
+unlisted. The three process cases and the two reopen cases are named and
+not yet replayed. To see it bite, change one byte of any replayed case's
+`expected-oap.json`: the test must fail on that case.
