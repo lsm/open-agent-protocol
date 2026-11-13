@@ -3,6 +3,7 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use oap_adapter::testkit::drain;
 use oap_adapter_codex_appserver::session::Session;
 use oap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest};
 use support::{adapter, request, Fake};
@@ -85,4 +86,51 @@ fn a_submit_returns_when_codex_asks_something_ahead_of_its_answer() {
     });
     assert!(submitted.is_ok(), "{:?}", submitted.err());
     assert_eq!(answers.0.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_transport_closed_during_turn_start_fails_the_run_it_admits_as_go_does() {
+    let (fake, session) = open();
+    let session = Arc::new(session);
+    let (arrivals, release) = fake.hold_calls("turn/start");
+    let submitting = {
+        let session = session.clone();
+        std::thread::spawn(move || {
+            session.submit(MessageSubmitRequest {
+                session_id: "s".into(),
+                messages: vec![Message {
+                    role: MessageRole::USER,
+                    content: MessageContent::from_text("hi"),
+                    ..Message::default()
+                }],
+                ..MessageSubmitRequest::default()
+            })
+        })
+    };
+    arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+    fake.hang_up();
+    std::thread::sleep(Duration::from_millis(200));
+    release.send(()).unwrap();
+    let (_, mut stream) = submitting.join().unwrap().unwrap();
+    let events = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drain(&mut stream, Duration::from_secs(2))
+    }))
+    .unwrap_or_default();
+    let shape: Vec<_> = events
+        .iter()
+        .map(|event| {
+            (
+                event.envelope_type.to_string(),
+                serde_json::from_str::<serde_json::Value>(event.payload.as_ref().unwrap().get())
+                    .unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [(
+            "run.failed".to_owned(),
+            serde_json::json!({"session_id": "s", "run_id": "run-minted", "error": {"code": "native_transport_closed", "message": "Codex app-server transport closed before terminal settlement"}, "settled_by": "inferred"})
+        )]
+    );
 }

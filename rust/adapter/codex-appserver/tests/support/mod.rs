@@ -20,6 +20,8 @@ use serde_json::value::RawValue;
 
 pub type Reply = Result<&'static str, &'static str>;
 
+type Gate = (&'static str, Sender<()>, Receiver<()>);
+
 pub struct Fake {
     replies: Mutex<VecDeque<Reply>>,
     calls: Mutex<Vec<(String, String)>>,
@@ -30,6 +32,7 @@ pub struct Fake {
     activated: AtomicBool,
     barriers: AtomicBool,
     ahead: Mutex<Vec<Inbound>>,
+    gate: Mutex<Option<Gate>>,
 }
 
 impl Fake {
@@ -47,6 +50,7 @@ impl Fake {
             activated: AtomicBool::new(false),
             barriers: AtomicBool::new(false),
             ahead: Mutex::default(),
+            gate: Mutex::default(),
         })
     }
 
@@ -93,6 +97,13 @@ impl Fake {
             .unwrap()
             .send(message)
             .map_err(|_| ())
+    }
+
+    pub fn hold_calls(&self, method: &'static str) -> (Receiver<()>, Sender<()>) {
+        let (entered, arrivals) = crossbeam_channel::unbounded();
+        let (release, released) = crossbeam_channel::bounded(0);
+        *self.gate.lock().unwrap() = Some((method, entered, released));
+        (arrivals, release)
     }
 
     pub fn disconnect(&self) {
@@ -142,6 +153,11 @@ impl Client for Fake {
             .lock()
             .unwrap()
             .push((method.into(), params.get().into()));
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some((_, entered, released)) = gate.filter(|(held, ..)| *held == method) {
+            entered.send(()).unwrap();
+            let _ = released.recv();
+        }
         self.barrier()?;
         match self.replies.lock().unwrap().pop_front() {
             Some(Ok(result)) => Ok(RawValue::from_string(result.into()).unwrap()),
