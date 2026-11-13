@@ -349,3 +349,5 @@ impl oap_adapter::gojson::Decode for ThreadStartResponse {}
 impl oap_adapter::gojson::Decode for ThreadResumeResponse {}
 
 impl oap_adapter::gojson::Decode for TurnStartResponse {}
+
+impl oap_adapter::gojson::Decode for TurnNotification {}

@@ -10,6 +10,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test open)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test submit)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test dispatch)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test events)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -78,3 +79,15 @@ lock, including when Codex asks something ahead of its answer. To see it
 bite, answer with another code or data member, take the operation lock
 before acknowledging a barrier, or take it to answer a reverse request:
 one test each must fail.
+
+`tests/events.rs` drives a run's notifications through the same client and
+checks each trace against the shared run validator, with the submit the run
+was admitted with. It pins Go's ids, sequences, timestamps and payloads for
+a start and a completion, and the terminal each native status settles to.
+An interruption no cancel asked for settles as `run.cancelled`, as Go's
+does; that trace has no cancel evidence, so it is checked by type and
+payload alone. A runtime with one counter for ids and the clock shows
+Go's order: the payload's clock, the event id, then the stamp. To see it
+bite, read the clock before minting the id: the order test must fail.
+Accept another thread's turn: the ignored-notifications test must fail.
+Treat an empty turn error as a message: the terminal-status test must fail.
