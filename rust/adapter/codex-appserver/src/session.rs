@@ -6,7 +6,8 @@ use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{
-    refuse_unadvertised_controls, Error, EventStream, UnsupportedControl, CONTROL_UNSATISFIABLE,
+    refuse_unadvertised_controls, Error, EventStream, Recovery, ResumeRequest, UnsupportedControl,
+    CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, MessageId, MessageRole, MessageSubmitRequest,
@@ -242,6 +243,10 @@ impl Shared {
         outcome
     }
 
+    pub fn resume(&self, _request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        Err(Error::RunNotFound)
+    }
+
     pub fn state(&self) -> Result<SessionState, Error> {
         let inner = self.lock();
         if inner.closed {
@@ -287,6 +292,10 @@ impl Session {
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
         self.shared.submit(request)
+    }
+
+    pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        self.shared.resume(request)
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {

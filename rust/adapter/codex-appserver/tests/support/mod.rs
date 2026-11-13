@@ -25,7 +25,7 @@ pub struct Fake {
     calls: Mutex<Vec<(String, String)>>,
     closes: AtomicUsize,
     pub failed: Mutex<Option<String>>,
-    inbound: (Sender<Inbound>, Receiver<Inbound>),
+    inbound: (Mutex<Option<Sender<Inbound>>>, Receiver<Inbound>),
     done: (Sender<()>, Receiver<()>),
     activated: AtomicBool,
     barriers: AtomicBool,
@@ -39,7 +39,10 @@ impl Fake {
             calls: Mutex::default(),
             closes: AtomicUsize::new(0),
             failed: Mutex::default(),
-            inbound: crossbeam_channel::unbounded(),
+            inbound: {
+                let (sender, receiver) = crossbeam_channel::unbounded();
+                (Mutex::new(Some(sender)), receiver)
+            },
             done: crossbeam_channel::unbounded(),
             activated: AtomicBool::new(false),
             barriers: AtomicBool::new(false),
@@ -52,18 +55,16 @@ impl Fake {
     }
 
     pub fn notify(&self, method: &str, params: &str) {
-        self.inbound
-            .0
-            .send(Inbound::Notification(NotificationMessage {
-                method: method.into(),
-                params: Some(RawValue::from_string(params.into()).unwrap()),
-            }))
-            .unwrap();
+        self.deliver(Inbound::Notification(NotificationMessage {
+            method: method.into(),
+            params: Some(RawValue::from_string(params.into()).unwrap()),
+        }))
+        .unwrap();
     }
 
     pub fn request(&self, method: &str, params: &str) -> Arc<Answers> {
         let (request, answers) = incoming(method, params);
-        self.inbound.0.send(request).unwrap();
+        self.deliver(request).unwrap();
         answers
     }
 
@@ -83,6 +84,21 @@ impl Fake {
             }));
     }
 
+    fn deliver(&self, message: Inbound) -> Result<(), ()> {
+        self.inbound
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send(message)
+            .map_err(|_| ())
+    }
+
+    pub fn disconnect(&self) {
+        self.inbound.0.lock().unwrap().take();
+    }
+
     pub fn hang_up(&self) {
         self.done.0.send(()).unwrap();
     }
@@ -100,10 +116,10 @@ impl Fake {
             return Ok(());
         }
         for message in self.ahead.lock().unwrap().drain(..) {
-            self.inbound.0.send(message).unwrap();
+            self.deliver(message).unwrap();
         }
         let (ack, acked) = crossbeam_channel::bounded::<()>(0);
-        self.inbound.0.send(Inbound::Barrier(ack)).unwrap();
+        self.deliver(Inbound::Barrier(ack)).unwrap();
         match acked.recv_timeout(Duration::from_secs(2)) {
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => Err(error(Fault::Closed)),
             _ => Ok(()),
