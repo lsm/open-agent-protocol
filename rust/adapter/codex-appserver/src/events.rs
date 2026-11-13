@@ -1,9 +1,10 @@
 use crossbeam_channel::select;
 use oap_adapter::gojson::{decode, Decode};
 use oap_protocol::{
-    ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType, Message,
-    MessageContent, MessageRole, ProtocolError, RunCancelledPayload, RunCompletedPayload,
-    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, SETTLED_BY_INFERRED,
+    ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType,
+    Message, MessageContent, MessageRole, ProtocolError, RunCancelledPayload, RunCompletedPayload,
+    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, ToolCallId,
+    SETTLED_BY_INFERRED,
 };
 use oap_validation::OutputSchema;
 use serde::Serialize;
@@ -207,6 +208,8 @@ impl Shared {
         };
         if method == METHOD_ITEM_COMPLETED && value.item.kind == "agentMessage" {
             run.final_text = Some(value.item.text);
+        } else {
+            self.action(inner, &id, method, value.item);
         }
     }
 
@@ -214,9 +217,11 @@ impl Shared {
         let Some(id) = self.run_for(inner, &value.thread_id, &value.turn.id) else {
             return;
         };
-        let Some(run) = inner.runs.get(&id).filter(|run| !run.terminal) else {
+        if inner.runs.get(&id).is_none_or(|run| run.terminal) {
             return;
-        };
+        }
+        self.close_pending(inner, &id, value.turn.status == TURN_INTERRUPTED);
+        let run = &inner.runs[&id];
         let session_id = inner.state.session_id.clone();
         match value.turn.status.as_str() {
             TURN_COMPLETED => {
@@ -280,7 +285,15 @@ impl Shared {
         }
     }
 
-    fn fail_run(&self, inner: &mut Inner, id: &RunId, code: &str, message: &str, settled_by: &str) {
+    pub(crate) fn fail_run(
+        &self,
+        inner: &mut Inner,
+        id: &RunId,
+        code: &str,
+        message: &str,
+        settled_by: &str,
+    ) {
+        self.close_pending(inner, id, false);
         let payload = RunFailedPayload {
             session_id: inner.state.session_id.clone(),
             run_id: id.clone(),
@@ -295,6 +308,17 @@ impl Shared {
         self.emit(inner, id, EnvelopeType::RUN_FAILED, &payload, true);
     }
 
+    pub(crate) fn emit_action(
+        &self,
+        inner: &mut Inner,
+        id: &RunId,
+        kind: EnvelopeType,
+        payload: &ActionCallPayload,
+    ) {
+        let tool_call = Some(payload.tool_call_id.clone());
+        self.stamp(inner, id, kind, payload, false, tool_call);
+    }
+
     fn emit(
         &self,
         inner: &mut Inner,
@@ -302,6 +326,18 @@ impl Shared {
         kind: EnvelopeType,
         payload: &impl Serialize,
         terminal: bool,
+    ) {
+        self.stamp(inner, id, kind, payload, terminal, None);
+    }
+
+    fn stamp(
+        &self,
+        inner: &mut Inner,
+        id: &RunId,
+        kind: EnvelopeType,
+        payload: &impl Serialize,
+        terminal: bool,
+        tool_call: Option<ToolCallId>,
     ) {
         let Some(run) = inner.runs.get_mut(id).filter(|run| !run.terminal) else {
             return;
@@ -314,6 +350,7 @@ impl Shared {
         let now = self.runtime.now_ms();
         envelope.session_id = Some(inner.state.session_id.clone());
         envelope.run_id = Some(id.clone());
+        envelope.tool_call_id = tool_call;
         envelope.sequence = Some(sequence);
         envelope.timestamp_ms = Some(now);
         envelope.capability_revision = Some(crate::adapter::pin().capability_revision.clone());

@@ -34,8 +34,13 @@ read from the last `agentMessage` item Codex completes, trimmed, compacted
 as Go's `json.Compact` compacts and checked against the schema. A missing,
 non-JSON or nonconforming message fails the run as
 `structured_output_failed`. An `item/started` or `item/completed` that
-cannot be decoded fails the active run as `invalid_native_event`. Other
-items are not mapped yet.
+cannot be decoded fails the active run as `invalid_native_event`.
+
+Command, file-change and MCP items map to `action.call.requested`, `started`
+and a terminal action, with the arguments and result Go builds. An action
+still open when the turn settles is cancelled on an interruption and fails
+as `native_action_incomplete` otherwise, in the order its items started. A
+completion with no matching start fails the run as `invalid_native_action`.
 
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While
