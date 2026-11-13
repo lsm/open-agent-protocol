@@ -186,6 +186,9 @@ pub struct TurnInterruptParams {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+pub struct TurnInterruptResponse {}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct TurnNotification {
     #[serde(default, rename = "threadId", deserialize_with = "zero")]
     pub thread_id: String,
@@ -361,3 +364,5 @@ impl oap_adapter::gojson::Decode for CommandApprovalParams {}
 impl oap_adapter::gojson::Decode for FileApprovalParams {}
 
 impl oap_adapter::gojson::Decode for UserInputRequestParams {}
+
+impl oap_adapter::gojson::Decode for TurnInterruptResponse {}

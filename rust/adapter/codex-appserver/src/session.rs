@@ -32,6 +32,10 @@ pub(crate) struct Run {
     pub(crate) text: String,
     pub(crate) schema: Option<OutputSchema>,
     pub(crate) final_text: Option<String>,
+    pub(crate) turn: String,
+    pub(crate) settled: Option<RunStatus>,
+    pub(crate) cancel_pending: bool,
+    pub(crate) flight: Option<Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -273,7 +277,7 @@ impl Shared {
                     return Err(error);
                 }
             };
-            inner.turns.insert(turn, run_id.clone());
+            inner.turns.insert(turn.clone(), run_id.clone());
             inner.runs.insert(
                 run_id.clone(),
                 Run {
@@ -285,6 +289,10 @@ impl Shared {
                     text: String::new(),
                     schema,
                     final_text: None,
+                    turn,
+                    settled: None,
+                    cancel_pending: false,
+                    flight: None,
                 },
             );
             drop(inner);
@@ -398,8 +406,8 @@ impl Session {
         self.shared.close()
     }
 
-    pub fn cancel(&self, _run_id: &RunId) -> Result<RunCancelResponse, Error> {
-        Err(Error::RunNotFound)
+    pub fn cancel(&self, run_id: &RunId) -> Result<RunCancelResponse, Error> {
+        self.shared.cancel(run_id)
     }
 }
 
