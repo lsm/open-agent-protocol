@@ -1,7 +1,7 @@
 mod events;
 mod requests;
 
-use oap_adapter::gojson::{raw, zero};
+use oap_adapter::gojson::{go_quote, raw, zero};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
 
@@ -428,7 +428,13 @@ pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> R
     serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(&text)).map_err(|error| {
         let text = error.to_string();
         let suffix = format!(" at line {} column {}", error.line(), error.column());
-        text.strip_suffix(&suffix)
-            .map_or(text.clone(), str::to_owned)
+        let text = text.strip_suffix(&suffix).unwrap_or(&text);
+        match text
+            .strip_prefix("unknown field `")
+            .and_then(|rest| rest.split_once('`'))
+        {
+            Some((name, _)) => format!("json: unknown field {}", go_quote(name)),
+            None => text.to_owned(),
+        }
     })
 }
