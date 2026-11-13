@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use oap_adapter::runtime::Runtime;
-use oap_adapter::{Descriptor, Error, JournalDescriptor};
+use oap_adapter::{Descriptor, Error, JournalDescriptor, OpenRequest};
 use oap_protocol::{
     CapabilityDescriptor, EndpointDescriptor, FeatureSupport, SupportLevel,
     FEATURE_COMPACTION_POLICY, FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING, MODE_SESSION_LIVE,
     MODE_SESSION_OPEN, PROFILE, VERSION,
 };
 
+use crate::client::{ClientFactory, ProcessFactory};
 use crate::process::ProcessConfig;
+use crate::session::Session;
 
 const ENDPOINT_ID: &str = "hermes.gateway";
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
@@ -16,6 +19,7 @@ pub(crate) const REOPEN_SUPPORT_REASON: &str = "session.resume reloads the bound
 
 #[derive(Clone, Default)]
 pub struct Config {
+    pub factory: Option<Arc<dyn ClientFactory>>,
     pub process: ProcessConfig,
     pub model: String,
     pub journal_capacity: usize,
@@ -25,6 +29,7 @@ pub struct Config {
 #[derive(Clone)]
 pub struct Adapter {
     config: Config,
+    factory: Arc<dyn ClientFactory>,
 }
 
 pub fn pin() -> &'static oap_harness::Version {
@@ -33,7 +38,7 @@ pub fn pin() -> &'static oap_harness::Version {
 
 impl Adapter {
     pub fn new(mut config: Config) -> Result<Self, Error> {
-        if config.process.path.is_empty() {
+        if config.factory.is_none() && config.process.path.is_empty() {
             return Err(Error::Harness(
                 "hermes adapter: factory or executable is required".into(),
             ));
@@ -41,7 +46,18 @@ impl Adapter {
         if config.journal_capacity == 0 {
             config.journal_capacity = DEFAULT_JOURNAL_CAPACITY;
         }
-        Ok(Self { config })
+        let factory = config.factory.clone().unwrap_or_else(|| {
+            Arc::new(ProcessFactory {
+                config: config.process.clone(),
+                model: config.model.clone(),
+            })
+        });
+        Ok(Self { config, factory })
+    }
+
+    pub fn open(&self, request: OpenRequest) -> Result<Session, Error> {
+        let _ = (&self.factory, request);
+        Err(Error::Harness(String::new()))
     }
 
     pub fn describe(&self) -> Descriptor {

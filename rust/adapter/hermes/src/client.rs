@@ -7,7 +7,9 @@ use oap_adapter::Error;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
-use crate::native::{SessionCreateParams, SessionCreateResult, METHOD_SESSION_CREATE};
+use crate::native::{
+    SessionCreateParams, SessionCreateResult, SessionResumeResult, METHOD_SESSION_CREATE,
+};
 use crate::process::{Process, ProcessConfig};
 use crate::rpc::{self, error, Fault, Inbound, RpcClient};
 
@@ -44,6 +46,14 @@ pub trait ClientFactory: Send + Sync {
         deadline: Option<Instant>,
     ) -> Result<(Arc<dyn Client>, String), Error> {
         self.start(deadline)
+    }
+
+    fn reopen(
+        &self,
+        _stored: &str,
+        _deadline: Option<Instant>,
+    ) -> Result<(Arc<dyn Client>, SessionResumeResult), String> {
+        Err("this client factory cannot reload a stored session".into())
     }
 }
 

@@ -5,3 +5,4 @@ pub mod client;
 pub mod native;
 pub mod process;
 pub mod rpc;
+pub mod session;
