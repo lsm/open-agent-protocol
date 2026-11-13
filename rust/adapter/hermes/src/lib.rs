@@ -2,6 +2,7 @@
 
 pub mod adapter;
 pub mod client;
+mod contract;
 mod controls;
 mod listing;
 pub mod native;

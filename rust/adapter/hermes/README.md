@@ -248,3 +248,12 @@ through the recorded `session.resume` answer, as Go's
 other must be refused with the expected feature and reason. To see it
 bite, change one byte of any case's `expected-oap.json`, or stop the
 gateway logging what it reads: the test must fail on that case.
+
+`tests/contract.rs` drives the adapter and a session through the shared
+async traits, as Go's hub drives its `Adapter` and `Session`: the probe is
+the adapter's descriptor, a session names its stored Hermes session, and
+submit, cancel, settings, resume, resolve, state, close and the native
+listing each reach the blocking operation Go's tests pin, on a thread of
+its own. To see it bite, return a default descriptor, no lister or updater,
+no stored id, or route any operation past the session: one test must fail
+for each.

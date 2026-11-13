@@ -90,7 +90,7 @@ pub(crate) struct Shared {
 }
 
 pub struct Session {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
 }
 
 pub(crate) fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -149,7 +149,7 @@ impl Shared {
         inner.state.status = SessionStatus::IDLE;
     }
 
-    fn submit(
+    pub(crate) fn submit(
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
@@ -250,7 +250,7 @@ impl Shared {
         ))
     }
 
-    fn close(&self) -> Result<(), Error> {
+    pub(crate) fn close(&self) -> Result<(), Error> {
         {
             let mut inner = self.lock();
             if inner.closed {
