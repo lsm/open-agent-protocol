@@ -69,13 +69,19 @@ impl Fake {
     }
 
     pub fn request(&self, method: &str, params: &str) -> Arc<Answers> {
-        let (request, answers) = incoming(method, params);
+        let (request, answers) = incoming(90, method, params);
+        self.deliver(request).unwrap();
+        answers
+    }
+
+    pub fn request_with(&self, id: i64, method: &str, params: &str) -> Arc<Answers> {
+        let (request, answers) = incoming(id, method, params);
         self.deliver(request).unwrap();
         answers
     }
 
     pub fn request_ahead_of_next_reply(&self, method: &str, params: &str) -> Arc<Answers> {
-        let (request, answers) = incoming(method, params);
+        let (request, answers) = incoming(90, method, params);
         self.ahead.lock().unwrap().push(request);
         answers
     }
@@ -202,11 +208,11 @@ impl Client for Fake {
     }
 }
 
-fn incoming(method: &str, params: &str) -> (Inbound, Arc<Answers>) {
+fn incoming(id: i64, method: &str, params: &str) -> (Inbound, Arc<Answers>) {
     let answers = Arc::new(Answers::default());
     let request = Inbound::Request(Arc::new(IncomingRequest::new(
         DIALECT,
-        RequestId::Integer(90),
+        RequestId::Integer(id),
         method,
         Some(RawValue::from_string(params.into()).unwrap()),
         answers.clone(),
