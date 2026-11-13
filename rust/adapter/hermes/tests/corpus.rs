@@ -16,10 +16,11 @@ use oap_adapter::{
     Error, EventStream, InteractionResolution, OpenRequest, Recovery, ResumeRequest,
 };
 use oap_adapter_hermes::adapter::{pin, Adapter, Config};
-use oap_adapter_hermes::client::{Client, ClientFactory};
+use oap_adapter_hermes::client::{resume_stored, Client, ClientFactory};
 use oap_adapter_hermes::native::{
-    decode_notification, METHOD_PROMPT_SUBMIT, METHOD_SESSION_CREATE, METHOD_SESSION_INTERRUPT,
-    REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
+    decode_notification, SessionResumeResult, EVENT_GATEWAY_READY, METHOD_PROMPT_SUBMIT,
+    METHOD_SESSION_CREATE, METHOD_SESSION_INTERRUPT, METHOD_SESSION_RESUME, REQUEST_APPROVAL,
+    REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
 };
 use oap_adapter_hermes::process::ProcessConfig;
 use oap_adapter_hermes::rpc::{
@@ -1242,6 +1243,129 @@ fn replay_process(case: &Case, frames: &[Frame], dir: &Path) -> Vec<Envelope> {
     envelopes
 }
 
+struct Recorded {
+    request: String,
+    response: Message,
+    calls: Mutex<Vec<String>>,
+    finished: Receiver<()>,
+}
+
+impl Client for Recorded {
+    fn call(
+        &self,
+        method: &str,
+        params: Box<RawValue>,
+        _: Option<Instant>,
+    ) -> Result<Box<RawValue>, rpc::Error> {
+        self.calls.lock().unwrap().push(method.into());
+        let recorded: Value = serde_json::from_str(&self.request).unwrap();
+        let sent: Value = serde_json::from_str(params.get()).unwrap();
+        assert!(
+            recorded["method"] == method && recorded["params"] == sent,
+            "native call {method} {}, want the recorded {}",
+            params.get(),
+            self.request
+        );
+        match (&self.response.error, &self.response.result) {
+            (Some(object), _) => Err(error(Fault::Remote {
+                id: self.response.id.clone().unwrap(),
+                object: object.clone(),
+            })),
+            (None, result) => Ok(result.clone().unwrap_or_default()),
+        }
+    }
+
+    fn inbound(&self) -> Receiver<Inbound> {
+        crossbeam_channel::never()
+    }
+
+    fn done(&self) -> Receiver<()> {
+        self.finished.clone()
+    }
+
+    fn err(&self) -> Option<String> {
+        None
+    }
+
+    fn close(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct Reopener(Arc<Recorded>);
+
+impl ClientFactory for Reopener {
+    fn start(&self, _: Option<Instant>) -> Result<(Arc<dyn Client>, String), Error> {
+        panic!("a reopen corpus case never creates a session")
+    }
+
+    fn reopen(
+        &self,
+        stored: &str,
+        deadline: Option<Instant>,
+    ) -> Result<(Arc<dyn Client>, SessionResumeResult), String> {
+        let resumed = resume_stored(self.0.as_ref(), stored, deadline)?;
+        Ok((self.0.clone(), resumed))
+    }
+}
+
+fn replay_reopen(labels: &[String], frames: &[Frame], decoded: &[Decoded], expected: &Path) {
+    assert!(
+        frames.len() == 3
+            && decoded[0].event.as_deref() == Some(EVENT_GATEWAY_READY)
+            && decoded[2].message.is_some(),
+        "a reopen case is gateway.ready, session.resume and its answer"
+    );
+    let request = wire(frames[1].raw.as_deref().unwrap(), 2);
+    let stored: Value = serde_json::from_str(&request).unwrap();
+    let stored = stored["params"]["session_id"].as_str().unwrap().to_owned();
+    let (_keep, finished) = crossbeam_channel::bounded::<()>(0);
+    let recorded = Arc::new(Recorded {
+        request,
+        response: decoded[2].message.clone().unwrap(),
+        calls: Mutex::default(),
+        finished,
+    });
+    let adapter = Adapter::new(Config {
+        factory: Some(Arc::new(Reopener(recorded.clone()))),
+        model: "hermes-test".into(),
+        runtime: go_runtime(),
+        ..Config::default()
+    })
+    .unwrap();
+    let reopened = adapter.open(OpenRequest {
+        reopen: true,
+        native_session_id: stored,
+        ..opened()
+    });
+    let expected: Value = load(expected);
+    for label in labels {
+        match (label.as_str(), &reopened) {
+            ("bound-session-reopen", Ok(session)) => {
+                let mut state = serde_json::to_value(session.state().unwrap()).unwrap();
+                state.as_object_mut().unwrap().remove("updated_at_ms");
+                assert_eq!(state, expected, "the reopened state");
+            }
+            ("reopen-auto-continue-refused", Err(Error::UnsupportedControl(control))) => {
+                assert!(reopened.as_ref().err().unwrap().is_unsupported_input());
+                assert_eq!(
+                    (control.feature.as_str(), control.reason),
+                    (
+                        expected["feature"].as_str().unwrap(),
+                        expected["reason"].as_str().unwrap()
+                    ),
+                    "the reopen refusal"
+                );
+            }
+            (label, outcome) => panic!(
+                "ledger fixture {label:?} reopened {:?}",
+                outcome.as_ref().err()
+            ),
+        }
+    }
+    assert_eq!(*recorded.calls.lock().unwrap(), [METHOD_SESSION_RESUME]);
+}
+
 fn check_resume(resumed: &mut Resumed, delivered: &[Envelope]) {
     let index = resumed.index;
     let after = resumed.control.after;
@@ -1320,7 +1444,7 @@ fn source() -> &'static oap_harness::Source {
 }
 
 #[test]
-fn every_case_but_a_reopen_replays_to_the_trace_go_emits() {
+fn every_corpus_case_replays_to_the_outcome_go_reaches() {
     let root = root();
     let manifest: Manifest = load(&root.join("manifest.json"));
     let pinned = source();
@@ -1336,7 +1460,6 @@ fn every_case_but_a_reopen_replays_to_the_trace_go_emits() {
     let mut ids = HashSet::new();
     let mut paths = HashSet::new();
     let mut covered = HashSet::new();
-    let mut outside = Vec::new();
     for entry in &manifest.cases {
         assert!(
             ids.insert(entry.id.clone())
@@ -1374,7 +1497,8 @@ fn every_case_but_a_reopen_replays_to_the_trace_go_emits() {
         classify(&frames, &decoded, &mappings, &omissions);
         check_actions(&case, &frames);
         if case.reopen {
-            outside.push(entry.id.clone());
+            let expected = file_in(&dir, &case.expected_oap);
+            replay_reopen(&entry.ledger_fixtures, &frames, &decoded, &expected);
             continue;
         }
         let envelopes = match case.server_mode.is_empty() {
@@ -1398,7 +1522,5 @@ fn every_case_but_a_reopen_replays_to_the_trace_go_emits() {
             "ledger fixture {fixture:?} has no case"
         );
     }
-    outside.sort();
-    assert_eq!(outside, ["session-reopen", "session-reopen-auto-continue"]);
     inventory(&root, &manifest);
 }

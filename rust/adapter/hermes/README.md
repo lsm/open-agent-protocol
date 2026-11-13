@@ -234,8 +234,7 @@ reuse check, the retry's keeping, the kept gateway, the adapter's close or
 the limit: one test must fail for each.
 
 `tests/corpus.rs` replays every case of the catalog's current Hermes corpus
-but the two reopen cases the way Go's `TestHermesEvidenceCorpus` does,
-against the same
+the way Go's `TestHermesEvidenceCorpus` does, against the same
 ids and clock, and each trace matches Go's `expected-oap.json` byte for
 byte. It also checks the manifest and case pins, decodes every frame through
 the production codec, checks each frame's classification, the prompts and
@@ -243,7 +242,9 @@ answers the adapter writes, each resume, and that no corpus file goes
 unlisted. Go runs its three process cases against its own test binary as
 the gateway; here a shell gateway plays the same recorded lines, answers
 each request by its id, and logs what the adapter writes, which must match
-the recorded host frames. The two reopen cases are named and not yet
-replayed. To see it bite, change one byte of any replayed case's
-`expected-oap.json`, or stop the gateway logging what it reads: the test
-must fail on that case.
+the recorded host frames. The two reopen cases reopen the recorded binding
+through the recorded `session.resume` answer, as Go's
+`runHermesReopenCorpus` does: one must restore the expected state, the
+other must be refused with the expected feature and reason. To see it
+bite, change one byte of any case's `expected-oap.json`, or stop the
+gateway logging what it reads: the test must fail on that case.
