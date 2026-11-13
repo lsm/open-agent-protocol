@@ -313,10 +313,11 @@ void main();
 
 Environment variable equivalents are `OXAP_SDK_BINARY_URL` and
 `OXAP_SDK_BINARY_SHA256`, with the legacy `OAP_SDK_BINARY_URL` and
-`OAP_SDK_BINARY_SHA256` still read. Each URL takes the checksum written beside
-it, so a checksum is never borrowed across the two pairs; a URL passed as
-`resolver.binaryUrl` takes either environment checksum, the OXAP one first,
-then `checksumSha256`.
+`OAP_SDK_BINARY_SHA256` still read. Each environment URL takes the checksum
+written beside it, so a checksum is never borrowed across the two pairs;
+`checksumSha256` from the resolver options is the fallback for any URL, and a
+URL passed as `resolver.binaryUrl` takes either environment checksum, the OXAP
+one first, then `checksumSha256`.
 
 ### PATH lookup and local builds
 

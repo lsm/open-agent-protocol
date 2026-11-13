@@ -60,17 +60,22 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 }
 
 function binaryURLAndChecksum(options: BinaryResolverOptions): { url?: string; checksum?: string } {
+  const optionChecksum = options.checksumSha256;
   const oxapURL = firstNonEmpty(process.env[ENV_BINARY_URL_OXAP]);
-  if (oxapURL) return { url: oxapURL, checksum: firstNonEmpty(process.env[ENV_BINARY_SHA256_OXAP]) };
+  if (oxapURL) {
+    return { url: oxapURL, checksum: firstNonEmpty(process.env[ENV_BINARY_SHA256_OXAP], optionChecksum) };
+  }
   const legacyURL = firstNonEmpty(process.env[ENV_BINARY_URL]);
-  if (legacyURL) return { url: legacyURL, checksum: firstNonEmpty(process.env[ENV_BINARY_SHA256]) };
+  if (legacyURL) {
+    return { url: legacyURL, checksum: firstNonEmpty(process.env[ENV_BINARY_SHA256], optionChecksum) };
+  }
   if (options.binaryUrl) {
     return {
       url: options.binaryUrl,
       checksum: firstNonEmpty(
         process.env[ENV_BINARY_SHA256_OXAP],
         process.env[ENV_BINARY_SHA256],
-        options.checksumSha256,
+        optionChecksum,
       ),
     };
   }

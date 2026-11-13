@@ -347,6 +347,23 @@ test("resolveMakaiBinary does not borrow a checksum across the OXAP and legacy p
   }
 });
 
+test("resolveMakaiBinary takes the option checksum for an environment URL", async (t) => {
+  t.after(clearResolverEnv());
+  const payload = Buffer.from("env-url-option-checksum");
+  const checksum = createHash("sha256").update(payload).digest("hex");
+  const server = await urlServer(new Map([["/dist/oxap", payload]]));
+  try {
+    process.env[ENV_BINARY_URL_OXAP] = `${server.url}/dist/oxap`;
+    const resolved = await resolveMakaiBinary({
+      checksumSha256: checksum,
+      cacheDir: await tempDir(t, "makai-env-option-checksum-"),
+    });
+    assert.deepEqual((await fs.readFile(resolved)).toString("utf8"), payload.toString("utf8"));
+  } finally {
+    await server.close();
+  }
+});
+
 test("resolveMakaiBinary takes an environment checksum for an option URL, OXAP first", async (t) => {
   t.after(clearResolverEnv());
   const payload = Buffer.from("option-url");
