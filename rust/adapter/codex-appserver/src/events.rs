@@ -19,10 +19,10 @@ impl Shared {
     }
 
     fn reduce(&self, message: Inbound) {
-        let _operating = hold(&self.operating);
         match message {
             Inbound::Barrier(ack) => drop(ack),
             Inbound::Request(request) => {
+                let _operating = hold(&self.operating);
                 let data =
                     serde_json::value::to_raw_value(&serde_json::json!({"method": request.method}))
                         .ok();

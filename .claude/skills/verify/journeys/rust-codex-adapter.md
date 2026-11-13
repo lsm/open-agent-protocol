@@ -71,5 +71,8 @@ must fail. Let close skip the active-run check: the close-refusal test must fail
 
 `tests/dispatch.rs` checks the session's own reader thread. It answers a
 reverse request Go does not handle with `-32601`, `unsupported Codex server
-request` and the method as data. To see it bite, answer with another code
-or data member: the reverse-request test must fail.
+request` and the method as data. Its fake holds each reply behind a
+barrier once the reader is running, as the real client does, so a submit
+returns only if the reader acknowledges without waiting for the operation
+lock. To see it bite, answer with another code or data member, or take
+the operation lock before acknowledging a barrier: one test each must fail.
