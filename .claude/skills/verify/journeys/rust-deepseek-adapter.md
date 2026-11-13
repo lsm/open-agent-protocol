@@ -70,7 +70,8 @@ before the send: it must fail, because the dropped submit sends its prompt.
 `tests/corpus.rs` replays every case of the pinned corpus through the adapter
 against `tests/support/corpus_runtime.py`, a runtime that plays the case's
 recorded frames and pauses at each harness-side frame until the test has acted
-on it. Traces are compared after Go's normalization. Two differences are the
+on it. Traces are compared byte for byte with the recorded ones, ids and
+timestamps included, as Go marshals them. Two differences are the
 harness's, not the adapter's: Go records an empty trace as `null`, and Go's
 in-process transport reports the case's own exit reason where a real process
 reports `EOF`. To see it bite, spell a turn-end failure code with a hyphen:
@@ -80,4 +81,5 @@ from a framing violation before the runtime writes it: `framing-strictness`
 must fail. Every submission is either admitted, and its run validated even
 when it emits nothing, or refused; the admitted count must equal the case's
 `run.started` events. Let a run that ends before admission answer its submit
-with a run id: the replay must fail.
+with a run id: the replay must fail. Start the replay's clock one tick later: the cases whose
+traces carry a timestamp must fail.
