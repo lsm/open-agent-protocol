@@ -1,21 +1,24 @@
 use crossbeam_channel::select;
-use oap_adapter::gojson::go_quote;
+use oap_adapter::gojson::{go_quote, remarshal_any};
 use oap_protocol::{
-    ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType, Message,
-    MessageContent, MessageRole, ProtocolError, RunCompletedPayload, RunFailedPayload,
-    RunStartedPayload, RunStatus, SessionStatus, Usage,
+    ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeId,
+    EnvelopeType, Message, MessageContent, MessageRole, ProtocolError, RunCompletedPayload,
+    RunFailedPayload, RunStartedPayload, RunStatus, SessionStatus, ToolCallId, Usage,
 };
 use serde::Serialize;
+use serde_json::value::RawValue;
 
 use std::sync::Arc;
 
+use crate::adapter::ENDPOINT_ID;
 use crate::native::{
     decode_notification, decode_strict, is_run_scoped, request_session_id, DeltaPayload, Event,
-    MessageCompletePayload, EVENT_MESSAGE_COMPLETE, EVENT_MESSAGE_DELTA, EVENT_MESSAGE_START,
-    EVENT_REASONING_DELTA, REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
+    MessageCompletePayload, ToolCompletePayload, ToolStartPayload, EVENT_MESSAGE_COMPLETE,
+    EVENT_MESSAGE_DELTA, EVENT_MESSAGE_START, EVENT_REASONING_DELTA, EVENT_TOOL_COMPLETE,
+    EVENT_TOOL_START, REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
 };
 use crate::rpc::{Inbound, IncomingRequest, RequestId};
-use crate::session::{native_protocol, Inner, Observation, Shared};
+use crate::session::{native_protocol, Inner, Observation, Shared, Tool};
 
 const TERMINAL_WON: &str = "hermes adapter: terminal already selected";
 
@@ -158,6 +161,14 @@ impl Shared {
             },
             EVENT_MESSAGE_DELTA => self.emit_delta(inner, event, ContentPartType::TEXT),
             EVENT_REASONING_DELTA => self.emit_delta(inner, event, ContentPartType::REASONING),
+            EVENT_TOOL_START => match decode_strict(event.payload_bytes()) {
+                Ok(payload) => self.start_tool(inner, &payload),
+                Err(_) => self.fail_run(inner, "hermes_invalid_event", "invalid tool start", ""),
+            },
+            EVENT_TOOL_COMPLETE => match decode_strict(event.payload_bytes()) {
+                Ok(payload) => self.end_tool(inner, &payload),
+                Err(_) => self.fail_run(inner, "hermes_invalid_event", "invalid tool complete", ""),
+            },
             _ => {}
         }
     }
@@ -202,6 +213,10 @@ impl Shared {
             let message = "child-mirror settlement on the parent stream";
             return self.fail_run(inner, "hermes_invalid_settlement", message, "");
         }
+        self.settle_children(inner);
+        let Some(run) = inner.run.as_ref() else {
+            return;
+        };
         let (session_id, run_id) = (inner.state.session_id.clone(), run.id.clone());
         if payload.status == "complete" {
             let mut usage = None;
@@ -296,6 +311,122 @@ impl Shared {
         }
     }
 
+    fn start_tool(&self, inner: &mut Inner, payload: &ToolStartPayload) {
+        let Some(run) = inner.run.as_ref() else {
+            return;
+        };
+        if run
+            .tools
+            .iter()
+            .any(|tool| tool.native_id == payload.tool_id)
+        {
+            return self.fail_run(inner, "hermes_tool_lifecycle", "duplicate tool call", "");
+        }
+        let args = payload.args.as_ref().map_or("null", |args| args.get());
+        let Ok(args) = remarshal_any(args).and_then(RawValue::from_string) else {
+            return self.fail_run(inner, "hermes_invalid_event", "invalid tool start", "");
+        };
+        let id = ToolCallId::from(self.runtime.new_id("tool-call"));
+        let mut call = self.tool_payload(inner, &id, &payload.name);
+        call.arguments_json = Some(args);
+        let requested = self.emit_call(inner, EnvelopeType::ACTION_CALL_REQUESTED, &call, None);
+        call.arguments_json = None;
+        let started = self.emit_call(inner, EnvelopeType::ACTION_CALL_STARTED, &call, requested);
+        if let Some(run) = inner.run.as_mut() {
+            run.tools.push(Tool {
+                native_id: payload.tool_id.clone(),
+                id,
+                name: payload.name.clone(),
+                started: started.unwrap_or_default(),
+                terminal: false,
+            });
+        }
+    }
+
+    fn end_tool(&self, inner: &mut Inner, payload: &ToolCompletePayload) {
+        let Some(tool) = inner.run.as_mut().and_then(|run| {
+            run.tools
+                .iter_mut()
+                .find(|tool| tool.native_id == payload.tool_id)
+                .filter(|tool| !tool.terminal)
+        }) else {
+            return self.fail_run(
+                inner,
+                "hermes_tool_lifecycle",
+                "unmatched tool completion",
+                "",
+            );
+        };
+        tool.terminal = true;
+        let (id, name, started) = (tool.id.clone(), tool.name.clone(), tool.started.clone());
+        let mut call = self.tool_payload(inner, &id, &name);
+        call.result = Some(payload.result.clone().unwrap_or_default());
+        self.emit_call(
+            inner,
+            EnvelopeType::ACTION_CALL_COMPLETED,
+            &call,
+            Some(started),
+        );
+    }
+
+    fn settle_children(&self, inner: &mut Inner) {
+        let Some(run) = inner.run.as_mut() else {
+            return;
+        };
+        let open: Vec<_> = run
+            .tools
+            .iter_mut()
+            .filter(|tool| !tool.terminal)
+            .map(|tool| {
+                tool.terminal = true;
+                (tool.id.clone(), tool.name.clone(), tool.started.clone())
+            })
+            .collect();
+        for (id, name, started) in open {
+            let mut call = self.tool_payload(inner, &id, &name);
+            call.error = Some(ProtocolError {
+                code: "incomplete_tool".into(),
+                message: "turn settled with an unfinished hermes tool".into(),
+                ..ProtocolError::default()
+            });
+            self.emit_call(
+                inner,
+                EnvelopeType::ACTION_CALL_FAILED,
+                &call,
+                Some(started),
+            );
+        }
+    }
+
+    fn tool_payload(&self, inner: &Inner, id: &ToolCallId, name: &str) -> ActionCallPayload {
+        ActionCallPayload {
+            session_id: inner.state.session_id.clone(),
+            run_id: inner
+                .run
+                .as_ref()
+                .map(|run| run.id.clone())
+                .unwrap_or_default(),
+            tool_call_id: id.clone(),
+            requested_by: Some(ENDPOINT_ID.into()),
+            execution_owner: "hermes".into(),
+            name: name.into(),
+            ..ActionCallPayload::default()
+        }
+    }
+
+    fn emit_call(
+        &self,
+        inner: &mut Inner,
+        kind: EnvelopeType,
+        call: &ActionCallPayload,
+        reply: Option<EnvelopeId>,
+    ) -> Option<EnvelopeId> {
+        self.emit_envelope(inner, kind, call, false, |envelope| {
+            envelope.in_reply_to = reply;
+            envelope.tool_call_id = Some(call.tool_call_id.clone());
+        })
+    }
+
     pub(crate) fn emit(
         &self,
         inner: &mut Inner,
@@ -303,13 +434,21 @@ impl Shared {
         payload: &impl Serialize,
         terminal: bool,
     ) -> bool {
-        let Some(run) = inner.run.as_mut().filter(|run| !run.terminal) else {
-            return false;
-        };
-        let Ok(mut envelope) = Envelope::new(kind.clone(), self.runtime.new_id("event"), payload)
-        else {
-            return false;
-        };
+        self.emit_envelope(inner, kind, payload, terminal, |_| {})
+            .is_some()
+    }
+
+    fn emit_envelope(
+        &self,
+        inner: &mut Inner,
+        kind: EnvelopeType,
+        payload: &impl Serialize,
+        terminal: bool,
+        stamp: impl FnOnce(&mut Envelope),
+    ) -> Option<EnvelopeId> {
+        let run = inner.run.as_mut().filter(|run| !run.terminal)?;
+        let mut envelope =
+            Envelope::new(kind.clone(), self.runtime.new_id("event"), payload).ok()?;
         let now = self.runtime.now_ms();
         let sequence = run.next;
         run.next += 1;
@@ -318,6 +457,8 @@ impl Shared {
         envelope.session_id = Some(inner.state.session_id.clone());
         envelope.run_id = Some(run.id.clone());
         envelope.capability_revision = Some(crate::adapter::pin().capability_revision.clone());
+        stamp(&mut envelope);
+        let id = envelope.id.clone();
         self.journal.append(envelope, terminal);
         inner.state.transcript_cursor = sequence.to_string();
         inner.state.updated_at_ms = now;
@@ -326,7 +467,7 @@ impl Shared {
             inner.state.status = SessionStatus::IDLE;
             inner.state.active_run_id = None;
         }
-        true
+        Some(id)
     }
 
     pub(crate) fn fail_run(&self, inner: &mut Inner, code: &str, message: &str, settled_by: &str) {
@@ -336,6 +477,10 @@ impl Shared {
         if !run.started {
             return self.abort_pre_start(inner, native_protocol(message));
         }
+        self.settle_children(inner);
+        let Some(run) = inner.run.as_ref() else {
+            return;
+        };
         let payload = RunFailedPayload {
             session_id: inner.state.session_id.clone(),
             run_id: run.id.clone(),

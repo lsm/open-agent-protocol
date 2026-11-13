@@ -6,9 +6,9 @@ use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{refuse_unadvertised_controls, Error, EventStream};
 use oap_protocol::{
-    Admission, ContentPartType, EffectiveDeliveryMode, MessageId, MessageRole,
+    Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, MessageId, MessageRole,
     MessageSubmitRequest, MessageSubmitResponse, RecoveryMetadata, RequestedDeliveryMode, RunId,
-    RunStatus, SessionState, SessionStatus, SubmissionId,
+    RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
 };
 use serde_json::value::RawValue;
 
@@ -26,6 +26,14 @@ pub(crate) enum Observation {
     Request(Arc<IncomingRequest>),
 }
 
+pub(crate) struct Tool {
+    pub(crate) native_id: String,
+    pub(crate) id: ToolCallId,
+    pub(crate) name: String,
+    pub(crate) started: EnvelopeId,
+    pub(crate) terminal: bool,
+}
+
 pub(crate) struct Run {
     pub(crate) id: RunId,
     pub(crate) message_id: MessageId,
@@ -36,6 +44,7 @@ pub(crate) struct Run {
     pub(crate) open_seen: bool,
     pub(crate) submitting: bool,
     pub(crate) buffered: Vec<Observation>,
+    pub(crate) tools: Vec<Tool>,
     pub(crate) start: Option<Sender<Result<RunId, String>>>,
 }
 
@@ -149,6 +158,7 @@ impl Shared {
                 open_seen: false,
                 submitting: true,
                 buffered: Vec::new(),
+                tools: Vec::new(),
                 start: Some(start),
             });
             message_id

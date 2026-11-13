@@ -17,7 +17,7 @@ use crate::native::{ConfigSetParams, ConfigSetResult, METHOD_CONFIG_SET};
 use crate::process::ProcessConfig;
 use crate::session::Session;
 
-const ENDPOINT_ID: &str = "hermes.gateway";
+pub(crate) const ENDPOINT_ID: &str = "hermes.gateway";
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
 pub(crate) const REOPEN_SUPPORT_REASON: &str = "session.resume reloads the bound stored session; one Hermes would auto-continue after a crash is refused and its process ended, taking the scheduled turn with it";
 

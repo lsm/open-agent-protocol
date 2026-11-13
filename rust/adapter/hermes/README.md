@@ -44,8 +44,13 @@ emits `run.completed` with the turn's text and usage, any other status
 `run.failed` coded `hermes_` plus the error surface's code or the status,
 and a status-less settlement, which only a child turn's mirror sends, fails
 the run as `hermes_invalid_settlement`. `message.delta` and
-`reasoning.delta` become text and reasoning content deltas; tools arrive
-next. `client::ProcessFactory` is Go's process client factory: it
+`reasoning.delta` become text and reasoning content deltas. `tool.start`
+emits `action.call.requested`, carrying the arguments re-encoded as Go's map
+encodes them, then `action.call.started`; `tool.complete` emits
+`action.call.completed` with the result, or `null`. A reused tool id or a
+completion for no open tool fails the run as `hermes_tool_lifecycle`, and
+a settlement or failure first fails every tool still open as
+`incomplete_tool`. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -127,3 +132,11 @@ see it bite, drop the empty-delta skip, the reasoning part, the child-mirror
 check, the negative-count refusal, the error-surface code, the
 error-before-text order, the `turn <status>` fallback, the total-token count
 or the reasoning delta: one test must fail for each.
+
+`tests/tools.rs` compares every tool lifecycle Go distinguishes byte for
+byte with Go's reducer over the same frames. To see it bite, drop the
+duplicate check, the argument re-encoding, the `null` default for absent
+arguments or result, the reply links, the open-tool filter on completion or
+settlement, the settlement of open tools on completion or failure, the tool
+call id on the envelope, or the requesting endpoint: one test must fail for
+each.

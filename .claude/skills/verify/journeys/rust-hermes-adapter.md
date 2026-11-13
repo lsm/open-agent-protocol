@@ -15,6 +15,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test reduce)
 (cd rust && cargo test -p oap-adapter-hermes --test submit)
 (cd rust && cargo test -p oap-adapter-hermes --test settle)
+(cd rust && cargo test -p oap-adapter-hermes --test tools)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -91,3 +92,11 @@ see it bite, drop the empty-delta skip, the reasoning part, the child-mirror
 check, the negative-count refusal, the error-surface code, the
 error-before-text order, the `turn <status>` fallback, the total-token count
 or the reasoning delta: one test must fail for each.
+
+`tests/tools.rs` compares every tool lifecycle Go distinguishes byte for
+byte with Go's reducer over the same frames. To see it bite, drop the
+duplicate check, the argument re-encoding, the `null` default for absent
+arguments or result, the reply links, the open-tool filter on completion or
+settlement, the settlement of open tools on completion or failure, the tool
+call id on the envelope, or the requesting endpoint: one test must fail for
+each.
