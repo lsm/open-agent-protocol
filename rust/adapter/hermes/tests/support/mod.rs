@@ -274,12 +274,31 @@ pub fn frame(session: &str, kind: &str, seq: i64, payload: &str) -> String {
     params + "}"
 }
 
+pub type Hook = Box<dyn FnOnce() + Send>;
+
 #[derive(Default)]
-pub struct Answers(pub Mutex<Vec<Message>>);
+pub struct Answers {
+    pub sent: Mutex<Vec<Message>>,
+    pub before: Mutex<Option<Hook>>,
+    pub failure: Mutex<Option<String>>,
+}
 
 impl Answers {
+    pub fn results(&self) -> Vec<String> {
+        let answers = self.sent.lock().unwrap();
+        answers
+            .iter()
+            .filter_map(|message| {
+                message
+                    .result
+                    .as_ref()
+                    .map(|result| result.get().to_owned())
+            })
+            .collect()
+    }
+
     pub fn codes(&self) -> Vec<i64> {
-        let answers = self.0.lock().unwrap();
+        let answers = self.sent.lock().unwrap();
         answers
             .iter()
             .map(|message| message.error.as_ref().map_or(0, |error| error.code))
@@ -289,7 +308,14 @@ impl Answers {
 
 impl Responder for Answers {
     fn send(&self, message: Message) -> Result<(), rpc::Error> {
-        self.0.lock().unwrap().push(message);
+        let before = self.before.lock().unwrap().take();
+        if let Some(before) = before {
+            before();
+        }
+        if let Some(failure) = self.failure.lock().unwrap().clone() {
+            return Err(error(Fault::Transport(failure)));
+        }
+        self.sent.lock().unwrap().push(message);
         Ok(())
     }
 }

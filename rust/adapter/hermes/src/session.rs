@@ -4,7 +4,7 @@ use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::gojson::go_quote;
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
-use oap_adapter::{refuse_unadvertised_controls, Error, EventStream};
+use oap_adapter::{refuse_unadvertised_controls, Error, EventStream, InteractionResolution};
 use oap_protocol::{
     Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, InteractionId, MessageId,
     MessageRole, MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RecoveryMetadata,
@@ -313,6 +313,10 @@ impl Session {
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
         self.shared.submit(request)
+    }
+
+    pub fn resolve(&self, _: InteractionResolution) -> Result<(), Error> {
+        Err(Error::InteractionNotFound)
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
