@@ -10,7 +10,7 @@ struct Case {
 #[test]
 fn clean_folds_each_path_as_go_does_on_unix_and_on_windows() {
     let cases: Vec<Case> = serde_json::from_str(include_str!("go_clean.json")).unwrap();
-    assert_eq!(cases.len(), 39);
+    assert_eq!(cases.len(), 42);
     let mut wrong = Vec::new();
     for case in &cases {
         for (windows, wanted) in [(false, &case.unix), (true, &case.windows)] {

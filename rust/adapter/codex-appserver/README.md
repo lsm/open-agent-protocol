@@ -12,8 +12,9 @@ ignores `auto` and refuses `off` and `share`, which Codex cannot honor at open.
 
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured
-approval policy, and the configured working directory, compared after folding
-`.` and `..` as Go's `filepath.Clean` does.
+approval policy, and the configured working directory. The directories are
+compared as the strings `filepath::clean` returns, a port of Go's
+`filepath.Clean` for Unix and Windows, so a drive letter keeps its case.
 
 It also holds the native types, with the members Go's adapter reads and
 writes, decoded as Go's `encoding/json` would, and the process launcher.

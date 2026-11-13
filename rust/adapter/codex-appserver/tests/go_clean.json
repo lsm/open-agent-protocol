@@ -193,5 +193,20 @@
     "path": "C:\\a\\.\\b\\",
     "unix": "C:\\a\\.\\b\\",
     "windows": "C:\\a\\b"
+  },
+  {
+    "path": "\\\\.\\unc\\h\\..\\x",
+    "unix": "\\\\.\\unc\\h\\..\\x",
+    "windows": "\\unc\\x"
+  },
+  {
+    "path": "\\\\.\\UNC\\h\\..\\x",
+    "unix": "\\\\.\\UNC\\h\\..\\x",
+    "windows": "\\UNC\\x"
+  },
+  {
+    "path": "\\\\?\\Unc\\h\\s\\a\\..\\b",
+    "unix": "\\\\?\\Unc\\h\\s\\a\\..\\b",
+    "windows": "\\\\?\\Unc\\h\\s\\b"
   }
 ]

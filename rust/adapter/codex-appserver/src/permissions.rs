@@ -1,7 +1,6 @@
-use std::path::{Component, Path};
-
 use oap_adapter::gojson::{go_quote, members};
 
+use crate::filepath::clean;
 use crate::native::{ThreadResumeParams, ThreadResumeResponse};
 
 fn sandbox_policy(sandbox: &str) -> Option<&'static str> {
@@ -27,24 +26,6 @@ fn sandbox_type(raw: &crate::native::Raw) -> Option<String> {
 
 fn raw_text(raw: &crate::native::Raw) -> &str {
     raw.as_deref().map_or("", |value| value.get())
-}
-
-fn clean(path: &str) -> Vec<Component<'_>> {
-    let mut parts: Vec<Component<'_>> = Vec::new();
-    for part in Path::new(path).components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => match parts.last() {
-                Some(Component::Normal(_)) => {
-                    parts.pop();
-                }
-                Some(Component::RootDir) => {}
-                _ => parts.push(part),
-            },
-            _ => parts.push(part),
-        }
-    }
-    parts
 }
 
 pub fn confirm(sent: &ThreadResumeParams, answered: &ThreadResumeResponse) -> Result<(), String> {
@@ -76,7 +57,9 @@ pub fn confirm(sent: &ThreadResumeParams, answered: &ThreadResumeResponse) -> Re
             ));
         }
     }
-    if !sent.cwd.is_empty() && clean(&answered.cwd) != clean(&sent.cwd) {
+    if !sent.cwd.is_empty()
+        && clean(&answered.cwd, cfg!(windows)) != clean(&sent.cwd, cfg!(windows))
+    {
         return Err(format!(
             "Codex resumed the thread in {}, not the configured {}",
             go_quote(&answered.cwd),
