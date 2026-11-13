@@ -9,9 +9,9 @@ import (
 var (
 	ErrClosed = errors.New("oap sdk: client is closed")
 
-	ErrBinaryNotFound = errors.New("oap sdk: oapx binary not found")
+	ErrBinaryNotFound = errors.New("oap sdk: runtime binary not found")
 
-	ErrChecksumRequired = errors.New("oap sdk: sha256 checksum is required when resolving the oapx binary from a URL")
+	ErrChecksumRequired = errors.New("oap sdk: sha256 checksum is required when resolving the runtime binary from a URL")
 
 	ErrChecksumMismatch = errors.New("oap sdk: binary checksum mismatch")
 

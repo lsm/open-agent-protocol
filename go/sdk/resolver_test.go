@@ -10,9 +10,20 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func preferredBinaryName(t *testing.T) string {
+	t.Helper()
+	return binaryNames()[0]
+}
+
+func legacyBinaryName(t *testing.T) string {
+	t.Helper()
+	return binaryNames()[1]
+}
 
 func writeFakeBinary(t *testing.T, dir, name, content string) string {
 	t.Helper()
@@ -44,9 +55,12 @@ func chdir(t *testing.T, dir string) {
 
 func isolateResolverEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv(EnvBinaryPath, "")
-	t.Setenv(EnvBinaryURL, "")
-	t.Setenv(EnvBinarySHA256, "")
+	for _, name := range []string{
+		"OAP_SDK_BINARY_PATH", "OAP_SDK_BINARY_URL", "OAP_SDK_BINARY_SHA256",
+		"OXAP_SDK_BINARY_PATH", "OXAP_SDK_BINARY_URL", "OXAP_SDK_BINARY_SHA256",
+	} {
+		t.Setenv(name, "")
+	}
 }
 
 func TestResolveBinaryUsesTheExplicitPath(t *testing.T) {
@@ -235,8 +249,8 @@ func TestResolveBinaryPrefersLocalZigBuilds(t *testing.T) {
 	isolateResolverEnv(t)
 	workdir := t.TempDir()
 
-	first := writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), binaryName(), "#!/bin/sh\n")
-	writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), binaryName(), "#!/bin/sh\n")
+	first := writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n")
+	writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, workdir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
@@ -254,7 +268,7 @@ func TestResolveBinaryPrefersLocalZigBuilds(t *testing.T) {
 func TestResolveBinaryFallsBackToTheNestedZigBuild(t *testing.T) {
 	isolateResolverEnv(t)
 	workdir := t.TempDir()
-	nested := writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), binaryName(), "#!/bin/sh\n")
+	nested := writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, workdir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
@@ -268,13 +282,44 @@ func TestResolveBinaryFallsBackToTheNestedZigBuild(t *testing.T) {
 	}
 }
 
+func TestResolveBinaryPrefersOxapOverOapxInTheZigBuild(t *testing.T) {
+	isolateResolverEnv(t)
+	workdir := t.TempDir()
+	writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), legacyBinaryName(t), "#!/bin/sh\n")
+	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(workdir, "zig", "zig-out", "bin"), preferredBinaryName(t), "#!/bin/sh\n"))
+
+	chdir(t, workdir)
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	if resolved != want {
+		t.Errorf("resolved = %q, want the nested oxap build %q", resolved, want)
+	}
+}
+
+func TestResolveBinaryFallsBackToTheOapxZigBuild(t *testing.T) {
+	isolateResolverEnv(t)
+	workdir := t.TempDir()
+	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(workdir, "zig-out", "bin"), legacyBinaryName(t), "#!/bin/sh\n"))
+
+	chdir(t, workdir)
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	if resolved != want {
+		t.Errorf("resolved = %q, want the legacy name's build %q", resolved, want)
+	}
+}
+
 func TestResolveBinaryFallsBackToPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the PATH fallback uses a shell script stub")
 	}
 	isolateResolverEnv(t)
 	pathDir := t.TempDir()
-	onPath := writeFakeBinary(t, pathDir, "oapx", "#!/bin/sh\n")
+	onPath := writeFakeBinary(t, pathDir, legacyBinaryName(t), "#!/bin/sh\n")
 
 	chdir(t, t.TempDir())
 	t.Setenv("PATH", pathDir)
@@ -290,6 +335,27 @@ func TestResolveBinaryFallsBackToPath(t *testing.T) {
 	}
 }
 
+func TestResolveBinaryPrefersOxapOnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the PATH fallback uses a shell script stub")
+	}
+	isolateResolverEnv(t)
+	pathDir := t.TempDir()
+	writeFakeBinary(t, pathDir, legacyBinaryName(t), "#!/bin/sh\n")
+	onPath := writeFakeBinary(t, pathDir, preferredBinaryName(t), "#!/bin/sh\n")
+
+	chdir(t, t.TempDir())
+	t.Setenv("PATH", pathDir)
+
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	if resolved != onPath {
+		t.Errorf("resolved = %q, want %q", resolved, onPath)
+	}
+}
+
 func TestResolveBinaryReportsWhenNothingIsFound(t *testing.T) {
 	isolateResolverEnv(t)
 	chdir(t, t.TempDir())
@@ -300,18 +366,160 @@ func TestResolveBinaryReportsWhenNothingIsFound(t *testing.T) {
 		t.Fatalf("expected ErrBinaryNotFound, got %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "zig-out") {
-		t.Errorf("message = %q; it should name the local build candidates", err)
+	message := err.Error()
+	for _, want := range append(binaryNames(), "zig-out") {
+		if !strings.Contains(message, want) {
+			t.Errorf("message = %q; it should mention %q", message, want)
+		}
 	}
 }
 
-func TestBinaryNameMatchesThePlatform(t *testing.T) {
-	want := "oapx"
-	if runtime.GOOS == "windows" {
-		want = "oapx.exe"
+func TestResolveBinaryPrefersTheOxapEnvironmentOverTheLegacyOne(t *testing.T) {
+	isolateResolverEnv(t)
+	dir := t.TempDir()
+	preferred := writeFakeBinary(t, dir, "from-oxap-env", "#!/bin/sh\n")
+	legacy := writeFakeBinary(t, dir, "from-oap-env", "#!/bin/sh\n")
+	t.Setenv("OXAP_SDK_BINARY_PATH", preferred)
+	t.Setenv("OAP_SDK_BINARY_PATH", legacy)
+
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
 	}
-	if binaryName() != want {
-		t.Errorf("binaryName() = %q, want %q", binaryName(), want)
+	if resolved != preferred {
+		t.Errorf("resolved = %q, want OXAP_SDK_BINARY_PATH's %q", resolved, preferred)
+	}
+}
+
+func TestResolveBinaryReadsTheLegacyEnvironmentWhenTheOxapOneIsAbsent(t *testing.T) {
+	isolateResolverEnv(t)
+	legacy := writeFakeBinary(t, t.TempDir(), "from-oap-env", "#!/bin/sh\n")
+	t.Setenv("OAP_SDK_BINARY_PATH", legacy)
+
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	if resolved != legacy {
+		t.Errorf("resolved = %q, want the legacy variable's %q", resolved, legacy)
+	}
+}
+
+func TestResolveBinaryPrefersTheOxapURLAndChecksumOverTheLegacyOnes(t *testing.T) {
+	isolateResolverEnv(t)
+	legacyPayload := []byte("#!/bin/sh\necho legacy\n")
+	preferredPayload := []byte("#!/bin/sh\necho preferred\n")
+	legacyDigest := sha256.Sum256(legacyPayload)
+	preferredDigest := sha256.Sum256(preferredPayload)
+
+	var requested []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		if r.URL.Path == "/preferred/oxap" {
+			w.Write(preferredPayload)
+			return
+		}
+		w.Write(legacyPayload)
+	}))
+	defer server.Close()
+
+	t.Setenv("OXAP_SDK_BINARY_URL", server.URL+"/preferred/oxap")
+	t.Setenv("OXAP_SDK_BINARY_SHA256", hex.EncodeToString(preferredDigest[:]))
+	t.Setenv("OAP_SDK_BINARY_URL", server.URL+"/legacy/oapx")
+	t.Setenv("OAP_SDK_BINARY_SHA256", hex.EncodeToString(legacyDigest[:]))
+
+	resolved, err := ResolveBinary(context.Background(), &Options{CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	if want := filepath.Join(filepath.Dir(resolved), "oxap"); resolved != want {
+		t.Errorf("resolved = %q, want the preferred URL's %q", resolved, want)
+	}
+	if !slices.Equal(requested, []string{"/preferred/oxap"}) {
+		t.Errorf("requested %q, want only the preferred URL", requested)
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(preferredPayload) {
+		t.Errorf("downloaded %q, want the preferred payload", content)
+	}
+}
+
+func TestResolveBinaryPairsEachURLWithTheChecksumBesideIt(t *testing.T) {
+	isolateResolverEnv(t)
+	legacyPayload := []byte("#!/bin/sh\necho legacy\n")
+	foreignPayload := []byte("#!/bin/sh\necho foreign\n")
+	legacyDigest := sha256.Sum256(legacyPayload)
+	foreignDigest := sha256.Sum256(foreignPayload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(legacyPayload)
+	}))
+	defer server.Close()
+
+	t.Setenv("OAP_SDK_BINARY_URL", server.URL+"/legacy/oapx")
+	t.Setenv("OAP_SDK_BINARY_SHA256", hex.EncodeToString(legacyDigest[:]))
+	t.Setenv("OXAP_SDK_BINARY_SHA256", hex.EncodeToString(foreignDigest[:]))
+
+	resolved, err := ResolveBinary(context.Background(), &Options{CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(legacyPayload) {
+		t.Errorf("downloaded %q, want the legacy URL's payload verified by its own checksum", content)
+	}
+}
+
+func TestResolveBinaryPairsAnOptionURLWithAnEnvironmentChecksum(t *testing.T) {
+	isolateResolverEnv(t)
+	payload := []byte("#!/bin/sh\necho legacy\n")
+	digest := sha256.Sum256(payload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer server.Close()
+
+	t.Setenv("OAP_SDK_BINARY_SHA256", hex.EncodeToString(digest[:]))
+
+	resolved, err := ResolveBinary(context.Background(), &Options{
+		BinaryURL: server.URL + "/legacy/oapx",
+		CacheDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("ResolveBinary: %v", err)
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(payload) {
+		t.Errorf("downloaded %q, want the option URL's payload", content)
+	}
+}
+
+func TestResolveBinaryDoesNotBorrowALegacyChecksumForTheOxapURL(t *testing.T) {
+	isolateResolverEnv(t)
+	payload := []byte("#!/bin/sh\necho legacy\n")
+	digest := sha256.Sum256(payload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer server.Close()
+
+	t.Setenv("OXAP_SDK_BINARY_URL", server.URL+"/preferred/oxap")
+	t.Setenv("OAP_SDK_BINARY_SHA256", hex.EncodeToString(digest[:]))
+
+	_, err := ResolveBinary(context.Background(), &Options{CacheDir: t.TempDir()})
+	if !errors.Is(err, ErrChecksumRequired) {
+		t.Fatalf("expected ErrChecksumRequired, got %v", err)
 	}
 }
 
@@ -329,7 +537,7 @@ func TestLegacyMakaiDoesNotShadowOapx(t *testing.T) {
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "zig-out", "bin")
 	writeFakeBinary(t, binDir, "makai", "#!/bin/sh\n")
-	want := resolvedPath(t, writeFakeBinary(t, binDir, "oapx", "#!/bin/sh\n"))
+	want := resolvedPath(t, writeFakeBinary(t, binDir, legacyBinaryName(t), "#!/bin/sh\n"))
 	chdir(t, dir)
 	resolved, err := ResolveBinary(context.Background(), &Options{})
 	if err != nil {

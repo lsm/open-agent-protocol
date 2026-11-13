@@ -24,6 +24,12 @@ const (
 	EnvBinaryURL = "OAP_SDK_BINARY_URL"
 
 	EnvBinarySHA256 = "OAP_SDK_BINARY_SHA256"
+
+	EnvBinaryPathOxap = "OXAP_SDK_BINARY_PATH"
+
+	EnvBinaryURLOxap = "OXAP_SDK_BINARY_URL"
+
+	EnvBinarySHA256Oxap = "OXAP_SDK_BINARY_SHA256"
 )
 
 func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
@@ -32,7 +38,9 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 	}
 	logger := opts.logger()
 
-	if explicit := firstNonEmpty(os.Getenv(EnvBinaryPath), opts.BinaryPath); explicit != "" {
+	if explicit := firstNonEmpty(
+		os.Getenv(EnvBinaryPathOxap), os.Getenv(EnvBinaryPath), opts.BinaryPath,
+	); explicit != "" {
 		resolved, err := filepath.Abs(explicit)
 		if err != nil {
 			return "", fmt.Errorf("oap sdk: cannot resolve binary path %q: %w", explicit, err)
@@ -44,9 +52,8 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 		return resolved, nil
 	}
 
-	binaryURL := firstNonEmpty(os.Getenv(EnvBinaryURL), opts.BinaryURL)
+	binaryURL, checksum := binaryURLAndChecksum(opts)
 	if binaryURL != "" {
-		checksum := firstNonEmpty(os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256)
 		if checksum == "" {
 			return "", fmt.Errorf("%w: %s", ErrChecksumRequired, binaryURL)
 		}
@@ -60,14 +67,31 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 		}
 	}
 
-	name := binaryName()
-	found, err := exec.LookPath(name)
-	if err == nil {
-		logger.Debug("oap sdk: binary resolved from PATH", "path", found)
-		return found, nil
+	for _, name := range binaryNames() {
+		found, err := exec.LookPath(name)
+		if err == nil {
+			logger.Debug("oap sdk: binary resolved from PATH", "path", found, "name", name)
+			return found, nil
+		}
 	}
 	return "", fmt.Errorf("%w: no %s on PATH and no local build under %s",
-		ErrBinaryNotFound, name, strings.Join(localCandidates(), " or "))
+		ErrBinaryNotFound, strings.Join(binaryNames(), " or "),
+		strings.Join(localCandidates(), " or "))
+}
+
+func binaryURLAndChecksum(opts *Options) (string, string) {
+	if url := os.Getenv(EnvBinaryURLOxap); url != "" {
+		return url, firstNonEmpty(os.Getenv(EnvBinarySHA256Oxap), opts.ChecksumSHA256)
+	}
+	if url := os.Getenv(EnvBinaryURL); url != "" {
+		return url, firstNonEmpty(os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256)
+	}
+	if opts.BinaryURL != "" {
+		return opts.BinaryURL, firstNonEmpty(
+			os.Getenv(EnvBinarySHA256Oxap), os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256,
+		)
+	}
+	return "", ""
 }
 
 func localCandidates() []string {
@@ -75,18 +99,21 @@ func localCandidates() []string {
 	if err != nil {
 		return nil
 	}
-	name := binaryName()
-	return []string{
-		filepath.Join(cwd, "zig-out", "bin", name),
-		filepath.Join(cwd, "zig", "zig-out", "bin", name),
+	var candidates []string
+	for _, name := range binaryNames() {
+		candidates = append(candidates,
+			filepath.Join(cwd, "zig-out", "bin", name),
+			filepath.Join(cwd, "zig", "zig-out", "bin", name),
+		)
 	}
+	return candidates
 }
 
-func binaryName() string {
+func binaryNames() []string {
 	if runtime.GOOS == "windows" {
-		return "oapx.exe"
+		return []string{"oxap.exe", "oapx.exe"}
 	}
-	return "oapx"
+	return []string{"oxap", "oapx"}
 }
 
 func resolveFromURL(ctx context.Context, rawURL, checksum, cacheDir string, logger *slog.Logger) (string, error) {
@@ -102,7 +129,7 @@ func resolveFromURL(ctx context.Context, rawURL, checksum, cacheDir string, logg
 	}
 	fileName := filepath.Base(parsed.Path)
 	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
-		fileName = binaryName()
+		fileName = binaryNames()[0]
 	}
 	cachePath := filepath.Join(cacheDir, fileName)
 
