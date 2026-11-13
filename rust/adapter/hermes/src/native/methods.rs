@@ -5,14 +5,17 @@ use super::Raw;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SessionCreateParams {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub cwd: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub model: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub reasoning_effort: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionCreateResult {
     #[serde(default, deserialize_with = "zero")]
     pub session_id: String,
@@ -32,7 +35,6 @@ pub struct SessionResumeParams {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionResumeResult {
     #[serde(default, deserialize_with = "zero")]
     pub session_id: String,
@@ -58,7 +60,6 @@ pub struct ConfigSetParams {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigSetResult {
     #[serde(default, deserialize_with = "zero")]
     pub key: String,
@@ -77,7 +78,6 @@ fn row_ids<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Option<i64>
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PromptSubmitResult {
     #[serde(default, deserialize_with = "zero")]
     pub status: String,
@@ -97,7 +97,6 @@ pub struct InterruptParams {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct InterruptResult {
     #[serde(default, deserialize_with = "zero")]
     pub status: String,

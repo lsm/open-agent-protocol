@@ -6,6 +6,7 @@ repository root.
 ```sh
 (cd rust && cargo test -p oap-adapter-hermes --test adapter)
 (cd rust && cargo test -p oap-adapter-hermes --test rpc)
+(cd rust && cargo test -p oap-adapter-hermes --test methods)
 (cd rust && cargo test -p oap-adapter-hermes --test notifications)
 (cd rust && cargo test -p oap-adapter-hermes --test process)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
@@ -43,3 +44,8 @@ revision, marshalled by Go's `encoding/json`. Regenerate it whenever Go's
 Hermes descriptor changes by printing `json.MarshalIndent(descriptor.Capabilities, "", "  ")`
 from a throwaway test in `go/adapter/hermes`, and require `tests/adapter.rs`
 to compare equal to the new file.
+
+`tests/methods.rs` holds what Go's `json.Marshal` prints for each method's
+params and what its `json.Unmarshal` reads from each result. To see it bite,
+drop an `omitempty`-matching `skip_serializing_if` from `SessionCreateParams`,
+or deny unknown members on a result: one test must fail for each.

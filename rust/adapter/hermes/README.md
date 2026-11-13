@@ -6,7 +6,9 @@ the corpus in `fixtures/adapters/hermes-v0.23.1`.
 
 So far it holds the gateway's event envelope, the payloads of its run events,
 and its server requests (approval, clarify, sudo, secret) with Go's
-`DecodeServerRequest` and `RequestSessionID`, and `rpc::DIALECT`, the
+`DecodeServerRequest` and `RequestSessionID`, the params and results of the
+five methods Go's adapter calls (session.create, session.resume, config.set,
+prompt.submit and session.interrupt), and `rpc::DIALECT`, the
 gateway's JSON-RPC over `oap_adapter::jsonrpc`: strict framing, params only as
 an object or null, and an empty string id that parses but never marshals, as in
 Go's `internal/rpc`. `adapter::Adapter::describe` is Go's `Probe`: the
@@ -22,7 +24,7 @@ ready payload; `decode_notification` has already refused every payload it
 would. `decode_notification` is Go's `DecodeNotification`: it
 takes only the `event` method, then checks the envelope's sequencing, the
 event type against Go's typed and observed vocabularies, and each typed
-payload, with Go's text for every refusal of its own. An approval request and
+payload, with Go's text for every refusal of its own. A method result, an approval request and
 `session.info` decode leniently, as Go's `json.Unmarshal` does; everything else
 decodes as Go's `DecodeStrict` does: unknown members refused, a null
 member read as its zero value, a trailing value refused, only JSON's four
