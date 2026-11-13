@@ -7,6 +7,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test adapter)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test permissions)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test filepath)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test open)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -42,4 +43,16 @@ host by printing `filepath.Clean` and, for Windows, Go's own `Clean`,
 throwaway package with `Separator` set to a backslash. To see it bite, match
 the device prefix's `UNC` case-sensitively: the lower-case `unc` case must
 fail. Skip `postClean`: the two cases that guard against forming a volume
-must fail. Drop the drive-letter volume: four drive cases must fail.
+must fail. Drop the drive-letter volume: six drive cases must fail.
+
+`tests/open.rs` opens sessions against a scripted client and compares the
+`thread/start` and `thread/resume` params byte for byte, so an empty config
+must be absent from the wire, as Go's `omitempty` leaves it. It pins the
+refusals for a missing participant, an unbound reopen, a reopen Codex cannot
+load and a resume under other permissions, and checks the client is closed
+after every failed open and once on close. A shell runtime checks the default
+factory sends the host's client info. To see it bite, skip the close on a
+failed open: four tests must fail. Rename the client: the factory test must
+fail. Keep the configured model or level on a resume: the resume test must
+fail. Refuse a reopen only on a closed transport: the unloadable-reopen test
+must fail.

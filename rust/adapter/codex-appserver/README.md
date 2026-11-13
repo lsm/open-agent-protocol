@@ -10,6 +10,12 @@ session's reasoning level as `model_reasoning_effort`, with `off` as Codex's
 `none`, and a token compaction limit as `model_auto_compact_token_limit`. It
 ignores `auto` and refuses `off` and `share`, which Codex cannot honor at open.
 
+`Adapter::open` starts a Codex thread, or resumes the one the configuration
+or a reopen names, and returns a `Session` that reports its state and closes
+its client once. A resume keeps the model and effort Codex reports, and a
+reopen reports itself recovered. The default factory launches the configured
+executable with `open-agent-protocol` as its client name.
+
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured
 approval policy, and the configured working directory. The directories are

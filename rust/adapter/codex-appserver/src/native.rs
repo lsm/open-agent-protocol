@@ -343,3 +343,7 @@ pub struct UserInputResponse {
 pub struct UserInputAnswer {
     pub answers: Vec<String>,
 }
+
+impl oap_adapter::gojson::Decode for ThreadStartResponse {}
+
+impl oap_adapter::gojson::Decode for ThreadResumeResponse {}
