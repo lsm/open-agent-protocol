@@ -9,7 +9,11 @@ and its server requests (approval, clarify, sudo, secret) with Go's
 `DecodeServerRequest` and `RequestSessionID`, and `rpc::DIALECT`, the
 gateway's JSON-RPC over `oap_adapter::jsonrpc`: strict framing, params only as
 an object or null, and an empty string id that parses but never marshals, as in
-Go's `internal/rpc`. `process::Process` starts the gateway as Go's `Start`
+Go's `internal/rpc`. `adapter::Adapter::describe` is Go's `Probe`: the
+descriptor `tests/go_capabilities.json` holds, the catalog's revision and
+Go's journal and cancellation fields. `adapter::Config` takes the gateway's
+process settings; Go's client and process factories arrive with the session.
+`process::Process` starts the gateway as Go's `Start`
 does: its client checks every notification with `decode_notification`,
 refuses a response to no pending call, and takes only `gateway.ready` as the
 first observation; `close` releases stdin, then interrupts and finally kills a

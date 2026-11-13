@@ -4,6 +4,7 @@ Follow shared setup and the verification mutex in SKILL.md. Run from the
 repository root.
 
 ```sh
+(cd rust && cargo test -p oap-adapter-hermes --test adapter)
 (cd rust && cargo test -p oap-adapter-hermes --test rpc)
 (cd rust && cargo test -p oap-adapter-hermes --test notifications)
 (cd rust && cargo test -p oap-adapter-hermes --test process)
@@ -36,3 +37,9 @@ interrupt, the kill, the stdin release, the cached close, the exit status,
 the barrier, request or event-type refusal, the deadline or cancel arm, the
 stderr in the refusal, abort's stderr grace, the notification check or
 strict response ids: one test must fail for each.
+
+`tests/go_capabilities.json` is Go's `Probe` capabilities for the catalog
+revision, marshalled by Go's `encoding/json`. Regenerate it whenever Go's
+Hermes descriptor changes by printing `json.MarshalIndent(descriptor.Capabilities, "", "  ")`
+from a throwaway test in `go/adapter/hermes`, and require `tests/adapter.rs`
+to compare equal to the new file.
