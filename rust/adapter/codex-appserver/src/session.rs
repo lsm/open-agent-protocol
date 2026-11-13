@@ -49,6 +49,7 @@ pub(crate) struct Interaction {
     pub(crate) tool_call: ToolCallId,
     pub(crate) request: Arc<IncomingRequest>,
     pub(crate) resolved: bool,
+    pub(crate) choices: Vec<String>,
     pub(crate) order: u64,
 }
 
@@ -383,16 +384,16 @@ impl Session {
         self.shared.resume(request)
     }
 
+    pub fn resolve(&self, resolution: InteractionResolution) -> Result<(), Error> {
+        self.shared.resolve(resolution)
+    }
+
     pub fn state(&self) -> Result<SessionState, Error> {
         self.shared.state()
     }
 
     pub fn close(&self) -> Result<(), Error> {
         self.shared.close()
-    }
-
-    pub fn resolve(&self, _resolution: InteractionResolution) -> Result<(), Error> {
-        Err(Error::InteractionNotFound)
     }
 }
 

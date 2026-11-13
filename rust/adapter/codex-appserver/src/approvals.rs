@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oap_adapter::gojson::decode;
+use oap_adapter::{Error, InteractionResolution};
 use oap_protocol::{
     EnvelopeType, InteractionId, InteractionOutcome, PermissionChoice, PermissionRequestedPayload,
     PermissionResolvedPayload, ProtocolError, RunId,
@@ -9,7 +10,8 @@ use serde_json::value::RawValue;
 
 use crate::adapter::ENDPOINT_ID;
 use crate::native::{
-    CommandApprovalParams, FileApprovalParams, METHOD_COMMAND_APPROVAL, METHOD_FILE_APPROVAL,
+    ApprovalResponse, CommandApprovalParams, FileApprovalParams, METHOD_COMMAND_APPROVAL,
+    METHOD_FILE_APPROVAL,
 };
 use crate::rpc::IncomingRequest;
 use crate::session::{Inner, Interaction, Shared};
@@ -20,6 +22,18 @@ const DECISIONS: [(&str, &str); 4] = [
     ("decline", "Deny"),
     ("cancel", "Deny and cancel run"),
 ];
+
+fn decision(choice: &str, available: &[String]) -> Option<(bool, InteractionOutcome)> {
+    if !available.iter().any(|offered| offered == choice) {
+        return None;
+    }
+    match choice {
+        "accept" | "acceptForSession" => Some((true, InteractionOutcome::RESOLVED)),
+        "decline" => Some((false, InteractionOutcome::REJECTED)),
+        "cancel" => Some((false, InteractionOutcome::CANCELLED)),
+        _ => None,
+    }
+}
 
 struct Scope {
     thread: String,
@@ -38,9 +52,7 @@ fn decisions(available: Option<&RawValue>) -> Option<Vec<String>> {
     let mut decisions = Vec::new();
     for listed in listed {
         let listed = listed.unwrap_or_default();
-        if !standard.contains(&listed) {
-            return None;
-        }
+        decision(&listed, &standard)?;
         if !decisions.contains(&listed) {
             decisions.push(listed);
         }
@@ -128,6 +140,7 @@ impl Shared {
                 tool_call: item.tool_call.clone(),
                 request: request.clone(),
                 resolved: false,
+                choices: scope.decisions,
                 order,
             },
         );
@@ -155,6 +168,75 @@ impl Shared {
             &payload,
             &item.tool_call,
         );
+    }
+
+    pub(crate) fn resolve(&self, resolution: InteractionResolution) -> Result<(), Error> {
+        let _operating = self.operate();
+        let inner = self.lock();
+        let id = match (&resolution.permission, &resolution.input) {
+            (Some(permission), None) => permission.interaction_id.clone(),
+            (None, Some(input)) => input.interaction_id.clone(),
+            _ => return Err(Error::InvalidResolution),
+        };
+        let interaction = inner
+            .interactions
+            .get(&id)
+            .filter(|interaction| interaction.run == resolution.run_id)
+            .ok_or(Error::InteractionNotFound)?;
+        if interaction.resolved {
+            return Err(Error::InteractionResolved);
+        }
+        if resolution.responded_by != self.participant {
+            return Err(Error::WrongResponder);
+        }
+        let run = interaction.run.clone();
+        if inner.runs.get(&run).is_none_or(|run| run.terminal) {
+            return Err(Error::InteractionResolved);
+        }
+        let request = resolution
+            .permission
+            .filter(|request| {
+                request.session_id == inner.state.session_id
+                    && request.run_id == run
+                    && request.requested_by.as_str() == ENDPOINT_ID
+                    && request.responded_by == self.participant
+                    && request.updated_arguments_json.is_none()
+            })
+            .ok_or(Error::InvalidResolution)?;
+        let (granted, outcome) = decision(&request.choice_id, &interaction.choices)
+            .filter(|(granted, _)| *granted == request.granted)
+            .ok_or(Error::InvalidResolution)?;
+        let (answer, tool_call) = (interaction.request.clone(), interaction.tool_call.clone());
+        drop(inner);
+        answer
+            .respond(&ApprovalResponse {
+                decision: request.choice_id.clone(),
+            })
+            .map_err(Error::harness)?;
+        let mut inner = self.lock();
+        if let Some(interaction) = inner.interactions.get_mut(&id) {
+            interaction.resolved = true;
+        }
+        let payload = PermissionResolvedPayload {
+            interaction_id: id,
+            requested_by: ENDPOINT_ID.into(),
+            responded_by: self.participant.clone(),
+            session_id: inner.state.session_id.clone(),
+            run_id: run.clone(),
+            tool_call_id: Some(tool_call.clone()),
+            outcome,
+            choice_id: request.choice_id,
+            granted: Some(granted),
+            reason: None,
+        };
+        self.emit_call(
+            &mut inner,
+            &run,
+            EnvelopeType::ACTION_PERMISSION_RESOLVED,
+            &payload,
+            &tool_call,
+        );
+        Ok(())
     }
 
     pub(crate) fn close_interactions(&self, inner: &mut Inner, id: &RunId, interrupted: bool) {
