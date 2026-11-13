@@ -86,7 +86,12 @@ func binaryURLAndChecksum(opts *Options) (string, string) {
 	if url := os.Getenv(EnvBinaryURL); url != "" {
 		return url, firstNonEmpty(os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256)
 	}
-	return opts.BinaryURL, opts.ChecksumSHA256
+	if opts.BinaryURL != "" {
+		return opts.BinaryURL, firstNonEmpty(
+			os.Getenv(EnvBinarySHA256Oxap), os.Getenv(EnvBinarySHA256), opts.ChecksumSHA256,
+		)
+	}
+	return "", ""
 }
 
 func localCandidates() []string {
