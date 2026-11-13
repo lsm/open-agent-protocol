@@ -12,7 +12,7 @@ use crate::native::{
     TURN_INTERRUPTED,
 };
 use crate::rpc::{Inbound, NotificationMessage};
-use crate::session::{Inner, Shared};
+use crate::session::{hold, Inner, Shared};
 
 fn read<T: Decode>(notification: &NotificationMessage) -> Option<T> {
     decode(notification.params.as_deref()?.get().as_bytes()).ok()
@@ -34,6 +34,20 @@ impl Shared {
     }
 
     fn reduce(&self, message: Inbound) {
+        match message {
+            Inbound::Barrier(ack) => drop(ack),
+            message => {
+                let mut operating = hold(&self.operating);
+                if operating.starting {
+                    operating.deferred.push(message);
+                    return;
+                }
+                self.handle(message);
+            }
+        }
+    }
+
+    pub(crate) fn handle(&self, message: Inbound) {
         match message {
             Inbound::Barrier(ack) => drop(ack),
             Inbound::Request(request) => {

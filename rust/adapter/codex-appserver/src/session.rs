@@ -18,6 +18,7 @@ use oap_validation::OutputSchema;
 use crate::adapter::{call, native_protocol};
 use crate::client::Client;
 use crate::native::{TurnStartParams, TurnStartResponse, UserInput, METHOD_TURN_START};
+use crate::rpc::Inbound;
 
 pub(crate) struct Run {
     pub(crate) model: String,
@@ -41,10 +42,16 @@ pub(crate) struct Shared {
     model: String,
     pub(crate) runtime: Runtime,
     pub(crate) journal: Journal,
-    pub(crate) operating: Mutex<()>,
+    pub(crate) operating: Mutex<Operating>,
     inner: Mutex<Inner>,
     stop: Mutex<Option<Sender<()>>>,
     pub(crate) stopped: Receiver<()>,
+}
+
+#[derive(Default)]
+pub(crate) struct Operating {
+    pub(crate) starting: bool,
+    pub(crate) deferred: Vec<Inbound>,
 }
 
 pub struct Session {
@@ -71,7 +78,7 @@ impl Shared {
             model,
             runtime,
             journal: Journal::new(capacity),
-            operating: Mutex::new(()),
+            operating: Mutex::default(),
             inner: Mutex::new(Inner {
                 state,
                 closed: false,
@@ -96,7 +103,7 @@ impl Shared {
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let _operating = hold(&self.operating);
+        let mut operating = hold(&self.operating);
         refuse_unadvertised_controls(
             &request,
             &[FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT],
@@ -170,59 +177,69 @@ impl Shared {
             inner.state.active_run_id = Some(run_id.clone());
             inner.state.updated_at_ms = self.runtime.now_ms();
         }
+        operating.starting = true;
+        drop(operating);
         let started = call::<TurnStartResponse>(&*self.client, METHOD_TURN_START, &params);
-        let mut inner = self.lock();
-        let turn = match started {
-            Ok(response) if !response.turn.id.is_empty() => response.turn.id,
-            outcome => {
-                inner.active = None;
-                inner.state.active_run_id = None;
-                let (error, closes) = match outcome {
-                    Err(failure) => (
-                        Error::Harness(format!("start Codex turn: {failure}")),
-                        self.client.err().is_some(),
-                    ),
-                    Ok(_) => (native_protocol("turn/start returned no turn id"), true),
-                };
-                if closes {
-                    inner.closed = true;
-                    inner.state.status = SessionStatus::CLOSED;
-                } else {
-                    inner.state.status = SessionStatus::IDLE;
+        let mut operating = hold(&self.operating);
+        let outcome = (|| -> Result<(MessageSubmitResponse, EventStream), Error> {
+            let mut inner = self.lock();
+            let turn = match started {
+                Ok(response) if !response.turn.id.is_empty() => response.turn.id,
+                outcome => {
+                    inner.active = None;
+                    inner.state.active_run_id = None;
+                    let (error, closes) = match outcome {
+                        Err(failure) => (
+                            Error::Harness(format!("start Codex turn: {failure}")),
+                            self.client.err().is_some(),
+                        ),
+                        Ok(_) => (native_protocol("turn/start returned no turn id"), true),
+                    };
+                    if closes {
+                        inner.closed = true;
+                        inner.state.status = SessionStatus::CLOSED;
+                    } else {
+                        inner.state.status = SessionStatus::IDLE;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
-        inner.turns.insert(turn, run_id.clone());
-        inner.runs.insert(
-            run_id.clone(),
-            Run {
-                model: model.clone(),
-                message_id,
-                started: false,
-                terminal: false,
-                next: 1,
-            },
-        );
-        drop(inner);
-        let stream = self.journal.follow(run_id.as_str(), 0);
-        Ok((
-            MessageSubmitResponse {
-                session_id,
-                accepted: true,
-                submission_id: SubmissionId::from(self.runtime.new_id("submission")),
-                requested_delivery: RequestedDeliveryMode::AUTO,
-                effective_delivery: EffectiveDeliveryMode::START,
-                delivery_resolution: "session_idle".into(),
-                admission: Admission::STARTED,
-                run_id: Some(run_id),
-                status: RunStatus::RUNNING,
-                model_id: model,
-                message_ids,
-                ..MessageSubmitResponse::default()
-            },
-            stream,
-        ))
+            };
+            inner.turns.insert(turn, run_id.clone());
+            inner.runs.insert(
+                run_id.clone(),
+                Run {
+                    model: model.clone(),
+                    message_id,
+                    started: false,
+                    terminal: false,
+                    next: 1,
+                },
+            );
+            drop(inner);
+            let stream = self.journal.follow(run_id.as_str(), 0);
+            Ok((
+                MessageSubmitResponse {
+                    session_id,
+                    accepted: true,
+                    submission_id: SubmissionId::from(self.runtime.new_id("submission")),
+                    requested_delivery: RequestedDeliveryMode::AUTO,
+                    effective_delivery: EffectiveDeliveryMode::START,
+                    delivery_resolution: "session_idle".into(),
+                    admission: Admission::STARTED,
+                    run_id: Some(run_id),
+                    status: RunStatus::RUNNING,
+                    model_id: model,
+                    message_ids,
+                    ..MessageSubmitResponse::default()
+                },
+                stream,
+            ))
+        })();
+        for message in std::mem::take(&mut operating.deferred) {
+            self.handle(message);
+        }
+        operating.starting = false;
+        outcome
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
