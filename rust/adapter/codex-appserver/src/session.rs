@@ -12,9 +12,10 @@ use oap_adapter::{
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, MessageId, MessageRole, MessageSubmitRequest,
     MessageSubmitResponse, RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus,
-    SubmissionId, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
+    SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
 };
 use oap_validation::OutputSchema;
+use serde_json::value::RawValue;
 
 use crate::adapter::{call, native_protocol};
 use crate::client::Client;
@@ -32,12 +33,24 @@ pub(crate) struct Run {
     pub(crate) final_text: Option<String>,
 }
 
+#[derive(Clone)]
+pub(crate) struct Binding {
+    pub(crate) run: RunId,
+    pub(crate) tool_call: ToolCallId,
+    pub(crate) name: String,
+    pub(crate) arguments: Box<RawValue>,
+    pub(crate) terminal: bool,
+    pub(crate) order: u64,
+}
+
 pub(crate) struct Inner {
     pub(crate) state: SessionState,
     pub(crate) closed: bool,
     pub(crate) active: Option<RunId>,
     pub(crate) runs: HashMap<RunId, Run>,
     pub(crate) turns: HashMap<String, RunId>,
+    pub(crate) items: HashMap<String, Binding>,
+    pub(crate) next_order: u64,
 }
 
 pub(crate) struct Shared {
@@ -109,6 +122,8 @@ impl Shared {
                 active: None,
                 runs: HashMap::new(),
                 turns: HashMap::new(),
+                items: HashMap::new(),
+                next_order: 0,
             }),
             stop: Mutex::new(Some(stop)),
             stopped,

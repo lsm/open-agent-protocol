@@ -12,6 +12,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test dispatch)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test events)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test structured)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test items)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -117,3 +118,12 @@ compaction of every input there. To see it bite, skip the trim: the result
 test must fail. Keep the first final message: the same test must fail. Read
 an `item/started` message or another item kind: the started-turn test must
 fail.
+
+`tests/go_items.json` holds item scenarios with the envelopes Go's own
+session emitted for each, and `tests/items.rs` replays them and compares
+the bytes as Go marshals them. Regenerate it by running a throwaway test in
+`go/adapter/codex/appserver` that opens the package's fake client with
+`openFake`, submits `fakeSubmit`, sends each scenario's notifications, and
+writes the drained envelopes with `json.MarshalIndent`. To see it bite,
+drop the duplicate-start check, the pending-action sort, or the `failed`
+status check: the replay test must fail.
