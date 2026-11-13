@@ -393,7 +393,7 @@ def main():
             commands={
                 'go':[str(output/'goap'),'validate','--format','json',str(path)],
                 'rust':['cargo','run','--quiet','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate','--',str(path)],
-                'zig':[str(ROOT/'zig/zig-out/bin/oapx'),'validate',str(path)],
+                'zig':[str(ROOT/'zig/zig-out/bin/oxap'),'validate',str(path)],
             }
             for name, command in commands.items():
                 run(command,case/f'validate-{name}.log')

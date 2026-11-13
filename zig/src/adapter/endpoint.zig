@@ -423,9 +423,9 @@ pub const Endpoint = struct {
         }
         const named = if (active.items.len > 0) active.items else "none";
         const line = if (wanted == .force)
-            try std.fmt.allocPrint(arena, "oapx: forced shutdown; cut off: {s}", .{named})
+            try std.fmt.allocPrint(arena, "oxap: forced shutdown; cut off: {s}", .{named})
         else
-            try std.fmt.allocPrint(arena, "oapx: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ named, applied.lost.len });
+            try std.fmt.allocPrint(arena, "oxap: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ named, applied.lost.len });
         notice.write(notice.context, line);
     }
 
@@ -1783,7 +1783,7 @@ test "a first signal drains gracefully naming the active run, a repeated count c
     try testing.expectEqual(@as(?ShutdownMode, .graceful), harness.endpoint.shutdown);
     try testing.expect(!try harness.endpoint.shutdownComplete());
     try testing.expectEqual(@as(usize, 1), noticed.lines.items.len);
-    try testing.expect(std.mem.startsWith(u8, noticed.lines.items[0], "oapx: shutting down gracefully; still active: s1/"));
+    try testing.expect(std.mem.startsWith(u8, noticed.lines.items[0], "oxap: shutting down gracefully; still active: s1/"));
     try testing.expect(std.mem.endsWith(u8, noticed.lines.items[0], "; 0 queued run(s) lost; signal again to force"));
 
     try harness.endpoint.takeSignals(1);
@@ -1793,7 +1793,7 @@ test "a first signal drains gracefully naming the active run, a repeated count c
     try testing.expectEqual(@as(?ShutdownMode, .force), harness.endpoint.shutdown);
     try testing.expect(try harness.endpoint.shutdownComplete());
     try testing.expectEqual(@as(usize, 2), noticed.lines.items.len);
-    try testing.expect(std.mem.startsWith(u8, noticed.lines.items[1], "oapx: forced shutdown; cut off: s1/"));
+    try testing.expect(std.mem.startsWith(u8, noticed.lines.items[1], "oxap: forced shutdown; cut off: s1/"));
 }
 
 test "a line that is not one JSON object is a framing defect" {

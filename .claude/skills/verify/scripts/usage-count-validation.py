@@ -48,7 +48,7 @@ def main():
         path = ROOT / "fixtures" / entry["path"]
         commands = {"go": [str(goap), "validate", "--format", "json"],
                     "rust": [str(ROOT / "rust/target/debug/examples/validate")],
-                    "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format", "json"]}
+                    "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"]}
         if entry.get("profile") == "model-provider-core":
             commands["go"].append("--provider")
             commands["rust"].append("--provider")

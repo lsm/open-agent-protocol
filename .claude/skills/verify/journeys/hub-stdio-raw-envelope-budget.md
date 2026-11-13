@@ -4,7 +4,7 @@ After changing hub stdio decoding or envelope gating, rebuild `oapx`, then run
 this real-process differential without Go's test cache:
 
 ```sh
-OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
+OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oxap" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
 zig build --build-file zig/build.zig test-unit-hub -Doptimize=ReleaseSafe
 ```
 

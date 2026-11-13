@@ -10,7 +10,7 @@ CARGO = ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml"]
 VALIDATORS = {
     "rust": CARGO + ["-p", "oap-validation", "--example", "validate", "--"],
     "go": ["go", "run", "./go/cmd/goap", "validate"],
-    "zig": ["./zig/zig-out/bin/oapx", "validate"],
+    "zig": ["./zig/zig-out/bin/oxap", "validate"],
 }
 JOURNEYS = [
     ("steer", ["run.steer.applied", "user.input.requested"], list(VALIDATORS),

@@ -27,7 +27,7 @@ func TestHubRefusesASessionHistoryAGoapHubHolds(t *testing.T) {
 	if err == nil {
 		t.Fatalf("oapx hub started on a session history goap holds:\n%s", output)
 	}
-	if !strings.Contains(string(output), "another oapx hub is using the session history") {
+	if !strings.Contains(string(output), "another oxap hub is using the session history") {
 		t.Fatalf("oapx hub did not say the history is held:\n%s", output)
 	}
 }

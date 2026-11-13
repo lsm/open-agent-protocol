@@ -11,7 +11,7 @@ RUST = ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
 COMMANDS = {
     "rust": RUST,
     "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
-    "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format", "json"],
+    "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"],
 }
 
 

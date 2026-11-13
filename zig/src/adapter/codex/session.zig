@@ -268,7 +268,7 @@ pub fn outputSchemaDefect(arena: std.mem.Allocator, text: []const u8) error{OutO
     const defect = jsonschema.schemaDefect(arena, document, document) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
     };
-    if (defect != null) return "output_schema uses a construct oapx's schema engine does not evaluate";
+    if (defect != null) return "output_schema uses a construct oxap's schema engine does not evaluate";
     return null;
 }
 
@@ -291,7 +291,7 @@ fn structuredResult(allocator: std.mem.Allocator, schema: []const u8, final_text
     var validator = jsonschema.Validator.init(allocator, &registry);
     const failure = validator.validate("output_schema", document) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        return .{ .defect = "the output_schema uses a construct oapx's schema engine does not evaluate" };
+        return .{ .defect = "the output_schema uses a construct oxap's schema engine does not evaluate" };
     };
     if (failure != null) return .{ .defect = "the final assistant message does not conform to the output_schema" };
     return .{ .result = document };

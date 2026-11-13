@@ -167,7 +167,7 @@ def main():
         if 'failure' not in observed['rust']:
             path = case / 'trace.json'
             path.write_text(json.dumps(trace(observed['rust'], request)))
-            for validator, command in [('go', [str(output / 'goap'), 'validate']), ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]), ('zig', [str(ROOT / 'zig/zig-out/bin/oapx'), 'validate'])]:
+            for validator, command in [('go', [str(output / 'goap'), 'validate']), ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]), ('zig', [str(ROOT / 'zig/zig-out/bin/oxap'), 'validate'])]:
                 peer.run(command + [str(path)], case / f'{validator}-validation.log')
         print(f'PASS {name}: public state/catalog/refusal metadata and parsed native wire agree; native children reaped', flush=True)
     print(f'PASS confirmed opening config/reasoning. Evidence: {output}', flush=True)

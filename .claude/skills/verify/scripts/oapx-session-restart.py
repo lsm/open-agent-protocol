@@ -147,7 +147,7 @@ def wait_idle(hub, session_id):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oxap"))
     parser.add_argument("--storage-recovery", action="store_true",
                         help="temporarily obstruct the transcript, then verify later saves recover metadata")
     mode = parser.add_mutually_exclusive_group()

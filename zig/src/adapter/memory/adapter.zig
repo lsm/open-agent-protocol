@@ -1740,7 +1740,7 @@ fn outputSchemaDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfMem
     const result = parseValue(arena, fixed_result) catch return error.OutOfMemory;
     const failure = validator.validate("output_schema", result) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return "output_schema uses a construct oapx's schema engine does not evaluate",
+        else => return "output_schema uses a construct oxap's schema engine does not evaluate",
     };
     if (failure != null) return "the fixed result does not satisfy the requested schema";
     return null;

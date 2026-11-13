@@ -5,7 +5,7 @@ Every test here needs ``OAP_SDK_BINARY_PATH`` and skips without it, so a green
 one first::
 
     zig build install --prefix /tmp/oapx-py
-    OAP_SDK_BINARY_PATH=/tmp/oapx-py/bin/oapx pytest
+    OAP_SDK_BINARY_PATH=/tmp/oapx-py/bin/oxap pytest
 
 No provider credentials are needed: each runtime gets a fresh ``HOME`` whose
 ``providers.json`` declares two local endpoints, one taking no credential and

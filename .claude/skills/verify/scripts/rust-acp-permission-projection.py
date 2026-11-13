@@ -149,7 +149,7 @@ def main():
                 trace[2]['payload']['allow_degraded_features']=['session.message.submit','run.streaming']
             path=case/'trace.json'
             path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
-            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+            for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
                 peer.run(command+[str(path)],case/f'validate-{language}.log')
             comparison='wall-clock/revision-normalized public events' if options.consumer=='session_permissions' else 'exact projected event JSON'
             print(f'PASS {name}: Go/Rust {comparison} and parsed host frames; three validators accept actual Rust events; native children reaped',flush=True)
@@ -173,7 +173,7 @@ def main():
             trace.extend((assembled[:2] if index==0 else [])+prefix+events)
         path=output/'pending-usage.trace.json'
         path.write_text(json.dumps(trace,ensure_ascii=False,indent=2))
-        for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+        for language,command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
             peer.run(command+[str(path)],output/f'pending-usage-validate-{language}.log')
         print('PASS pending usage: native barrier proves the update reached a pending projection; first terminal stays100, next run sees200; all three validators accept; child reaped',flush=True)
     print(f'PASS ACP {options.consumer} permission proof. Evidence {output}',flush=True)

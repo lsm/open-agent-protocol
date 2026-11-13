@@ -1165,9 +1165,9 @@ pub const Frontend = struct {
         }
         const listed = if (active.items.len > 0) active.items else "none";
         const line = if (wanted == .force)
-            try std.fmt.allocPrint(arena, "oapx: forced shutdown; cut off: {s}", .{listed})
+            try std.fmt.allocPrint(arena, "oxap: forced shutdown; cut off: {s}", .{listed})
         else
-            try std.fmt.allocPrint(arena, "oapx: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ listed, lost });
+            try std.fmt.allocPrint(arena, "oxap: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ listed, lost });
         notices.write(notices.context, line) catch {};
     }
 

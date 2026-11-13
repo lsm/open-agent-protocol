@@ -63,7 +63,7 @@ def main():
         (directory / "pack.json").write_text(json.dumps(descriptor))
         rust = run([str(ROOT / "rust/target/debug/pack-uri-consumer"), str(directory)], label + ".rust")
         go = run([str(goap), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".go")
-        zig = run([str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".zig")
+        zig = run([str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--pack", str(directory), "--format", "json", str(ROOT / "fixtures/valid/core-completed.json")], label + ".zig")
         rust_data = json.loads(rust.stdout)
         go_reports = json.loads(go.stdout)
         assert len(go_reports) == 1 and go_reports[0]["valid"], (label, go.stdout)

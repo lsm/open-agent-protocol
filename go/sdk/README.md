@@ -92,7 +92,7 @@ Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls 
 
 Typed failures include `*StreamError`, `*AuthRequiredError`, `*ProtocolError`, and `*AuthError`. Unsupported OAP features carry code `unsupported_feature`.
 
-Run `go test ./go/sdk/...` and `go vet ./...` from the repository root. Fake-host tests need no API keys; a built `zig/zig-out/bin/oapx` enables the live OAP smoke test.
+Run `go test ./go/sdk/...` and `go vet ./...` from the repository root. Fake-host tests need no API keys; a built `zig/zig-out/bin/oxap` enables the live OAP smoke test.
 
 
 ## Usage counts

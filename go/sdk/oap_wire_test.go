@@ -576,7 +576,7 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 }
 
 func TestOAPCombinedHostWire(t *testing.T) {
-	binary := "../../zig/zig-out/bin/oapx"
+	binary := "../../zig/zig-out/bin/oxap"
 	if _, err := os.Stat(binary); err != nil {
 		t.Skip("built oapx not available")
 	}

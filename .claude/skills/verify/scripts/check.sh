@@ -35,7 +35,7 @@ run go test ./go/protocol
 run zig build --build-file zig/build.zig -Doptimize=ReleaseSafe
 run zig build --build-file zig/build.zig test-unit-validation -Doptimize=ReleaseSafe
 run zig build --build-file zig/build.zig test-unit-reactor -Doptimize=ReleaseSafe
-run env OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
+run env OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oxap" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
 run go run ./go/tools/nocomment --check
 run node scripts/check-no-comments.mjs --check
 run ./scripts/check-zig-patterns.sh
@@ -49,9 +49,9 @@ run python3 .claude/skills/verify/scripts/rust-sdk-usage.py --output-dir "$artif
 run python3 .claude/skills/verify/scripts/go-sdk-usage.py --output-dir "$artifacts/go-sdk-usage"
 run python3 .claude/skills/verify/scripts/ts-sdk-usage.py --output-dir "$artifacts/ts-sdk-usage"
 run python3 .claude/skills/verify/scripts/usage-count-validation.py --output-dir "$artifacts/usage-count-validation"
-run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
-run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
-run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
+run ./zig/zig-out/bin/oxap validate fixtures/valid/core-completed.json
+run ./zig/zig-out/bin/oxap validate fixtures/valid/permission-resolved-in-the-refresh-window.json
+run ./zig/zig-out/bin/oxap validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
 run python3 .claude/skills/verify/scripts/redelivery-wire.py --output-dir "$artifacts/redelivery-wire"
 run python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir "$artifacts/interaction-binding"
 run python3 .claude/skills/verify/scripts/requester-identity.py --output-dir "$artifacts/requester-identity"
@@ -68,7 +68,7 @@ run python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir "$ar
 run python3 .claude/skills/verify/scripts/rust-go-parity.py --output-dir "$artifacts/rust-go"
 printf '\nRUN: oapx validate fixtures/schema-invalid/missing-envelope-id.json (expect exit 1, schema_invalid)\n'
 set +e
-./zig/zig-out/bin/oapx validate fixtures/schema-invalid/missing-envelope-id.json > "$artifacts/invalid.txt" 2>&1
+./zig/zig-out/bin/oxap validate fixtures/schema-invalid/missing-envelope-id.json > "$artifacts/invalid.txt" 2>&1
 code=$?
 set -e
 cat "$artifacts/invalid.txt"

@@ -13,7 +13,7 @@ limit metadata to the hub. Invalid diagnostic bytes must be saved with
 replacement decoding while the timeout and run directory survive.
 
 ```sh
-python3 scripts/check-bench-stall-capture.py --binary zig/zig-out/bin/oapx --output-dir /tmp/oap-stall-check
+python3 scripts/check-bench-stall-capture.py --binary zig/zig-out/bin/oxap --output-dir /tmp/oap-stall-check
 ```
 
 Require 5/5 checks, exit 0 and `live_stack_captured: true`. The macOS stack uses

@@ -58,7 +58,7 @@ fn hex(bytes: []const u8) [64]u8 {
 
 pub fn install(allocator: std.mem.Allocator, arena: std.mem.Allocator, home: []const u8, why: *[]const u8) ![]const u8 {
     const pinned = artifact orelse {
-        why.* = "oapx has not been tested with an OpenCode build for this platform";
+        why.* = "oxap has not been tested with an OpenCode build for this platform";
         return error.InstallRefused;
     };
     const url = try std.mem.concat(arena, u8, &.{ download_base, version, "/", pinned.name });

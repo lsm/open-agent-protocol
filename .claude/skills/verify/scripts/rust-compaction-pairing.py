@@ -100,7 +100,7 @@ def replay(language, output, label, case):
     command = {
         "go": [str(output / "goap"), "validate", "--format", "json"],
         "rust": [str(ROOT / "rust/target/debug/examples/validate")],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format", "json"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"],
     }[language]
     result = run(command + [str(path)], output, label)
     data = json.loads(result.stdout)

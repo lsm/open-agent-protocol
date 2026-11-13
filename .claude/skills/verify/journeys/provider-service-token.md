@@ -4,7 +4,7 @@ Build the product and run the synthetic HTTP journey on the designated test host
 
 ```sh
 zig build --build-file zig/build.zig -Doptimize=ReleaseSafe
-python3 .claude/skills/verify/scripts/provider-service-token.py --binary zig/zig-out/bin/oapx --output-dir /tmp/oap-service-token-evidence
+python3 .claude/skills/verify/scripts/provider-service-token.py --binary zig/zig-out/bin/oxap --output-dir /tmp/oap-service-token-evidence
 zig build --build-file zig/build.zig test-unit-core test-unit-tools test-unit-protocol test-unit-agent-bridge test-unit-makai-cli -Doptimize=ReleaseSafe --summary all
 ```
 

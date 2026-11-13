@@ -1968,7 +1968,7 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        if (away and changed) try self.state.appendTranscript(.system, "OpenCode runs this model with its own loop and tools, so this is a new session; pick one of oapx's models to come back, on a new session too.");
+        if (away and changed) try self.state.appendTranscript(.system, "OpenCode runs this model with its own loop and tools, so this is a new session; pick one of oxap's models to come back, on a new session too.");
         if (runtime.currentModel()) |m| {
             try self.state.status.setModelWithContext(self.allocator, m.id, m.provider, m.context_window);
             self.state.telemetry.context_window = m.context_window;
@@ -2743,7 +2743,7 @@ pub const App = struct {
             }
         } else |_| {}
         if (std.mem.eql(u8, provider_id, "openai-codex")) {
-            try self.state.appendTranscript(.system, "oapx imports the Codex CLI's login while it has one; sign out there too to drop openai-codex");
+            try self.state.appendTranscript(.system, "oxap imports the Codex CLI's login while it has one; sign out there too to drop openai-codex");
         }
         if (!removed) return;
         self.refreshLoginStatus();
@@ -4404,7 +4404,7 @@ pub const TuiModel = struct {
 
     fn tabTitle(buffer: []u8, title: []const u8) []const u8 {
         if (title.len == 0) return "";
-        const prefix = "oapx \u{b7} ";
+        const prefix = "oxap \u{b7} ";
         @memcpy(buffer[0..prefix.len], prefix);
         var end = @min(title.len, buffer.len - prefix.len);
         while (end < title.len and end > 0 and (title[end] & 0xC0) == 0x80) end -= 1;
@@ -5753,10 +5753,10 @@ fn failureText(err: anyerror) []const u8 {
     return if (err == error.NoModelConfigured) login_first_notice else @errorName(err);
 }
 
-pub const login_first_notice = "No model: log in to a provider first. Run /login <provider> here, for example /login anthropic, or oapx auth login --provider <id> in a shell; its models appear once you have.";
-pub const over_oap_notice = "this session runs on another endpoint: the hub's with --attach, or the backend's with --backend. Resume and automatic worktrees are not carried over to it, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach or --backend for them.";
+pub const login_first_notice = "No model: log in to a provider first. Run /login <provider> here, for example /login anthropic, or oxap auth login --provider <id> in a shell; its models appear once you have.";
+pub const over_oap_notice = "this session runs on another endpoint: the hub's with --attach, or the backend's with --backend. Resume and automatic worktrees are not carried over to it, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oxap without --attach or --backend for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
-pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oapx without --attach or --backend to compact.";
+pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oxap without --attach or --backend to compact.";
 
 pub const Execution = union(enum) {
     in_process,
@@ -5770,7 +5770,7 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
 
     var stderr_redirect = redirectStderrToLog(allocator, &environ_map);
     defer stderr_redirect.restore();
-    if (stderr_redirect.active()) std.debug.print("--- oapx terminal UI session started at {d} ms (stderr redirected here while the TUI owns the terminal) ---\n", .{compat.time.nowMillis()});
+    if (stderr_redirect.active()) std.debug.print("--- oxap terminal UI session started at {d} ms (stderr redirected here while the TUI owns the terminal) ---\n", .{compat.time.nowMillis()});
 
     const fixture = try FixtureRuntime.fromEnv(allocator, &environ_map);
     defer if (fixture) |runtime| runtime.deinit();
@@ -6550,7 +6550,7 @@ test "the terminal tab title follows the session title and is cleared on quit" {
 
     try model.app.?.renameSession("Freeze hunt");
     const titled = model.update(.{ .window_size = .{ .width = 80, .height = 24 } }, &tctx.ctx);
-    try std.testing.expectEqualStrings("oapx \u{b7} Freeze hunt", titled.batch[0].set_title);
+    try std.testing.expectEqualStrings("oxap \u{b7} Freeze hunt", titled.batch[0].set_title);
 
     const unchanged = model.update(.{ .window_size = .{ .width = 80, .height = 24 } }, &tctx.ctx);
     try std.testing.expect(std.meta.activeTag(unchanged) != .batch);

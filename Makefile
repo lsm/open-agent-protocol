@@ -8,8 +8,8 @@ ZIG_GLOBAL_CACHE := $(shell $(ZIG) env 2>/dev/null | sed -n 's/.*global_cache_di
 .PHONY: help build install tui test test-tui check clean clean-all
 
 help:
-	@echo "make build      build oapx into zig/zig-out/bin, ReleaseSafe (OPTIMIZE=Debug for a debug build; OAPX_CODESIGN_IDENTITY=<sha1> to sign)"
-	@echo "make install    build, then put oapx in $(PREFIX)/bin (PREFIX=<dir> to change)"
+	@echo "make build      build oxap into zig/zig-out/bin, ReleaseSafe (OPTIMIZE=Debug for a debug build; OAPX_CODESIGN_IDENTITY=<sha1> to sign)"
+	@echo "make install    build, then put oxap and the oapx alias in $(PREFIX)/bin (PREFIX=<dir> to change)"
 	@echo "make tui        build, then start the TUI (extra flags: make tui ARGS='tui --context-window 200k')"
 	@echo "make test       run every unit test group"
 	@echo "make test-tui   run the TUI unit tests"
@@ -20,15 +20,16 @@ help:
 build:
 	$(ZIG) build --build-file zig/build.zig -Doptimize=$(OPTIMIZE)
 ifneq ($(OAPX_CODESIGN_IDENTITY),)
-	codesign --force --identifier ai.hyperneo.oap --sign "$(OAPX_CODESIGN_IDENTITY)" zig/zig-out/bin/oapx
+	codesign --force --identifier ai.hyperneo.oap --sign "$(OAPX_CODESIGN_IDENTITY)" zig/zig-out/bin/oxap
+	cp zig/zig-out/bin/oxap zig/zig-out/bin/oapx
 endif
 
 install: build
 	mkdir -p "$(PREFIX)/bin"
-	tmp="$(PREFIX)/bin/.oapx.install.$$$$" && trap 'rm -f "$$tmp"' EXIT && cp zig/zig-out/bin/oapx "$$tmp" && mv -f "$$tmp" "$(PREFIX)/bin/oapx"
+	for name in oxap oapx; do tmp="$(PREFIX)/bin/.$$name.install.$$$$" && trap 'rm -f "$$tmp"' EXIT && cp "zig/zig-out/bin/$$name" "$$tmp" && mv -f "$$tmp" "$(PREFIX)/bin/$$name"; done
 
 tui: build
-	./zig/zig-out/bin/oapx $(ARGS)
+	./zig/zig-out/bin/oxap $(ARGS)
 
 test:
 	$(ZIG) build --build-file zig/build.zig test

@@ -183,7 +183,7 @@ def main():
         trace_path.write_text(json.dumps(trace(observed['rust'])))
         for validator, command in [('go', [str(output / 'goap'), 'validate']),
                                    ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]),
-                                   ('zig', [str(ROOT / 'zig/zig-out/bin/oapx'), 'validate'])]:
+                                   ('zig', [str(ROOT / 'zig/zig-out/bin/oxap'), 'validate'])]:
             peer.run(command + [str(trace_path)], case / f'{validator}-validation.log')
         print(f'PASS {name}: public Go/Rust snapshots, events and parsed native wire agree; children reaped; three validators accept trace', flush=True)
     print(f'PASS live config replacement. Evidence: {output}', flush=True)

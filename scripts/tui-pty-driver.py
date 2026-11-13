@@ -32,7 +32,7 @@
 #
 # Usage:
 #   zig build install -Doptimize=ReleaseFast --prefix /tmp/oapx-pty
-#   python3 scripts/tui-pty-driver.py --binary /tmp/oapx-pty/bin/oapx \
+#   python3 scripts/tui-pty-driver.py --binary /tmp/oapx-pty/bin/oxap \
 #       --output-dir tui-pty-out
 #   python3 scripts/tui-pty-driver.py --binary ... --scenario all
 #

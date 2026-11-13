@@ -96,7 +96,7 @@ class Hub:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--oapx", default=str(ROOT / "zig/zig-out/bin/oapx"))
+    parser.add_argument("--oapx", default=str(ROOT / "zig/zig-out/bin/oxap"))
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)

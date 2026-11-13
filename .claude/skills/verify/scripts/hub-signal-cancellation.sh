@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/../../../.." && pwd)
 proof_dir=${1:?pass an evidence directory}
 repetitions=${2:-25}
-binary=${OAP_OAPX_BIN:-$repo_root/zig/zig-out/bin/oapx}
+binary=${OAP_OAPX_BIN:-$repo_root/zig/zig-out/bin/oxap}
 go_cache=$(go env GOCACHE)
 go_modules=$(go env GOMODCACHE)
 probe_home=$(mktemp -d "${TMPDIR:-/tmp}/oap-hub-signal.XXXXXX")

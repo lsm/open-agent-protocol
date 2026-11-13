@@ -103,7 +103,7 @@ def verify(output):
     validators = {
         "rust": [str(ROOT / "rust/target/debug/examples/validate")],
         "go": [str(goap), "validate"],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate"],
     }
     comparisons = 0
     for name, questions, answers, indexed, valid in cases():

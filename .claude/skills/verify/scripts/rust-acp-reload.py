@@ -151,7 +151,7 @@ def main():
         if 'failure' not in observed['rust']:
             trace_path = case / 'trace.json'
             trace_path.write_text(json.dumps(trace(observed['rust'])))
-            for validator, command in [('go', [str(output / 'goap'), 'validate']), ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]), ('zig', [str(ROOT / 'zig/zig-out/bin/oapx'), 'validate'])]:
+            for validator, command in [('go', [str(output / 'goap'), 'validate']), ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]), ('zig', [str(ROOT / 'zig/zig-out/bin/oxap'), 'validate'])]:
                 peer.run(command + [str(trace_path)], case / f'{validator}-validation.log')
         print(f'PASS {name}: public Go/Rust state, events and structured refusal agree; parsed native wire matches; children reaped', flush=True)
     print(f'PASS capability-gated reload. Evidence: {output}', flush=True)

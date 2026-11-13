@@ -56,7 +56,7 @@ def main():
     commands = {
         "go": [str(output / "goap"), "validate", "--format=json"],
         "rust": [str(ROOT / "rust/target/debug/examples/validate")],
-        "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format=json"],
+        "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format=json"],
     }
     manifest = {f["id"]: f for f in json.loads((ROOT / "fixtures/manifest.json").read_text())["fixtures"]}
 

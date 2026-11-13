@@ -164,7 +164,7 @@ def main():
                 assert answer['result']['outcome'] == dict(outcome='cancelled'), answer
         path = case/'trace.json'
         path.write_text(json.dumps(trace(observed['rust']), ensure_ascii=False, indent=2))
-        for language, command in [('go', [str(output/'goap'), 'validate']), ('rust', [str(ROOT/'rust/target/debug/examples/validate')]), ('zig', [str(ROOT/'zig/zig-out/bin/oapx'), 'validate'])]:
+        for language, command in [('go', [str(output/'goap'), 'validate']), ('rust', [str(ROOT/'rust/target/debug/examples/validate')]), ('zig', [str(ROOT/'zig/zig-out/bin/oxap'), 'validate'])]:
             peer.run(command+[str(path)], case/f'validate-{language}.log')
         print(f'PASS {mode}: public cancel intent/confirmation, Go/Rust events and parsed native frames agree; three validators accept actual Rust events; peers reaped', flush=True)
     integration = peer.run(['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--test', 'cancel', '--test', 'cancel_order', '--', '--nocapture'], output/'integration.log')

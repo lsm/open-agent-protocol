@@ -11,7 +11,7 @@ then run the journey normally to ensure the supported surface still executes.
 ```sh
 go test ./go/cmd/goap -run '^TestHubOpenDirectorySkipsWithoutPython$' -count=1 -v
 zig build --build-file zig/build.zig -Doptimize=ReleaseSafe -j4
-OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubOpenDirectory$' -count=1 -v
+OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oxap" go test ./go/cmd/goap -run '^TestHubOpenDirectory$' -count=1 -v
 go test ./go/serve/servehttp -run '^TestAReopenDirectoryConflictIsABadRequest$' -count=1 -v
 zig build --build-file zig/build.zig test-unit-hub -Doptimize=ReleaseSafe -j4
 ```
@@ -22,7 +22,7 @@ run the same script once with each binary and a fresh output directory.
 ```sh
 go build -o /tmp/hub-directory-goap ./go/cmd/goap
 python3 .claude/skills/verify/scripts/hub-open-directory.py --binary /tmp/hub-directory-goap --output-dir /tmp/hub-directory-go-<unique-name>
-python3 .claude/skills/verify/scripts/hub-open-directory.py --binary zig/zig-out/bin/oapx --output-dir /tmp/hub-directory-zig-<unique-name>
+python3 .claude/skills/verify/scripts/hub-open-directory.py --binary zig/zig-out/bin/oxap --output-dir /tmp/hub-directory-zig-<unique-name>
 ```
 
 Require PASS from both. The script observes host-named sessions in separate

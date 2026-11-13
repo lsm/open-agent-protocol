@@ -164,7 +164,7 @@ def main():
         frames[2]['payload']['messages'] = [dict(role='user', content='hello')]
         path = case/'trace.json'
         path.write_text(json.dumps(frames, ensure_ascii=False, indent=2))
-        for language, command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oapx'),'validate'])]:
+        for language, command in [('go',[str(output/'goap'),'validate']),('rust',[str(ROOT/'rust/target/debug/examples/validate')]),('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
             checked = subprocess.run(command+[str(path)], cwd=ROOT, capture_output=True, text=True, timeout=90)
             raw = checked.stdout + checked.stderr
             (case/f'validate-{language}.log').write_text(raw)

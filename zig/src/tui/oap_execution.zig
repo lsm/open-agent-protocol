@@ -453,7 +453,7 @@ pub const OapExecution = struct {
             try switch_map.put("model_id", .{ .string = wanted });
             _ = self.exchange(a, "session.model.switch.request", switch_map.value(), true) catch |err| switch (err) {
                 error.OapRequestRefused => {
-                    const message = try std.fmt.allocPrint(self.allocator, "{s} is not in the OAP session's catalog, so the session runs on its own default model; refresh or restart oapx tui to pick it up", .{wanted});
+                    const message = try std.fmt.allocPrint(self.allocator, "{s} is not in the OAP session's catalog, so the session runs on its own default model; refresh or restart oxap tui to pick it up", .{wanted});
                     self.notice(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
                 },
                 else => return err,

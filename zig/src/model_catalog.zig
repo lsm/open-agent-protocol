@@ -357,7 +357,7 @@ fn loadGitHubCopilotModels(allocator: std.mem.Allocator, storage: ?*oauth_storag
         return models.toOwnedSlice(allocator);
     }
 
-    note(notes, github_copilot_provider_id, "GitHub has not listed your models yet, so github-copilot shows oapx's built-in list, which your plan may not offer", .{});
+    note(notes, github_copilot_provider_id, "GitHub has not listed your models yet, so github-copilot shows oxap's built-in list, which your plan may not offer", .{});
     const ids: []const []const u8 = discovered orelse &github_copilot.KNOWN_COPILOT_MODELS;
     for (ids) |id| {
         var model = try copilotModel(allocator, id, base_url, null);
@@ -410,7 +410,7 @@ fn loadCachedCopilotModels(allocator: std.mem.Allocator, max_age_ms: ?i64) !?[]D
 
 fn listedCopilotModels(allocator: std.mem.Allocator, body: []const u8, notes: ?*RefreshNotes) ![]DiscoveredModel {
     const models = try parseCopilotModels(allocator, body);
-    if (models.len == 0) note(notes, github_copilot_provider_id, "GitHub Copilot answered, but your plan offers no model oapx can pick (Copilot Free chooses models automatically), so github-copilot lists no models", .{});
+    if (models.len == 0) note(notes, github_copilot_provider_id, "GitHub Copilot answered, but your plan offers no model oxap can pick (Copilot Free chooses models automatically), so github-copilot lists no models", .{});
     return models;
 }
 
@@ -3231,7 +3231,7 @@ test "a Copilot listing that offers no pickable chat model lists none and says w
 
     try std.testing.expectEqual(@as(usize, 0), models.len);
     try std.testing.expectEqual(@as(usize, 1), notes.items.items.len);
-    try std.testing.expect(std.mem.startsWith(u8, notes.items.items[0].reason, "GitHub Copilot answered, but your plan offers no model oapx can pick"));
+    try std.testing.expect(std.mem.startsWith(u8, notes.items.items[0].reason, "GitHub Copilot answered, but your plan offers no model oxap can pick"));
 }
 
 test "Copilot models from the built-in list come with a note that GitHub has not confirmed them" {

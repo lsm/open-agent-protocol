@@ -261,7 +261,7 @@ for index, line in enumerate(sys.stdin):
     run(['go', 'build', '-o', str(output / 'goap'), './go/cmd/goap'], output / 'goap-build.log')
     for name, command in [('go', [str(output / 'goap'), 'validate']),
                           ('rust', [str(ROOT / 'rust/target/debug/examples/validate')]),
-                          ('zig', [str(ROOT / 'zig/zig-out/bin/oapx'), 'validate'])]:
+                          ('zig', [str(ROOT / 'zig/zig-out/bin/oxap'), 'validate'])]:
         run(command + [str(trace_path)], output / f'trace-{name}.log')
         print(f'PASS confirmed switch/state trace validates with {name}')
     print(f'PASS model-switch confirmation. Evidence: {output}')
