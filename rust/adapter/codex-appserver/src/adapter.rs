@@ -1,20 +1,31 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use oap_adapter::gojson::{decode, go_quote, Decode};
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{
+    refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
     Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     CapabilityDescriptor, CompactionKind, EndpointDescriptor, FeatureSupport, ReasoningLevel,
-    SupportLevel, FEATURE_COMPACTION_POLICY, FEATURE_INSTRUCTIONS, FEATURE_MODEL_SELECTION,
-    FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING, FEATURE_STRUCTURED_OUTPUT,
-    FEATURE_TOOL_SELECTION, MODE_SESSION_LIVE, MODE_SESSION_OPEN, PROFILE, SCOPE_RUN, VERSION,
+    RecoveryMetadata, SessionState, SessionStatus, SupportLevel, FEATURE_COMPACTION_POLICY,
+    FEATURE_INSTRUCTIONS, FEATURE_MODEL_SELECTION, FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING,
+    FEATURE_STRUCTURED_OUTPUT, FEATURE_TOOL_SELECTION, MODE_SESSION_LIVE, MODE_SESSION_OPEN,
+    PROFILE, SCOPE_RUN, VERSION,
 };
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::client::ClientFactory;
-use crate::process::ProcessConfig;
+use crate::client::{Client, ClientFactory};
+use crate::native::{
+    ThreadResumeParams, ThreadResumeResponse, ThreadStartParams, ThreadStartResponse,
+    METHOD_THREAD_RESUME, METHOD_THREAD_START,
+};
+use crate::permissions::confirm;
+use crate::process::{ClientInfo, ProcessConfig, ProcessFactory};
+use crate::rpc::{self, error, Fault};
+use crate::session::Session;
 
 pub(crate) const ENDPOINT_ID: &str = "codex.app-server";
 const DEFAULT_JOURNAL_CAPACITY: usize = 256;
@@ -34,6 +45,7 @@ pub struct Config {
 #[derive(Clone)]
 pub struct Adapter {
     config: Config,
+    factory: Arc<dyn ClientFactory>,
 }
 
 pub fn pin() -> &'static oap_harness::Version {
@@ -50,7 +62,118 @@ impl Adapter {
         if config.journal_capacity == 0 {
             config.journal_capacity = DEFAULT_JOURNAL_CAPACITY;
         }
-        Ok(Self { config })
+        let factory = config.factory.clone().unwrap_or_else(|| {
+            let mut process = config.process.clone();
+            process.client_info = ClientInfo {
+                name: "open-agent-protocol".into(),
+                version: VERSION.into(),
+                ..ClientInfo::default()
+            };
+            Arc::new(ProcessFactory(process))
+        });
+        Ok(Self { config, factory })
+    }
+
+    pub fn open(&self, request: OpenRequest) -> Result<Session, Error> {
+        refuse_unadvertised_tool_sources(&request, &[])?;
+        refuse_unadvertised_tools(&request, &[])?;
+        refuse_unadvertised_settings(&request, &self.describe().capabilities)?;
+        let settings = thread_config(&request)?;
+        if request.participant.id.as_str().is_empty() {
+            return Err(Error::InvalidParticipant);
+        }
+        let client = self.factory.start(None).map_err(Error::harness)?;
+        let fail = |failure: Error| {
+            let _ = client.close();
+            failure
+        };
+        let mut thread_id = self.config.resume_thread_id.clone();
+        if request.reopen {
+            thread_id.clone_from(&request.native_session_id);
+            if thread_id.is_empty() {
+                return Err(fail(reopen_refused(
+                    "no Codex thread is bound to this session",
+                )));
+            }
+        }
+        let mut model = self.config.model.clone();
+        let mut level = request.reasoning_level.clone();
+        let mut recovery = None;
+        if thread_id.is_empty() {
+            let params = ThreadStartParams {
+                model: self.config.model.clone(),
+                cwd: self.config.process.dir.clone(),
+                approval_policy: self.config.approval_policy.clone(),
+                sandbox: self.config.sandbox.clone(),
+                config: settings,
+            };
+            let response: ThreadStartResponse = call(&*client, METHOD_THREAD_START, &params)
+                .map_err(|failure| {
+                    fail(Error::Harness(format!("start Codex thread: {failure}")))
+                })?;
+            thread_id = response.thread.id;
+            if thread_id.is_empty() {
+                return Err(fail(native_protocol("thread/start returned no thread id")));
+            }
+        } else {
+            let params = ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                cwd: self.config.process.dir.clone(),
+                approval_policy: self.config.approval_policy.clone(),
+                sandbox: self.config.sandbox.clone(),
+                config: settings,
+            };
+            let response: ThreadResumeResponse = call(&*client, METHOD_THREAD_RESUME, &params)
+                .map_err(|failure| {
+                    fail(match failure.fault {
+                        Fault::Remote { .. } if request.reopen => reopen_refused(&format!(
+                            "Codex could not load the bound thread: {failure}"
+                        )),
+                        _ => Error::Harness(format!("resume Codex thread: {failure}")),
+                    })
+                })?;
+            if response.thread.id != thread_id {
+                return Err(fail(native_protocol(&format!(
+                    "thread/resume returned unexpected thread id {}",
+                    go_quote(&response.thread.id)
+                ))));
+            }
+            if let Err(detail) = confirm(&params, &response) {
+                return Err(fail(if request.reopen {
+                    reopen_refused(&detail)
+                } else {
+                    Error::Harness(format!("resume Codex thread: {detail}"))
+                }));
+            }
+            if !response.model.is_empty() {
+                model = response.model;
+            }
+            if level.is_empty() {
+                level = reasoning_level(&response.reasoning_effort);
+            }
+            if request.reopen {
+                recovery = Some(RecoveryMetadata {
+                    recovered: true,
+                    ..RecoveryMetadata::default()
+                });
+            }
+        }
+        let session_id = if request.session_id.as_str().is_empty() {
+            self.config.runtime.new_id("session").into()
+        } else {
+            request.session_id
+        };
+        let state = SessionState {
+            session_id,
+            status: SessionStatus::IDLE,
+            current_model_id: model,
+            updated_at_ms: self.config.runtime.now_ms(),
+            recovery,
+            reasoning_level: level,
+            compaction_policy: request.compaction_policy,
+            ..SessionState::default()
+        };
+        Ok(Session::new(client, thread_id, state))
     }
 
     pub fn describe(&self) -> Descriptor {
@@ -80,6 +203,37 @@ impl Adapter {
             cancellation_implementation: "native_turn_interrupt".into(),
         }
     }
+}
+
+fn reopen_refused(detail: &str) -> Error {
+    Error::UnsupportedControl(Box::new(UnsupportedControl {
+        feature: FEATURE_OPEN_REOPEN.into(),
+        reason: CONTROL_UNSATISFIABLE,
+        detail: detail.into(),
+        ..UnsupportedControl::default()
+    }))
+}
+
+fn native_protocol(detail: &str) -> Error {
+    Error::Harness(format!(
+        "codex app-server adapter: invalid native protocol observation: {detail}"
+    ))
+}
+
+fn call<T: Decode>(
+    client: &dyn Client,
+    method: &str,
+    params: &impl Serialize,
+) -> Result<T, rpc::Error> {
+    let params = serde_json::value::to_raw_value(params)
+        .map_err(|failure| error(Fault::Encode(failure.to_string())))?;
+    let result = client.call(method, params, None)?;
+    decode(result.get().as_bytes()).map_err(|failure| {
+        error(Fault::Decode {
+            method: method.into(),
+            detail: failure.to_string(),
+        })
+    })
 }
 
 fn features() -> BTreeMap<String, FeatureSupport> {
