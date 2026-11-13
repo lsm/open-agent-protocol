@@ -16,7 +16,14 @@ from oap_sdk.binary import BinaryResolverOptions, resolve_makai_binary
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("OAP_SDK_BINARY_PATH", "OAP_SDK_BINARY_URL", "OAP_SDK_BINARY_SHA256"):
+    for name in (
+        "OXAP_SDK_BINARY_PATH",
+        "OAP_SDK_BINARY_PATH",
+        "OXAP_SDK_BINARY_URL",
+        "OAP_SDK_BINARY_URL",
+        "OXAP_SDK_BINARY_SHA256",
+        "OAP_SDK_BINARY_SHA256",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -26,6 +33,76 @@ def make_binary(directory: Path, name: str = "oapx") -> Path:
     path.write_bytes(b"#!/bin/sh\nexit 0\n")
     path.chmod(0o755)
     return path
+
+
+def platform_name(name: str) -> str:
+    return f"{name}.exe" if os.name == "nt" else name
+
+
+def test_oxap_env_path_outranks_legacy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preferred = make_binary(tmp_path / "preferred", name="from-oxap")
+    legacy = make_binary(tmp_path / "legacy", name="from-oap")
+    monkeypatch.setenv("OXAP_SDK_BINARY_PATH", str(preferred))
+    monkeypatch.setenv("OAP_SDK_BINARY_PATH", str(legacy))
+    assert resolve_makai_binary() == str(preferred.resolve())
+
+
+def test_legacy_env_path_still_resolves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    legacy = make_binary(tmp_path / "legacy", name="from-oap")
+    monkeypatch.setenv("OAP_SDK_BINARY_PATH", str(legacy))
+    assert resolve_makai_binary() == str(legacy.resolve())
+
+
+def test_oxap_local_build_outranks_oapx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_binary(tmp_path / "zig-out" / "bin", name=platform_name("oapx"))
+    preferred = make_binary(tmp_path / "zig" / "zig-out" / "bin", name=platform_name("oxap"))
+    monkeypatch.chdir(tmp_path)
+    assert resolve_makai_binary() == str(preferred)
+
+
+def test_legacy_local_build_still_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = make_binary(tmp_path / "zig-out" / "bin", name=platform_name("oapx"))
+    monkeypatch.chdir(tmp_path)
+    assert resolve_makai_binary() == str(legacy)
+
+
+def test_oxap_on_path_outranks_oapx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = tmp_path / "bin"
+    make_binary(bin_dir, name=platform_name("oapx"))
+    preferred = make_binary(bin_dir, name=platform_name("oxap"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert resolve_makai_binary() == str(preferred)
+
+
+def test_oapx_on_path_still_resolves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = tmp_path / "bin"
+    legacy = make_binary(bin_dir, name=platform_name("oapx"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert resolve_makai_binary() == str(legacy)
+
+
+def test_bare_name_fallback_is_the_oxap_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    monkeypatch.setenv("PATH", str(empty))
+    assert resolve_makai_binary() == platform_name("oxap")
 
 
 def test_explicit_path_wins(tmp_path: Path) -> None:
@@ -81,7 +158,7 @@ def test_falls_back_to_bare_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     empty.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(empty))
-    assert resolve_makai_binary() == "oapx"
+    assert resolve_makai_binary() == platform_name("oxap")
 
 
 def test_legacy_makai_does_not_shadow_nested_oapx(
@@ -122,7 +199,7 @@ def test_an_install_predating_the_rename_is_not_resolved(
     empty.mkdir()
     monkeypatch.chdir(empty)
     monkeypatch.setenv("PATH", str(tmp_path / "bin"))
-    assert resolve_makai_binary() == "oapx"
+    assert resolve_makai_binary() == platform_name("oxap")
 
 
 class _Server(http.server.BaseHTTPRequestHandler):
@@ -220,3 +297,114 @@ def test_rejects_non_http_url(tmp_path: Path) -> None:
                 cache_dir=str(tmp_path),
             )
         )
+
+
+@pytest.fixture
+def named_server() -> Iterator[tuple[str, list[str]]]:
+    requests: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            requests.append(self.path)
+            body = b"#!/bin/sh\necho oxap\n" if "oxap" in self.path else b"#!/bin/sh\necho oapx\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = _FastHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+_OXAP_BODY = b"#!/bin/sh\necho oxap\n"
+_OAPX_BODY = b"#!/bin/sh\necho oapx\n"
+
+
+def test_oxap_url_outranks_legacy_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named_server: tuple[str, list[str]]
+) -> None:
+    base, requests = named_server
+    monkeypatch.setenv("OXAP_SDK_BINARY_URL", f"{base}/dist/oxap")
+    monkeypatch.setenv("OXAP_SDK_BINARY_SHA256", hashlib.sha256(_OXAP_BODY).hexdigest())
+    monkeypatch.setenv("OAP_SDK_BINARY_URL", f"{base}/dist/oapx")
+    monkeypatch.setenv("OAP_SDK_BINARY_SHA256", hashlib.sha256(_OAPX_BODY).hexdigest())
+    resolved = resolve_makai_binary(BinaryResolverOptions(cache_dir=str(tmp_path / "cache")))
+    assert Path(resolved).name == platform_name("oxap")
+    assert Path(resolved).read_bytes() == _OXAP_BODY
+    assert requests == ["/dist/oxap"]
+
+
+def test_legacy_url_still_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named_server: tuple[str, list[str]]
+) -> None:
+    base, requests = named_server
+    monkeypatch.setenv("OAP_SDK_BINARY_URL", f"{base}/dist/oapx")
+    monkeypatch.setenv("OAP_SDK_BINARY_SHA256", hashlib.sha256(_OAPX_BODY).hexdigest())
+    resolved = resolve_makai_binary(BinaryResolverOptions(cache_dir=str(tmp_path / "cache")))
+    assert Path(resolved).name == platform_name("oapx")
+    assert requests == ["/dist/oapx"]
+
+
+def test_a_checksum_is_never_borrowed_across_the_two_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named_server: tuple[str, list[str]]
+) -> None:
+    base, requests = named_server
+    monkeypatch.setenv("OXAP_SDK_BINARY_URL", f"{base}/dist/oxap")
+    monkeypatch.setenv("OAP_SDK_BINARY_SHA256", hashlib.sha256(_OAPX_BODY).hexdigest())
+    with pytest.raises(ValueError, match="SHA256 checksum is required"):
+        resolve_makai_binary(BinaryResolverOptions(cache_dir=str(tmp_path / "cache")))
+
+    monkeypatch.delenv("OXAP_SDK_BINARY_URL")
+    monkeypatch.delenv("OAP_SDK_BINARY_SHA256")
+    monkeypatch.setenv("OAP_SDK_BINARY_URL", f"{base}/dist/oapx")
+    monkeypatch.setenv("OXAP_SDK_BINARY_SHA256", hashlib.sha256(_OXAP_BODY).hexdigest())
+    with pytest.raises(ValueError, match="SHA256 checksum is required"):
+        resolve_makai_binary(BinaryResolverOptions(cache_dir=str(tmp_path / "cache")))
+    assert requests == []
+
+
+def test_an_environment_url_takes_the_option_checksum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named_server: tuple[str, list[str]]
+) -> None:
+    base, _ = named_server
+    monkeypatch.setenv("OXAP_SDK_BINARY_URL", f"{base}/dist/oxap")
+    resolved = resolve_makai_binary(
+        BinaryResolverOptions(
+            checksum_sha256=hashlib.sha256(_OXAP_BODY).hexdigest(),
+            cache_dir=str(tmp_path / "cache"),
+        )
+    )
+    assert Path(resolved).read_bytes() == _OXAP_BODY
+
+
+def test_an_option_url_takes_either_environment_checksum_oxap_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named_server: tuple[str, list[str]]
+) -> None:
+    base, _ = named_server
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("OXAP_SDK_BINARY_SHA256", hashlib.sha256(_OXAP_BODY).hexdigest())
+    preferred = resolve_makai_binary(
+        BinaryResolverOptions(
+            binary_url=f"{base}/dist/oxap", checksum_sha256="0" * 64, cache_dir=str(cache / "a")
+        )
+    )
+    assert Path(preferred).read_bytes() == _OXAP_BODY
+
+    monkeypatch.delenv("OXAP_SDK_BINARY_SHA256")
+    monkeypatch.setenv("OAP_SDK_BINARY_SHA256", hashlib.sha256(_OAPX_BODY).hexdigest())
+    legacy = resolve_makai_binary(
+        BinaryResolverOptions(
+            binary_url=f"{base}/dist/oapx", checksum_sha256="0" * 64, cache_dir=str(cache / "b")
+        )
+    )
+    assert Path(legacy).read_bytes() == _OAPX_BODY
