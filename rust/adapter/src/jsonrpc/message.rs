@@ -30,8 +30,7 @@ impl RequestId {
                 .map(Self::String)
                 .map_err(|error| Fault::InvalidId(error.to_string()));
         }
-        let integer = text.strip_prefix('-').unwrap_or(text);
-        if integer.is_empty() || !integer.bytes().all(|byte| byte.is_ascii_digit()) {
+        if !text.starts_with(|first: char| first == '-' || first.is_ascii_digit()) {
             return Err(Fault::InvalidId(String::new()));
         }
         text.parse()
