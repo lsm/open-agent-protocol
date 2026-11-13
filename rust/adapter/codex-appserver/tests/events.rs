@@ -274,3 +274,49 @@ fn a_settled_run_lets_the_session_close() {
     session.close().unwrap();
     assert_eq!(fake.closes(), 1);
 }
+
+fn trace_with_codex_messages(ahead: bool) -> (String, Vec<String>) {
+    let (fake, _adapter, session) = open();
+    fake.hold_replies_behind_barriers();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !fake.activated() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the session never read Codex's queue"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let started = r#"{"threadId":"t-1","turn":{"id":"turn-1","status":"inProgress"}}"#;
+    let finished = completed("completed", Value::Null);
+    let early = ahead.then(|| {
+        fake.notify_ahead_of_next_reply("turn/started", started);
+        let answers = fake.request_ahead_of_next_reply("item/tool/call", "{}");
+        fake.notify_ahead_of_next_reply("turn/completed", &finished);
+        answers
+    });
+    let (_admission, mut stream) = submit(&session);
+    let answers = early.unwrap_or_else(|| {
+        fake.notify("turn/started", started);
+        let answers = fake.request("item/tool/call", "{}");
+        fake.notify("turn/completed", &finished);
+        answers
+    });
+    let events = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| events(&mut stream)))
+        .unwrap_or_default();
+    let answered = answers
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|answer| format!("{answer:?}"))
+        .collect();
+    (serde_json::to_string(&events).unwrap(), answered)
+}
+
+#[test]
+fn what_codex_sends_ahead_of_its_turn_start_answer_lands_as_if_after_it() {
+    let after = trace_with_codex_messages(false);
+    assert!(after.0.contains("run.completed"), "{}", after.0);
+    assert_eq!(after.1.len(), 1);
+    assert_eq!(trace_with_codex_messages(true), after);
+}
