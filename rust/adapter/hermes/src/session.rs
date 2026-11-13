@@ -4,11 +4,15 @@ use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::gojson::go_quote;
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
-use oap_adapter::{refuse_unadvertised_controls, Error, EventStream, InteractionResolution};
+use oap_adapter::{
+    refuse_unadvertised_controls, Error, EventStream, InteractionResolution, Recovery,
+    ResumeRequest,
+};
 use oap_protocol::{
     Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, InputQuestion, InteractionId,
     MessageId, MessageRole, MessageSubmitRequest, MessageSubmitResponse, ParticipantId,
-    RecoveryMetadata, RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus,
+    RecoveryMetadata, RequestedDeliveryMode, RunCancelResponse, RunId, RunStatus,
+    SessionSettingsUpdateRequest, SessionSettingsUpdateResponse, SessionState, SessionStatus,
     SubmissionId, ToolCallId,
 };
 use serde_json::value::RawValue;
@@ -79,7 +83,7 @@ pub(crate) struct Shared {
     stored_id: String,
     pub(crate) runtime: Runtime,
     pub(crate) journal: Journal,
-    prompt: Mutex<()>,
+    pub(crate) prompt: Mutex<()>,
     inner: Mutex<Inner>,
     stop: Mutex<Option<Sender<()>>>,
     pub(crate) stopped: Receiver<()>,
@@ -321,6 +325,21 @@ impl Session {
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
         self.shared.submit(request)
+    }
+
+    pub fn cancel(&self, id: &RunId) -> Result<RunCancelResponse, Error> {
+        self.shared.cancel(id)
+    }
+
+    pub fn update_settings(
+        &self,
+        request: SessionSettingsUpdateRequest,
+    ) -> Result<(SessionSettingsUpdateResponse, SessionState), Error> {
+        self.shared.update_settings(request)
+    }
+
+    pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        self.shared.resume(request)
     }
 
     pub fn resolve(&self, resolution: InteractionResolution) -> Result<(), Error> {

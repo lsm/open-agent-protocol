@@ -2,6 +2,7 @@
 
 pub mod adapter;
 pub mod client;
+mod controls;
 pub mod native;
 pub mod process;
 mod reduce;

@@ -333,10 +333,14 @@ pub fn go_runtime() -> Runtime {
 }
 
 pub fn go_adapter(fake: &Arc<Fake>) -> Adapter {
+    go_adapter_with(fake, 64)
+}
+
+pub fn go_adapter_with(fake: &Arc<Fake>, capacity: usize) -> Adapter {
     Adapter::new(Config {
         factory: Some(Factory::new(fake, "sess0001")),
         model: "hermes-test".into(),
-        journal_capacity: 64,
+        journal_capacity: capacity,
         runtime: go_runtime(),
         ..Config::default()
     })
@@ -344,7 +348,11 @@ pub fn go_adapter(fake: &Arc<Fake>) -> Adapter {
 }
 
 pub fn opened(fake: &Arc<Fake>) -> Session {
-    go_adapter(fake)
+    opened_with_journal(fake, 64)
+}
+
+pub fn opened_with_journal(fake: &Arc<Fake>, capacity: usize) -> Session {
+    go_adapter_with(fake, capacity)
         .open(OpenRequest {
             session_id: "session".into(),
             ..request()
