@@ -15,5 +15,8 @@ oap-protocol = { path = "../../protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 
+[dev-dependencies]
+oap-adapter = { path = "..", features = ["testkit"] }
+
 [lints.rust]
 unsafe_code = "forbid"

@@ -2,8 +2,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::journal::Journal;
-use oap_adapter::Error;
-use oap_protocol::{RecoveryMetadata, SessionState, SessionStatus};
+use oap_adapter::{Error, EventStream};
+use oap_protocol::{
+    MessageSubmitRequest, MessageSubmitResponse, RecoveryMetadata, SessionState, SessionStatus,
+};
 use serde_json::value::RawValue;
 
 use crate::client::Client;
@@ -99,6 +101,14 @@ impl Session {
 
     pub fn native_session_id(&self) -> String {
         self.shared.stored_id.clone()
+    }
+
+    pub fn submit(
+        &self,
+        request: MessageSubmitRequest,
+    ) -> Result<(MessageSubmitResponse, EventStream), Error> {
+        let _ = request;
+        Err(Error::Harness(String::new()))
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
