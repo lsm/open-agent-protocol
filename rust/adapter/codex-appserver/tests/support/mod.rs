@@ -20,16 +20,20 @@ use serde_json::value::RawValue;
 
 pub type Reply = Result<&'static str, &'static str>;
 
+type Gate = (&'static str, Sender<()>, Receiver<()>);
+
 pub struct Fake {
     replies: Mutex<VecDeque<Reply>>,
     calls: Mutex<Vec<(String, String)>>,
     closes: AtomicUsize,
     pub failed: Mutex<Option<String>>,
-    inbound: (Sender<Inbound>, Receiver<Inbound>),
+    inbound: (Mutex<Option<Sender<Inbound>>>, Receiver<Inbound>),
     done: (Sender<()>, Receiver<()>),
     activated: AtomicBool,
     barriers: AtomicBool,
     ahead: Mutex<Vec<Inbound>>,
+    gate: Mutex<Option<Gate>>,
+    panics: Mutex<Option<&'static str>>,
 }
 
 impl Fake {
@@ -39,11 +43,16 @@ impl Fake {
             calls: Mutex::default(),
             closes: AtomicUsize::new(0),
             failed: Mutex::default(),
-            inbound: crossbeam_channel::unbounded(),
+            inbound: {
+                let (sender, receiver) = crossbeam_channel::unbounded();
+                (Mutex::new(Some(sender)), receiver)
+            },
             done: crossbeam_channel::unbounded(),
             activated: AtomicBool::new(false),
             barriers: AtomicBool::new(false),
             ahead: Mutex::default(),
+            gate: Mutex::default(),
+            panics: Mutex::default(),
         })
     }
 
@@ -52,18 +61,16 @@ impl Fake {
     }
 
     pub fn notify(&self, method: &str, params: &str) {
-        self.inbound
-            .0
-            .send(Inbound::Notification(NotificationMessage {
-                method: method.into(),
-                params: Some(RawValue::from_string(params.into()).unwrap()),
-            }))
-            .unwrap();
+        self.deliver(Inbound::Notification(NotificationMessage {
+            method: method.into(),
+            params: Some(RawValue::from_string(params.into()).unwrap()),
+        }))
+        .unwrap();
     }
 
     pub fn request(&self, method: &str, params: &str) -> Arc<Answers> {
         let (request, answers) = incoming(method, params);
-        self.inbound.0.send(request).unwrap();
+        self.deliver(request).unwrap();
         answers
     }
 
@@ -83,6 +90,32 @@ impl Fake {
             }));
     }
 
+    fn deliver(&self, message: Inbound) -> Result<(), ()> {
+        self.inbound
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send(message)
+            .map_err(|_| ())
+    }
+
+    pub fn hold_calls(&self, method: &'static str) -> (Receiver<()>, Sender<()>) {
+        let (entered, arrivals) = crossbeam_channel::unbounded();
+        let (release, released) = crossbeam_channel::bounded(0);
+        *self.gate.lock().unwrap() = Some((method, entered, released));
+        (arrivals, release)
+    }
+
+    pub fn panic_on(&self, method: &'static str) {
+        *self.panics.lock().unwrap() = Some(method);
+    }
+
+    pub fn disconnect(&self) {
+        self.inbound.0.lock().unwrap().take();
+    }
+
     pub fn hang_up(&self) {
         self.done.0.send(()).unwrap();
     }
@@ -100,10 +133,10 @@ impl Fake {
             return Ok(());
         }
         for message in self.ahead.lock().unwrap().drain(..) {
-            self.inbound.0.send(message).unwrap();
+            self.deliver(message).unwrap();
         }
         let (ack, acked) = crossbeam_channel::bounded::<()>(0);
-        self.inbound.0.send(Inbound::Barrier(ack)).unwrap();
+        self.deliver(Inbound::Barrier(ack)).unwrap();
         match acked.recv_timeout(Duration::from_secs(2)) {
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => Err(error(Fault::Closed)),
             _ => Ok(()),
@@ -126,6 +159,15 @@ impl Client for Fake {
             .lock()
             .unwrap()
             .push((method.into(), params.get().into()));
+        let panics = *self.panics.lock().unwrap();
+        if panics == Some(method) {
+            panic!("the fake client panics on {method}");
+        }
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some((_, entered, released)) = gate.filter(|(held, ..)| *held == method) {
+            entered.send(()).unwrap();
+            let _ = released.recv();
+        }
         self.barrier()?;
         match self.replies.lock().unwrap().pop_front() {
             Some(Ok(result)) => Ok(RawValue::from_string(result.into()).unwrap()),

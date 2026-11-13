@@ -22,14 +22,20 @@ it admitted. It refuses what Go refuses before any native call, and a
 becomes `run.started`, and `turn/completed` settles the run by the turn's
 status: completed, interrupted as `run.cancelled`, failed with the turn's
 error, or anything else as `invalid_native_terminal`. An undecodable start
-or completion fails the active run. A session with an active run refuses to
-close. Text deltas are not mapped yet.
+or completion fails the active run, as an undecodable text delta does.
+Each delta streams as `content.delta`, and the completion carries the joined
+text. A closed transport fails the active run as inferred, with the client's
+error. `Session::resume` replays a run from the bounded journal and reports
+a gap for events it no longer holds. A session with an active run refuses to
+close.
 
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While
 `turn/start` is in flight, the reader sets aside what Codex sends and the
 submit replays it once the turn is recorded, so the reader never waits on
 the submit and those messages land as Go's do, after the turn is known.
+Every other operation, including the reader's handling of a closed
+transport, waits for the submit, as Go's does.
 
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured

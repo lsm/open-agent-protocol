@@ -75,10 +75,14 @@ reverse request Go does not handle with `-32601`, `unsupported Codex server
 request` and the method as data. Its fake holds each reply behind a
 barrier once the reader is running, as the real client does, so a submit
 returns only if the reader acknowledges without waiting for the operation
-lock, including when Codex asks something ahead of its answer. To see it
-bite, answer with another code or data member, take the operation lock
-before acknowledging a barrier, or take it to answer a reverse request:
-one test each must fail.
+lock, including when Codex asks something ahead of its answer. A transport
+that closes while `turn/start` is held at a gate must still fail the run
+the submit admits, as Go printed from its fake. A client that panics in
+`turn/start` closes the session, and `close` still returns. To see it bite,
+answer with another code or data member, take the operation lock before
+acknowledging a barrier, take it to answer a reverse request, let the
+closed-transport path run during `turn/start`, or forget the start guard
+before the call: one test each must fail.
 
 `tests/events.rs` drives a run's notifications through the same client and
 checks each trace against the shared run validator, with the submit the run
@@ -94,3 +98,11 @@ Treat an empty turn error as a message: the terminal-status test must fail.
 What Codex sends ahead of the `turn/start` answer must produce the same
 events and answers as when it comes after it. Handle such a message at once,
 or skip its replay: the ahead-of-answer test must fail.
+
+The same file pins each agent message delta as `content.delta`, the joined
+text in the completion, and a closed transport or inbound queue failing the
+active run as inferred with the client's error. A resume replays the run's
+journal and reports a gap once a small journal has dropped the events it
+asks for. To see it bite, return without failing when the inbound queue
+closes: the transport test must fail. Skip the gap check: the gap test
+must fail.

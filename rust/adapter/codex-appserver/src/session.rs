@@ -1,12 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crossbeam_channel::{Receiver, Sender};
 
 use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{
-    refuse_unadvertised_controls, Error, EventStream, UnsupportedControl, CONTROL_UNSATISFIABLE,
+    refuse_unadvertised_controls, Error, EventStream, Recovery, ResumeRequest, UnsupportedControl,
+    CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, MessageId, MessageRole, MessageSubmitRequest,
@@ -26,6 +27,7 @@ pub(crate) struct Run {
     pub(crate) started: bool,
     pub(crate) terminal: bool,
     pub(crate) next: u64,
+    pub(crate) text: String,
 }
 
 pub(crate) struct Inner {
@@ -43,6 +45,7 @@ pub(crate) struct Shared {
     pub(crate) runtime: Runtime,
     pub(crate) journal: Journal,
     pub(crate) operating: Mutex<Operating>,
+    idle: Condvar,
     inner: Mutex<Inner>,
     stop: Mutex<Option<Sender<()>>>,
     pub(crate) stopped: Receiver<()>,
@@ -62,6 +65,24 @@ pub(crate) fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+struct Starting<'a>(&'a Shared);
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        let mut operating = hold(&self.0.operating);
+        {
+            let mut inner = self.0.lock();
+            inner.active = None;
+            inner.closed = true;
+            inner.state.active_run_id = None;
+            inner.state.status = SessionStatus::CLOSED;
+        }
+        operating.deferred.clear();
+        operating.starting = false;
+        self.0.idle.notify_all();
+    }
+}
+
 impl Shared {
     pub(crate) fn new(
         client: Arc<dyn Client>,
@@ -79,6 +100,7 @@ impl Shared {
             runtime,
             journal: Journal::new(capacity),
             operating: Mutex::default(),
+            idle: Condvar::new(),
             inner: Mutex::new(Inner {
                 state,
                 closed: false,
@@ -89,6 +111,17 @@ impl Shared {
             stop: Mutex::new(Some(stop)),
             stopped,
         }
+    }
+
+    pub(crate) fn operate(&self) -> MutexGuard<'_, Operating> {
+        let mut operating = hold(&self.operating);
+        while operating.starting {
+            operating = self
+                .idle
+                .wait(operating)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
+        operating
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -103,7 +136,7 @@ impl Shared {
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let mut operating = hold(&self.operating);
+        let mut operating = self.operate();
         refuse_unadvertised_controls(
             &request,
             &[FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT],
@@ -179,6 +212,7 @@ impl Shared {
         }
         operating.starting = true;
         drop(operating);
+        let starting = Starting(self);
         let started = call::<TurnStartResponse>(&*self.client, METHOD_TURN_START, &params);
         let mut operating = hold(&self.operating);
         let outcome = (|| -> Result<(MessageSubmitResponse, EventStream), Error> {
@@ -213,6 +247,7 @@ impl Shared {
                     started: false,
                     terminal: false,
                     next: 1,
+                    text: String::new(),
                 },
             );
             drop(inner);
@@ -239,7 +274,28 @@ impl Shared {
             self.handle(message);
         }
         operating.starting = false;
+        self.idle.notify_all();
+        std::mem::forget(starting);
         outcome
+    }
+
+    pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        let inner = self.lock();
+        let run = inner.runs.get(&request.run_id).ok_or(Error::RunNotFound)?;
+        let latest = run.next - 1;
+        if request.after_sequence > latest {
+            return Err(Error::ReplayCursorFuture);
+        }
+        let (recovery, replay) = self.journal.resume(
+            inner.state.clone(),
+            request.run_id.as_str(),
+            request.after_sequence,
+            latest,
+        );
+        if let Some(gap) = recovery.replay_gap {
+            return Err(Error::ReplayGap(gap));
+        }
+        Ok((recovery, replay))
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
@@ -251,7 +307,7 @@ impl Shared {
     }
 
     pub fn close(&self) -> Result<(), Error> {
-        let _operating = hold(&self.operating);
+        let _operating = self.operate();
         {
             let mut inner = self.lock();
             if inner.closed {
@@ -287,6 +343,10 @@ impl Session {
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
         self.shared.submit(request)
+    }
+
+    pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        self.shared.resume(request)
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {
