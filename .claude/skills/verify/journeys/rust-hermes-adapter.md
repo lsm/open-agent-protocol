@@ -17,6 +17,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test settle)
 (cd rust && cargo test -p oap-adapter-hermes --test tools)
 (cd rust && cargo test -p oap-adapter-hermes --test gates)
+(cd rust && cargo test -p oap-adapter-hermes --test resolve)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -110,3 +111,12 @@ running update, the cancellation on settlement, the turn id, the reply link,
 the pending input id, the participant or its default, `allow_cancel`, the
 waiting update, or the replay of a buffered gate: one test must fail for
 each.
+
+`tests/resolve.rs` compares every resolution outcome, the answer Hermes
+receives and the envelopes byte for byte with Go's `Resolve` over the same
+gates, including a parked settlement, a withdrawn gate, a failed write and
+two nested resolutions. To see it bite, drop the resolved filter, any of
+the five ownership checks, the answer validation, the multi-choice encoding,
+the deferral or the settling flag, the withdrawal, its refusal or its
+cancelled status, the flush after a failed write, the submitted answers, or
+the running update: one test must fail for each.

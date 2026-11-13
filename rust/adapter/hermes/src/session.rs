@@ -6,16 +6,17 @@ use oap_adapter::journal::Journal;
 use oap_adapter::runtime::Runtime;
 use oap_adapter::{refuse_unadvertised_controls, Error, EventStream, InteractionResolution};
 use oap_protocol::{
-    Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, InteractionId, MessageId,
-    MessageRole, MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RecoveryMetadata,
-    RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
+    Admission, ContentPartType, EffectiveDeliveryMode, EnvelopeId, InputQuestion, InteractionId,
+    MessageId, MessageRole, MessageSubmitRequest, MessageSubmitResponse, ParticipantId,
+    RecoveryMetadata, RequestedDeliveryMode, RunId, RunStatus, SessionState, SessionStatus,
+    SubmissionId, ToolCallId,
 };
 use serde_json::value::RawValue;
 
 use crate::client::{call, Client, NATIVE_PROTOCOL};
 use crate::native::{
-    Event, PromptSubmitParams, PromptSubmitResult, SessionInfoPayload, METHOD_PROMPT_SUBMIT,
-    SUBMIT_STREAMING,
+    Event, MessageCompletePayload, PromptSubmitParams, PromptSubmitResult, SessionInfoPayload,
+    METHOD_PROMPT_SUBMIT, SUBMIT_STREAMING,
 };
 use crate::rpc::IncomingRequest;
 
@@ -36,9 +37,14 @@ pub(crate) struct Tool {
 
 pub(crate) struct Interaction {
     pub(crate) id: InteractionId,
+    pub(crate) kind: String,
     pub(crate) request_id: String,
+    pub(crate) request: Arc<IncomingRequest>,
+    pub(crate) questions: Vec<InputQuestion>,
     pub(crate) requested: EnvelopeId,
     pub(crate) resolved: bool,
+    pub(crate) settling: bool,
+    pub(crate) withdrawn: bool,
 }
 
 pub(crate) struct Run {
@@ -53,6 +59,7 @@ pub(crate) struct Run {
     pub(crate) buffered: Vec<Observation>,
     pub(crate) tools: Vec<Tool>,
     pub(crate) interactions: Vec<Interaction>,
+    pub(crate) deferred: Option<MessageCompletePayload>,
     pub(crate) start: Option<Sender<Result<RunId, String>>>,
 }
 
@@ -169,6 +176,7 @@ impl Shared {
                 buffered: Vec::new(),
                 tools: Vec::new(),
                 interactions: Vec::new(),
+                deferred: None,
                 start: Some(start),
             });
             message_id
@@ -315,8 +323,8 @@ impl Session {
         self.shared.submit(request)
     }
 
-    pub fn resolve(&self, _: InteractionResolution) -> Result<(), Error> {
-        Err(Error::InteractionNotFound)
+    pub fn resolve(&self, resolution: InteractionResolution) -> Result<(), Error> {
+        self.shared.resolve(resolution)
     }
 
     pub fn state(&self) -> Result<SessionState, Error> {

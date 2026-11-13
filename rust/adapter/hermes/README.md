@@ -58,7 +58,20 @@ encodes them, then `action.call.started`; `tool.complete` emits
 completion for no open tool fails the run as `hermes_tool_lifecycle`, and
 a settlement or failure first cancels every gate still open, then fails
 every tool still open as `incomplete_tool`, each in the order it arrived.
-Resolving a gate arrives next. `client::ProcessFactory` is Go's process client factory: it
+`Session::resolve` is Go's `Resolve`: it refuses a gate it cannot find or
+already settled as `InteractionNotFound`, and a foreign run, session,
+responder or requester or an answer that does not fit the gate's questions
+as `InvalidResolution`. It answers Hermes outside the reducer's lock; a
+settlement arriving meanwhile waits until every answer in flight is
+written, and a `request.cancel` arriving meanwhile resolves the gate as
+cancelled and refuses the resolution. A failed write leaves the gate open.
+Go also cancels the gate on a failed write while a settlement waits, counts
+clarify answers before indexing them, copies the resolver as the responder,
+and checks for answers in flight before flushing a waiting settlement; none
+of these changes an outcome, since the settlement cancels the gate,
+indexing refuses a missing or extra answer, a responder must already be the
+participant, and the settlement checks again itself, so they are not
+ported. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -157,3 +170,12 @@ running update, the cancellation on settlement, the turn id, the reply link,
 the pending input id, the participant or its default, `allow_cancel`, the
 waiting update, or the replay of a buffered gate: one test must fail for
 each.
+
+`tests/resolve.rs` compares every resolution outcome, the answer Hermes
+receives and the envelopes byte for byte with Go's `Resolve` over the same
+gates, including a parked settlement, a withdrawn gate, a failed write and
+two nested resolutions. To see it bite, drop the resolved filter, any of
+the five ownership checks, the answer validation, the multi-choice encoding,
+the deferral or the settling flag, the withdrawal, its refusal or its
+cancelled status, the flush after a failed write, the submitted answers, or
+the running update: one test must fail for each.

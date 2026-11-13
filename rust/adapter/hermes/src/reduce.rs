@@ -21,7 +21,7 @@ use crate::native::{
     EVENT_TOOL_START, REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
 };
 use crate::rpc::{Inbound, IncomingRequest, RequestId};
-use crate::session::{native_protocol, Inner, Interaction, Observation, Shared, Tool};
+use crate::session::{native_protocol, Inner, Interaction, Observation, Run, Shared, Tool};
 
 const TERMINAL_WON: &str = "hermes adapter: terminal already selected";
 
@@ -140,7 +140,7 @@ impl Shared {
         }
     }
 
-    fn open_interaction(&self, inner: &mut Inner, request: &IncomingRequest) {
+    fn open_interaction(&self, inner: &mut Inner, request: &Arc<IncomingRequest>) {
         let method = request.method.as_str();
         let params = request.params.as_deref().map_or("", |raw| raw.get());
         let Ok(Some(decoded)) = decode_server_request(method, params.as_bytes()) else {
@@ -164,7 +164,7 @@ impl Shared {
             run_id: run_id.clone(),
             title: title.into(),
             description,
-            questions,
+            questions: questions.clone(),
             allow_cancel: true,
             ..UserInputRequestedPayload::default()
         };
@@ -175,12 +175,17 @@ impl Shared {
         if let Some(run) = inner.run.as_mut() {
             run.interactions.push(Interaction {
                 id: id.clone(),
+                kind: method.into(),
                 request_id: match &request.id {
                     RequestId::String(id) => id.clone(),
                     _ => String::new(),
                 },
+                request: request.clone(),
+                questions,
                 requested,
                 resolved: false,
+                settling: false,
+                withdrawn: false,
             });
         }
         let waiting = RunStatusUpdatedPayload {
@@ -201,6 +206,10 @@ impl Shared {
         }) else {
             return;
         };
+        if interaction.settling {
+            interaction.withdrawn = true;
+            return;
+        }
         interaction.resolved = true;
         let (id, requested) = (interaction.id.clone(), interaction.requested.clone());
         self.cancel_interaction(inner, &id, requested);
@@ -217,7 +226,12 @@ impl Shared {
         self.emit(inner, EnvelopeType::RUN_STATUS_UPDATED, &running, false);
     }
 
-    fn cancel_interaction(&self, inner: &mut Inner, id: &InteractionId, requested: EnvelopeId) {
+    pub(crate) fn cancel_interaction(
+        &self,
+        inner: &mut Inner,
+        id: &InteractionId,
+        requested: EnvelopeId,
+    ) {
         let payload = UserInputResolvedPayload {
             interaction_id: id.clone(),
             requested_by: ENDPOINT_ID.into(),
@@ -235,7 +249,14 @@ impl Shared {
         self.emit_input(inner, kind, &payload, id, Some(requested));
     }
 
-    fn emit_input(
+    pub(crate) fn flush_deferred(&self, inner: &mut Inner) {
+        let Some(payload) = inner.run.as_mut().and_then(|run| run.deferred.take()) else {
+            return;
+        };
+        self.settle_run(inner, &payload);
+    }
+
+    pub(crate) fn emit_input(
         &self,
         inner: &mut Inner,
         kind: EnvelopeType,
@@ -322,6 +343,10 @@ impl Shared {
         if !run.started {
             let failure = native_protocol("settlement before the turn opened");
             return self.abort_pre_start(inner, failure);
+        }
+        if let Some(run) = inner.run.as_mut().filter(|run| settling(run)) {
+            run.deferred = Some(payload.clone());
+            return;
         }
         if payload.status.is_empty() {
             let message = "child-mirror settlement on the parent stream";
@@ -714,4 +739,10 @@ fn options(choices: &[String]) -> Vec<InputOption> {
 
 fn answerable(question: &InputQuestion) -> bool {
     question.options.iter().all(|option| !option.id.is_empty())
+}
+
+fn settling(run: &Run) -> bool {
+    run.interactions
+        .iter()
+        .any(|interaction| interaction.settling)
 }
