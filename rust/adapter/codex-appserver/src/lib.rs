@@ -2,6 +2,7 @@
 
 mod actions;
 pub mod adapter;
+mod approvals;
 pub mod client;
 mod events;
 pub mod filepath;
