@@ -2,13 +2,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crossbeam_channel::{select, Receiver, Sender};
-use oap_adapter::gojson::{decode, Decode};
+use oap_adapter::gojson::{decode, go_quote, Decode};
 use oap_adapter::Error;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
 use crate::native::{
-    SessionCreateParams, SessionCreateResult, SessionResumeResult, METHOD_SESSION_CREATE,
+    SessionCreateParams, SessionCreateResult, SessionResumeParams, SessionResumeResult,
+    METHOD_SESSION_CREATE, METHOD_SESSION_RESUME,
 };
 use crate::process::{Process, ProcessConfig};
 use crate::rpc::{self, error, Fault, Inbound, RpcClient};
@@ -16,6 +17,7 @@ use crate::rpc::{self, error, Fault, Inbound, RpcClient};
 pub const NATIVE_PROTOCOL: &str = "hermes adapter: invalid native protocol observation";
 pub const PENDING_AUTO_CONTINUE: &str = "Hermes would restart the turn a crash interrupted, which a reopen must not do; open it in Hermes to settle the turn, or wait for Hermes to retire the marker";
 const RELAY_CAPACITY: usize = 256;
+const SESSION_NOT_FOUND: i64 = 4007;
 
 pub trait Client: Send + Sync {
     fn call(
@@ -203,4 +205,51 @@ impl ClientFactory for ProcessFactory {
         client.stored = created.stored_session_id;
         Ok((Arc::new(client), created.session_id))
     }
+
+    fn reopen(
+        &self,
+        stored: &str,
+        deadline: Option<Instant>,
+    ) -> Result<(Arc<dyn Client>, SessionResumeResult), String> {
+        let process = Process::start(&self.config, deadline).map_err(|error| error.to_string())?;
+        let mut client = ProcessClient::new(process);
+        let resumed = resume_stored(&client, stored, deadline)?;
+        client.stored = stored.into();
+        Ok((Arc::new(client), resumed))
+    }
+}
+
+pub fn resume_stored(
+    client: &dyn Client,
+    stored: &str,
+    deadline: Option<Instant>,
+) -> Result<SessionResumeResult, String> {
+    let params = SessionResumeParams {
+        session_id: stored.into(),
+    };
+    let resumed: SessionResumeResult = call(client, METHOD_SESSION_RESUME, &params, deadline)
+        .map_err(|failure| match failure.remote_code() {
+            Some(SESSION_NOT_FOUND) => format!("Hermes has no stored session {}", go_quote(stored)),
+            _ => failure.to_string(),
+        })?;
+    if resumed.session_id.is_empty() {
+        return Err("Hermes omitted the reloaded session id".into());
+    }
+    if resumed
+        .auto_continue
+        .as_deref()
+        .is_some_and(|raw| raw.get() != "null")
+    {
+        return Err(PENDING_AUTO_CONTINUE.into());
+    }
+    if resumed.running {
+        return Err("Hermes reattached the stored session while it was running".into());
+    }
+    if !resumed.status.is_empty() && resumed.status != "idle" {
+        return Err(format!(
+            "Hermes reattached the stored session while it was {}",
+            resumed.status
+        ));
+    }
+    Ok(resumed)
 }

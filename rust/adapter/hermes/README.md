@@ -20,7 +20,10 @@ its process settings when none is given), sets a reasoning level through
 `config.set` and refuses one Hermes rejects as unsatisfiable, and reports an
 idle `session::Session` bound to the stored session. A reopen is refused when
 the binding names no stored session or the factory cannot reload one, and
-otherwise reports the recovery and the model Hermes last ran under. The
+otherwise reports the recovery and the model Hermes last ran under.
+`client::ProcessFactory` reloads one with `session.resume`, as Go's
+`resumeStored` does, refusing a session Hermes does not know, a reply naming
+no session, a pending auto-continue and a session still running or busy. The
 session so far answers `state` and `close`; submitting and the event reducer
 arrive in the slices that follow. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
@@ -78,3 +81,9 @@ refusal printed from Go's `Open` over the same fakes. To see it bite, send
 Hermes's reasoning level as OAP spells it, keep the client open after a
 refused level, stop trimming the stored id, ignore the reloaded model, close
 the client twice, or answer `state` once closed: one test must fail for each.
+
+`tests/reopen.rs` drives shell gateways through `session.resume`, with each
+refusal printed from Go's process factory over the same scripts. To see it
+bite, drop the not-found code, the null auto-continue exemption, the status
+or running check, the empty-id check, or the stored id on the client: one test
+must fail for each.

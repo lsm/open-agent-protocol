@@ -11,6 +11,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test process)
 (cd rust && cargo test -p oap-adapter-hermes --test client)
 (cd rust && cargo test -p oap-adapter-hermes --test open)
+(cd rust && cargo test -p oap-adapter-hermes --test reopen)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -62,3 +63,9 @@ refusal printed from Go's `Open` over the same fakes. To see it bite, send
 Hermes's reasoning level as OAP spells it, keep the client open after a
 refused level, stop trimming the stored id, ignore the reloaded model, close
 the client twice, or answer `state` once closed: one test must fail for each.
+
+`tests/reopen.rs` drives shell gateways through `session.resume`, with each
+refusal printed from Go's process factory over the same scripts. To see it
+bite, drop the not-found code, the null auto-continue exemption, the status
+or running check, the empty-id check, or the stored id on the client: one test
+must fail for each.
