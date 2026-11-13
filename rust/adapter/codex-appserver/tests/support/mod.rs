@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use oap_adapter::runtime::Runtime;
@@ -27,6 +27,8 @@ pub struct Fake {
     pub failed: Mutex<Option<String>>,
     inbound: (Sender<Inbound>, Receiver<Inbound>),
     done: (Sender<()>, Receiver<()>),
+    activated: AtomicBool,
+    barriers: AtomicBool,
 }
 
 impl Fake {
@@ -38,6 +40,8 @@ impl Fake {
             failed: Mutex::default(),
             inbound: crossbeam_channel::unbounded(),
             done: crossbeam_channel::unbounded(),
+            activated: AtomicBool::new(false),
+            barriers: AtomicBool::new(false),
         })
     }
 
@@ -74,6 +78,26 @@ impl Fake {
         self.done.0.send(()).unwrap();
     }
 
+    pub fn hold_replies_behind_barriers(&self) {
+        self.barriers.store(true, Ordering::SeqCst);
+    }
+
+    pub fn activated(&self) -> bool {
+        self.activated.load(Ordering::SeqCst)
+    }
+
+    fn barrier(&self) -> Result<(), rpc::Error> {
+        if !self.barriers.load(Ordering::SeqCst) || !self.activated() {
+            return Ok(());
+        }
+        let (ack, acked) = crossbeam_channel::bounded::<()>(0);
+        self.inbound.0.send(Inbound::Barrier(ack)).unwrap();
+        match acked.recv_timeout(Duration::from_secs(2)) {
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => Err(error(Fault::Closed)),
+            _ => Ok(()),
+        }
+    }
+
     pub fn closes(&self) -> usize {
         self.closes.load(Ordering::SeqCst)
     }
@@ -90,6 +114,7 @@ impl Client for Fake {
             .lock()
             .unwrap()
             .push((method.into(), params.get().into()));
+        self.barrier()?;
         match self.replies.lock().unwrap().pop_front() {
             Some(Ok(result)) => Ok(RawValue::from_string(result.into()).unwrap()),
             Some(Err(message)) => Err(error(Fault::Remote {
@@ -105,6 +130,7 @@ impl Client for Fake {
     }
 
     fn inbound(&self) -> Receiver<Inbound> {
+        self.activated.store(true, Ordering::SeqCst);
         self.inbound.1.clone()
     }
 
