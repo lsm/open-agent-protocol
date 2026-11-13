@@ -15,10 +15,12 @@ pub(crate) struct Inner {
     pub(crate) state: SessionState,
     pub(crate) closed: bool,
     pub(crate) unusable: bool,
+    pub(crate) last_seq: i64,
 }
 
 pub(crate) struct Shared {
     pub(crate) client: Arc<dyn Client>,
+    pub(crate) native_id: String,
     stored_id: String,
     journal: Journal,
     inner: Mutex<Inner>,
@@ -58,7 +60,7 @@ impl Shared {
 impl Session {
     pub(crate) fn new(
         client: Arc<dyn Client>,
-        _native_id: String,
+        native_id: String,
         capacity: usize,
         state: SessionState,
     ) -> Self {
@@ -66,11 +68,13 @@ impl Session {
         let shared = Arc::new(Shared {
             stored_id: client.stored_session_id(),
             client,
+            native_id,
             journal: Journal::new(capacity),
             inner: Mutex::new(Inner {
                 state,
                 closed: false,
                 unusable: false,
+                last_seq: 0,
             }),
             stop: Mutex::new(Some(stop)),
             stopped,

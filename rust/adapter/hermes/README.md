@@ -24,8 +24,13 @@ otherwise reports the recovery and the model Hermes last ran under.
 `client::ProcessFactory` reloads one with `session.resume`, as Go's
 `resumeStored` does, refusing a session Hermes does not know, a reply naming
 no session, a pending auto-continue and a session still running or busy. The
-session so far answers `state` and `close`; submitting and the event reducer
-arrive in the slices that follow. `client::ProcessFactory` is Go's process client factory: it
+session so far answers `state` and `close`, and reduces the gateway's
+inbound messages as Go's `dispatch` does while no run is reserved: an event
+for another session, out of sequence, or run-scoped makes the session
+unusable, as does a server request with a non-string id, for another
+session, or with no run to own it; an unmapped request is answered
+`-32601 method not found`, and a closed transport makes the session
+unusable. A session-less event is ignored. Submitting arrives next. `client::ProcessFactory` is Go's process client factory: it
 starts the gateway, calls `session.create` with the configured model and
 reasoning effort, and refuses a reply naming no live or stored session as
 `client::NATIVE_PROTOCOL`, closing the gateway either way. Its client relays
@@ -87,3 +92,9 @@ refusal printed from Go's process factory over the same scripts. To see it
 bite, drop the not-found code, the null auto-continue exemption, the status
 or running check, the empty-id check, or the stored id on the client: one test
 must fail for each.
+
+`tests/reduce.rs` drives the reducer over a fake gateway, with each outcome
+printed from Go's reducer over the same messages. To see it bite, drop the
+session-less, foreign-session, sequence or run-scoped check, or the non-string
+id check: one test must fail for each. The foreign-session check on a server
+request is only observable once a run exists, so the submit slice pins it.

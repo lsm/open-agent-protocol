@@ -12,6 +12,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-hermes --test client)
 (cd rust && cargo test -p oap-adapter-hermes --test open)
 (cd rust && cargo test -p oap-adapter-hermes --test reopen)
+(cd rust && cargo test -p oap-adapter-hermes --test reduce)
 (cd rust && cargo test -p oap-adapter-hermes --all-features)
 ```
 
@@ -69,3 +70,8 @@ refusal printed from Go's process factory over the same scripts. To see it
 bite, drop the not-found code, the null auto-continue exemption, the status
 or running check, the empty-id check, or the stored id on the client: one test
 must fail for each.
+
+`tests/reduce.rs` drives the reducer over a fake gateway, with each outcome
+printed from Go's reducer over the same messages. To see it bite, drop the
+session-less, foreign-session, sequence or run-scoped check, or the non-string
+id check: one test must fail for each.
