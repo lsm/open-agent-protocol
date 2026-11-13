@@ -1,7 +1,7 @@
 use crossbeam_channel::select;
 
 use crate::rpc::Inbound;
-use crate::session::{hold, Shared};
+use crate::session::Shared;
 
 impl Shared {
     pub(crate) fn dispatch(&self) {
@@ -22,7 +22,6 @@ impl Shared {
         match message {
             Inbound::Barrier(ack) => drop(ack),
             Inbound::Request(request) => {
-                let _operating = hold(&self.operating);
                 let data =
                     serde_json::value::to_raw_value(&serde_json::json!({"method": request.method}))
                         .ok();
