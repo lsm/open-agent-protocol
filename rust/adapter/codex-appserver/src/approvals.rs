@@ -194,6 +194,11 @@ impl Shared {
         if inner.runs.get(&run).is_none_or(|run| run.terminal) {
             return Err(Error::InteractionResolved);
         }
+        if interaction.questions.is_some() {
+            let interaction = interaction.clone();
+            drop(inner);
+            return self.answer_input(id, run, interaction, resolution.input);
+        }
         let request = resolution
             .permission
             .filter(|request| {

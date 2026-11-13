@@ -1,16 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use oap_adapter::gojson::decode;
+use oap_adapter::{index_input_answers, Error};
 use oap_protocol::{
     EnvelopeType, InputOption, InputQuestion, InputQuestionKind, InteractionId, RunId, RunStatus,
     RunStatusUpdatedPayload, SessionStatus, ToolCallId, UserInputRequestedPayload,
-    UserInputResolutionStatus, UserInputResolvedPayload,
+    UserInputResolutionStatus, UserInputResolveRequest, UserInputResolvedPayload,
 };
 use serde_json::value::RawValue;
 
 use crate::adapter::ENDPOINT_ID;
-use crate::native::UserInputRequestParams;
+use crate::native::{UserInputAnswer, UserInputRequestParams, UserInputResponse};
 use crate::rpc::IncomingRequest;
 use crate::session::{Inner, Interaction, Shared};
 
@@ -48,6 +49,34 @@ fn questions(params: &UserInputRequestParams) -> Result<Vec<InputQuestion>, &'st
         });
     }
     Ok(questions)
+}
+
+fn answers(
+    questions: &[InputQuestion],
+    given: &[oap_protocol::InputAnswer],
+) -> Option<BTreeMap<String, UserInputAnswer>> {
+    let indexed = index_input_answers(questions, given).ok()?;
+    let mut answers = BTreeMap::new();
+    for question in questions {
+        let answer = indexed.get(question.id.as_str())?;
+        let text = if question.options.is_empty() {
+            answer.text.clone()
+        } else {
+            let selected = answer.selected_option_ids.first()?;
+            let option = question
+                .options
+                .iter()
+                .find(|option| &option.id == selected)?;
+            option.label.clone()
+        };
+        answers.insert(
+            question.id.clone(),
+            UserInputAnswer {
+                answers: vec![text],
+            },
+        );
+    }
+    Some(answers)
 }
 
 impl Shared {
@@ -117,6 +146,54 @@ impl Shared {
             RunStatus::WAITING_FOR_INPUT,
             Some(interaction),
         );
+    }
+
+    pub(crate) fn answer_input(
+        &self,
+        id: InteractionId,
+        run: RunId,
+        interaction: Interaction,
+        request: Option<UserInputResolveRequest>,
+    ) -> Result<(), Error> {
+        let session = self.lock().state.session_id.clone();
+        let request = request
+            .filter(|request| {
+                request.session_id == session
+                    && request.run_id == run
+                    && request.requested_by.as_str() == ENDPOINT_ID
+                    && request.responded_by == self.participant
+            })
+            .ok_or(Error::InvalidResolution)?;
+        let questions = interaction.questions.unwrap_or_default();
+        let answers = answers(&questions, &request.answers).ok_or(Error::InvalidResolution)?;
+        interaction
+            .request
+            .respond(&UserInputResponse { answers })
+            .map_err(Error::harness)?;
+        let mut inner = self.lock();
+        if let Some(interaction) = inner.interactions.get_mut(&id) {
+            interaction.resolved = true;
+        }
+        inner.state.status = SessionStatus::RUNNING;
+        inner.state.updated_at_ms = self.runtime.now_ms();
+        let payload = UserInputResolvedPayload {
+            interaction_id: id,
+            requested_by: ENDPOINT_ID.into(),
+            responded_by: self.participant.clone(),
+            session_id: session,
+            run_id: run.clone(),
+            status: UserInputResolutionStatus::SUBMITTED,
+            answers: request.answers,
+        };
+        self.emit(
+            &mut inner,
+            &run,
+            EnvelopeType::USER_INPUT_RESOLVED,
+            &payload,
+            false,
+        );
+        self.status(&mut inner, &run, RunStatus::RUNNING, None);
+        Ok(())
     }
 
     pub(crate) fn cancel_input(&self, inner: &mut Inner, id: &RunId, interaction: InteractionId) {
