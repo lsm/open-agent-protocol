@@ -5,6 +5,7 @@ repository root.
 
 ```sh
 (cd rust && cargo test -p oap-adapter-codex-appserver --test adapter)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test permissions)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -18,3 +19,11 @@ carries, and the mapping from a resumed effort back to an OAP level. To see
 them bite, send `off` to Codex as `off`: the thread-config test must fail.
 Accept `auto` as a refusal: the same test must fail. Read Codex's `off` as a
 level: the effort-mapping test must fail.
+
+`tests/permissions.rs` pins the check a resume runs on the thread Codex
+answered with. Every case and message there was printed by Go's
+`confirmsHostPermissions`, including the `null` Go shows for an explicit null
+and the empty text for an absent member. To see it bite, stop folding `..` in
+a working directory: the confirmed-resume test must fail. Compare the whole
+sandbox instead of its `type`: the same test must fail. Show an explicit null
+as empty: the sandbox and approval-policy tests must fail.
