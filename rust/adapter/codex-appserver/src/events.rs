@@ -5,14 +5,50 @@ use oap_protocol::{
     MessageContent, MessageRole, ProtocolError, RunCancelledPayload, RunCompletedPayload,
     RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, SETTLED_BY_INFERRED,
 };
+use oap_validation::OutputSchema;
 use serde::Serialize;
+use serde_json::value::RawValue;
 
 use crate::native::{
-    AgentMessageDeltaNotification, TurnNotification, METHOD_AGENT_DELTA, METHOD_TURN_COMPLETED,
-    METHOD_TURN_STARTED, TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
+    AgentMessageDeltaNotification, ItemNotification, TurnNotification, METHOD_AGENT_DELTA,
+    METHOD_ITEM_COMPLETED, METHOD_ITEM_STARTED, METHOD_TURN_COMPLETED, METHOD_TURN_STARTED,
+    TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
 };
 use crate::rpc::{Inbound, NotificationMessage};
 use crate::session::{hold, Inner, Shared};
+
+fn compact(text: &str) -> Option<String> {
+    serde_json::from_str::<&RawValue>(text).ok()?;
+    let mut compacted = String::with_capacity(text.len());
+    let (mut quoted, mut escaped) = (false, false);
+    for character in text.chars() {
+        if quoted {
+            compacted.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if !matches!(character, ' ' | '\t' | '\n' | '\r') {
+            quoted = character == '"';
+            compacted.push(character);
+        }
+    }
+    Some(compacted)
+}
+
+fn structured(schema: &OutputSchema, text: Option<&str>) -> Result<Box<RawValue>, &'static str> {
+    let text = text.ok_or(
+        "the turn completed without a final assistant message to read the structured result from",
+    )?;
+    let compacted = compact(text.trim()).ok_or("the final assistant message is not JSON")?;
+    schema
+        .validate(&compacted)
+        .map_err(|_| "the final assistant message does not conform to the output_schema")?;
+    RawValue::from_string(compacted).map_err(|_| "the final assistant message is not JSON")
+}
 
 fn read<T: Decode>(notification: &NotificationMessage) -> Option<T> {
     decode(notification.params.as_deref()?.get().as_bytes()).ok()
@@ -85,6 +121,12 @@ impl Shared {
                 Some(value) => self.delta(&mut inner, &value),
                 None => invalid(&mut inner, "invalid agent message delta"),
             },
+            METHOD_ITEM_STARTED | METHOD_ITEM_COMPLETED => {
+                match read::<ItemNotification>(notification) {
+                    Some(value) => self.item(&mut inner, &notification.method, value),
+                    None => invalid(&mut inner, "invalid item lifecycle payload"),
+                }
+            }
             METHOD_TURN_COMPLETED => match read::<TurnNotification>(notification) {
                 Some(value) => self.completed(&mut inner, &value),
                 None => invalid(&mut inner, "invalid turn/completed payload"),
@@ -152,6 +194,22 @@ impl Shared {
         self.emit(inner, &id, EnvelopeType::CONTENT_DELTA, &payload, false);
     }
 
+    fn item(&self, inner: &mut Inner, method: &str, value: ItemNotification) {
+        let Some(id) = self.run_for(inner, &value.thread_id, &value.turn_id) else {
+            return;
+        };
+        let Some(run) = inner
+            .runs
+            .get_mut(&id)
+            .filter(|run| run.started && !run.terminal)
+        else {
+            return;
+        };
+        if method == METHOD_ITEM_COMPLETED && value.item.kind == "agentMessage" {
+            run.final_text = Some(value.item.text);
+        }
+    }
+
     fn completed(&self, inner: &mut Inner, value: &TurnNotification) {
         let Some(id) = self.run_for(inner, &value.thread_id, &value.turn.id) else {
             return;
@@ -162,6 +220,16 @@ impl Shared {
         let session_id = inner.state.session_id.clone();
         match value.turn.status.as_str() {
             TURN_COMPLETED => {
+                let result = match &run.schema {
+                    Some(schema) => match structured(schema, run.final_text.as_deref()) {
+                        Ok(result) => Some(result),
+                        Err(defect) => {
+                            self.fail_run(inner, &id, "structured_output_failed", defect, "");
+                            return;
+                        }
+                    },
+                    None => None,
+                };
                 let payload = RunCompletedPayload {
                     session_id,
                     run_id: id.clone(),
@@ -172,6 +240,7 @@ impl Shared {
                         ..Message::default()
                     },
                     stop_reason: "end_turn".into(),
+                    result,
                     ..RunCompletedPayload::default()
                 };
                 self.emit(inner, &id, EnvelopeType::RUN_COMPLETED, &payload, true);

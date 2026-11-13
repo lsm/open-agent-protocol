@@ -353,3 +353,5 @@ impl oap_adapter::gojson::Decode for TurnStartResponse {}
 impl oap_adapter::gojson::Decode for TurnNotification {}
 
 impl oap_adapter::gojson::Decode for AgentMessageDeltaNotification {}
+
+impl oap_adapter::gojson::Decode for ItemNotification {}

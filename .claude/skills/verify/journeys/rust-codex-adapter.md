@@ -11,6 +11,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test submit)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test dispatch)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test events)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test structured)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -106,3 +107,13 @@ journal and reports a gap once a small journal has dropped the events it
 asks for. To see it bite, return without failing when the inbound queue
 closes: the transport test must fail. Skip the gap check: the gap test
 must fail.
+
+`tests/structured.rs` pins the result a run submitted with an
+`output_schema` completes with: the last `agentMessage` item Codex completes
+after the turn started, trimmed as Go's `strings.TrimSpace` trims and
+compacted as `json.Compact` compacts, escapes and number spellings kept.
+Each refusal is `structured_output_failed` with Go's message. Go printed the
+compaction of every input there. To see it bite, skip the trim: the result
+test must fail. Keep the first final message: the same test must fail. Read
+an `item/started` message or another item kind: the started-turn test must
+fail.

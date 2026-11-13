@@ -28,6 +28,8 @@ pub(crate) struct Run {
     pub(crate) terminal: bool,
     pub(crate) next: u64,
     pub(crate) text: String,
+    pub(crate) schema: Option<OutputSchema>,
+    pub(crate) final_text: Option<String>,
 }
 
 pub(crate) struct Inner {
@@ -146,8 +148,8 @@ impl Shared {
             Some(model) => model.clone(),
             None => self.model.clone(),
         };
-        if let Some(schema) = &request.output_schema {
-            OutputSchema::compile(schema.get()).map_err(|detail| {
+        let schema = match &request.output_schema {
+            Some(schema) => Some(OutputSchema::compile(schema.get()).map_err(|detail| {
                 Error::UnsupportedControl(Box::new(UnsupportedControl {
                     feature: FEATURE_STRUCTURED_OUTPUT.into(),
                     reason: CONTROL_UNSATISFIABLE,
@@ -155,8 +157,9 @@ impl Shared {
                     detail,
                     ..UnsupportedControl::default()
                 }))
-            })?;
-        }
+            })?),
+            None => None,
+        };
         let session_id = self.lock().state.session_id.clone();
         if request.session_id != session_id
             || request.messages.is_empty()
@@ -248,6 +251,8 @@ impl Shared {
                     terminal: false,
                     next: 1,
                     text: String::new(),
+                    schema,
+                    final_text: None,
                 },
             );
             drop(inner);
