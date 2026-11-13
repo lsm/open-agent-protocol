@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 crossbeam-channel = "0.5"
 oap-adapter = { path = ".." }
+oap-harness = { path = "../../harness" }
+oap-protocol = { path = "../../protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 

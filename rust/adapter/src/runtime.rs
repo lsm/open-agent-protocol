@@ -25,11 +25,11 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn now_ms(&self) -> i64 {
+    pub fn now_ms(&self) -> i64 {
         (self.clock)()
     }
 
-    pub(crate) fn new_id(&self, kind: &str) -> String {
+    pub fn new_id(&self, kind: &str) -> String {
         (self.ids)(kind)
     }
 }
