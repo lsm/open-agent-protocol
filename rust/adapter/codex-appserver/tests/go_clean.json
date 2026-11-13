@@ -208,5 +208,15 @@
     "path": "\\\\?\\Unc\\h\\s\\a\\..\\b",
     "unix": "\\\\?\\Unc\\h\\s\\a\\..\\b",
     "windows": "\\\\?\\Unc\\h\\s\\b"
+  },
+  {
+    "path": "1:a/../b",
+    "unix": "b",
+    "windows": "1:b"
+  },
+  {
+    "path": "1:2",
+    "unix": "1:2",
+    "windows": "1:2"
   }
 ]
