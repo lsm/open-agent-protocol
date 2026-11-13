@@ -1026,6 +1026,7 @@ dependencies = [
  "oap-adapter",
  "oap-harness",
  "oap-protocol",
+ "oap-validation",
  "serde",
  "serde_json",
 ]

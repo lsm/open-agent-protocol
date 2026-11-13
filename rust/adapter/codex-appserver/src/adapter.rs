@@ -166,14 +166,21 @@ impl Adapter {
         let state = SessionState {
             session_id,
             status: SessionStatus::IDLE,
-            current_model_id: model,
+            current_model_id: model.clone(),
             updated_at_ms: self.config.runtime.now_ms(),
             recovery,
             reasoning_level: level,
             compaction_policy: request.compaction_policy,
             ..SessionState::default()
         };
-        Ok(Session::new(client, thread_id, state))
+        Ok(Session::new(
+            client,
+            thread_id,
+            model,
+            self.config.runtime.clone(),
+            self.config.journal_capacity,
+            state,
+        ))
     }
 
     pub fn describe(&self) -> Descriptor {
@@ -214,13 +221,13 @@ fn reopen_refused(detail: &str) -> Error {
     }))
 }
 
-fn native_protocol(detail: &str) -> Error {
+pub(crate) fn native_protocol(detail: &str) -> Error {
     Error::Harness(format!(
         "codex app-server adapter: invalid native protocol observation: {detail}"
     ))
 }
 
-fn call<T: Decode>(
+pub(crate) fn call<T: Decode>(
     client: &dyn Client,
     method: &str,
     params: &impl Serialize,

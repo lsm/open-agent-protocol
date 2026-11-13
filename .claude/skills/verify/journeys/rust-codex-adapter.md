@@ -8,6 +8,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test permissions)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test filepath)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test open)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test submit)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -56,3 +57,13 @@ failed open: four tests must fail. Rename the client: the factory test must
 fail. Keep the configured model or level on a resume: the resume test must
 fail. Refuse a reopen only on a closed transport: the unloadable-reopen test
 must fail.
+
+`tests/submit.rs` submits against the same scripted client, which lives in
+`tests/support`. It compares the `turn/start` params byte for byte and checks
+the ids are minted in Go's order (a missing message id, the run, the run's
+message, then the submission), the response, the queued state, each refusal
+Go makes before any native call, and what a refused or turn-less `turn/start`
+leaves. To see it bite, read a null content as missing: the null-content test
+must fail. Ignore a failed transport after a refused `turn/start`, drop the
+active-run check, or leave the session queued after a refusal: one test each
+must fail. Let close skip the active-run check: the close-refusal test must fail.
