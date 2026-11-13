@@ -8,6 +8,7 @@ use std::thread::ScopedJoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+use oap_adapter::gojson::members;
 use oap_adapter::gojson::{go_marshal, go_quote};
 use oap_adapter::jsonrpc::{Decoder, Kind, Message, Responder, DEFAULT_FRAME_LIMIT};
 use oap_adapter::testkit::{drain, next, RunTrace};
@@ -20,6 +21,7 @@ use oap_adapter_hermes::native::{
     decode_notification, METHOD_PROMPT_SUBMIT, METHOD_SESSION_CREATE, METHOD_SESSION_INTERRUPT,
     REQUEST_APPROVAL, REQUEST_CLARIFY, REQUEST_SECRET, REQUEST_SUDO,
 };
+use oap_adapter_hermes::process::ProcessConfig;
 use oap_adapter_hermes::rpc::{
     self, error, Fault, Inbound, IncomingRequest, NotificationMessage, DIALECT,
 };
@@ -1068,6 +1070,178 @@ fn replay(case: &Case, frames: &[Frame], decoded: &[Decoded]) -> Vec<Envelope> {
     envelopes
 }
 
+const GATEWAY: &str = r#"set -u
+d=$0
+mode=$(cat "$d/mode")
+if [ "$mode" = pre-observe ]; then
+  head -n 1 "$d/script"
+  k=0
+  while [ "$k" -lt 200 ]; do sleep 0.05; k=$((k + 1)); done
+  exit 0
+fi
+cat "$d/ready"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$d/wire.log"
+  id=$(printf '%s' "$line" | sed -n 's/^{"id":\([^,]*\),.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  if [ -z "$id" ] || [ -z "$method" ]; then exit 0; fi
+  if [ -f "$d/response.$id" ]; then cat "$d/response.$id"; fi
+  if [ "$method" = prompt.submit ]; then
+    cat "$d/script"
+    if [ "$mode" = malformed ]; then exit 0; fi
+  fi
+done
+"#;
+
+fn stage_gateway(case: &Case, frames: &[Frame], workspace: &Path) {
+    let mut ready = String::new();
+    let mut script = String::new();
+    for (at, frame) in frames.iter().enumerate() {
+        if frame.direction != "gateway-to-host"
+            || !matches!(frame.action.as_str(), "auto" | "decode-error")
+        {
+            continue;
+        }
+        let line = wire(frame.raw.as_deref().unwrap(), at + 1);
+        let object = members(&line)
+            .ok()
+            .filter(|_| frame.action != "decode-error");
+        let Some(object) = object else {
+            script.push_str(&format!("{line}\n"));
+            continue;
+        };
+        let member = |name: &str| {
+            object
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, raw)| raw)
+        };
+        if member("method").is_none() {
+            if let Some(id) = member("id") {
+                std::fs::write(
+                    workspace.join(format!("response.{}", id.get())),
+                    format!("{line}\n"),
+                )
+                .unwrap();
+            }
+            continue;
+        }
+        let kind = member("params")
+            .and_then(|params| serde_json::from_str::<Value>(params.get()).ok())
+            .and_then(|params| params["type"].as_str().map(str::to_owned));
+        match kind.as_deref() {
+            Some("gateway.ready") => ready = format!("{line}\n"),
+            _ => script.push_str(&format!("{line}\n")),
+        }
+    }
+    std::fs::write(workspace.join("mode"), &case.server_mode).unwrap();
+    std::fs::write(workspace.join("ready"), ready).unwrap();
+    std::fs::write(workspace.join("script"), script).unwrap();
+}
+
+fn replay_process(case: &Case, frames: &[Frame], dir: &Path) -> Vec<Envelope> {
+    let workspace = std::env::temp_dir()
+        .join(format!("oap-hermes-corpus-{}", std::process::id()))
+        .join(&case.id);
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).unwrap();
+    stage_gateway(case, frames, &workspace);
+    let adapter = Adapter::new(Config {
+        process: ProcessConfig {
+            path: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                GATEWAY.into(),
+                workspace.to_string_lossy().into_owned(),
+            ],
+            dir: workspace.to_string_lossy().into_owned(),
+            env: Some(vec!["PATH=/usr/bin:/bin".into()]),
+            exit_timeout: Some(Duration::from_secs(1)),
+            ..ProcessConfig::default()
+        },
+        model: "hermes-test".into(),
+        journal_capacity: match case.journal_capacity {
+            0 => 64,
+            capacity => capacity,
+        },
+        runtime: go_runtime(),
+        ..Config::default()
+    })
+    .unwrap();
+    let descriptor = adapter.describe();
+    let mut session = None;
+    let mut envelopes = Vec::new();
+    let record = |envelopes: &mut Vec<Envelope>, submitted: Option<Submitted>| {
+        let Some(Ok((admission, mut stream))) = submitted else {
+            return;
+        };
+        let delivered = drain(&mut stream, Duration::from_secs(5));
+        if !delivered.is_empty() {
+            RunTrace {
+                opened: Some(opened()),
+                ..RunTrace::new(admission, descriptor.clone(), delivered.clone())
+            }
+            .assert_valid();
+        }
+        envelopes.extend(delivered);
+    };
+    std::thread::scope(|scope| {
+        let mut pending: Option<ScopedJoinHandle<'_, Submitted>> = None;
+        for (at, frame) in frames.iter().enumerate() {
+            let index = at + 1;
+            match frame.action.as_str() {
+                "open" => {
+                    assert!(session.is_none(), "frame {index}: the session opened twice");
+                    match (adapter.open(opened()), case.open_error) {
+                        (Ok(opened), false) => session = Some(Arc::new(opened)),
+                        (Err(_), true) => {}
+                        (outcome, _) => panic!("frame {index}: open {:?}", outcome.err()),
+                    }
+                }
+                "submit" => {
+                    record(&mut envelopes, join(&mut pending));
+                    let session = session.clone().expect("a submit needs an open session");
+                    pending = Some(scope.spawn(move || session.submit(submission())));
+                }
+                "oap-control" => {
+                    record(&mut envelopes, join(&mut pending));
+                    if let Some(open) = session.take() {
+                        if let Err(failure) = open.close() {
+                            panic!("{} close: {failure:?}", case.id);
+                        }
+                    }
+                }
+                "auto" | "decode-error" => {}
+                other => panic!("frame {index}: action {other:?} needs the in-process harness"),
+            }
+        }
+        record(&mut envelopes, join(&mut pending));
+    });
+    assert!(
+        session.is_none(),
+        "the process case ended without a close frame"
+    );
+    let logged = std::fs::read_to_string(workspace.join("wire.log")).unwrap_or_default();
+    let written: Vec<String> = frames
+        .iter()
+        .enumerate()
+        .filter(|(_, frame)| frame.direction == "host-to-gateway")
+        .filter_map(|(at, frame)| {
+            let raw = frame.raw.as_deref().filter(|raw| raw.get() != "null")?;
+            Some(wire(raw, at + 1))
+        })
+        .collect();
+    assert_eq!(
+        logged.lines().collect::<Vec<_>>(),
+        written,
+        "{} host wire",
+        case.id
+    );
+    let _ = dir;
+    let _ = std::fs::remove_dir_all(&workspace);
+    envelopes
+}
+
 fn check_resume(resumed: &mut Resumed, delivered: &[Envelope]) {
     let index = resumed.index;
     let after = resumed.control.after;
@@ -1146,7 +1320,7 @@ fn source() -> &'static oap_harness::Source {
 }
 
 #[test]
-fn every_in_process_case_replays_to_the_trace_go_emits() {
+fn every_case_but_a_reopen_replays_to_the_trace_go_emits() {
     let root = root();
     let manifest: Manifest = load(&root.join("manifest.json"));
     let pinned = source();
@@ -1199,11 +1373,14 @@ fn every_in_process_case_replays_to_the_trace_go_emits() {
         let omissions: Vec<Omission> = load(&file_in(&dir, &case.omissions));
         classify(&frames, &decoded, &mappings, &omissions);
         check_actions(&case, &frames);
-        if case.reopen || !case.server_mode.is_empty() {
+        if case.reopen {
             outside.push(entry.id.clone());
             continue;
         }
-        let envelopes = replay(&case, &frames, &decoded);
+        let envelopes = match case.server_mode.is_empty() {
+            true => replay(&case, &frames, &decoded),
+            false => replay_process(&case, &frames, &dir),
+        };
         let expected = std::fs::read_to_string(file_in(&dir, &case.expected_oap)).unwrap();
         assert_eq!(
             go_marshal(&serde_json::to_string(&envelopes).unwrap()),
@@ -1222,15 +1399,6 @@ fn every_in_process_case_replays_to_the_trace_go_emits() {
         );
     }
     outside.sort();
-    assert_eq!(
-        outside,
-        [
-            "malformed-frame",
-            "pre-ready-observation",
-            "ready-handshake",
-            "session-reopen",
-            "session-reopen-auto-continue"
-        ]
-    );
+    assert_eq!(outside, ["session-reopen", "session-reopen-auto-continue"]);
     inventory(&root, &manifest);
 }
