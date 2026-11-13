@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -45,6 +45,7 @@ pub(crate) struct Shared {
     pub(crate) runtime: Runtime,
     pub(crate) journal: Journal,
     pub(crate) operating: Mutex<Operating>,
+    idle: Condvar,
     inner: Mutex<Inner>,
     stop: Mutex<Option<Sender<()>>>,
     pub(crate) stopped: Receiver<()>,
@@ -81,6 +82,7 @@ impl Shared {
             runtime,
             journal: Journal::new(capacity),
             operating: Mutex::default(),
+            idle: Condvar::new(),
             inner: Mutex::new(Inner {
                 state,
                 closed: false,
@@ -91,6 +93,17 @@ impl Shared {
             stop: Mutex::new(Some(stop)),
             stopped,
         }
+    }
+
+    pub(crate) fn operate(&self) -> MutexGuard<'_, Operating> {
+        let mut operating = hold(&self.operating);
+        while operating.starting {
+            operating = self
+                .idle
+                .wait(operating)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
+        operating
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -105,7 +118,7 @@ impl Shared {
         &self,
         request: MessageSubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let mut operating = hold(&self.operating);
+        let mut operating = self.operate();
         refuse_unadvertised_controls(
             &request,
             &[FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT],
@@ -242,6 +255,7 @@ impl Shared {
             self.handle(message);
         }
         operating.starting = false;
+        self.idle.notify_all();
         outcome
     }
 
@@ -273,7 +287,7 @@ impl Shared {
     }
 
     pub fn close(&self) -> Result<(), Error> {
-        let _operating = hold(&self.operating);
+        let _operating = self.operate();
         {
             let mut inner = self.lock();
             if inner.closed {

@@ -31,7 +31,7 @@ impl Shared {
                 recv(stop) -> _ => return,
             }
         }
-        let _operating = hold(&self.operating);
+        let _operating = self.operate();
         let message = self.client.err().unwrap_or_else(|| {
             "Codex app-server transport closed before terminal settlement".into()
         });

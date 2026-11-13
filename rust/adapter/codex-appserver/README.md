@@ -34,6 +34,8 @@ request it does not handle with `-32601` and the method as data. While
 `turn/start` is in flight, the reader sets aside what Codex sends and the
 submit replays it once the turn is recorded, so the reader never waits on
 the submit and those messages land as Go's do, after the turn is known.
+Every other operation, including the reader's handling of a closed
+transport, waits for the submit, as Go's does.
 
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured
