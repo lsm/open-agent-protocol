@@ -13,14 +13,16 @@ use oap_protocol::{
     Admission, EffectiveDeliveryMode, InputQuestion, InteractionId, MessageId, MessageRole,
     MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode,
     RunCancelResponse, RunId, RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
-    FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
+    Usage, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
 };
 use oap_validation::OutputSchema;
 use serde_json::value::RawValue;
 
 use crate::adapter::{call, native_protocol};
 use crate::client::Client;
-use crate::native::{TurnStartParams, TurnStartResponse, UserInput, METHOD_TURN_START};
+use crate::native::{
+    TokenUsageBreakdown, TurnStartParams, TurnStartResponse, UserInput, METHOD_TURN_START,
+};
 use crate::rpc::{Inbound, IncomingRequest};
 
 pub(crate) struct Run {
@@ -36,6 +38,8 @@ pub(crate) struct Run {
     pub(crate) settled: Option<RunStatus>,
     pub(crate) cancel_pending: bool,
     pub(crate) flight: Option<Receiver<()>>,
+    pub(crate) base: TokenUsageBreakdown,
+    pub(crate) usage: Option<Usage>,
 }
 
 #[derive(Clone)]
@@ -68,6 +72,7 @@ pub(crate) struct Inner {
     pub(crate) items: HashMap<String, Binding>,
     pub(crate) interactions: HashMap<InteractionId, Interaction>,
     pub(crate) next_order: u64,
+    pub(crate) thread_usage: TokenUsageBreakdown,
 }
 
 pub(crate) struct Shared {
@@ -145,6 +150,7 @@ impl Shared {
                 items: HashMap::new(),
                 interactions: HashMap::new(),
                 next_order: 0,
+                thread_usage: TokenUsageBreakdown::default(),
             }),
             stop: Mutex::new(Some(stop)),
             stopped,
@@ -240,6 +246,7 @@ impl Shared {
             effort: String::new(),
             output_schema: request.output_schema.clone(),
         };
+        let base = self.lock().thread_usage;
         let run_id = RunId::from(self.runtime.new_id("run"));
         let message_id = MessageId::from(self.runtime.new_id("message"));
         {
@@ -293,6 +300,8 @@ impl Shared {
                     settled: None,
                     cancel_pending: false,
                     flight: None,
+                    base,
+                    usage: None,
                 },
             );
             drop(inner);

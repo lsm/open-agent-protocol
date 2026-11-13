@@ -3,7 +3,7 @@ use oap_adapter::gojson::{decode, Decode};
 use oap_protocol::{
     ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType,
     Message, MessageContent, MessageRole, ProtocolError, RunCancelledPayload, RunCompletedPayload,
-    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, ToolCallId,
+    RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, ToolCallId, Usage,
     SETTLED_BY_INFERRED,
 };
 use oap_validation::OutputSchema;
@@ -11,10 +11,10 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 
 use crate::native::{
-    AgentMessageDeltaNotification, ItemNotification, TurnNotification, METHOD_AGENT_DELTA,
-    METHOD_COMMAND_APPROVAL, METHOD_FILE_APPROVAL, METHOD_ITEM_COMPLETED, METHOD_ITEM_STARTED,
-    METHOD_TURN_COMPLETED, METHOD_TURN_STARTED, METHOD_USER_INPUT, TURN_COMPLETED, TURN_FAILED,
-    TURN_INTERRUPTED,
+    AgentMessageDeltaNotification, ItemNotification, ThreadTokenUsageUpdatedNotification,
+    TurnNotification, METHOD_AGENT_DELTA, METHOD_COMMAND_APPROVAL, METHOD_FILE_APPROVAL,
+    METHOD_ITEM_COMPLETED, METHOD_ITEM_STARTED, METHOD_TOKEN_USAGE, METHOD_TURN_COMPLETED,
+    METHOD_TURN_STARTED, METHOD_USER_INPUT, TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
 };
 use crate::rpc::{Inbound, NotificationMessage};
 use crate::session::{hold, Inner, Shared};
@@ -138,6 +138,10 @@ impl Shared {
                     None => invalid(&mut inner, "invalid item lifecycle payload"),
                 }
             }
+            METHOD_TOKEN_USAGE => match read::<ThreadTokenUsageUpdatedNotification>(notification) {
+                Some(value) => self.usage(&mut inner, &value),
+                None => invalid(&mut inner, "invalid thread/tokenUsage/updated payload"),
+            },
             METHOD_TURN_COMPLETED => match read::<TurnNotification>(notification) {
                 Some(value) => self.completed(&mut inner, &value),
                 None => invalid(&mut inner, "invalid turn/completed payload"),
@@ -234,6 +238,7 @@ impl Shared {
         self.close_interactions(inner, &id, interrupted);
         self.close_pending(inner, &id, interrupted);
         let run = &inner.runs[&id];
+        let usage = run.usage.clone();
         let session_id = inner.state.session_id.clone();
         match value.turn.status.as_str() {
             TURN_COMPLETED => {
@@ -241,7 +246,7 @@ impl Shared {
                     Some(schema) => match structured(schema, run.final_text.as_deref()) {
                         Ok(result) => Some(result),
                         Err(defect) => {
-                            self.fail_run(inner, &id, "structured_output_failed", defect, "");
+                            self.failed(inner, &id, "structured_output_failed", defect, "", usage);
                             return;
                         }
                     },
@@ -258,6 +263,7 @@ impl Shared {
                     },
                     stop_reason: "end_turn".into(),
                     result,
+                    usage,
                     ..RunCompletedPayload::default()
                 };
                 self.emit(inner, &id, EnvelopeType::RUN_COMPLETED, &payload, true);
@@ -267,6 +273,7 @@ impl Shared {
                     session_id,
                     run_id: id.clone(),
                     reason: "native turn interrupted".into(),
+                    usage,
                     ..RunCancelledPayload::default()
                 };
                 self.emit(inner, &id, EnvelopeType::RUN_CANCELLED, &payload, true);
@@ -279,7 +286,7 @@ impl Shared {
                     .map(|error| error.message.clone())
                     .filter(|message| !message.is_empty())
                     .unwrap_or_else(|| "native turn failed".into());
-                self.fail_run(inner, &id, "native_turn_failed", &message, "");
+                self.failed(inner, &id, "native_turn_failed", &message, "", usage);
             }
             _ => self.fail_run(
                 inner,
@@ -307,6 +314,18 @@ impl Shared {
     ) {
         self.close_interactions(inner, id, false);
         self.close_pending(inner, id, false);
+        self.failed(inner, id, code, message, settled_by, None);
+    }
+
+    fn failed(
+        &self,
+        inner: &mut Inner,
+        id: &RunId,
+        code: &str,
+        message: &str,
+        settled_by: &str,
+        usage: Option<Usage>,
+    ) {
         let payload = RunFailedPayload {
             session_id: inner.state.session_id.clone(),
             run_id: id.clone(),
@@ -316,6 +335,7 @@ impl Shared {
                 ..ProtocolError::default()
             },
             settled_by: settled_by.into(),
+            usage,
             ..RunFailedPayload::default()
         };
         self.emit(inner, id, EnvelopeType::RUN_FAILED, &payload, true);

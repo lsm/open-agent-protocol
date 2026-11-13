@@ -61,6 +61,12 @@ flight serves every concurrent one, and a refused interrupt leaves the run
 running. A settled run answers with its status: accepted if it was
 cancelled, `RunAlreadyTerminal` otherwise.
 
+A run reports token usage as how far the thread total Codex last sent in
+`thread/tokenUsage/updated` grew since the run was submitted, never below
+zero, on completion, cancellation, a failed turn and a structured result.
+An update for another turn still moves the thread total the next run
+starts from.
+
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While
 `turn/start` is in flight, the reader sets aside what Codex sends and the

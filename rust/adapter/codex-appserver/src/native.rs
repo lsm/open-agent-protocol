@@ -366,3 +366,5 @@ impl oap_adapter::gojson::Decode for FileApprovalParams {}
 impl oap_adapter::gojson::Decode for UserInputRequestParams {}
 
 impl oap_adapter::gojson::Decode for TurnInterruptResponse {}
+
+impl oap_adapter::gojson::Decode for ThreadTokenUsageUpdatedNotification {}
