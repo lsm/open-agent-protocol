@@ -11,9 +11,9 @@ use oap_adapter::{
 };
 use oap_protocol::{
     Admission, EffectiveDeliveryMode, InputQuestion, InteractionId, MessageId, MessageRole,
-    MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode, RunId,
-    RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION,
-    FEATURE_STRUCTURED_OUTPUT,
+    MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode,
+    RunCancelResponse, RunId, RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
+    FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
 };
 use oap_validation::OutputSchema;
 use serde_json::value::RawValue;
@@ -396,6 +396,10 @@ impl Session {
 
     pub fn close(&self) -> Result<(), Error> {
         self.shared.close()
+    }
+
+    pub fn cancel(&self, _run_id: &RunId) -> Result<RunCancelResponse, Error> {
+        Err(Error::RunNotFound)
     }
 }
 

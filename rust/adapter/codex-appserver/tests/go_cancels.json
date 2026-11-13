@@ -1,0 +1,1010 @@
+[
+  {
+    "name": "a_cancel_interrupts_the_turn_and_the_run_settles_cancelled",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "await": 1
+      },
+      {
+        "state": true
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "interrupted"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "state": true
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "cancelling",
+          "updated_at_ms": 6
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.cancelled",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "reason": "native turn interrupted"
+        },
+        "sequence": 3,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "accepted cancelling session-1 run-02",
+      "accepted cancelling session-1 run-02",
+      "accepted cancelled session-1 run-02"
+    ],
+    "states": [
+      "running run-02",
+      "idle "
+    ],
+    "interrupts": 1,
+    "interrupt_params": [
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}"
+    ]
+  },
+  {
+    "name": "a_cancel_before_the_turn_starts_still_interrupts_it",
+    "steps": [
+      {
+        "cancel": "run-02"
+      },
+      {
+        "await": 1
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "interrupted"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "cancelling",
+          "updated_at_ms": 3
+        },
+        "sequence": 1,
+        "timestamp_ms": 4,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.cancelled",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "reason": "native turn interrupted"
+        },
+        "sequence": 2,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "accepted cancelling session-1 run-02"
+    ],
+    "states": [],
+    "interrupts": 1,
+    "interrupt_params": [
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}"
+    ]
+  },
+  {
+    "name": "a_cancel_for_an_unknown_run_is_refused",
+    "steps": [
+      {
+        "cancel": "run-99"
+      },
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "run_not_found"
+    ],
+    "states": [],
+    "interrupts": 0,
+    "interrupt_params": []
+  },
+  {
+    "name": "a_cancel_after_the_run_completed_is_refused",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      },
+      {
+        "await": 2
+      },
+      {
+        "cancel": "run-02"
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "run_already_terminal run-02 completed"
+    ],
+    "states": [],
+    "interrupts": 0,
+    "interrupt_params": []
+  },
+  {
+    "name": "a_cancel_after_the_run_failed_is_refused",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "failed",
+              "error": {
+                "message": "boom"
+              }
+            }
+          }
+        }
+      },
+      {
+        "await": 2
+      },
+      {
+        "cancel": "run-02"
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.failed",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "error": {
+            "code": "native_turn_failed",
+            "message": "boom"
+          }
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "run_already_terminal run-02 failed"
+    ],
+    "states": [],
+    "interrupts": 0,
+    "interrupt_params": []
+  },
+  {
+    "name": "a_refused_interrupt_leaves_the_run_running",
+    "interrupt_error": "busy",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "state": true
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "error: interrupt Codex turn: codex app-server rpc error -32600 for request 1: busy",
+      "error: interrupt Codex turn: codex app-server rpc error -32600 for request 1: busy"
+    ],
+    "states": [
+      "running run-02"
+    ],
+    "interrupts": 2,
+    "interrupt_params": [
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}",
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}"
+    ]
+  },
+  {
+    "name": "concurrent_cancels_send_one_interrupt",
+    "gate": true,
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "cancel_async": "run-02"
+      },
+      {
+        "cancel_async": "run-02"
+      },
+      {
+        "release": true
+      },
+      {
+        "await": 1
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "interrupted"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "cancelling",
+          "updated_at_ms": 6
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.cancelled",
+        "id": "event-07",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "reason": "native turn interrupted"
+        },
+        "sequence": 3,
+        "timestamp_ms": 8,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "accepted cancelling session-1 run-02",
+      "accepted cancelling session-1 run-02"
+    ],
+    "states": [],
+    "interrupts": 1,
+    "interrupt_params": [
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}"
+    ]
+  },
+  {
+    "name": "a_run_that_ends_during_the_interrupt_reports_no_cancelling_status",
+    "gate": true,
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "cancel_async": "run-02"
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "release": true
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "submit": true
+      },
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "await": 1
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-06",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 2,
+        "timestamp_ms": 6,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-11",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-08",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 9
+        },
+        "sequence": 1,
+        "timestamp_ms": 10,
+        "session_id": "session-1",
+        "run_id": "run-08",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-12",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-08",
+          "final_response": {
+            "id": "message-09",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 2,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-08",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "accepted cancelling session-1 run-02",
+      "run_already_terminal run-02 completed"
+    ],
+    "states": [],
+    "interrupts": 1,
+    "interrupt_params": [
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}"
+    ]
+  },
+  {
+    "name": "a_cancel_while_input_is_pending_cancels_the_input",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/tool/requestUserInput",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "questions": [
+              {
+                "id": "a",
+                "question": "A?"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "await": 3
+      },
+      {
+        "cancel": "run-02"
+      },
+      {
+        "await": 1
+      },
+      {
+        "state": true
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "interrupted"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.requested",
+        "id": "event-07",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "title": "Codex needs input",
+          "questions": [
+            {
+              "id": "a",
+              "prompt": "A?",
+              "kind": "text",
+              "required": true
+            }
+          ]
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "waiting_for_input",
+          "pending_user_input_id": "interaction-06",
+          "updated_at_ms": 8
+        },
+        "sequence": 3,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-09",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "cancelling",
+          "updated_at_ms": 10
+        },
+        "sequence": 4,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.resolved",
+        "id": "event-10",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "cancelled"
+        },
+        "sequence": 5,
+        "timestamp_ms": 12,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.cancelled",
+        "id": "event-11",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "reason": "native turn interrupted"
+        },
+        "sequence": 6,
+        "timestamp_ms": 13,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "cancels": [
+      "accepted cancelling session-1 run-02"
+    ],
+    "states": [
+      "waiting_for_input run-02"
+    ],
+    "interrupts": 1,
+    "interrupt_params": [
+      "{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}"
+    ]
+  }
+]

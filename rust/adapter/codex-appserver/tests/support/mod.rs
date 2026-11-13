@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,6 +34,7 @@ pub struct Fake {
     ahead: Mutex<Vec<Inbound>>,
     gate: Mutex<Option<Gate>>,
     panics: Mutex<Option<&'static str>>,
+    fixed: Mutex<HashMap<String, Reply>>,
 }
 
 impl Fake {
@@ -53,6 +54,7 @@ impl Fake {
             ahead: Mutex::default(),
             gate: Mutex::default(),
             panics: Mutex::default(),
+            fixed: Mutex::default(),
         })
     }
 
@@ -105,6 +107,14 @@ impl Fake {
             .unwrap()
             .send(message)
             .map_err(|_| ())
+    }
+
+    pub fn always_reply(&self, method: &str, reply: Reply) {
+        self.fixed.lock().unwrap().insert(method.into(), reply);
+    }
+
+    pub fn hold_interrupts(&self) -> (Receiver<()>, Sender<()>) {
+        self.hold_calls("turn/interrupt")
     }
 
     pub fn hold_calls(&self, method: &'static str) -> (Receiver<()>, Sender<()>) {
@@ -175,7 +185,8 @@ impl Client for Fake {
             let _ = released.recv();
         }
         self.barrier()?;
-        match self.replies.lock().unwrap().pop_front() {
+        let fixed = self.fixed.lock().unwrap().get(method).copied();
+        match fixed.or_else(|| self.replies.lock().unwrap().pop_front()) {
             Some(Ok(result)) => Ok(RawValue::from_string(result.into()).unwrap()),
             Some(Err(message)) => Err(error(Fault::Remote {
                 id: RequestId::Integer(1),
