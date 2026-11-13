@@ -14,6 +14,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test structured)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test items)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test approvals)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test inputs)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -137,3 +138,9 @@ drives requests through the package's `request` helper and `Resolve`, and
 fills an empty `interaction_id` from the latest request event. To see it
 bite, accept a decision Codex did not offer, skip the responder check, or
 settle pending actions before pending approvals: the replay test must fail.
+
+`tests/go_inputs.json` is the same kind of record for user input, printed
+by the same generator with one more step kind that records the session's
+status and active run, and `tests/inputs.rs` replays it. To see it bite,
+accept a secret question, number options from zero, or leave the session
+running while input is pending: the replay test must fail.

@@ -359,3 +359,5 @@ impl oap_adapter::gojson::Decode for ItemNotification {}
 impl oap_adapter::gojson::Decode for CommandApprovalParams {}
 
 impl oap_adapter::gojson::Decode for FileApprovalParams {}
+
+impl oap_adapter::gojson::Decode for UserInputRequestParams {}

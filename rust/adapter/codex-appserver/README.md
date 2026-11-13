@@ -47,7 +47,12 @@ A command or file-change approval for an active action becomes
 `Session::resolve` answers Codex with the chosen decision once, refusing
 what Go refuses. An approval still pending when the run settles is answered
 with `-32800` and resolved as failed, or cancelled on an interruption.
-User input requests are not mapped yet.
+
+An `item/tool/requestUserInput` request for the active run becomes
+`user.input.requested`, with each question's options as single-choice
+options, and the run waits for input. Input still pending when the run
+settles is answered with `-32800` and resolved as cancelled. Resolving
+user input is not mapped yet.
 
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While

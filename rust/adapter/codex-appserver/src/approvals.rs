@@ -141,6 +141,7 @@ impl Shared {
                 request: request.clone(),
                 resolved: false,
                 choices: scope.decisions,
+                questions: None,
                 order,
             },
         );
@@ -254,6 +255,10 @@ impl Shared {
             let _ = interaction
                 .request
                 .respond_error(-32800, "OAP run terminated before interaction resolution");
+            if interaction.questions.is_some() {
+                self.cancel_input(inner, id, key);
+                continue;
+            }
             let payload = PermissionResolvedPayload {
                 interaction_id: key,
                 requested_by: ENDPOINT_ID.into(),
