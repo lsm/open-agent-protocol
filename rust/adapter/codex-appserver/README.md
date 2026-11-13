@@ -26,7 +26,10 @@ or completion fails the active run. A session with an active run refuses to
 close. Text deltas are not mapped yet.
 
 A session reads what Codex sends on its own thread. It answers each reverse
-request it does not handle with `-32601` and the method as data.
+request it does not handle with `-32601` and the method as data. While
+`turn/start` is in flight, the reader sets aside what Codex sends and the
+submit replays it once the turn is recorded, so the reader never waits on
+the submit and those messages land as Go's do, after the turn is known.
 
 `permissions::confirm` is the check a resume runs on Codex's answer: the
 thread must keep the configured sandbox, by its policy `type`, the configured

@@ -73,6 +73,16 @@ impl Fake {
         answers
     }
 
+    pub fn notify_ahead_of_next_reply(&self, method: &str, params: &str) {
+        self.ahead
+            .lock()
+            .unwrap()
+            .push(Inbound::Notification(NotificationMessage {
+                method: method.into(),
+                params: Some(RawValue::from_string(params.into()).unwrap()),
+            }));
+    }
+
     pub fn hang_up(&self) {
         self.done.0.send(()).unwrap();
     }

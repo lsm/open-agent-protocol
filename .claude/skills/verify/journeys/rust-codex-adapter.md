@@ -91,3 +91,6 @@ Go's order: the payload's clock, the event id, then the stamp. To see it
 bite, read the clock before minting the id: the order test must fail.
 Accept another thread's turn: the ignored-notifications test must fail.
 Treat an empty turn error as a message: the terminal-status test must fail.
+What Codex sends ahead of the `turn/start` answer must produce the same
+events and answers as when it comes after it. Handle such a message at once,
+or skip its replay: the ahead-of-answer test must fail.
