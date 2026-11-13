@@ -82,15 +82,14 @@ fn each_item_scenario_emits_the_actions_go_emits() {
             "{}",
             scenario.name
         );
-        if events
+        let cancelled = events
             .iter()
-            .all(|event| event.envelope_type != EnvelopeType::RUN_CANCELLED)
-        {
-            RunTrace {
-                submitted: Some(submission()),
-                ..RunTrace::new(admission, adapter.describe(), events)
-            }
-            .assert_valid();
+            .any(|event| event.envelope_type == EnvelopeType::RUN_CANCELLED);
+        RunTrace {
+            submitted: Some(submission()),
+            cancelled,
+            ..RunTrace::new(admission, adapter.describe(), events)
         }
+        .assert_valid();
     }
 }
