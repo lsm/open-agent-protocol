@@ -154,50 +154,14 @@ commits, not one, and which of them a given clone can see depends on its depth.
 If those notes are ever wanted back into the file, that is where they are — a
 deliberate revert of one commit, not a regeneration.
 
-`package.json` and `package-lock.json` are `0.1.0-alpha.5` so the declared
-version and the next tag agree. That value is not cosmetic, but it decides
-something narrower than it looks:
-
-- **a tagged run ignores it.** `changelog`, `package-npm` and `publish-npm` are
-  all `if: startsWith(github.ref, 'refs/tags/v')`, and they take
-  `${GITHUB_REF_NAME#v}` — `package-npm` also runs `npm version "$TAG_VERSION"
-  --no-git-tag-version`, overwriting both files in the runner's workspace. So the
-  tag decides what npm publishes, every time, and `package.json` cannot
-  contradict it.
-- **an untagged `workflow_dispatch` is governed by it.** `build-binaries` and
-  `checksums` carry no `if`, so they run on one, and three steps in
-  `build-binaries` read `package.json`: `-Dversion` for the binary's compiled-in
-  version, and the `oxap-<version>-<os>-<arch>` names of the `.tar.gz` and the
-  `.zip`.
-
-One more surface, which the workflow never reads but a local build does:
-`zig/build.zig.zon`'s `.version` is the *default* for `-Dversion`
-(`zig/build.zig:13`, `orelse manifest.version`), so it is what `oxap --version`
-prints for anyone who runs `zig build` themselves. It is on the alpha line now
-for the same reason `package.json` is — a manifest left saying `0.2.0` after the
-retraction is the disagreement again, one file over. Nothing validates it; the
-only workflow reference is a `hashFiles` cache key, which a correct bump
-invalidates.
-
-That second bullet is the whole reason this value is worth setting, and it is
-worth being exact about what it is: a dispatch builds binaries and names
-artifacts. It does not publish to npm. So the drift to fear is not "the wrong
-version reaches the registry" — the tag makes that impossible — it is an
-artifact and an `oxap --version` release name carrying `0.2.0` when the tree is
-four alphas past it, handed to whoever asked for a build. `scripts/package-npm.ts`
-also falls back to `package.json` when no `--version` is passed, which is
-reachable from a local shell but not from CI, since the workflow always passes
-it.
-
-`clients/ts/package.json` (`@oxap/client`) follows the same release line and is
-bumped by hand with the others. No workflow in this repository releases it yet —
-`release-binaries.yml` does not mention it — so the tagged run does not
-overwrite its version, and the `NPM_DIST_TAG` rule below does not reach it.
-Whoever publishes it passes the tag themselves: current npm refuses a bare
-`npm publish` of a prerelease, so an alpha needs `npm publish --tag next`.
-
-The `NPM_DIST_TAG` rule already sends a version containing `-` to `next`, so
-the alpha line publishes under the right tag with no further change.
+Every package carries the release version, and the `versions` job refuses a
+run where they disagree: the root and `clients/ts` `package.json` (with their
+lockfiles), `sdk/python/pyproject.toml` in its PEP 440 spelling (`0.1.0a33` for
+`0.1.0-alpha.33`), `zig/build.zig.zon` (the default for `-Dversion`, so what a
+local `oxap --version` prints) and every publishable crate. A dispatch builds
+and names its artifacts under that version, and a tag must equal it, so bump
+them all in one pull request before tagging. A version containing `-`
+publishes to npm under the `next` dist-tag, `@oxap/client` included.
 
 **3. Commit the changelog through a pull request.** This is an ordinary change to
 `CHANGELOG.md` on a branch, merged the usual way. It has to be on `main` *before*
@@ -216,8 +180,8 @@ To check step 2 landed before you tag:
 node scripts/changelog-release.mjs --version 0.1.0-alpha.5 --check
 ```
 
-That is the same check the release workflow runs, and it is what fails the
-`release` and `publish-npm` jobs when the section is missing.
+That is the same check the release workflow runs, and it is what holds back
+every publish job when the section is missing.
 
 ## The generated list
 
@@ -250,15 +214,13 @@ Write it exactly.
 
 ## What the workflow does with all this
 
-| job | needs | what it does with the changelog |
+| job | needs | what it does |
 | --- | --- | --- |
-| `changelog` | — | asserts `CHANGELOG.md` carries a section for `$GITHUB_REF_NAME` |
-| `release` | `checksums`, `changelog` | publishes the GitHub Release |
-| `package-npm` | `build-binaries`, `changelog` | builds the npm packages |
-| `publish-npm` | `package-npm`, `changelog` | publishes to npm |
+| `changelog` | — | on a tag, asserts `CHANGELOG.md` carries a section for it |
+| `package-npm` | `versions`, `build-binaries`, `changelog` | packs the nine npm tarballs |
+| `bundle-smoke` | `versions`, `bundle` | installs and runs the packed release |
+| `release` | `checksums`, `changelog`, `bundle-smoke` | publishes the GitHub Release |
+| `publish-npm`, `publish-crates`, `publish-pypi` | `versions`, `changelog`, `bundle-smoke` | publish to their registries |
 
-`changelog` is its own job and all three publish paths name it in `needs`,
-because the two publish paths are otherwise independent — `release` needs
-`checksums` and `publish-npm` needs `package-npm`, and neither waits for the
-other. Without that, a tag with no notes would fail the GitHub Release while the
-npm packages published anyway, which is the irreversible half.
+Every publish job names `changelog` in its `needs` itself rather than through
+another job, so a tag with no notes reaches no registry and no GitHub Release.
