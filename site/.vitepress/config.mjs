@@ -5,7 +5,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 export default withMermaid(defineConfig({
   title: 'OXAP',
   description: 'One protocol across agent sessions, tools, and model inference.',
-  base: '/open-agent-protocol/',
+  base: '/oxap/',
   srcDir: '.content',
   cleanUrls: false,
   lastUpdated: false,
@@ -33,7 +33,7 @@ export default withMermaid(defineConfig({
       ] }
     ],
     search: { provider: 'local' },
-    socialLinks: [{ icon: 'github', link: 'https://github.com/lsm/open-agent-protocol' }],
-    footer: { message: 'OXAP · existing v0.1 wire identities and package names remain unchanged.' }
+    socialLinks: [{ icon: 'github', link: 'https://github.com/lsm/oxap' }],
+    footer: { message: 'OXAP, formerly Open Agent Protocol · the v0.1 wire identities are unchanged.' }
   }
 }))

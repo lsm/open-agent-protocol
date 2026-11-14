@@ -1,6 +1,11 @@
-# Open Agent Protocol
+# OXAP
 
-**OXAP (formerly OAP)** is the project's name; the CLI rename to `oxap` with an `oapx` compatibility alias is planned in [Decision 0067](decisions/0067-the-project-is-named-oxap.md).
+**OXAP** is the new name of Open Agent Protocol (OAP). The command is `oxap`,
+and `oapx` still works as an alias of it. [docs/install.md](docs/install.md)
+lists the new package names and how to move from the old ones, and
+[Decision 0067](decisions/0067-the-project-is-named-oxap.md) records them.
+The v0.1 wire is unchanged: envelopes still carry the protocol value
+`open-agent-protocol`.
 
 Draft public-domain semantic protocol for agent software layers, agent loops,
 model IO, tools, resources, and adapters for existing agent SDKs.
@@ -8,11 +13,11 @@ model IO, tools, resources, and adapters for existing agent SDKs.
 One protocol envelope covers the whole stack: how a client drives an agent,
 and how an agent loop does model IO. This repository ships the specification
 drafts and decisions, a JSON Schema bundle with executable conformance
-fixtures, SDKs in Go, Python, Rust and TypeScript, and `oapx` — a single
+fixtures, SDKs in Go, Python, Rust and TypeScript, and `oxap` — a single
 binary that serves both profiles, runs its own agent loop, and adapts
 third-party harnesses onto the same wire.
 
-![Diagram: clients — the terminal UI, the SDKs, any OAP client — drive an agent over agent-control-core, served by oapx's built-in loop or a pinned harness adapter; the loop's model IO crosses model-provider-core to catalogued model providers.](docs/oap-overview.svg)
+![Diagram: clients — the terminal UI, the SDKs, any OAP client — drive an agent over agent-control-core, served by oxap's built-in loop or a pinned harness adapter; the loop's model IO crosses model-provider-core to catalogued model providers.](docs/oap-overview.svg)
 
 The first conformance target is an agent-control core covering the boundary
 between a control layer and an agent loop: capabilities, session state, message
@@ -32,7 +37,7 @@ layer talking to an agent loop — sessions, runs, tools — and is what this
 repository executes today.
 [Decision 0016](decisions/0016-model-provider-profile.md) and
 [**drafts/model-provider-core.md**](drafts/model-provider-core.md) specify the
-lower model-provider boundary. `oapx` now implements both profiles and uses
+lower model-provider boundary. `oxap` now implements both profiles and uses
 model-provider-core for its own agent inference; it can expose them together
 on one stdio connection. Other agent implementations may still wrap vendor
 SDKs internally.
@@ -48,7 +53,7 @@ SDKs internally.
   `opencode`), or implement the profile natively and judge it with
   `go run ./go/cmd/goap conformance`.
 - **Model providers and inference services.** Serve `model-provider-core`
-  over stdio or the HTTP binding. The `oapx` loop is itself a client of the
+  over stdio or the HTTP binding. The `oxap` loop is itself a client of the
   profile, so a remote provider service can stand in for the local one.
 - **Protocol implementers and reviewers.** [STABILITY.md](STABILITY.md)
   states the v0.1 pre-release contract, [IMPLEMENTERS.md](IMPLEMENTERS.md)
@@ -57,22 +62,23 @@ SDKs internally.
 
 ## Quick start
 
-`oapx` is a single binary. Get one of these two ways:
+`oxap` is a single binary. Get it one of these ways:
 
-- Download it from the [latest release](https://github.com/lsm/open-agent-protocol/releases). Builds are published for macOS, Linux and Windows on arm64 and x64, with a `SHA256SUMS.txt`.
+- Download it from the [latest release](https://github.com/lsm/oxap/releases). Builds are published for macOS, Linux and Windows on arm64 and x64, with a `SHA256SUMS.txt`.
+- Or install it from npm: `npm install -g @oxap/cli`.
 - Or build it from this checkout with Zig 0.17.0. `make install` puts it in `~/.local/bin`.
 
 ```sh
-oapx auth providers                      # the providers you can sign in to
-oapx auth login --provider <id>          # store a credential (Keychain first on macOS)
-oapx                                     # the terminal UI, over any stored credential
-KIMI_API_KEY=<key> oapx run --agent "summarize this repo"   # one prompt over Kimi, every event printed
-oapx serve agent,provider --stdio        # the endpoint the SDKs drive
+oxap auth providers                      # the providers you can sign in to
+oxap auth login --provider <id>          # store a credential (Keychain first on macOS)
+oxap                                     # the terminal UI, over any stored credential
+KIMI_API_KEY=<key> oxap run --agent "summarize this repo"   # one prompt over Kimi, every event printed
+oxap serve agent,provider --stdio        # the endpoint the SDKs drive
 ```
 
-## How oapx works
+## How oxap works
 
-`oapx` sits between whatever drives an agent and whatever runs it. Every
+`oxap` sits between whatever drives an agent and whatever runs it. Every
 client speaks the same OAP envelopes to it. Behind it there are two kinds of
 backend:
 
@@ -83,12 +89,12 @@ backend:
 flowchart TB
     subgraph clients["Clients"]
         direction LR
-        tui["Terminal UI<br/><code>oapx</code>"]
+        tui["Terminal UI<br/><code>oxap</code>"]
         sdk["SDKs<br/>Python · Rust · TypeScript · Go"]
         remote["Any OAP client<br/>stdio or HTTP + SSE"]
     end
 
-    subgraph oapx["oapx — one binary"]
+    subgraph oapx["oxap — one binary"]
         direction TB
         hub["<b>serve</b><br/>many sessions · replay"]
         agent["<b>serve agent</b><br/>agent-control-core"]
@@ -139,8 +145,8 @@ provider profile.
 sequenceDiagram
     autonumber
     participant C as Client (TUI / SDK)
-    participant A as oapx · agent loop
-    participant P as oapx · provider
+    participant A as oxap · agent loop
+    participant P as oxap · provider
     participant M as Model API
 
     C->>A: protocol.initialize.request
@@ -178,7 +184,7 @@ gap is.
 
 ```mermaid
 flowchart TB
-    subgraph host["Host: TUI, serve agent, or oapx run"]
+    subgraph host["Host: TUI, serve agent, or oxap run"]
         session["Session<br/>history · settings · compaction policy"]
     end
 
@@ -223,7 +229,7 @@ is deprecated. State lives under `~/.oxap`; a home that has only the old
 
 ### Harness backends
 
-`oapx serve agent --backend <name>` swaps the built-in loop for a third-party
+`oxap serve agent --backend <name>` swaps the built-in loop for a third-party
 harness. The client sees the same envelopes either way. Each adapter is pinned
 to the harness versions its catalog entry in `harnesses/` names. Its
 `research/` ledger records everything the harness cannot express in OAP, and
@@ -233,23 +239,23 @@ start and how it authenticates.
 
 | Backend | Runs | Pinned |
 | --- | --- | --- |
-| `oapx` | oapx's own loop, as the terminal UI builds it | — |
+| `oapx` | oxap's own loop, as the terminal UI builds it | — |
 | `claude` | a Claude Code child | 2.1.322 |
 | `codex` | a Codex app-server child | `rust-v0.167.2` |
 | `pi` | a Pi RPC child | `v1.5.2` |
 | `acp` | an ACP v1 agent named by a `--config` entry | `v1.17.0` |
 | `hermes` | a Hermes gateway | `v0.23.1` |
 | `deepseek` | a DeepSeek harness | `dsh-v0.2.2-rc.2` (release candidate) |
-| `opencode` | an OpenCode server, started by oapx or already running | `v2.2.7` |
+| `opencode` | an OpenCode server, started by oxap or already running | `v2.2.7` |
 | `memory` | the in-memory reference script that conformance runs against | — |
 
-When `opencode` names no endpoint, oapx runs the whole server lifecycle
+When `opencode` names no endpoint, oxap runs the whole server lifecycle
 itself. The terminal UI uses the same route when you pick an OpenCode model in
 `/model`:
 
 ```mermaid
 sequenceDiagram
-    participant O as oapx
+    participant O as oxap
     participant S as opencode serve
     participant C as Client
 
@@ -259,7 +265,7 @@ sequenceDiagram
         O->>S: GET /api/info
     end
     alt version not admitted by the catalog
-        O-->>C: refuse, naming the tested version and oapx opencode install
+        O-->>C: refuse, naming the tested version and oxap opencode install
     else admitted
         C->>O: session.open / session.message.submit
         O->>S: create session, prompt
@@ -272,13 +278,13 @@ sequenceDiagram
 To run the terminal UI over OpenCode:
 
 ```sh
-oapx opencode install
-oapx tui --backend opencode
+oxap opencode install
+oxap tui --backend opencode
 ```
 
-`oapx opencode install` downloads the OpenCode build the catalog pins for this
+`oxap opencode install` downloads the OpenCode build the catalog pins for this
 platform (`v2.2.7`), checks its sha256, and unpacks it under
-`~/.oxap/opencode/<version>`. `oapx tui --backend opencode` then starts that
+`~/.oxap/opencode/<version>`. `oxap tui --backend opencode` then starts that
 server, runs the terminal UI over it, and stops it on exit. With
 `--config <path>` it takes the registry entry named `opencode` instead, and an
 entry naming an `endpoint` attaches to a server that is already running.
@@ -288,7 +294,7 @@ entry naming an `endpoint` attaches to a server that is already running.
 Run the combined endpoint with:
 
 ```sh
-oapx serve agent,provider --stdio
+oxap serve agent,provider --stdio
 ```
 
 The four SDKs — Python and TypeScript in `sdk/`, Rust in `rust/sdk/`, and Go
@@ -296,14 +302,14 @@ in `go/sdk/` — use this OAP mode by default. The agent's selected
 model can be changed mid-session with `session.model.switch`, and local
 authentication flows use the optional `+auth` unit. Dynamic provider
 attachment is specified but optional; a remote HTTP provider binding is
-specified in [the HTTP binding](drafts/provider-http.md). `oapx` can use an
+specified in [the HTTP binding](drafts/provider-http.md). `oxap` can use an
 operator-configured remote provider for agent inference by setting
-`OAPX_PROVIDER_SERVICE_URL` and `OAPX_PROVIDER_SERVICE_SECURITY` to `loopback`,
+`OXAP_PROVIDER_SERVICE_URL` and `OXAP_PROVIDER_SERVICE_SECURITY` to `loopback`,
 `tls`, or `mesh_proxy`; the remote service must expose
-`POST /oap/v0.1/provider`. An `oapx` provider can serve that endpoint with
-`oapx serve provider --http 127.0.0.1:8080`; a sidecar or reverse proxy must
+`POST /oap/v0.1/provider`. An `oxap` provider can serve that endpoint with
+`oxap serve provider --http 127.0.0.1:8080`; a sidecar or reverse proxy must
 provide authenticated cross-Pod exposure. Use the remote-service settings with
-`oapx serve agent --stdio`; the combined `agent,provider` role refuses them
+`oxap serve agent --stdio`; the combined `agent,provider` role refuses them
 rather than exposing a different, local provider profile. Live
 `session.provider.attach` is not yet implemented.
 The `oapx`
@@ -317,7 +323,7 @@ available only by explicit opt-in.
 
 ## Backends in detail
 
-`oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.322),
+`oxap serve agent --backend claude` serves a Claude Code child (pinned 2.1.322),
 `--backend codex` a Codex app-server child (pinned `rust-v0.167.2`), `--backend pi` a
 Pi RPC child (pinned `v1.5.2`), an `acp`
 entry an ACP v1 agent (pinned `v1.17.0`), a `hermes` entry a Hermes gateway (pinned `v0.23.1`), a `deepseek` entry a DeepSeek harness (pinned release candidate `dsh-v0.2.2-rc.2`), and an `opencode` entry an OpenCode server (pinned `v2.2.7`), behind the same stdio door instead of the built-in loop, following
@@ -328,15 +334,15 @@ as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
 `--backend opencode` with no `endpoint` starts its own `opencode serve` (the
-entry's `executable`, else the one `oapx opencode install` put under
+entry's `executable`, else the one `oxap opencode install` put under
 `~/.oxap/opencode/<version>`, else `opencode` from `PATH`) on a loopback port under a fresh password,
 logs it to `~/.oxap/opencode/<entry>.log`, refuses a server whose `/api/info`
 reports a version the catalog does not admit, and stops it on exit; an entry
-naming an `endpoint` attaches to a server already running instead. `oapx opencode
+naming an `endpoint` attaches to a server already running instead. `oxap opencode
 install` downloads the OpenCode build the catalog pins for this platform from
 `https://opencode.ai/files/bin/<version>/`, refuses an archive or binary whose
 sha256 is not the pinned one, and unpacks it under `~/.oxap/opencode/<version>`.
-`--backend oapx` serves `oapx`'s own agent loop as the terminal UI builds it —
+`--backend oapx` serves `oxap`'s own agent loop as the terminal UI builds it —
 the same model catalog, workspace tools and permission engine —
 through the adapter in `zig/src/adapter/oapx/`, so a session gets every
 catalogued provider and the loop's tools, and cancelling a run leaves the
@@ -597,9 +603,9 @@ adapter's pin — which makes it the first native adapter to exercise the
 degraded opt-in end to end. The reference adapter serves the fixed catalog its
 model gate already enforces.
 
-### Local daemon (`oapx serve`)
+### Local daemon (`oxap serve`)
 
-`oapx serve` is the product's multi-session daemon; `hub` is its old name and
+`oxap serve` is the product's multi-session daemon; `hub` is its old name and
 still works. It carries the registry config (`--config`), the stdio
 transport-object wire (`--stdio`) and HTTP + Server-Sent Events (`--addr`).
 `goap serve` is the same daemon in this repository's Go tree, and it is **not
@@ -613,7 +619,7 @@ wire behavior is the contract the `client` package proves:
 
 **`go/serve` is the library, and it is for in-process hosts.** A Go host that
 wants the hub driven inside its own test binary imports `go/serve` and calls it
-directly — no socket, no port, no second process. `oapx serve` is the product's
+directly — no socket, no port, no second process. `oxap serve` is the product's
 daemon, and the two are held to one wire by CI rather than by assumption:
 `go/cmd/goap`'s differential drives both over stdio and compares every line,
 and `clients/ts`'s suite runs against each over HTTP + SSE.
@@ -922,13 +928,13 @@ Pick the tier that fits: `adapter.Session` directly for one embedded session
 ### Depending on the Go library
 
 A Go program depends on this repository as a module, and one tag carries both
-the library and the released `oapx` binary:
+the library and the released `oxap` binary:
 
 ```
-go get github.com/lsm/open-agent-protocol@v0.1.0-alpha.4
+go get github.com/lsm/oxap@v0.1.0-alpha.33
 ```
 
-Tags are shared with `oapx` releases, so a consumer that installs the library
+Tags are shared with `oxap` releases, so a consumer that installs the library
 and a host that installs the binary are on the same pin. `go get` without a
 version takes the newest tag; a program that must stay on a known release
 should name it, the way this repository names its harness pins.
@@ -945,7 +951,7 @@ the list cannot drift by adding a directory.
 which file in `goap` uses it, which is where to start when the signature alone
 does not answer the question.
 [`docs/go-agent-loop.md`](docs/go-agent-loop.md) covers the agent loop the Go
-tree is growing its own (#370): what `oapx`'s loop does, which parts the Go
+tree is growing its own (#370): what `oxap`'s loop does, which parts the Go
 tree needs first, and why the first slice is text turns and client-executed
 tool calls.
 
@@ -1019,8 +1025,8 @@ for await (const envelope of events) {
 }
 ```
 
-See `clients/ts/README.md` for the full surface. npm publishing is
-intentionally out of scope; the package is consumed from a checkout.
+The package is `@oxap/client`. It is not on npm yet, so use it from a checkout
+as `clients/ts/README.md` describes; that README also covers the full surface.
 
 Harness pins:
 
@@ -1100,7 +1106,7 @@ go run ./go/cmd/goap conformance                  # drive that reference endpoin
 go run ./go/cmd/goap conformance --command "some-agent --oap" # drive somebody else's
 ```
 
-`oapx` carries `serve agent` today; `oapx conformance` is product work under
+`oxap` carries `serve agent` today; `oxap conformance` is product work under
 Decision 0038. `goap` is this repository's own tool.
 
 The Rust Unix process runner is `oap_conformance::run`. Its `Options` select

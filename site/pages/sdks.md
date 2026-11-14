@@ -1,6 +1,6 @@
 # SDKs and clients
 
-Choose a client for the wire you intend to use:
+Choose a client for the wire you intend to use. The [install and migration guide](./source/docs/install.md) gives each one's package name.
 
 | Language / layer | Source guide |
 | --- | --- |
@@ -11,7 +11,7 @@ Choose a client for the wire you intend to use:
 | Python endpoint SDK | [Python SDK](./source/sdk/python/README.md) |
 | Zig runtime embedding and stream ownership | [Ownership guide](./source/docs/zig-stream-memory-ownership.md) |
 
-The endpoint SDKs and Hub clients are distinct APIs. Source compatibility names such as `MakaiClient`, package names and commands retain their spelling.
+The endpoint SDKs and Hub clients are distinct APIs. Exported names such as `MakaiClient` keep their spelling under the new OXAP package names.
 
 ::: warning Open conflict — C02–C04, C16, C35
 Go SDK tools/options and library inventories, Go loop progress, the TS Hub subscription lifetime and TS installation guidance have [unresolved differences](./conflicts.md). Both claims are preserved on the affected source pages.
