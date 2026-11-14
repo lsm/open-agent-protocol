@@ -308,3 +308,26 @@ fn a_call_answered_just_before_the_gateway_exits_still_returns_its_result() {
         drain.join().unwrap();
     }
 }
+
+#[test]
+fn a_pending_call_fails_at_close_while_a_descendant_still_holds_stdout() {
+    let _serial = serial();
+    let process = Process::start(
+        &gateway(&ready_then(
+            "sleep 15 &\nwhile IFS= read -r line; do :; done\nexit 0\n",
+        )),
+        None,
+    )
+    .unwrap();
+    let client = process.client.clone();
+    let (answered, answer) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = answered.send(client.call("probe", None, None).map(drop));
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = process.close();
+    let outcome = answer
+        .recv_timeout(Duration::from_secs(3))
+        .expect("the pending call still waits after close");
+    assert!(outcome.is_err());
+}
