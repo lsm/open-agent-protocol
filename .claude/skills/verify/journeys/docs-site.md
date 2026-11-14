@@ -12,7 +12,7 @@ npm --prefix site run browser-check
 ```
 
 The browser journey serves the built site on an OS-assigned loopback port,
-visits it under `/open-agent-protocol/`, checks deep links, local search,
+visits it under `/oxap/`, checks deep links, local search,
 conflict notices, schema/raw JSON and LLM outputs, and reads content with
 JavaScript disabled. It checks desktop/mobile layouts, records screenshots
 under the supplied artifact directory, and closes its browser and server.

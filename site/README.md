@@ -16,7 +16,7 @@ npm --prefix site run check
 npm --prefix site run preview -- --port 4173
 ```
 
-Visit `http://127.0.0.1:4173/open-agent-protocol/`. Node 22 is used in CI.
+Visit `http://127.0.0.1:4173/oxap/`. Node 22 is used in CI.
 Browser verification is documented in the repository's docs-site verify journey.
 
 A repository administrator must select GitHub Actions as the Pages source and

@@ -1,6 +1,6 @@
 # Start with OXAP
 
-OXAP is the project name. The released command remains `oapx`; the v0.1 protocol ID remains `open-agent-protocol`. See [Decision 0067](./source/decisions/0067-the-project-is-named-oxap.md) for the planned compatibility boundaries.
+OXAP is the new name of Open Agent Protocol (OAP). The command is `oxap`, and `oapx` still works as an alias; the v0.1 protocol ID remains `open-agent-protocol`. The [install and migration guide](./source/docs/install.md) lists the new package names, and [Decision 0067](./source/decisions/0067-the-project-is-named-oxap.md) records them.
 
 Choose the boundary before choosing a client:
 
@@ -16,4 +16,4 @@ The README examples, command inventory, decision index, operation count and hand
 
 ## Hosting this documentation
 
-This site uses GitHub Pages under `/open-agent-protocol/`. A repository administrator must choose **Settings → Pages → Build and deployment → Source: GitHub Actions** and permit the `github-pages` environment deployment if approval is required. The workflow can then be dispatched after merge. Domain, repository and DNS settings are outside this change.
+This site uses GitHub Pages under `/oxap/`. A repository administrator must choose **Settings → Pages → Build and deployment → Source: GitHub Actions** and permit the `github-pages` environment deployment if approval is required. The workflow can then be dispatched after merge. Domain, repository and DNS settings are outside this change.

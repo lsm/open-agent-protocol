@@ -1,6 +1,7 @@
 # Decision 0067: The Project Is Named OXAP
 
-Status: accepted 2026-11-03 (implementation follows separately)
+Status: accepted 2026-11-03; implemented in `v0.1.0-alpha.33`, the first release
+under the OXAP names ([install and migration guide](../docs/install.md))
 Date: 2026-11-03
 Protocol: `open-agent-protocol` version `0.1`
 Profile: all existing profiles
