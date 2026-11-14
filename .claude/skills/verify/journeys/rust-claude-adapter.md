@@ -12,6 +12,7 @@ repository root.
 (cd rust && cargo test -p oxap-adapter-claude --test native_control)
 (cd rust && cargo test -p oxap-adapter-claude --test native_turns)
 (cd rust && cargo test -p oxap-adapter-claude --test native_raw_bytes)
+(cd rust && cargo test -p oxap-adapter-claude --test native_host_writes)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -94,3 +95,15 @@ which borrow from the decoded text so each raw span stays in it. To see it
 bite, parse a nested member from a copy: the raw-member assertions must fail.
 Read a user frame's blocks without `source::decode_slice`: the ignored-key
 test must fail.
+
+`tests/native_host_writes.rs` pins the bytes of the hook answers, the
+initialize and interrupt requests, the permission answers and the MCP response
+Go's session writes to Claude Code, compared with what `json.Marshal` gives the Go types in
+`go/adapter/claude/internal/native/types.go`: members in declaration order,
+each `omitempty` member left out when empty, and a raw member compacted and
+escaped as Go marshals a `json.RawMessage`, a lone surrogate escape kept. It
+also reads an interrupt result as Go reads one, a null member or element as
+its zero value and a non-object refused. To see it bite, drop the
+`skip_serializing_if` on `interrupt`: the deny test must fail. Skip
+`go_marshal`: the allow test must fail. Decode the result without
+`source::decode_object`: the null result case must fail.
