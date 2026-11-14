@@ -610,7 +610,16 @@ impl Serving {
     }
 
     fn write_stopping(&self) -> Option<std::sync::RwLockWriteGuard<'_, Stopping>> {
-        self.wait_stopping(std::sync::RwLock::try_write)
+        self.wait_stopping(|stopping| {
+            let taken = stopping.try_write();
+            #[cfg(test)]
+            if matches!(taken, Err(std::sync::TryLockError::WouldBlock)) {
+                if let Some(contended) = lock(&tests::CONTENDED).take() {
+                    let _ = contended.send(());
+                }
+            }
+            taken
+        })
     }
 
     fn wait_stopping<'a, G>(
@@ -2346,6 +2355,41 @@ fn response_line(id: i64, answer: Answer) -> Result<Vec<u8>, StdioError> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    pub(super) static CONTENDED: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> =
+        std::sync::Mutex::new(None);
+
+    #[test]
+    fn a_third_signal_ends_serving_while_a_shutdown_request_waits_on_a_parked_shutdown() {
+        let hub = crate::Hub::new(crate::Registry::default_registry());
+        let signals = super::Signals::new(&hub);
+        let (contended, contention) = std::sync::mpsc::channel();
+        *super::lock(&CONTENDED) = Some(contended);
+        let parked = signals.stopping.write().unwrap();
+        let (done, served) = std::sync::mpsc::channel();
+        let serving = signals.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(super::serve_signalled(
+                &serving,
+                std::io::Cursor::new(b"{\"id\":1,\"op\":\"shutdown\"}\n".to_vec()),
+                std::io::sink(),
+                &super::StdioOptions::default(),
+            ));
+        });
+        contention
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the shutdown request never waited on the parked shutdown");
+        assert!(signals.signal(3).is_none());
+        let ended = served.recv_timeout(Duration::from_secs(10));
+        drop(parked);
+        assert!(
+            ended.is_ok(),
+            "the third signal did not end serving while the shutdown request waited"
+        );
+        assert!(ended.unwrap().is_ok(), "third signal must return Ok");
+    }
+
     #[test]
     fn the_byte_budget_admits_one_oversize_request_and_refuses_what_overfills_it() {
         let inflight = super::Inflight::new(16);
