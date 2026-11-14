@@ -2021,6 +2021,40 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+pub const oxap_settings_key = "oxap";
+
+fn settingsIn(metadata: ?std.json.Value) ?std.json.Value {
+    const document = metadata orelse return null;
+    if (document != .object) return null;
+    return document.object.get(oxap_settings_key) orelse document.object.get(settings_key);
+}
+
+fn requireAgreeingSettings(metadata: ?std.json.Value, refusal: *contract.Refusal) contract.Failure!void {
+    const document = metadata orelse return;
+    if (document != .object) return;
+    const ours = document.object.get(oxap_settings_key) orelse return;
+    const old = document.object.get(settings_key) orelse return;
+    if (!sameJson(ours, old)) return refusal.fail(error.InvalidSubmission, "metadata carries oxap and oapx settings that disagree; send one of them");
+}
+
+fn sameJson(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |held| held == b.bool,
+        .integer => |held| held == b.integer,
+        .float => |held| held == b.float,
+        .number_string => |held| std.mem.eql(u8, held, b.number_string),
+        .string => |held| std.mem.eql(u8, held, b.string),
+        .array => |held| held.items.len == b.array.items.len and for (held.items, b.array.items) |left, right| {
+            if (!sameJson(left, right)) break false;
+        } else true,
+        .object => |held| held.count() == b.object.count() and for (held.keys(), held.values()) |key, value| {
+            const other = b.object.get(key) orelse break false;
+            if (!sameJson(value, other)) break false;
+        } else true,
+    };
+}
 
 const CallEnd = struct {
     text: []const u8 = "",
@@ -2060,9 +2094,7 @@ fn thinkingLevel(text: []const u8, refusal: *contract.Refusal) contract.Failure!
 }
 
 fn offersUserInput(metadata: ?std.json.Value) bool {
-    const document = metadata orelse return true;
-    if (document != .object) return true;
-    const settings = document.object.get(settings_key) orelse return true;
+    const settings = settingsIn(metadata) orelse return true;
     if (settings != .object) return true;
     const offered = settings.object.get("user_input") orelse return true;
     return !(offered == .bool and !offered.bool);
@@ -2083,8 +2115,8 @@ const LiveSettings = struct {
 fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contract.Refusal) contract.Failure!LiveSettings {
     var settings = LiveSettings{};
     const document = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return settings;
-    if (document != .object) return settings;
-    const named = document.object.get(settings_key) orelse return settings;
+    try requireAgreeingSettings(document, refusal);
+    const named = settingsIn(document) orelse return settings;
     if (named != .object) return settings;
     const fields = named.object;
     if (fields.get("context_window")) |value| {
@@ -2143,9 +2175,7 @@ fn applyLiveSettings(runtime: *session_runtime.SessionRuntime, settings: LiveSet
 
 pub fn sessionOptions(base: session_runtime.SessionRuntimeOptions, metadata: ?std.json.Value) session_runtime.SessionRuntimeOptions {
     var options = base;
-    const document = metadata orelse return options;
-    if (document != .object) return options;
-    const settings = document.object.get(settings_key) orelse return options;
+    const settings = settingsIn(metadata) orelse return options;
     if (settings != .object) return options;
     const fields = settings.object;
     if (fields.get("thinking_level")) |value| {
@@ -2201,9 +2231,8 @@ pub fn requestedModel(
     metadata: ?std.json.Value,
     refusal: *contract.Refusal,
 ) contract.Failure!?session_runtime.InitialModelRef {
-    const document = metadata orelse return null;
-    if (document != .object) return null;
-    const settings = document.object.get(settings_key) orelse return null;
+    try requireAgreeingSettings(metadata, refusal);
+    const settings = settingsIn(metadata) orelse return null;
     if (settings != .object) return null;
     const named = settings.object.get("model") orelse return null;
     if (named != .string or named.string.len == 0) return null;
@@ -5604,4 +5633,39 @@ test "host reads task output using raw offsets and valid UTF-8" {
     try wire.send("session.task.output.request", wire_scope, try parseValue(a, interior));
     const refusal = wireLast(&wire, "error.response");
     try testing.expectEqualStrings("invalid_request", refusal.object.get("payload").?.object.get("error").?.object.get("code").?.string);
+}
+
+fn requestedIn(arena: std.mem.Allocator, document: []const u8, refusal: *contract.Refusal) !?session_runtime.InitialModelRef {
+    const ref = try refFor(arena, other_model);
+    const text = try std.mem.replaceOwned(u8, arena, document, "REF", ref);
+    const metadata = try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+    return requestedModel(arena, &scripted_models, metadata, refusal);
+}
+
+test "a session's settings are read from the oxap namespace, and the oapx one still works" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    for ([_][]const u8{
+        \\{"oxap":{"model":"REF"}}
+        ,
+        \\{"oapx":{"model":"REF"}}
+        ,
+        \\{"oxap":{"model":"REF"},"oapx":{"model":"REF"}}
+    }) |document| {
+        const chosen = (try requestedIn(arena.allocator(), document, &refusal)).?;
+        try testing.expectEqualStrings(other_model.id, chosen.id);
+    }
+    const thinking = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"oxap\":{\"thinking_level\":\"high\"}}", .{});
+    try testing.expectEqual(ai_types.ThinkingLevel.high, sessionOptions(.{ .thinking_level = .low }, thinking).thinking_level);
+}
+
+test "oxap and oapx settings that disagree are refused rather than one silently chosen" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, requestedIn(arena.allocator(),
+        \\{"oxap":{"model":"REF"},"oapx":{"model":"scripted-model"}}
+    , &refusal));
+    try testing.expectEqualStrings("metadata carries oxap and oapx settings that disagree; send one of them", refusal.message);
 }

@@ -42,7 +42,7 @@ pub const artifact: ?Artifact = pinned: {
 };
 
 pub fn installedPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
-    return std.fs.path.join(arena, &.{ home, ".oapx", "opencode", version, "opencode" });
+    return std.fs.path.join(arena, &.{ home, try compat.state.nameUnder(arena, home), "opencode", version, "opencode" });
 }
 
 pub fn installed(arena: std.mem.Allocator, home: []const u8) !?[]const u8 {
@@ -81,7 +81,7 @@ pub fn place(arena: std.mem.Allocator, home: []const u8, pinned: Artifact, body:
     }
     const io = compat.fs.defaultIo();
     const cwd = compat.fs.getCwd();
-    const final = try std.fs.path.join(arena, &.{ home, ".oapx", "opencode", version });
+    const final = try std.fs.path.join(arena, &.{ home, try compat.state.nameUnder(arena, home), "opencode", version });
     const staging = try std.mem.concat(arena, u8, &.{ final, ".partial" });
     cwd.deleteTree(io, staging) catch {};
     try compat.fs.createDir(cwd, staging);

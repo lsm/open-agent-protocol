@@ -71,7 +71,16 @@ type ListingCache struct {
 }
 
 func HomeListingCache(home string) ListingCache {
-	return ListingCache{Dir: filepath.Join(home, ".oapx", "model_catalog")}
+	return ListingCache{Dir: filepath.Join(home, stateDirName(home), "model_catalog")}
+}
+
+func stateDirName(home string) string {
+	if _, err := os.Lstat(filepath.Join(home, ".oxap")); errors.Is(err, os.ErrNotExist) {
+		if info, err := os.Stat(filepath.Join(home, ".oapx")); err == nil && info.IsDir() {
+			return ".oapx"
+		}
+	}
+	return ".oxap"
 }
 
 type listingTarget struct {
@@ -157,7 +166,7 @@ func (d Discoverer) target(id string) (listingTarget, bool) {
 }
 
 func (d Discoverer) baseOverride(id, wire string) string {
-	given := environmentValue(d.Environment, providercatalog.GlobalBaseURLEnv)
+	given := providercatalog.GlobalBaseURL(d.Environment)
 	if given == "" {
 		given = environmentValue(d.Environment, providercatalog.FirstBaseURLEnv(d.Catalog, id))
 	}

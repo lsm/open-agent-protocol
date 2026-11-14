@@ -15,7 +15,6 @@ pub const schema_job =
     \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string","description":"The output_path the background Shell call returned."},"kill":{"type":"boolean"},"wake_on":{"type":"string","description":"An RE2 regular expression. The session is woken once, with the matching line, when the job writes a line it matches anywhere in; output since the offset you last saw counts. The rule then ends, so set it again to be woken again."}},"required":["description","workspace_root","path"],"additionalProperties":false}
 ;
 
-const jobs_dir = ".oapx/jobs";
 
 pub const job_tool_name = "ShellJob";
 
@@ -143,7 +142,7 @@ pub const Jobs = struct {
         self.closing = true;
     }
 
-    fn newJob(self: *Jobs, workspace_root: []const u8, tool_call_id: []const u8) !*Job {
+    fn newJob(self: *Jobs, workspace_root: []const u8, jobs_dir: []const u8, tool_call_id: []const u8) !*Job {
         self.lock();
         self.next += 1;
         const number = self.next;
@@ -152,7 +151,7 @@ pub const Jobs = struct {
         compat.random.fillSecureBytes(&entropy);
         const id = try std.fmt.allocPrint(self.allocator, "job-{d}-{x}", .{ number, entropy });
         errdefer self.allocator.free(id);
-        const output = try std.fmt.allocPrint(self.allocator, jobs_dir ++ "/{s}.log", .{id});
+        const output = try std.fmt.allocPrint(self.allocator, "{s}/{s}.log", .{ jobs_dir, id });
         errdefer self.allocator.free(output);
         const root = try self.allocator.dupe(u8, workspace_root);
         errdefer self.allocator.free(root);
@@ -196,9 +195,11 @@ pub const Jobs = struct {
         };
         var dir = try common.openWorkspace(workspace_root, false);
         defer dir.close(common.defaultIo());
+        const jobs_dir = try std.fs.path.join(self.allocator, &.{ compat.state.nameIn(dir), "jobs" });
+        defer self.allocator.free(jobs_dir);
         try dir.createDirPath(common.defaultIo(), jobs_dir);
         self.reap();
-        const job = try self.newJob(workspace_root, options.tool_call_id);
+        const job = try self.newJob(workspace_root, jobs_dir, options.tool_call_id);
         errdefer self.freeJob(job);
         const file = try dir.createFile(common.defaultIo(), job.output, .{});
         var file_open = true;

@@ -438,3 +438,36 @@ func TestAStaleStoredRefusalStaysDroppedWhenTheReprobeFails(t *testing.T) {
 		t.Fatalf("models = %v, want the plan kept dropped, declared models included", modelKeys(found))
 	}
 }
+
+func TestTheHomeListingCacheLivesUnderOxapUnlessOnlyOapxExists(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		layout []string
+		want   string
+	}{
+		{"no state yet", nil, ".oxap"},
+		{"only the old directory", []string{".oapx"}, ".oapx"},
+		{"both directories", []string{".oapx", ".oxap"}, ".oxap"},
+	} {
+		home := t.TempDir()
+		for _, dir := range tc.layout {
+			if err := os.Mkdir(filepath.Join(home, dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, want := HomeListingCache(home).Dir, filepath.Join(home, tc.want, "model_catalog"); got != want {
+			t.Errorf("%s: cache dir = %q, want %q", tc.name, got, want)
+		}
+	}
+}
+
+func TestDiscoveryReadsTheOXAPGlobalBaseURLBeforeItsOldName(t *testing.T) {
+	both := Discoverer{Environment: []providercatalog.EnvironmentValue{{Name: "OAPX_BASE_URL", Value: "http://old.test"}, {Name: "OXAP_BASE_URL", Value: "http://new.test"}}}
+	if got := both.baseOverride("openrouter", "openai-completions"); !strings.Contains(got, "new.test") {
+		t.Errorf("both set: override = %q, want the OXAP value", got)
+	}
+	old := Discoverer{Environment: []providercatalog.EnvironmentValue{{Name: "OAPX_BASE_URL", Value: "http://old.test"}}}
+	if got := old.baseOverride("openrouter", "openai-completions"); !strings.Contains(got, "old.test") {
+		t.Errorf("only the old name: override = %q, want its value", got)
+	}
+}

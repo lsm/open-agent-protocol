@@ -107,7 +107,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
-    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth] | /provider del <id> | /provider list", .description = "Declare, delete, or list the custom providers in ~/.oapx/providers.json", .handler = handleProvider },
+    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth] | /provider del <id> | /provider list", .description = "Declare, delete, or list the custom providers in ~/.oxap/providers.json", .handler = handleProvider },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },

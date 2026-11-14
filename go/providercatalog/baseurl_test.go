@@ -306,3 +306,14 @@ func TestAKnownRegionStillOutranksTheDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestTheOXAPGlobalOverrideWinsOverItsOldNameWhichStillWorksAlone(t *testing.T) {
+	both := BaseOverridesFromEnv(heldCatalog(t), envOf("OAPX_BASE_URL", "http://old.test", "OXAP_BASE_URL", "http://new.test"))
+	if both.Global != "http://new.test" {
+		t.Errorf("both set: global = %q, want the OXAP value", both.Global)
+	}
+	old := BaseOverridesFromEnv(heldCatalog(t), envOf("OAPX_BASE_URL", "http://old.test"))
+	if old.Global != "http://old.test" {
+		t.Errorf("only the old name: global = %q, want its value", old.Global)
+	}
+}

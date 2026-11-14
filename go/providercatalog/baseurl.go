@@ -4,6 +4,17 @@ import "strings"
 
 const GlobalBaseURLEnv = "OAPX_BASE_URL"
 
+const OXAPGlobalBaseURLEnv = "OXAP_BASE_URL"
+
+func GlobalBaseURL(env []EnvironmentValue) string {
+	for _, held := range env {
+		if held.Name == OXAPGlobalBaseURLEnv {
+			return held.Value
+		}
+	}
+	return firstEnvValue(env, GlobalBaseURLEnv)
+}
+
 var VersionedWires = []string{"anthropic-messages", "openai-completions", "openai-responses"}
 
 type BaseOverrides struct {
@@ -16,7 +27,7 @@ type BaseOverrides struct {
 
 func BaseOverridesFromEnv(catalog Catalog, env []EnvironmentValue) BaseOverrides {
 	return BaseOverrides{
-		Global:     firstEnvValue(env, GlobalBaseURLEnv),
+		Global:     GlobalBaseURL(env),
 		Anthropic:  firstEnvValue(env, FirstBaseURLEnv(catalog, "anthropic")),
 		OpenAI:     firstEnvValue(env, FirstBaseURLEnv(catalog, "openai")),
 		DeepSeek:   firstEnvValue(env, FirstBaseURLEnv(catalog, "deepseek")),

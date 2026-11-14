@@ -1877,7 +1877,7 @@ fn tokenCount(usage: std.json.ObjectMap, key: []const u8) u64 {
 fn oapxExtension(root: std.json.ObjectMap, key: []const u8) ?std.json.Value {
     const extensions = root.get("extensions") orelse return null;
     if (extensions != .object) return null;
-    const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
+    const ours = extensions.object.get(oapx_adapter.oxap_settings_key) orelse extensions.object.get(oapx_adapter.settings_key) orelse return null;
     if (ours != .object) return null;
     return ours.object.get(key);
 }

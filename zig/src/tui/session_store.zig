@@ -498,7 +498,7 @@ pub const Store = struct {
             else => return err,
         };
         defer allocator.free(home);
-        const base = try std.fs.path.join(allocator, &.{ home, ".oapx", "sessions" });
+        const base = try std.fs.path.join(allocator, &.{ home, try compat.state.nameUnder(allocator, home), "sessions" });
         defer allocator.free(base);
         return init(allocator, base);
     }

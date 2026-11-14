@@ -13,12 +13,11 @@ pub const ProviderDefinition = struct {
 
 pub const fixture_provider_id = "test-fixture";
 pub const fixture_provider_name = "Test Fixture (CI)";
-pub const fixture_opt_in_env = "OAPX_TEST_FIXTURE_PROVIDER";
 
 pub var test_fixture_opt_in: ?bool = null;
 
 pub fn fixtureOptInIsSet(allocator: std.mem.Allocator, environ: std.process.Environ) bool {
-    const raw = compat.getEnvVarOwnedFrom(environ, allocator, fixture_opt_in_env) catch return false;
+    const raw = compat.getProductEnvOwnedFrom(environ, allocator, "TEST_FIXTURE_PROVIDER") catch return false;
     defer allocator.free(raw);
     return std.mem.eql(u8, raw, "1") or std.ascii.eqlIgnoreCase(raw, "true");
 }
@@ -179,9 +178,10 @@ test "the fixture is served only when the opt-in variable asks for it by name" {
     }
 }
 
-test "the opt-in is read under the name the tests are told to set" {
-    try std.testing.expectEqualStrings("OAPX_TEST_FIXTURE_PROVIDER", fixture_opt_in_env);
+test "the opt-in is read under the OXAP name first and the old name still opts in" {
+    try std.testing.expect(fixtureOptInIsSet(std.testing.allocator, environOf(&.{"OXAP_TEST_FIXTURE_PROVIDER=1"})));
     try std.testing.expect(fixtureOptInIsSet(std.testing.allocator, environOf(&.{"OAPX_TEST_FIXTURE_PROVIDER=1"})));
+    try std.testing.expect(!fixtureOptInIsSet(std.testing.allocator, environOf(&.{ "OXAP_TEST_FIXTURE_PROVIDER=0", "OAPX_TEST_FIXTURE_PROVIDER=1" })));
 }
 
 test "a user who did not ask for the fixture is not offered it" {

@@ -41,6 +41,7 @@ tmp/
 .env
 .env.*
 .oapx/
+.oxap/
 .makai/
 
 # TUI PTY harness output (scripts/tui-pty-driver.py)

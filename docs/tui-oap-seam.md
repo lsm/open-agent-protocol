@@ -34,7 +34,8 @@ refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises
 `models.list` as `degraded`. The settings the protocol has no verb for (context
 window, output, permission mode, workspace root) travel in the open request's
-`metadata.oapx` with the thinking level. When the endpoint advertises
+`metadata.oapx` with the thinking level (`metadata.oxap` is read first, and both
+disagreeing is refused). When the endpoint advertises
 `session.reasoning` with `session_live`, all five change between runs on a
 `session.settings.update.request`, the four under `extensions.oapx` beside the
 current thinking level. Over `--attach` only the thinking level changes, through
