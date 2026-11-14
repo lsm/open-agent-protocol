@@ -11,9 +11,9 @@ use oxap_adapter::{
 };
 use oxap_protocol::{
     Admission, EffectiveDeliveryMode, InputQuestion, InteractionId, MessageId, MessageRole,
-    MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode, RunId,
-    RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION,
-    FEATURE_STRUCTURED_OUTPUT,
+    MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode,
+    RunCancelResponse, RunId, RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
+    FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
 };
 use oxap_validation::OutputSchema;
 use serde_json::value::RawValue;
@@ -32,6 +32,10 @@ pub(crate) struct Run {
     pub(crate) text: String,
     pub(crate) schema: Option<OutputSchema>,
     pub(crate) final_text: Option<String>,
+    pub(crate) turn: String,
+    pub(crate) settled: Option<RunStatus>,
+    pub(crate) cancel_pending: bool,
+    pub(crate) flight: Option<Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -273,7 +277,7 @@ impl Shared {
                     return Err(error);
                 }
             };
-            inner.turns.insert(turn, run_id.clone());
+            inner.turns.insert(turn.clone(), run_id.clone());
             inner.runs.insert(
                 run_id.clone(),
                 Run {
@@ -285,6 +289,10 @@ impl Shared {
                     text: String::new(),
                     schema,
                     final_text: None,
+                    turn,
+                    settled: None,
+                    cancel_pending: false,
+                    flight: None,
                 },
             );
             drop(inner);
@@ -396,6 +404,10 @@ impl Session {
 
     pub fn close(&self) -> Result<(), Error> {
         self.shared.close()
+    }
+
+    pub fn cancel(&self, run_id: &RunId) -> Result<RunCancelResponse, Error> {
+        self.shared.cancel(run_id)
     }
 }
 

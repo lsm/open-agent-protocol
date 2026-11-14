@@ -5500,9 +5500,13 @@ fn runOapMode(
     defer if (remote_url) |value| allocator.free(value);
     const remote_security_text = try provider_base_url.productEnvOwnedOrNull(allocator, "PROVIDER_SERVICE_SECURITY");
     defer if (remote_security_text) |value| allocator.free(value);
-    const remote_token = compat.getProductEnvOwned(allocator, "PROVIDER_SERVICE_TOKEN") catch |err| switch (err) {
-        error.EnvironmentVariableMissing => null,
-        else => return err,
+    const token_names = comptime compat.productEnvNames("PROVIDER_SERVICE_TOKEN");
+    const remote_token = compat.getEnvVarOwned(allocator, token_names[0]) catch |first| switch (first) {
+        error.EnvironmentVariableMissing => compat.getEnvVarOwned(allocator, token_names[1]) catch |err| switch (err) {
+            error.EnvironmentVariableMissing => null,
+            else => return err,
+        },
+        else => return first,
     };
     if (comptime @hasField(std.process.Environ.Block, "slice")) {
         for (compat.runtimeEnviron().block.view().slice) |entry| {
@@ -6183,7 +6187,7 @@ fn opencodeBackendConfig(
     }
     const home = environ.get("HOME") orelse "";
     if (home.len == 0) {
-        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME/.oxap, and HOME is not set", .{ surface.noun, entry.name });
+        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME, and HOME is not set", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     const wanted = if (entry.executable.len > 0) entry.executable else "opencode";
@@ -6855,7 +6859,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oxap, and HOME is not set\n", complained);
+    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME, and HOME is not set\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {

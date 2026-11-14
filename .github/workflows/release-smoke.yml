@@ -243,7 +243,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          for package in oap-sdk @oap-sdk/cli-linux-x64; do
+          for package in @oxap/sdk @oap-sdk/cli-linux-x64; do
             if ! npm view "$package@$VERSION" version >/dev/null 2>&1; then missing="$missing $package@$VERSION"; fi
           done
           if [ -z "$missing" ]; then
@@ -268,9 +268,9 @@ jobs:
           mkdir -p "$app" "$RUNNER_TEMP/home"
           cd "$app"
           npm init -y >/dev/null
-          npm install --no-audit --no-fund "oap-sdk@$VERSION" "@oap-sdk/cli-linux-x64@$VERSION"
+          npm install --no-audit --no-fund "@oxap/sdk@$VERSION" "@oap-sdk/cli-linux-x64@$VERSION"
           HOME="$RUNNER_TEMP/home" node -e '
-            const { createMakaiClient } = require("oap-sdk");
+            const { createMakaiClient } = require("@oxap/sdk");
             (async () => {
               const client = await createMakaiClient();
               const providers = await client.auth.listProviders();

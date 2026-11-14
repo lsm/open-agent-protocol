@@ -1,5 +1,5 @@
 {
-  "name": "oap-sdk",
+  "name": "@oxap/sdk",
   "version": "0.1.0-alpha.32",
   "description": "TypeScript SDK for the Open Agent Protocol project's runtime, over its stdio protocol",
   "main": "dist/src/index.js",
@@ -22,9 +22,9 @@
   "author": "Open Agent Protocol contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lsm/open-agent-protocol.git"
+    "url": "git+https://github.com/lsm/oxap.git"
   },
-  "homepage": "https://github.com/lsm/open-agent-protocol/tree/main/sdk/typescript",
+  "homepage": "https://github.com/lsm/oxap/tree/main/sdk/typescript",
   "license": "ISC",
   "type": "commonjs",
   "files": [
@@ -39,5 +39,8 @@
     "lossless-json": "4.3.2",
     "nanoid": "^5.1.5",
     "ulid": "^3.0.2"
+  },
+  "optionalDependencies": {
+    "@oxap/cli": "0.1.0-alpha.32"
   }
 }

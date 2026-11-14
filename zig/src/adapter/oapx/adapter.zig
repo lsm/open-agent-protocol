@@ -394,6 +394,7 @@ pub const Session = struct {
     ready: ?contract.Session.Ready = null,
 
     fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        try requireAgreeingSettings(request.metadata, refusal);
         const gpa = owner.allocator;
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
@@ -2231,7 +2232,6 @@ pub fn requestedModel(
     metadata: ?std.json.Value,
     refusal: *contract.Refusal,
 ) contract.Failure!?session_runtime.InitialModelRef {
-    try requireAgreeingSettings(metadata, refusal);
     const settings = settingsIn(metadata) orelse return null;
     if (settings != .object) return null;
     const named = settings.object.get("model") orelse return null;
@@ -5660,12 +5660,22 @@ test "a session's settings are read from the oxap namespace, and the oapx one st
     try testing.expectEqual(ai_types.ThinkingLevel.high, sessionOptions(.{ .thinking_level = .low }, thinking).thinking_level);
 }
 
-test "oxap and oapx settings that disagree are refused rather than one silently chosen" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var refusal = contract.Refusal{};
-    try testing.expectError(error.InvalidSubmission, requestedIn(arena.allocator(),
-        \\{"oxap":{"model":"REF"},"oapx":{"model":"scripted-model"}}
-    , &refusal));
-    try testing.expectEqualStrings("metadata carries oxap and oapx settings that disagree; send one of them", refusal.message);
+test "an open whose oxap and oapx settings disagree on anything is refused before the session starts" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    for ([_][]const u8{
+        \\{"oxap":{"thinking_level":"low"},"oapx":{"thinking_level":"high"}}
+        ,
+        \\{"oxap":{"user_input":false},"oapx":{"user_input":true}}
+        ,
+        \\{"oxap":{"model":"scripted/openai-completions@other-model"},"oapx":{"model":"scripted-model"}}
+    }) |document| {
+        const metadata = try std.json.parseFromSliceLeaky(std.json.Value, a, document, .{});
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.InvalidSubmission, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "split", .metadata = metadata }, &refusal));
+        try testing.expectEqualStrings("metadata carries oxap and oapx settings that disagree; send one of them", refusal.message);
+    }
 }

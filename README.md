@@ -219,7 +219,7 @@ Each provider's base URL and sign-in origin live in exactly one place,
 [`providers/catalog.json`](providers/catalog.json). The model list comes from
 that catalog plus models.dev, which supplies context limits and whether a model
 is deprecated. State lives under `~/.oxap`; a home that has only the old
-`~/.oapx` keeps using it, and `OXAP_*` variables win over their `OAPX_*` names.
+`~/.oapx` keeps using it, and a non-empty `OXAP_*` variable wins over its `OAPX_*` name.
 
 ### Harness backends
 

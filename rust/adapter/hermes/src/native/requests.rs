@@ -196,7 +196,7 @@ pub enum ServerRequest {
     Secret(SecretRequestParams),
 }
 
-fn refused(detail: impl std::fmt::Display) -> String {
+pub(super) fn refused(detail: impl std::fmt::Display) -> String {
     format!("{INVALID}: {detail}")
 }
 

@@ -22,7 +22,7 @@ The TypeScript SDK has one extra step between 2 and 3: an optional
 omitted here.** npm's optional-dependency mechanism installs a per-platform
 package automatically; Python's closest equivalent would be publishing
 platform-specific wheels, and no such distribution exists for oapx today.
-Inventing a ``oap-sdk-cli-<platform>`` import probe would be dead code that also
+Inventing a ``oxap-sdk-cli-<platform>`` import probe would be dead code that also
 silently outranks a local ``zig build`` -- the exact footgun CLAUDE.md warns
 about for the TypeScript resolver. If platform wheels are published later, this
 is the place to add the step; until then, set ``OXAP_SDK_BINARY_PATH`` when you

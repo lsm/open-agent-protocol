@@ -1,8 +1,8 @@
 export const uint64TypeCases = [
   { name: 'uniform-bigint', accepts: true, source: `
-import { parseEnvelope, serializeEnvelope, OverflowError } from 'oap-client';
+import { parseEnvelope, serializeEnvelope, OverflowError } from '@oxap/client';
 import type { Envelope, Usage, ActiveRun, ModelEventPosition, RunPosition, SettledRun,
-  MessageSubmitResponse, RunCompactionStartedPayload, RunCompactionEndedPayload, OapSession } from 'oap-client';
+  MessageSubmitResponse, RunCompactionStartedPayload, RunCompactionEndedPayload, OapSession } from '@oxap/client';
 const usage: Usage = { input_tokens: 0n, output_tokens: 1n, total_tokens: 1n,
   cache_read_input_tokens: 0n, cache_write_input_tokens: 0n, reasoning_tokens: 1n };
 const sum: bigint = usage.input_tokens! + usage.output_tokens!;
@@ -21,10 +21,10 @@ function replay(session: OapSession) { return session.eventsAfter('r', 0n); }
 void [sum, position, genesis, settled, active, admission, started, ended, cursor, replay];
 console.log(serializeEnvelope(parseEnvelope(serializeEnvelope(envelope))));
 ` },
-  { name: 'number-usage-refused', accepts: false, source: `import type { Usage } from 'oap-client';
+  { name: 'number-usage-refused', accepts: false, source: `import type { Usage } from '@oxap/client';
 const value: Usage = { input_tokens: 0 };
 void value;` },
-  { name: 'number-cursor-refused', accepts: false, source: `import type { OapSession } from 'oap-client';
+  { name: 'number-cursor-refused', accepts: false, source: `import type { OapSession } from '@oxap/client';
 function replay(session: OapSession) { return session.eventsAfter('r', 0); }
 void replay;` },
 ] as const;
@@ -32,7 +32,7 @@ void replay;` },
 export const uint64RuntimeConsumer = `
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
-import * as client from 'oap-client';
+import * as client from '@oxap/client';
 const { parseEnvelope, payload, serializeEnvelope } = client;
 const fields = ['input_tokens', 'output_tokens', 'total_tokens', 'cache_read_input_tokens', 'cache_write_input_tokens', 'reasoning_tokens'];
 const sites = ['content.completed', 'run.completed', 'run.failed', 'run.cancelled', 'inference.completed', 'inference.failed'];
@@ -122,7 +122,7 @@ export const uint64TransportConsumer = String.raw`
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { writeFileSync } from 'node:fs';
-import { dial, payload, OverflowError, ReplayGapError, MalformedFrameError } from 'oap-client';
+import { dial, payload, OverflowError, ReplayGapError, MalformedFrameError } from '@oxap/client';
 const MAX = 18446744073709551615n;
 const AFTER = 9007199254740992n;
 let mode = 'normal';
@@ -209,7 +209,7 @@ export const uint64CorpusConsumer = String.raw`
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseEnvelope, serializeEnvelope } from 'oap-client';
+import { parseEnvelope, serializeEnvelope } from '@oxap/client';
 const cases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const output = process.argv[3];
 mkdirSync(output, { recursive: true });

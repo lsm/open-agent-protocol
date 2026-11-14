@@ -55,6 +55,12 @@ once with each answer's text or chosen option's label, refusing what Go
 refuses, and the run goes back to running. Input still pending when the
 run settles is answered with `-32800` and resolved as cancelled.
 
+`Session::cancel` sends Codex one `turn/interrupt` for the run's turn and
+reports the run as cancelling until Codex settles it. A cancel already in
+flight serves every concurrent one, and a refused interrupt leaves the run
+running. A settled run answers with its status: accepted if it was
+cancelled, `RunAlreadyTerminal` otherwise.
+
 A session reads what Codex sends on its own thread. It answers each reverse
 request it does not handle with `-32601` and the method as data. While
 `turn/start` is in flight, the reader sets aside what Codex sends and the

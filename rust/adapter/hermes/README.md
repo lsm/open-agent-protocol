@@ -9,7 +9,10 @@ and its server requests (approval, clarify, sudo, secret) with Go's
 `DecodeServerRequest` and `RequestSessionID`, and `rpc::DIALECT`, the
 gateway's JSON-RPC over `oxap_adapter::jsonrpc`: strict framing, params only as
 an object or null, and an empty string id that parses but never marshals, as in
-Go's `internal/rpc`. An approval request and
+Go's `internal/rpc`. `decode_notification` is Go's `DecodeNotification`: it
+takes only the `event` method, then checks the envelope's sequencing, the
+event type against Go's typed and observed vocabularies, and each typed
+payload, with Go's text for every refusal of its own. An approval request and
 `session.info` decode leniently, as Go's `json.Unmarshal` does; everything else
 decodes as Go's `DecodeStrict` does: unknown members refused, a null
 member read as its zero value, a trailing value refused, only JSON's four
@@ -21,15 +24,17 @@ UTF-8 inside a string read as U+FFFD. Three of Go's `encoding/json` rules differ
 - Go falls back to a case-insensitive key match, so `{"Session_ID":"s"}` sets
   `SessionID`; these types match keys exactly.
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029, and serializing
-  an `Event` here does not. The rpc layer, which lands separately, writes every
-  frame through `oxap_adapter::gojson::go_marshal`.
+  an `Event` here does not. The rpc layer writes every frame through
+  `oxap_adapter::gojson::go_marshal`.
 
 The gateway writes each member once, in its exact case, and the pinned corpus
 spells them so, so nothing on the wire observes the first two.
 
 `decode_strict` refuses every frame Go's `DecodeStrict` refuses. Its error text
 is Go's for the refusals the adapter reports: a non-object struct, which names
-`native.<Type>` or Go's `usageAlias` and `surfaceAlias`, and a non-object tool
-`args`. Other refusals carry serde_json's wording. Examples are a mistyped
-member inside `usage` or `error_surface`, and a byte that cannot begin a JSON
-value.
+`native.<Type>` or Go's `usageAlias` and `surfaceAlias`, a non-object tool
+`args`, and an unknown member, which reads `json: unknown field "x"`. That text
+matters: Hermes reports a refused notification as the transport's error, and a
+run it closes carries it. Other refusals carry serde_json's wording. Examples
+are a mistyped member, which Go names by struct field, a trailing value, and a
+byte that cannot begin a JSON value.

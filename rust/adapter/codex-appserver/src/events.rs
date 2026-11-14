@@ -379,6 +379,13 @@ impl Shared {
         envelope.capability_revision = Some(crate::adapter::pin().capability_revision.clone());
         if terminal {
             run.terminal = true;
+            run.settled = Some(if envelope.envelope_type == EnvelopeType::RUN_COMPLETED {
+                RunStatus::COMPLETED
+            } else if envelope.envelope_type == EnvelopeType::RUN_CANCELLED {
+                RunStatus::CANCELLED
+            } else {
+                RunStatus::FAILED
+            });
             inner.state.status = SessionStatus::IDLE;
             inner.state.active_run_id = None;
             inner.state.transcript_cursor = sequence.to_string();

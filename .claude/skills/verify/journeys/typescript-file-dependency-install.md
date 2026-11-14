@@ -13,5 +13,9 @@ build must install and import without the compiler. Changed sources, modified
 output or missing JavaScript/declarations must fail installation without it. With the compiler,
 prepare must rebuild: the consumer must import the new source value and missing
 outputs must be restored. Missing source/configuration inputs must refuse with
-instructions to restore a complete checkout and prepare it. Temporary checkouts and children are cleaned up. Keep
+instructions to restore a complete checkout and prepare it. The same file also
+packs the client with `npm pack`, installs that tarball offline the way a
+registry consumer would, and imports `@oxap/client`; the tarball must hold only
+`dist/src`, `README.md` and `package.json`, and its manifest must be public with
+`repository.directory` set to `clients/ts`. Temporary checkouts and children are cleaned up. Keep
 the console output as install-surface evidence, alongside the full baseline.

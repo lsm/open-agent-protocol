@@ -1,25 +1,25 @@
 # OAP TypeScript SDK
 
-TypeScript SDK published as `oap-sdk`. The default client spawns `oapx serve agent,provider --stdio` and speaks OAP v0.1 on both profiles: agent sessions and authentication on `agent-control-core`, direct inference and provider model discovery on `model-provider-core`.
+TypeScript SDK published as `@oxap/sdk`. The default client spawns `oapx serve agent,provider --stdio` and speaks OAP v0.1 on both profiles: agent sessions and authentication on `agent-control-core`, direct inference and provider model discovery on `model-provider-core`.
 
 `createOapClient()` is the preferred entry point. `createMakaiClient()` remains an alias for it.
 
 ## Installation
 
 ```bash
-npm install oap-sdk
+npm install @oxap/sdk
 ```
 
 No release has been published yet; until one is, install from a checkout of this repository.
 
-The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oxap` or `zig/zig-out/bin/oxap`, then `oxap` on `PATH`; the `oapx` names keep resolving in every step. See [Configuration](#configuration) for explicit binary resolver options.
+The package is a library and ships no executable, so you also need the runtime binary. It optionally depends on `@oxap/cli` at its own version, which carries the runtime for the platform; failing that, it uses a local build under `zig-out/bin/oxap` or `zig/zig-out/bin/oxap`, then `oxap` on `PATH`, and the `oapx` names keep resolving in every step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
 Create a client, resolve a model, send one chat message, and print the assistant response.
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -55,7 +55,7 @@ main().catch((error: unknown) => {
 Use `client.provider.stream(...)` for provider-level streaming. It is the SDK's streaming form of `complete`; each `text_delta` contains newly generated text.
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -108,7 +108,7 @@ If you are migrating from an API that used `client.complete({ stream: true })`, 
 Use `client.agent.run(...)` for an agent session, or `client.agent.stream(...)` for lifecycle and content events. A run naming `options.session_id` opens that session the first time and submits into it after that, so a later run carries only the new messages: the endpoint keeps the history. A session's tools, `reasoning_effort` and `max_tokens` are fixed when it opens; a later run that omits them keeps them, and one that names different ones fails with `OapUnsupportedFeatureError`. `switchModel(sessionId, modelRef)` changes the selected model of an open session; `runSelected(sessionId, messages)` uses that selection on the next run. An agent request's `tools` are provided to the session at open (`action.tools.provide`), owned by the SDK's participant `sdk`; when the model calls one, the SDK runs its `execute` callback and answers with `action.call.resolve.request`, and a tool without `execute` is answered with an error. Against an endpoint that does not advertise `action.tools.provide`, a request with tools fails with `OapUnsupportedFeatureError` before the open rather than having its tools ignored, and once a tool has run, an `auto_once` auth failure is not retried, so the tool is not run twice. The stream yields `tool_execution_start` and `tool_execution_end` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` (an integer from 1 to 4294967295) the oapx output limit, both at open, the output limit only on the `oapx.agent` endpoint that reads it (elsewhere `OapUnsupportedFeatureError`); `temperature` and `reasoning_effort: "minimal"` fail with `OapUnsupportedFeatureError`, since the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer, and an abort stops waiting on a tool that is still running. Direct provider calls may carry declaration-only tools, but client-side `execute` callbacks are unsupported there.
 
 ```ts
-import { createOapClient } from "oap-sdk";
+import { createOapClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createOapClient();
@@ -141,7 +141,7 @@ For agent streaming, iterate over `client.agent.stream(request)` and handle `age
 `client.agent.models` is a compatibility alias for the provider model catalog exposed as `client.models` on the same OAP connection.
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -164,7 +164,7 @@ Prefer `client.models` when you only need model discovery. Use `client.agent.mod
 Use `client.auth.listProviders()` to inspect auth state, and `client.auth.login(providerId, handlers)` to start a browser login flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`. `openai-codex` offers two ways at once: its URL is the ChatGPT sign-in, which returns to a `localhost:1455` callback the runtime listens on, and its instructions also give `https://auth.openai.com/codex/device` and a one-time code for signing in from any other device, which needs device code login turned on in ChatGPT's security settings (or by a workspace admin). Whichever finishes first completes the login. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
 
 ```ts
-import { createMakaiClient, type MakaiAuthEvent } from "oap-sdk";
+import { createMakaiClient, type MakaiAuthEvent } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -196,7 +196,7 @@ void main();
 You can also configure automatic one-shot auth retry for `provider` and `agent` calls:
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
@@ -225,7 +225,7 @@ void main();
 Models are discovered through `client.models`. Use `model_ref` from the returned descriptor in completion and agent requests. Treat `model_ref` as opaque; do not parse or construct it in application code.
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -265,7 +265,7 @@ void main();
 ### Explicit binary path
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
@@ -290,7 +290,7 @@ legacy `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`.
 ### Download from URL with checksum
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
@@ -323,18 +323,18 @@ one first, then `checksumSha256`.
 
 With no resolver options, the SDK checks, in order:
 
-1. The `@oap-sdk/cli-<platform>-<arch>` package, when it is installed: `oxap`, then `oapx`
+1. The platform package `@oxap/cli` installs (`@oxap/cli-<platform>-<arch>`), then the legacy `@oap-sdk/cli-<platform>-<arch>`, when present: `oxap`, then `oapx` in each
 2. `./zig-out/bin/oxap`, `./zig/zig-out/bin/oxap`, `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 3. `oxap` on `PATH`, then `oapx`
 
 On Windows each name carries an `.exe` suffix.
 
-Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OXAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary; the legacy `OAP_SDK_BINARY_PATH` still resolves.
+Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It arrives as the optional dependency `@oxap/cli` at the SDK's own version, so a plain install gets a runtime unless the platform is unsupported; npm skips an optional dependency it cannot satisfy. Set `OXAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary; the legacy `OAP_SDK_BINARY_PATH` still resolves.
 
 The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds the reply to each request; `frameTimeoutMs` bounds auth event waits. A running agent run or provider inference has no idle limit by default, because a tool or a reasoning model can be silent for minutes; set `idleTimeoutMs` to give up after that long without an event, which also cancels the run, or pass an `AbortSignal` to stop it yourself. A failed connection closes the spawned process.
 
 ```ts
-import { createMakaiClient } from "oap-sdk";
+import { createMakaiClient } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
@@ -372,7 +372,7 @@ async function closeClient(client: { close(): Promise<void> }): Promise<void> {
 Pass an `AbortSignal` as `options.signal` to cancel a `provider` or `agent` call; these reject with an `Error` whose `name` is `"AbortError"`. `client.auth.login(providerId, handlers, { signal })` also accepts a signal and reports cancellation as `MakaiAuthError` with `kind: "cancelled"`.
 
 ```ts
-import { createMakaiClient, isAbortError } from "oap-sdk";
+import { createMakaiClient, isAbortError } from "@oxap/sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -420,7 +420,7 @@ import {
   MakaiProtocolError,
   MakaiStreamError,
   createMakaiClient,
-} from "oap-sdk";
+} from "@oxap/sdk";
 
 async function run(): Promise<void> {
   const client = await createMakaiClient();
@@ -488,13 +488,13 @@ import type {
   TextContentPart,
   ToolDefinition,
   UsageSummary,
-} from "oap-sdk";
+} from "@oxap/sdk";
 ```
 
 Most requests share this shape:
 
 ```ts
-import type { ContentPart, TextContentPart } from "oap-sdk";
+import type { ContentPart, TextContentPart } from "@oxap/sdk";
 
 type ChatMessage = {
   role: "system" | "developer" | "user" | "assistant" | "tool";
@@ -536,7 +536,7 @@ import type {
   MakaiModelsApi,
   MakaiAgentModelsApi,
   MakaiProviderApi,
-} from "oap-sdk";
+} from "@oxap/sdk";
 
 type MakaiClient = {
   auth: MakaiAuthApi;
