@@ -3,7 +3,7 @@ package native
 import (
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
+	"github.com/lsm/oxap/go/internal/fuzzseed"
 )
 
 func FuzzAnObservationIsRefusedForAFrameTypeItDoesNotServeWhateverTheRawSays(f *testing.F) {

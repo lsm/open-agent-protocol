@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const controlsCore = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`

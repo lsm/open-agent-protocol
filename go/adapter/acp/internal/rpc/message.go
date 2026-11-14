@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
+	"github.com/lsm/oxap/go/internal/jsonwalk"
 	"strconv"
 	"unicode/utf8"
 )

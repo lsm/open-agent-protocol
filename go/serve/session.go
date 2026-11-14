@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/oxap/go/binding"
 	"io"
 	"slices"
 	"strings"
@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type sessionRegistry struct {

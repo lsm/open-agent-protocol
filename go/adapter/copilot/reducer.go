@@ -1,9 +1,9 @@
 package copilot
 
 import (
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/native"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/copilot/internal/native"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const maxQueued = 8

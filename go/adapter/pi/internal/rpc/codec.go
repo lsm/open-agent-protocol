@@ -9,7 +9,7 @@ import (
 	"io"
 	"unicode/utf8"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
+	"github.com/lsm/oxap/go/adapter/pi/internal/native"
 )
 
 const DefaultFrameLimit = 8 << 20

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/native"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const reopenSupportReason = "GET /api/session/:id attaches to the bound server session and follows its events from the attach on; an unknown or running session is refused"

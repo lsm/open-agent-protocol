@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const routeQueueSize = 1024

@@ -3,7 +3,7 @@ package validation
 import (
 	"encoding/json"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type pendingModelsQuery struct {

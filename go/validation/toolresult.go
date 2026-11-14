@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func (s *state) checkResultImages(i, line int, e protocol.Envelope) {

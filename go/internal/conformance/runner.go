@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/validation"
 )
 
 type Check struct {

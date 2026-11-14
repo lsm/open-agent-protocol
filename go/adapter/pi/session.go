@@ -11,10 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/pi/internal/native"
+	"github.com/lsm/oxap/go/adapter/pi/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const streamCapacity = 64

@@ -3,8 +3,8 @@ package sdk
 import (
 	"context"
 	"errors"
-	"github.com/lsm/open-agent-protocol/go/providercatalog"
-	"github.com/lsm/open-agent-protocol/providers"
+	"github.com/lsm/oxap/go/providercatalog"
+	"github.com/lsm/oxap/providers"
 	"os"
 	"path/filepath"
 	"strings"

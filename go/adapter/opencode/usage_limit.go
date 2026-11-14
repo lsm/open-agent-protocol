@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/native"
 )
 
 func failureText(failure native.SessionError) string {

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const reopenReason = "Claude Code restored the conversation; model, effort and compaction settings belong to the loader, not the stored session"

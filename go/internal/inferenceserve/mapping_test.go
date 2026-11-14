@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/provider"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/internal/provider"
+	"github.com/lsm/oxap/go/validation"
 )
 
 func body(t *testing.T, envelope Envelope) map[string]any {

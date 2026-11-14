@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/harness"
-	"github.com/lsm/open-agent-protocol/harnesses"
+	"github.com/lsm/oxap/go/harness"
+	"github.com/lsm/oxap/harnesses"
 )
 
 func TestEveryCatalogHarnessHasAGoAdapterPin(t *testing.T) {

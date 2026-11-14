@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/native"
+	"github.com/lsm/oxap/go/adapter/deepseek/internal/native"
 )
 
 func TestDeepseekProcessHelper(t *testing.T) {

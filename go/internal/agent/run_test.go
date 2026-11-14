@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/internal/provider"
+	"github.com/lsm/oxap/go/internal/provider"
 )
 
 type scriptedTurn struct {

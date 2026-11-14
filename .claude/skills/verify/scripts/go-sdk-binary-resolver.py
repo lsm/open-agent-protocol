@@ -16,7 +16,7 @@ import (
     "fmt"
     "os"
 
-    "github.com/lsm/open-agent-protocol/go/sdk"
+    "github.com/lsm/oxap/go/sdk"
 )
 
 func main() {
@@ -83,8 +83,8 @@ def main():
     module = output / "module"
     module.mkdir()
     (module / "go.mod").write_text(
-        "module probe\n\ngo 1.26\n\nrequire github.com/lsm/open-agent-protocol v0.0.0\n\n"
-        f"replace github.com/lsm/open-agent-protocol => {ROOT}\n")
+        "module probe\n\ngo 1.26\n\nrequire github.com/lsm/oxap v0.0.0\n\n"
+        f"replace github.com/lsm/oxap => {ROOT}\n")
     (module / "main.go").write_text(SOURCE)
     consumer = module / "consumer"
     run(["go", "build", "-o", str(consumer), "."], cwd=module)

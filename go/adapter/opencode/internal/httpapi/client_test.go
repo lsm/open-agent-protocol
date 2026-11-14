@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/native"
 )
 
 const sessionInfo = `{"id":"ses_test0000000000000000","projectID":"prj_1","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"","location":{"directory":"/w"}}`

@@ -3,7 +3,7 @@ package providercatalog
 import (
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/providers"
+	"github.com/lsm/oxap/providers"
 )
 
 func env(names ...string) []EnvironmentValue {

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/providercatalog"
+	"github.com/lsm/oxap/go/providercatalog"
 )
 
 type DiscoveryMode int

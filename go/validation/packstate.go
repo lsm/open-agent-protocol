@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func (s *state) isRequestType(t protocol.EnvelopeType) bool {

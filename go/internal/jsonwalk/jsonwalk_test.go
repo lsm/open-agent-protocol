@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
+	"github.com/lsm/oxap/go/internal/fuzzseed"
 )
 
 var corpusHarnesses = []string{

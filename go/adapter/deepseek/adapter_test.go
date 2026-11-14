@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/deepseek/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func TestEnvironmentAllowlistNilness(t *testing.T) {

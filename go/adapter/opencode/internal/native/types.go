@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
+	"github.com/lsm/oxap/go/internal/jsonwalk"
 )
 
 var (

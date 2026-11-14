@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/httpapi"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/httpapi"
 )
 
 func messagePage(next string, messages ...string) httpapi.MessagePage {

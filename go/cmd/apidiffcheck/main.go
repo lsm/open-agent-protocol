@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/publicset"
+	"github.com/lsm/oxap/go/internal/publicset"
 )
 
 const apidiffVersion = "v0.0.0-20260908205506-85c1c2202aba"

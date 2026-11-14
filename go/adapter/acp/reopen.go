@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/acp/internal/native"
+	"github.com/lsm/oxap/go/adapter/acp/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const reopenSupportReason = "session/load when loadSession is advertised, otherwise session/resume when advertised; agents offering neither refuse the binding"

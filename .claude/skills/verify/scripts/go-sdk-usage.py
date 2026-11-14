@@ -16,7 +16,7 @@ import (
     "fmt"
     "os"
 
-    "github.com/lsm/open-agent-protocol/go/sdk"
+    "github.com/lsm/oxap/go/sdk"
 )
 
 func observe(client *sdk.Client, agent, stream bool) (*sdk.Usage, error) {

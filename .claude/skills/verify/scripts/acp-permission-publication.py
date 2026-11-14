@@ -44,9 +44,9 @@ import (
     "os"
     "time"
 
-    base "github.com/lsm/open-agent-protocol/go/adapter"
-    "github.com/lsm/open-agent-protocol/go/adapter/acp"
-    "github.com/lsm/open-agent-protocol/go/protocol"
+    base "github.com/lsm/oxap/go/adapter"
+    "github.com/lsm/oxap/go/adapter/acp"
+    "github.com/lsm/oxap/go/protocol"
 )
 
 func must(err error) { if err != nil { panic(err) } }
@@ -116,7 +116,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="oap-acp-permission-") as temporary:
         work = Path(temporary)
-        (work / "go.mod").write_text(f"module acp-permission-consumer\n\ngo 1.26\n\nrequire github.com/lsm/open-agent-protocol v0.0.0\nreplace github.com/lsm/open-agent-protocol => {ROOT}\n")
+        (work / "go.mod").write_text(f"module acp-permission-consumer\n\ngo 1.26\n\nrequire github.com/lsm/oxap v0.0.0\nreplace github.com/lsm/oxap => {ROOT}\n")
         (work / "main.go").write_text(CONSUMER)
         (work / "agent.py").write_text(AGENT)
         built = subprocess.run(["go", "build", "-mod=mod", "-o", str(work / "consumer"), "."], cwd=work, capture_output=True, text=True, timeout=300)

@@ -7,14 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
+	"github.com/lsm/oxap/go/internal/jsonwalk"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/native"
 )
 
 const DefaultQueueCapacity = 256
