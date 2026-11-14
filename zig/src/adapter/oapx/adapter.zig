@@ -5605,3 +5605,38 @@ test "host reads task output using raw offsets and valid UTF-8" {
     const refusal = wireLast(&wire, "error.response");
     try testing.expectEqualStrings("invalid_request", refusal.object.get("payload").?.object.get("error").?.object.get("code").?.string);
 }
+
+fn requestedIn(arena: std.mem.Allocator, document: []const u8, refusal: *contract.Refusal) !?session_runtime.InitialModelRef {
+    const ref = try refFor(arena, other_model);
+    const text = try std.mem.replaceOwned(u8, arena, document, "REF", ref);
+    const metadata = try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+    return requestedModel(arena, &scripted_models, metadata, refusal);
+}
+
+test "a session's settings are read from the oxap namespace, and the oapx one still works" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    for ([_][]const u8{
+        \\{"oxap":{"model":"REF"}}
+        ,
+        \\{"oapx":{"model":"REF"}}
+        ,
+        \\{"oxap":{"model":"REF"},"oapx":{"model":"REF"}}
+    }) |document| {
+        const chosen = (try requestedIn(arena.allocator(), document, &refusal)).?;
+        try testing.expectEqualStrings(other_model.id, chosen.id);
+    }
+    const thinking = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"oxap\":{\"thinking_level\":\"high\"}}", .{});
+    try testing.expectEqual(ai_types.ThinkingLevel.high, sessionOptions(.{ .thinking_level = .low }, thinking).thinking_level);
+}
+
+test "oxap and oapx settings that disagree are refused rather than one silently chosen" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, requestedIn(arena.allocator(),
+        \\{"oxap":{"model":"REF"},"oapx":{"model":"scripted-model"}}
+    , &refusal));
+    try testing.expectEqualStrings("metadata carries oxap and oapx settings that disagree; send one of them", refusal.message);
+}
