@@ -237,6 +237,24 @@ const GO_DECODED: &[(&str, Option<&str>)] = &[
         Some(r#"hermes native: invalid pinned message: event type is required"#),
     ),
     (
+        r#"{"type":"message.start","session_id":"s","seq":1,"we`ird":1}"#,
+        Some(
+            r#"hermes native: invalid pinned message: invalid event envelope: json: unknown field "we`ird""#,
+        ),
+    ),
+    (
+        r#"{"type":"message.interim","session_id":"s","seq":1,"payload":{"text":"x","a`, expected `b":1}}"#,
+        Some(
+            r#"hermes native: invalid pinned message: invalid message.interim payload: json: unknown field "a`, expected `b""#,
+        ),
+    ),
+    (
+        r#"{"type":"session.usage","session_id":"s","seq":1,"payload":{"`":1}}"#,
+        Some(
+            r#"hermes native: invalid pinned message: invalid session.usage payload: json: unknown field "`""#,
+        ),
+    ),
+    (
         r#"{"type":"message.start","session_id":"s","seq":1,"extra":1}"#,
         Some(
             r#"hermes native: invalid pinned message: invalid event envelope: json: unknown field "extra""#,
