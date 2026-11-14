@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod replay;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
