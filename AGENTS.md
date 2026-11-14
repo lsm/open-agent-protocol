@@ -86,7 +86,9 @@ in `sdk/typescript/test/makai_binary_smoke.test.ts` and in
 with zero end-to-end binary coverage. A binary found through `zig-out` or the
 `@oap-sdk/cli-*` platform package does not switch the TypeScript tests on, and
 that package outranks both local build paths, so a fresh `zig build` alone is
-not what either SDK exercises. Export the variable when you mean to. CI's
+not what either SDK exercises. The SDK itself is published as `@oxap/sdk` and
+takes its runtime from the optional, same-version `@oxap/cli`, so installing
+the SDK never installs a CLI that depends back on it. Export the variable when you mean to. CI's
 `go-sdk-smoke` job does exactly that: it builds `oapx` and runs
 `go test -race ./go/sdk/...` with the variable set, which is the only place the
 Go SDK talks to a real runtime.

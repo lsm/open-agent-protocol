@@ -73,7 +73,7 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
   console.log(`  Created ${pkgName}`);
 }
 
-const mainDir = join(NPM_DIR, "oap-sdk");
+const mainDir = join(NPM_DIR, "oxap-sdk");
 mkdirSync(mainDir, { recursive: true });
 
 
@@ -106,11 +106,11 @@ copyDir(srcDir, destSrcDir);
 
 copyFileSync(join(ROOT, "sdk", "typescript", "README.md"), join(mainDir, "README.md"));
 
-console.log(`  Created oap-sdk (main package)`);
+console.log(`  Created @oxap/sdk (main package)`);
 
 console.log(`\nAll packages created in ${NPM_DIR}`);
 console.log(`\nTo publish, run:`);
 for (const { target } of PLATFORMS) {
   console.log(`  cd dist/npm/cli-${target} && npm publish --access public`);
 }
-console.log(`  cd dist/npm/oap-sdk && npm publish --access public`);
+console.log(`  cd dist/npm/oxap-sdk && npm publish --access public`);
