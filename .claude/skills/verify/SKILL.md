@@ -137,7 +137,7 @@ also run `cargo test --all-features` in `rust/`; for SDK/TUI changes run their
 relevant CI groups and journeys. Do not describe lint or unit tests alone as
 product proof.
 
-Send Neo `lsm/open-agent-protocol#N` when the PR opens and at merge. Wait for the
+Send Neo `lsm/oxap#N` when the PR opens and at merge. Wait for the
 review bot's approval of the latest head and green CI; address review threads,
 reply, and resolve each addressed thread via `resolveReviewThread`. A new commit
 needs fresh review. The task's designated reviewer or merge service performs

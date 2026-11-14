@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/adaptertest"
-	"github.com/lsm/open-agent-protocol/go/internal/provider"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/adaptertest"
+	"github.com/lsm/oxap/go/internal/provider"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/validation"
 )
 
 func main() {

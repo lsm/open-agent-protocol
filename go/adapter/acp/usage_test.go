@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/acp/internal/native"
+	"github.com/lsm/oxap/go/adapter/acp/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const devinTurnUsage = `{"totalTokens":7301,"inputTokens":7224,"outputTokens":77,"cachedReadTokens":6976}`

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/provider/mockprovider"
-	"github.com/lsm/open-agent-protocol/go/providercatalog"
+	"github.com/lsm/oxap/go/internal/provider/mockprovider"
+	"github.com/lsm/oxap/go/providercatalog"
 )
 
 func heldCatalogForTest(t *testing.T) providercatalog.Catalog {

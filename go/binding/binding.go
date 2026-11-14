@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 var ErrTorn = errors.New("binding: a record was not written whole")

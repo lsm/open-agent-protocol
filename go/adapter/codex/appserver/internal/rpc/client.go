@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lsm/open-agent-protocol/go/adapter/internal/backpressure"
+	"github.com/lsm/oxap/go/adapter/internal/backpressure"
 	"io"
 	"sync"
 	"sync/atomic"

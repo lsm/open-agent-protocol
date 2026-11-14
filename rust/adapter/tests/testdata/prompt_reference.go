@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type input struct {

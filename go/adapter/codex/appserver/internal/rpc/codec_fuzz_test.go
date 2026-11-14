@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
-	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
+	"github.com/lsm/oxap/go/internal/fuzzseed"
+	"github.com/lsm/oxap/go/internal/jsonwalk"
 )
 
 func FuzzAFrameIsEitherWithinTheLimitOrRefusedAndNeverAHalfMessage(f *testing.F) {

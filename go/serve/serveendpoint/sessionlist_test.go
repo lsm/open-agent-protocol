@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/binding"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/serve"
+	"github.com/lsm/oxap/go/binding"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/serve"
 )
 
 func listEndpoint(t *testing.T, store binding.Store, lines ...string) string {

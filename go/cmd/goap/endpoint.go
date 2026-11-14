@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/binding"
-	"github.com/lsm/open-agent-protocol/go/serve"
-	"github.com/lsm/open-agent-protocol/go/serve/serveendpoint"
+	"github.com/lsm/oxap/go/binding"
+	"github.com/lsm/oxap/go/serve"
+	"github.com/lsm/oxap/go/serve/serveendpoint"
 )
 
 func runServeRole(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {

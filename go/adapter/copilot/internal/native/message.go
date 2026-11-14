@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
+	"github.com/lsm/oxap/go/internal/jsonwalk"
 )
 
 var ErrWire = errors.New("invalid Copilot JSON-RPC frame")

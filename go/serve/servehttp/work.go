@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/workwire"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/internal/workwire"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 var workStatuses = map[string]int{

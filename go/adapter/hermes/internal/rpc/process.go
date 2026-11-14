@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/native"
+	"github.com/lsm/oxap/go/adapter/hermes/internal/native"
 )
 
 const defaultStderrLimit = 64 << 10

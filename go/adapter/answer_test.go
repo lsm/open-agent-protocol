@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func TestValidateInputAnswer(t *testing.T) {

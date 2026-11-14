@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/serve"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/serve"
 )
 
 const DefaultSubscriptionHold = 30 * time.Second

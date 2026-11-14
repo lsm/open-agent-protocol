@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
+	"github.com/lsm/oxap/go/adapter/pi/internal/native"
 )
 
 type testCloser struct {

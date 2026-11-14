@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot"
+	"github.com/lsm/oxap/go/adapter/copilot"
 )
 
 func TestRegistryBuildsTheCopilotAdapterWithoutStartingIt(t *testing.T) {

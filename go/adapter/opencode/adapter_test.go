@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/native"
 )
 
 func TestTwoAdaptersMintDistinctNativeMessageIDs(t *testing.T) {

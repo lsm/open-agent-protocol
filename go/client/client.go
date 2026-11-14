@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/validation"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 

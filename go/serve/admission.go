@@ -3,8 +3,8 @@ package serve
 import (
 	"context"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type Admitted struct {

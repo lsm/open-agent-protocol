@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/harnesses"
+	"github.com/lsm/oxap/harnesses"
 )
 
 func TestPinnedCorpusMessages(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"log"
 	"os"
 
-	sdk "github.com/lsm/open-agent-protocol/go/sdk"
+	sdk "github.com/lsm/oxap/go/sdk"
 )
 
 func ExampleNew() {

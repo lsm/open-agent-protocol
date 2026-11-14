@@ -1,6 +1,6 @@
 package validation
 
-import "github.com/lsm/open-agent-protocol/go/protocol"
+import "github.com/lsm/oxap/go/protocol"
 
 func (s *state) redeliveryHeld(held []protocol.ShutdownQueuedRun) {
 	groups := map[protocol.SessionID][]protocol.RunID{}

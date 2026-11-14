@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/serve"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/serve"
 )
 
 type unencodableAdapter struct {

@@ -6,16 +6,16 @@ import (
 	"io"
 	"os"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/acp"
-	"github.com/lsm/open-agent-protocol/go/adapter/claude"
-	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver"
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot"
-	"github.com/lsm/open-agent-protocol/go/adapter/deepseek"
-	"github.com/lsm/open-agent-protocol/go/adapter/hermes"
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
-	"github.com/lsm/open-agent-protocol/go/adapter/pi"
-	"github.com/lsm/open-agent-protocol/go/harness"
-	"github.com/lsm/open-agent-protocol/harnesses"
+	"github.com/lsm/oxap/go/adapter/acp"
+	"github.com/lsm/oxap/go/adapter/claude"
+	"github.com/lsm/oxap/go/adapter/codex/appserver"
+	"github.com/lsm/oxap/go/adapter/copilot"
+	"github.com/lsm/oxap/go/adapter/deepseek"
+	"github.com/lsm/oxap/go/adapter/hermes"
+	"github.com/lsm/oxap/go/adapter/opencode"
+	"github.com/lsm/oxap/go/adapter/pi"
+	"github.com/lsm/oxap/go/harness"
+	"github.com/lsm/oxap/harnesses"
 )
 
 var adapterPins = map[string]harness.AdapterPin{

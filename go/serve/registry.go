@@ -11,17 +11,17 @@ import (
 	"strings"
 	"sync"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp"
-	"github.com/lsm/open-agent-protocol/go/adapter/claude"
-	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver"
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot"
-	"github.com/lsm/open-agent-protocol/go/adapter/deepseek"
-	"github.com/lsm/open-agent-protocol/go/adapter/hermes"
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
-	"github.com/lsm/open-agent-protocol/go/adapter/pi"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/acp"
+	"github.com/lsm/oxap/go/adapter/claude"
+	"github.com/lsm/oxap/go/adapter/codex/appserver"
+	"github.com/lsm/oxap/go/adapter/copilot"
+	"github.com/lsm/oxap/go/adapter/deepseek"
+	"github.com/lsm/oxap/go/adapter/hermes"
+	"github.com/lsm/oxap/go/adapter/opencode"
+	"github.com/lsm/oxap/go/adapter/pi"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/validation"
 )
 
 type configFile struct {

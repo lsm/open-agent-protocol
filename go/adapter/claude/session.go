@@ -12,11 +12,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/adapter/internal/journal"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/claude/internal/native"
+	"github.com/lsm/oxap/go/adapter/claude/internal/rpc"
+	"github.com/lsm/oxap/go/adapter/internal/journal"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const (

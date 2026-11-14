@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/adapter/pi/internal/native"
+	"github.com/lsm/oxap/go/adapter/pi/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func runPiReopenCorpus(t *testing.T, frames []piCorpusFrame, expectedFile string) {

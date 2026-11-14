@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/providercatalog"
+	"github.com/lsm/oxap/go/providercatalog"
 )
 
 type listingAnswer struct {

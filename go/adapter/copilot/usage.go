@@ -5,8 +5,8 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/native"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/adapter/copilot/internal/native"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type usageState struct {

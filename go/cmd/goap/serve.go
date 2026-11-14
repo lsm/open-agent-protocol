@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/binding"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/serve"
-	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
-	"github.com/lsm/open-agent-protocol/go/serve/servestdio"
+	"github.com/lsm/oxap/go/binding"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/serve"
+	"github.com/lsm/oxap/go/serve/servehttp"
+	"github.com/lsm/oxap/go/serve/servestdio"
 )
 
 func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {

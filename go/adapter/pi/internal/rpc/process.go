@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
+	"github.com/lsm/oxap/go/adapter/pi/internal/native"
 )
 
 const defaultStderrLimit = 64 << 10

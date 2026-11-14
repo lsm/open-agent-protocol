@@ -12,10 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/harnesses"
+	"github.com/lsm/oxap/harnesses"
 )
 
-const modulePrefix = "github.com/lsm/open-agent-protocol/"
+const modulePrefix = "github.com/lsm/oxap/"
 
 type column struct {
 	Key   string `json:"key"`

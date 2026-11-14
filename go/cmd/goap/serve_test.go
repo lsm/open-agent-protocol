@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/serve/servehttp"
 )
 
 func TestUsageMentionsHubAndServe(t *testing.T) {

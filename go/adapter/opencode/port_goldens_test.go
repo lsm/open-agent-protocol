@@ -12,9 +12,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/httpapi"
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/httpapi"
+	"github.com/lsm/oxap/go/adapter/opencode/internal/native"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const portGoldensPath = "testdata/port-goldens.json"

@@ -14,9 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lsm/open-agent-protocol/go/internal/workwire"
-	"github.com/lsm/open-agent-protocol/go/serve"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/internal/workwire"
+	"github.com/lsm/oxap/go/serve"
+	"github.com/lsm/oxap/go/validation"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )

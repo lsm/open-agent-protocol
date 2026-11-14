@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver/internal/native"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/codex/appserver/internal/native"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func reopenWithHostPermissions(t *testing.T, client *fakeClient) (adapter.Session, error) {

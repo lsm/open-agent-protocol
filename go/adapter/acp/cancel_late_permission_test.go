@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/adapter/adaptertest"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/adapter/acp/internal/native"
+	"github.com/lsm/oxap/go/adapter/acp/internal/rpc"
+	"github.com/lsm/oxap/go/adapter/adaptertest"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func answeredIncomingRequest(t *testing.T, message rpc.Message) (*rpc.IncomingRequest, <-chan string) {

@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/binding"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/serve"
-	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/binding"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/serve"
+	"github.com/lsm/oxap/go/serve/servehttp"
 )
 
 func historyHub(t *testing.T, store binding.Store) *serve.Hub {

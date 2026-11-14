@@ -2,11 +2,11 @@ package serve
 
 import (
 	"context"
-	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/oxap/go/binding"
 	"slices"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type CompoundOpen struct {

@@ -1,6 +1,6 @@
 package copilot
 
-import "github.com/lsm/open-agent-protocol/harnesses"
+import "github.com/lsm/oxap/harnesses"
 
 var pin = harnesses.Current("copilot-cli")
 

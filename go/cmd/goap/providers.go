@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/lsm/open-agent-protocol/go/providercatalog"
-	"github.com/lsm/open-agent-protocol/providers"
+	"github.com/lsm/oxap/go/providercatalog"
+	"github.com/lsm/oxap/providers"
 )
 
 func checkProviders(stdout io.Writer) error {

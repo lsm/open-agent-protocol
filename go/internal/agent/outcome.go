@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/lsm/open-agent-protocol/go/internal/provider"
+import "github.com/lsm/oxap/go/internal/provider"
 
 const MaxCutOffToolTurns = 3
 

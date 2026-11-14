@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/validation"
 )
 
 func TestCheck(t *testing.T) {
