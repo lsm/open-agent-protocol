@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { npmTarball, pep440, publishOrder } from "./release-channels.mjs";
+import { bundledNpmPackages, npmTarball, pep440, publishOrder } from "./release-channels.mjs";
+
+test("a platform package the build withheld is not selected for npm, and the rest keep their order", () => {
+  const bundle = mkdtempSync(join(tmpdir(), "release-channels-"));
+  mkdirSync(join(bundle, "npm"));
+  const version = "0.1.0-alpha.33";
+  for (const name of ["@oxap/cli-linux-arm64", "@oxap/cli-linux-x64", "@oxap/cli-win32-x64", "@oxap/cli-win32-arm64", "@oxap/cli", "@oxap/sdk", "@oxap/client"]) {
+    writeFileSync(join(bundle, "npm", npmTarball(name, version)), "");
+  }
+  assert.deepEqual(bundledNpmPackages(version, bundle), [
+    "@oxap/cli-linux-arm64",
+    "@oxap/cli-linux-x64",
+    "@oxap/cli-win32-x64",
+    "@oxap/cli-win32-arm64",
+    "@oxap/cli",
+    "@oxap/sdk",
+    "@oxap/client",
+  ]);
+});
 
 const crate = (name, deps = [], publish = null) => ({
   name,
