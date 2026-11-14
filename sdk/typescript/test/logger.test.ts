@@ -181,13 +181,13 @@ test("binary resolver logs resolution from the bundled package", async (t) => {
   const resolved = await resolveMakaiBinary({ logger, resolveModule });
   assert.equal(resolved, bundledPath);
   assert.deepEqual(specifiers, [
-    `@oap-sdk/cli-${process.platform}-${process.arch}/bin/${binaryName}`,
+    `@oxap/cli-${process.platform}-${process.arch}/bin/${binaryName}`,
   ]);
 
   const bundledLog = logger.entries.find((e) => e.message === "binary: resolved from bundled package");
   assert.ok(bundledLog, "expected 'binary: resolved from bundled package' log");
   assert.equal(bundledLog.context?.path, bundledPath);
-  assert.equal(bundledLog.context?.package, `@oap-sdk/cli-${process.platform}-${process.arch}`);
+  assert.equal(bundledLog.context?.package, `@oxap/cli-${process.platform}-${process.arch}`);
 
   const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
   assert.deepEqual(candidateLogs, [], "bundled package must short-circuit the local candidate search");
