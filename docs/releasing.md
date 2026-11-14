@@ -46,9 +46,19 @@ and fail if one is missing. Delete the variable once the tag run is green.
 
 ## A run that fails part-way
 
-Each publish job publishes only what its registry lacks, so re-running the
-failed jobs of the same tag run fills in the missing channels without touching
-what is already out. Never move a tag or bump the version to recover.
+Each publish job publishes only what its registry lacks, so **Re-run failed
+jobs** on the same tag run fills in the missing channels without touching what
+is already out. Use that, not **Re-run all jobs**: a full re-run rebuilds and
+re-signs every binary, and although the GitHub Release keeps the assets it
+already has, the rebuilt files in that run's bundle no longer match them. Never
+move a tag or bump the version to recover.
+
+## Before the first tag
+
+The npm, crates and PyPI jobs run in the `release` environment, and each
+registry's trusted publisher names it. Create it by hand, with required
+reviewers, before the first tag: a job that names an environment the
+repository lacks creates it on the spot, unprotected.
 
 ## The steps
 

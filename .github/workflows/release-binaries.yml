@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   versions:
     name: Every package carries the release version
@@ -523,6 +527,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
+          overwrite_files: false
           files: |
             dist/oxap-*.tar.gz
             dist/oxap-*.zip
@@ -617,27 +622,15 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
       - uses: actions/download-artifact@v4
         with:
           name: release-bundle
           path: bundle
 
-      - id: pypi
-        env:
-          VERSION: ${{ needs.versions.outputs.version }}
-        run: |
-          set -euo pipefail
-          node scripts/release-channels.mjs registry --version "$VERSION" --channel pypi | tee pypi.txt
-          echo "missing=$(awk '$1 == "missing" { found = 1 } END { print found ? "true" : "false" }' pypi.txt)" >> "$GITHUB_OUTPUT"
-
       - uses: pypa/gh-action-pypi-publish@release/v1
-        if: steps.pypi.outputs.missing == 'true'
         with:
           packages-dir: bundle/python
+          skip-existing: true
 
   smoke:
     name: Release smoke

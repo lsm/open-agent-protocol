@@ -149,6 +149,7 @@ function commands() {
     "",
     `Each one names owner \`lsm\`, repository \`oxap\`, workflow \`${WORKFLOW}\` and environment \`${ENVIRONMENT}\`.`,
     "",
+    `- GitHub: create the \`${ENVIRONMENT}\` environment with required reviewers before tagging: https://github.com/${REPOSITORY}/settings/environments`,
     ...NPM_PACKAGES.map((name) => `- npm: https://www.npmjs.com/package/${name}/access`),
     ...order.map((crate) => `- crates.io: https://crates.io/crates/${crate.name}/settings`),
     `- PyPI (pending publisher for \`${PYPI_PROJECT}\`): https://pypi.org/manage/account/publishing/`,
