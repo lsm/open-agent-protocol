@@ -22,7 +22,7 @@ fn a_turn_the_cli_may_expand_carries_no_client_composed_member() {
 fn a_user_turn_escapes_its_text_as_go_does() {
     assert_eq!(
         new_user_turn("u", "a <b> & \"c\"\n\u{2028}", false).unwrap(),
-        r#"{"message":{"content":"a <b> & \"c\"\n ","role":"user"},"origin":{"kind":"human"},"parent_tool_use_id":null,"session_id":"default","type":"user","uuid":"u"}"#
+        r#"{"message":{"content":"a \u003cb\u003e \u0026 \"c\"\n\u2028","role":"user"},"origin":{"kind":"human"},"parent_tool_use_id":null,"session_id":"default","type":"user","uuid":"u"}"#
     );
 }
 
