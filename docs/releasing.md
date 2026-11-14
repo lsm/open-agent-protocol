@@ -160,10 +160,10 @@ also falls back to `package.json` when no `--version` is passed, which is
 reachable from a local shell but not from CI, since the workflow always passes
 it.
 
-`clients/ts/package.json` (`oap-client`) is deliberately **not** moved. It is a
-separate package on its own `0.1.0` line, and no workflow in this repository
-releases it — `release-binaries.yml` does not mention it — so it is not part of
-the tag line this decision is about.
+`clients/ts/package.json` (`@oxap/client`) follows the same release line and is
+bumped by hand with the others. No workflow in this repository releases it yet —
+`release-binaries.yml` does not mention it — so the tagged run does not
+overwrite its version.
 
 The `NPM_DIST_TAG` rule already sends a version containing `-` to `next`, so
 the alpha line publishes under the right tag with no further change.
