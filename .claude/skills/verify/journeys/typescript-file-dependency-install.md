@@ -16,6 +16,7 @@ outputs must be restored. Missing source/configuration inputs must refuse with
 instructions to restore a complete checkout and prepare it. The same file also
 packs the client with `npm pack`, installs that tarball offline the way a
 registry consumer would, and imports `@oxap/client`; the tarball must hold only
-`dist/src`, `README.md` and `package.json`, and its manifest must be public with
+`dist/src`, `LICENSE`, `README.md` and `package.json`, the installed `LICENSE`
+must be the CC0 text, and its manifest must be public with
 `repository.directory` set to `clients/ts`. Temporary checkouts and children are cleaned up. Keep
 the console output as install-surface evidence, alongside the full baseline.

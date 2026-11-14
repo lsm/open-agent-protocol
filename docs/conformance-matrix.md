@@ -30,7 +30,7 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Conformance runner | partial: asks no `session.list` | done | missing |
 | Binding and run stores | done | done | done: `oxap-binding`'s file and memory session histories and run store (#1473); the hub records opens, closes and refusals (#1489) |
 | `transcript.load` (Decision 0051) | done | partial: hub route pending | partial: the stdio op and the HTTP route; no Rust adapter has a reader yet |
-| Shutdown (Decision 0050) | partial: signals and restart recovery pending | partial: same | partial: the stdio op, `POST /shutdown`, the endpoint's request and its signals; the hub's signals and restart recovery pending |
+| Shutdown (Decision 0050) | partial: signals and restart recovery pending | partial: same | partial: the stdio op, `POST /shutdown`, the endpoint's request and its signals, the stdio hub's signals; the HTTP hub's signals and restart recovery pending |
 | Client SDK | n/a (oapx is the runtime) | done | done (delegates to oapx) |
 | Agent loop and provider runtime | done | done | missing |
 

@@ -104,12 +104,72 @@ pub const SHUTDOWN_WINDOW: std::time::Duration = std::time::Duration::from_secs(
 
 type Lines = std::sync::mpsc::SyncSender<(Vec<u8>, bool)>;
 
+#[derive(Clone)]
+pub struct Signals {
+    hub: Hub,
+    stopping: Arc<std::sync::RwLock<Stopping>>,
+    seen: Arc<std::sync::atomic::AtomicUsize>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Signals {
+    pub fn new(hub: &Hub) -> Self {
+        Self {
+            hub: hub.clone(),
+            stopping: Arc::default(),
+            seen: Arc::default(),
+            ended: Arc::default(),
+        }
+    }
+
+    pub fn signal(&self, count: usize) -> Option<oxap_protocol::EndpointShutdownResponse> {
+        use oxap_protocol::ShutdownMode;
+        use std::sync::atomic::Ordering;
+        if count > 2 {
+            self.ended.store(true, Ordering::SeqCst);
+            return None;
+        }
+        let mut stopping = self
+            .stopping
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.seen.fetch_max(count, Ordering::SeqCst) >= count {
+            return None;
+        }
+        let wanted = if count >= 2 || stopping.mode == Some(ShutdownMode::FORCE) {
+            ShutdownMode::FORCE
+        } else {
+            ShutdownMode::GRACEFUL
+        };
+        let request = Request {
+            request: serde_json::value::to_raw_value(&serde_json::json!({ "mode": wanted })).ok(),
+            ..Request::default()
+        };
+        let (answer, finished) = shutdown(&self.hub, &request, &mut stopping);
+        if finished {
+            self.ended.store(true, Ordering::SeqCst);
+        }
+        let answer = serde_json::from_value(answer.ok()?).ok()?;
+        (stopping.mode == Some(wanted)).then_some(answer)
+    }
+}
+
 pub fn serve(
     hub: &Hub,
+    input: impl BufRead + Send + 'static,
+    output: impl Write + Send + 'static,
+    options: &StdioOptions,
+) -> Result<(), StdioError> {
+    serve_signalled(&Signals::new(hub), input, output, options)
+}
+
+pub fn serve_signalled(
+    signals: &Signals,
     input: impl BufRead + Send + 'static,
     mut output: impl Write + Send + 'static,
     options: &StdioOptions,
 ) -> Result<(), StdioError> {
+    let hub = &signals.hub;
     if options.frame_limit < MIN_FRAME_LIMIT {
         return Err(StdioError::FrameLimit(options.frame_limit));
     }
@@ -160,7 +220,8 @@ pub fn serve(
             cap => cap,
         },
         pumps: Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
-        stopping: Arc::default(),
+        stopping: signals.stopping.clone(),
+        ended: signals.ended.clone(),
         inflight: Arc::new(Inflight::new(options.max_ops)),
         broken: Arc::default(),
         pending: Arc::default(),
@@ -304,6 +365,7 @@ struct Serving {
     cap: usize,
     pumps: Arc<Pumps>,
     stopping: Arc<std::sync::RwLock<Stopping>>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
     inflight: Arc<Inflight>,
     broken: Arc<std::sync::Mutex<Option<StdioError>>>,
     pending: Arc<Held>,
@@ -547,12 +609,10 @@ impl Serving {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .draining;
-            if draining && Stopping::drained(&self.hub) {
+            if self.ended.load(std::sync::atomic::Ordering::SeqCst)
+                || (draining && Stopping::drained(&self.hub))
+            {
                 return Some(Ok(None));
-            }
-            let waiting = !lock(&self.pending).is_empty();
-            if !draining && !waiting {
-                return frames.recv().ok();
             }
             match frames.recv_timeout(DRAIN_POLL) {
                 Ok(frame) => return Some(frame),
