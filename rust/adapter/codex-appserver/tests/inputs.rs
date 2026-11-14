@@ -132,9 +132,9 @@ fn take(stream: &mut EventStream, events: &mut Vec<Envelope>, count: usize) {
 }
 
 #[test]
-fn each_user_input_request_is_scoped_and_settled_as_go_does() {
+fn each_user_input_scenario_round_trips_as_go_does() {
     let scenarios: Vec<Scenario> = serde_json::from_str(include_str!("go_inputs.json")).unwrap();
-    assert_eq!(scenarios.len(), 3);
+    assert_eq!(scenarios.len(), 7);
     for scenario in scenarios {
         let fake = Fake::new([
             Ok(r#"{"thread":{"id":"native-thread"}}"#),

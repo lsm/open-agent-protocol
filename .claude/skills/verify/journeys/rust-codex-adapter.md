@@ -142,5 +142,6 @@ settle pending actions before pending approvals: the replay test must fail.
 `tests/go_inputs.json` is the same kind of record for user input, printed
 by the same generator with one more step kind that records the session's
 status and active run, and `tests/inputs.rs` replays it. To see it bite,
-accept a secret question, number options from zero, or leave the session
-running while input is pending: the replay test must fail.
+accept a secret question, number options from zero, leave the session
+running while input is pending, or send Codex an option's id instead of
+its label: the replay test must fail.

@@ -1,5 +1,537 @@
 [
   {
+    "name": "a_user_input_request_round_trips",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/tool/requestUserInput",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "itemId": "i1",
+            "questions": [
+              {
+                "id": "name",
+                "header": "h",
+                "question": "Your name?"
+              },
+              {
+                "id": "color",
+                "header": "h",
+                "question": "Pick one",
+                "options": [
+                  {
+                    "label": "Red",
+                    "description": "warm"
+                  },
+                  {
+                    "label": "Blue",
+                    "description": "cool"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "await": 3
+      },
+      {
+        "state": true
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "await": 2
+      },
+      {
+        "state": true
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.requested",
+        "id": "event-07",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "title": "Codex needs input",
+          "questions": [
+            {
+              "id": "name",
+              "prompt": "Your name?",
+              "kind": "text",
+              "required": true
+            },
+            {
+              "id": "color",
+              "prompt": "Pick one",
+              "kind": "single_choice",
+              "required": true,
+              "options": [
+                {
+                  "id": "option-1",
+                  "label": "Red",
+                  "description": "warm"
+                },
+                {
+                  "id": "option-2",
+                  "label": "Blue",
+                  "description": "cool"
+                }
+              ]
+            }
+          ]
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "waiting_for_input",
+          "pending_user_input_id": "interaction-06",
+          "updated_at_ms": 8
+        },
+        "sequence": 3,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.resolved",
+        "id": "event-09",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "submitted",
+          "answers": [
+            {
+              "question_id": "color",
+              "selected_option_ids": [
+                "option-2"
+              ]
+            },
+            {
+              "question_id": "name",
+              "text": "Ada"
+            }
+          ]
+        },
+        "sequence": 4,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-10",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "updated_at_ms": 12
+        },
+        "sequence": 5,
+        "timestamp_ms": 13,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-11",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 6,
+        "timestamp_ms": 14,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": {
+          "answers": {
+            "color": {
+              "answers": [
+                "Blue"
+              ]
+            },
+            "name": {
+              "answers": [
+                "Ada"
+              ]
+            }
+          }
+        },
+        "error": null
+      }
+    ],
+    "resolutions": [
+      "ok"
+    ],
+    "states": [
+      "waiting_for_input run-02",
+      "running run-02"
+    ]
+  },
+  {
+    "name": "empty_or_null_options_ask_for_text",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/tool/requestUserInput",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "questions": [
+              {
+                "id": "a",
+                "header": "h",
+                "question": "A?",
+                "options": null
+              },
+              {
+                "id": "b",
+                "header": "h",
+                "question": "B?",
+                "options": [],
+                "isOther": true
+              }
+            ]
+          }
+        }
+      },
+      {
+        "await": 3
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "a",
+                "text": "x"
+              },
+              {
+                "question_id": "b",
+                "text": "y"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.requested",
+        "id": "event-07",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "title": "Codex needs input",
+          "questions": [
+            {
+              "id": "a",
+              "prompt": "A?",
+              "kind": "text",
+              "required": true
+            },
+            {
+              "id": "b",
+              "prompt": "B?",
+              "kind": "text",
+              "required": true
+            }
+          ]
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "waiting_for_input",
+          "pending_user_input_id": "interaction-06",
+          "updated_at_ms": 8
+        },
+        "sequence": 3,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.resolved",
+        "id": "event-09",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "submitted",
+          "answers": [
+            {
+              "question_id": "a",
+              "text": "x"
+            },
+            {
+              "question_id": "b",
+              "text": "y"
+            }
+          ]
+        },
+        "sequence": 4,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-10",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "updated_at_ms": 12
+        },
+        "sequence": 5,
+        "timestamp_ms": 13,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-11",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 6,
+        "timestamp_ms": 14,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": {
+          "answers": {
+            "a": {
+              "answers": [
+                "x"
+              ]
+            },
+            "b": {
+              "answers": [
+                "y"
+              ]
+            }
+          }
+        },
+        "error": null
+      }
+    ],
+    "resolutions": [
+      "ok"
+    ],
+    "states": []
+  },
+  {
     "name": "a_user_input_request_go_cannot_scope_is_refused",
     "steps": [
       {
@@ -411,6 +943,603 @@
     ],
     "resolutions": [],
     "states": []
+  },
+  {
+    "name": "a_user_input_resolution_go_refuses_changes_nothing",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/tool/requestUserInput",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "questions": [
+              {
+                "id": "name",
+                "header": "h",
+                "question": "Your name?"
+              },
+              {
+                "id": "color",
+                "header": "h",
+                "question": "Pick one",
+                "options": [
+                  {
+                    "label": "Red",
+                    "description": "warm"
+                  },
+                  {
+                    "label": "Blue",
+                    "description": "cool"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "await": 3
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              },
+              {
+                "question_id": "extra",
+                "text": "z"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "name",
+                "text": "Ada"
+              },
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-9"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "name",
+                "text": "Ada"
+              },
+              {
+                "question_id": "color",
+                "text": "Red"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "name",
+                "text": "Ada"
+              },
+              {
+                "question_id": "name",
+                "text": "Bob"
+              },
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-1"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-9",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "user",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-09",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "permission": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "choice_id": "accept",
+            "granted": true
+          },
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "other",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "other",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "state": true
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "name",
+                "text": "Ada"
+              },
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-1"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.requested",
+        "id": "event-07",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "title": "Codex needs input",
+          "questions": [
+            {
+              "id": "name",
+              "prompt": "Your name?",
+              "kind": "text",
+              "required": true
+            },
+            {
+              "id": "color",
+              "prompt": "Pick one",
+              "kind": "single_choice",
+              "required": true,
+              "options": [
+                {
+                  "id": "option-1",
+                  "label": "Red",
+                  "description": "warm"
+                },
+                {
+                  "id": "option-2",
+                  "label": "Blue",
+                  "description": "cool"
+                }
+              ]
+            }
+          ]
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "waiting_for_input",
+          "pending_user_input_id": "interaction-06",
+          "updated_at_ms": 8
+        },
+        "sequence": 3,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.resolved",
+        "id": "event-09",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "submitted",
+          "answers": [
+            {
+              "question_id": "name",
+              "text": "Ada"
+            },
+            {
+              "question_id": "color",
+              "selected_option_ids": [
+                "option-1"
+              ]
+            }
+          ]
+        },
+        "sequence": 4,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-10",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "updated_at_ms": 12
+        },
+        "sequence": 5,
+        "timestamp_ms": 13,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-11",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 6,
+        "timestamp_ms": 14,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": {
+          "answers": {
+            "color": {
+              "answers": [
+                "Red"
+              ]
+            },
+            "name": {
+              "answers": [
+                "Ada"
+              ]
+            }
+          }
+        },
+        "error": null
+      }
+    ],
+    "resolutions": [
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "invalid_resolution",
+      "wrong_responder",
+      "invalid_resolution",
+      "ok",
+      "interaction_resolved"
+    ],
+    "states": [
+      "waiting_for_input run-02"
+    ]
   },
   {
     "name": "a_user_input_pending_when_the_turn_completes_is_cancelled",
@@ -999,6 +2128,240 @@
       }
     ],
     "resolutions": [],
+    "states": []
+  },
+  {
+    "name": "a_user_input_after_the_run_settled_is_refused",
+    "steps": [
+      {
+        "notify": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "inProgress"
+            }
+          }
+        }
+      },
+      {
+        "request": {
+          "id": 1,
+          "method": "item/tool/requestUserInput",
+          "params": {
+            "threadId": "native-thread",
+            "turnId": "native-turn",
+            "questions": [
+              {
+                "id": "name",
+                "header": "h",
+                "question": "Your name?"
+              },
+              {
+                "id": "color",
+                "header": "h",
+                "question": "Pick one",
+                "options": [
+                  {
+                    "label": "Red",
+                    "description": "warm"
+                  },
+                  {
+                    "label": "Blue",
+                    "description": "cool"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "await": 3
+      },
+      {
+        "notify": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "native-thread",
+            "turn": {
+              "id": "native-turn",
+              "status": "completed"
+            }
+          }
+        }
+      },
+      {
+        "await": 2
+      },
+      {
+        "resolve": {
+          "run_id": "run-02",
+          "responded_by": "user",
+          "input": {
+            "interaction_id": "interaction-06",
+            "requested_by": "codex.app-server",
+            "responded_by": "user",
+            "session_id": "session-1",
+            "run_id": "run-02",
+            "answers": [
+              {
+                "question_id": "color",
+                "selected_option_ids": [
+                  "option-2"
+                ]
+              },
+              {
+                "question_id": "name",
+                "text": "Ada"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.started",
+        "id": "event-05",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "running",
+          "model_id": "glm-test",
+          "started_at_ms": 4
+        },
+        "sequence": 1,
+        "timestamp_ms": 5,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.requested",
+        "id": "event-07",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "title": "Codex needs input",
+          "questions": [
+            {
+              "id": "name",
+              "prompt": "Your name?",
+              "kind": "text",
+              "required": true
+            },
+            {
+              "id": "color",
+              "prompt": "Pick one",
+              "kind": "single_choice",
+              "required": true,
+              "options": [
+                {
+                  "id": "option-1",
+                  "label": "Red",
+                  "description": "warm"
+                },
+                {
+                  "id": "option-2",
+                  "label": "Blue",
+                  "description": "cool"
+                }
+              ]
+            }
+          ]
+        },
+        "sequence": 2,
+        "timestamp_ms": 7,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.status.updated",
+        "id": "event-08",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "waiting_for_input",
+          "pending_user_input_id": "interaction-06",
+          "updated_at_ms": 8
+        },
+        "sequence": 3,
+        "timestamp_ms": 9,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "user.input.resolved",
+        "id": "event-09",
+        "payload": {
+          "interaction_id": "interaction-06",
+          "requested_by": "codex.app-server",
+          "responded_by": "user",
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "status": "cancelled"
+        },
+        "sequence": 4,
+        "timestamp_ms": 10,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      },
+      {
+        "protocol": "open-agent-protocol",
+        "version": "0.1",
+        "profile": "open-agent-protocol.agent-control-core",
+        "type": "run.completed",
+        "id": "event-10",
+        "payload": {
+          "session_id": "session-1",
+          "run_id": "run-02",
+          "final_response": {
+            "id": "message-03",
+            "role": "assistant",
+            "content": ""
+          },
+          "stop_reason": "end_turn"
+        },
+        "sequence": 5,
+        "timestamp_ms": 11,
+        "session_id": "session-1",
+        "run_id": "run-02",
+        "capability_revision": "codex-appserver-0.167.2-oap-v1"
+      }
+    ],
+    "answers": [
+      {
+        "id": 1,
+        "result": null,
+        "error": {
+          "code": -32800,
+          "message": "OAP run terminated before interaction resolution"
+        }
+      }
+    ],
+    "resolutions": [
+      "interaction_resolved"
+    ],
     "states": []
   }
 ]
