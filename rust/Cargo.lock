@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "oxap-sdk"
-version = "0.1.0"
+version = "0.1.0-alpha.33"
 dependencies = [
  "async-stream",
  "futures",
