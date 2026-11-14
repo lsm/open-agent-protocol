@@ -9,6 +9,7 @@ repository root.
 (cd rust && cargo test -p oxap-adapter-claude --test native_lifecycle)
 (cd rust && cargo test -p oxap-adapter-claude --test native_system)
 (cd rust && cargo test -p oxap-adapter-claude --test native_tasks)
+(cd rust && cargo test -p oxap-adapter-claude --test native_control)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -49,3 +50,13 @@ Go reads it: a present null `output_file` counts as present. To see it bite,
 drop the `output_file` presence check: the output-file test must fail. Read
 no patch as terminal: the task-updated test must fail. Print the status
 unquoted: the notification test must fail.
+
+`tests/native_control.rs` ports Go's `TestCanUseToolRequestDecode` for the
+reverse requests Claude Code sends the host: `can_use_tool`, `hook_callback`
+and `mcp_message`. It pins what Go settles without a test: a present null
+`input` counts as present, a null `request` or hook `input` reads as its zero
+value, an MCP message keeps its bytes as written, whitespace included, and any
+other subtype is unknown without its body being read. To see it bite, drop
+the `input` presence check: the can-use-tool refusal test must fail. Drop the
+`callback_id` check: the hook test must fail. Decode an unknown subtype's
+body: the unknown test must fail.

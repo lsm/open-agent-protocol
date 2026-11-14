@@ -227,3 +227,47 @@ pub fn decode_observation(kind: &str, subtype: &str, raw: &[u8]) -> Result<Obser
         },
     })
 }
+
+#[derive(Clone, Debug)]
+pub enum ControlRequest {
+    CanUseTool(Box<CanUseToolRequest>),
+    HookCallback(Box<HookCallbackRequest>),
+    McpMessage(Box<McpMessageRequest>),
+    Unknown { subtype: String },
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(bound(deserialize = "T: DeserializeOwned + Default"))]
+struct Envelope<T> {
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::structure")]
+    request: T,
+}
+
+fn request<T: DeserializeOwned + Default>(raw: &[u8]) -> Result<T, Invalid> {
+    unmarshal::<Envelope<T>>(raw).map(|envelope| envelope.request)
+}
+
+pub fn decode_control_request(subtype: &str, raw: &[u8]) -> Result<ControlRequest, Invalid> {
+    Ok(match subtype {
+        CONTROL_CAN_USE_TOOL => {
+            let ask: CanUseToolRequest = request(raw)?;
+            if ask.tool_name.is_empty() || ask.tool_use_id.is_empty() || ask.input.is_none() {
+                return Err(invalid(
+                    "can_use_tool requires tool_name, input, and tool_use_id",
+                ));
+            }
+            ControlRequest::CanUseTool(Box::new(ask))
+        }
+        CONTROL_HOOK_CALLBACK => {
+            let hook: HookCallbackRequest = request(raw)?;
+            if hook.callback_id.is_empty() {
+                return Err(invalid("hook_callback requires callback_id"));
+            }
+            ControlRequest::HookCallback(Box::new(hook))
+        }
+        CONTROL_MCP_MESSAGE => ControlRequest::McpMessage(Box::new(request(raw)?)),
+        _ => ControlRequest::Unknown {
+            subtype: subtype.into(),
+        },
+    })
+}
