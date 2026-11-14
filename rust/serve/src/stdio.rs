@@ -505,10 +505,9 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             FrameError::Io(err) => StdioError::Io(err),
         })?
         else {
-            let stopping = serving
-                .stopping
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(stopping) = serving.read_stopping() else {
+                return Ok(false);
+            };
             return Ok(stopping.draining && stopping.graceful());
         };
         let request = decode_request(&frame).map_err(malformed)?;
@@ -606,6 +605,23 @@ impl Serving {
         }
     }
 
+    fn read_stopping(&self) -> Option<std::sync::RwLockReadGuard<'_, Stopping>> {
+        loop {
+            if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            match self.stopping.try_read() {
+                Ok(stopping) => return Some(stopping),
+                Err(std::sync::TryLockError::Poisoned(stopping)) => {
+                    return Some(stopping.into_inner())
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
     fn next_frame(&self, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
         loop {
             if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
@@ -697,11 +713,11 @@ impl Serving {
             "submit" | "open" | "work.start" | "work.send"
         );
         let _admitted = if admits {
-            let stopping = self
-                .stopping
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if stopping.mode.is_some() {
+            let stopping = self.read_stopping();
+            if stopping
+                .as_ref()
+                .is_none_or(|stopping| stopping.mode.is_some())
+            {
                 let refused = wire(
                     "shutting_down",
                     "the endpoint is shutting down and admits no new work",
@@ -711,7 +727,7 @@ impl Serving {
                 }
                 return Ok(());
             }
-            Some(stopping)
+            stopping
         } else {
             None
         };
