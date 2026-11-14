@@ -491,8 +491,11 @@ shutdown and says what is still running, and a second forces it`; Go:
 `TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt`,
 `TestAFirstSignalOnAnIdleDaemonStopsItGracefullyAndASecondForcesIt`,
 `TestTheSignalLineListsEachActiveRunAndSaysWhatTheNextSignalDoes`,
-`TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Stdin EOF still
-ends serving in both.
+`TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Rust maps them
+the same way on stdio, with a third signal also ending serving outright —
+Rust: `a_first_signal_drains_naming_the_live_run_and_a_second_forces_the_hub_out`,
+`a_signal_with_nothing_running_stops_the_hub_at_once`; its HTTP hub does not
+map them yet. Stdin EOF still ends serving in every tree.
 
 Stdin EOF, and where a tree has not yet mapped them, SIGINT/SIGTERM, end
 serving at once: the daemon stops admitting, settles the work it already

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use oap_binding::FileStore;
 use oap_serve::endpoint::{Endpoint, EndpointOptions};
 use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::stdio::{serve, StdioOptions};
+use oap_serve::stdio::{serve_signalled, Signals, StdioOptions};
 use oap_serve::{Hub, HubOptions, Registry};
 
 const USAGE: &str = "usage: oap-rust-hub serve [--addr=A | --stdio] [--session-history=PATH] [--config=F] serves many sessions; oap-rust-hub serve agent [--backend=B] [--config=F] [--stdio] [--session-history=PATH] serves one";
@@ -92,31 +92,16 @@ fn main() -> ExitCode {
         )
         .map(Arc::new)
         .and_then(|endpoint| {
-            let (signalled, writing) = (endpoint.clone(), pending.clone());
-            let mut count = 0;
-            let relayed = ctrlc::set_handler(move || {
-                count += 1;
-                if count > 2 {
-                    signalled.signal(count);
-                    return;
-                }
-                writing.fetch_add(1, Ordering::SeqCst);
-                let (applying, written, seen) = (signalled.clone(), writing.clone(), count);
-                std::thread::spawn(move || {
-                    if let Some(answer) = applying.signal(seen) {
-                        eprintln!("{}", signal_line(seen, &answer));
-                    }
-                    written.fetch_sub(1, Ordering::SeqCst);
-                });
-            });
-            if let Err(err) = relayed {
-                eprintln!("oap-rust-hub: signals are not relayed: {err}");
-            }
+            let signalled = endpoint.clone();
+            relay(move |count| signalled.signal(count), &pending);
             endpoint.run(input, std::io::stdout())
         })
         .map_err(|err| err.to_string())
     } else if stdio {
-        serve(&hub, input, std::io::stdout(), &StdioOptions::default())
+        let signals = Signals::new(&hub);
+        let signalled = signals.clone();
+        relay(move |count| signalled.signal(count), &pending);
+        serve_signalled(&signals, input, std::io::stdout(), &StdioOptions::default())
             .map_err(|err| err.to_string())
     } else {
         serve_on(&hub, &addr.unwrap_or_else(|| DEFAULT_ADDR.to_owned()))
@@ -134,6 +119,32 @@ fn main() -> ExitCode {
             eprintln!("oap-rust-hub: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn relay(
+    apply: impl Fn(usize) -> Option<oap_protocol::EndpointShutdownResponse> + Send + Sync + 'static,
+    pending: &Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let (apply, writing) = (Arc::new(apply), pending.clone());
+    let mut count = 0;
+    let relayed = ctrlc::set_handler(move || {
+        count += 1;
+        if count > 2 {
+            apply(count);
+            return;
+        }
+        writing.fetch_add(1, Ordering::SeqCst);
+        let (applying, written, seen) = (apply.clone(), writing.clone(), count);
+        std::thread::spawn(move || {
+            if let Some(answer) = applying(seen) {
+                eprintln!("{}", signal_line(seen, &answer));
+            }
+            written.fetch_sub(1, Ordering::SeqCst);
+        });
+    });
+    if let Err(err) = relayed {
+        eprintln!("oap-rust-hub: signals are not relayed: {err}");
     }
 }
 
