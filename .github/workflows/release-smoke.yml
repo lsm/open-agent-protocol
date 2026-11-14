@@ -243,7 +243,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          for package in @oxap/sdk @oxap/cli @oxap/cli-linux-x64; do
+          for package in @oxap/sdk @oxap/cli @oxap/cli-linux-x64 @oxap/client; do
             if ! npm view "$package@$VERSION" version >/dev/null 2>&1; then missing="$missing $package@$VERSION"; fi
           done
           if [ -z "$missing" ]; then
@@ -268,8 +268,9 @@ jobs:
           mkdir -p "$app" "$RUNNER_TEMP/home"
           cd "$app"
           npm init -y >/dev/null
-          npm install --no-audit --no-fund "@oxap/sdk@$VERSION" "@oxap/cli@$VERSION"
+          npm install --no-audit --no-fund "@oxap/sdk@$VERSION" "@oxap/cli@$VERSION" "@oxap/client@$VERSION"
           test "$(npx --no-install oxap --version)" = "oxap-$VERSION-linux-x64"
+          node --input-type=module -e 'await import("@oxap/client")'
           HOME="$RUNNER_TEMP/home" node -e '
             const { createMakaiClient } = require("@oxap/sdk");
             (async () => {
@@ -280,3 +281,76 @@ jobs:
               console.log(`listed ${providers.length} providers`);
             })().catch((error) => { console.error(error); process.exit(1); });
           '
+
+  registries:
+    name: Published crates, wheel and Go module
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      ON_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: The release is on crates.io and PyPI
+        id: published
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/release-channels.mjs ]; then
+            echo "::warning::$TAG predates crates.io and PyPI publishing"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if node scripts/release-channels.mjs registry --version "$VERSION" --channel crates --require-present \
+            && node scripts/release-channels.mjs registry --version "$VERSION" --channel pypi --require-present; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          if [ "$ON_PULL_REQUEST" = "true" ]; then
+            echo "::warning::$TAG is not on every registry; a release run fails here"
+            exit 0
+          fi
+          exit 1
+
+      - name: A new project depends on each published crate, and imports the wheel
+        if: steps.published.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          cargo new --quiet "$RUNNER_TEMP/crates-app"
+          for crate in $(node scripts/release-channels.mjs crates); do
+            cargo add --quiet --manifest-path "$RUNNER_TEMP/crates-app/Cargo.toml" "$crate@=$VERSION"
+          done
+          cargo build --quiet --manifest-path "$RUNNER_TEMP/crates-app/Cargo.toml"
+          wheel="$(printf '%s' "$VERSION" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/')"
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "oxap-sdk==$wheel"
+          "$RUNNER_TEMP/venv/bin/python" -c 'import oxap_sdk'
+
+      - name: go get resolves the module at the tag
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/go-app"
+          cd "$RUNNER_TEMP/go-app"
+          go mod init example.com/smoke >/dev/null 2>&1
+          if go get "github.com/lsm/oxap@$TAG"; then exit 0; fi
+          if [ "$ON_PULL_REQUEST" = "true" ]; then
+            echo "::warning::$TAG predates the github.com/lsm/oxap module path"
+            exit 0
+          fi
+          exit 1

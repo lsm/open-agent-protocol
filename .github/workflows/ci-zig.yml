@@ -179,6 +179,9 @@ jobs:
       - name: Run changelog-release self-tests
         run: node --test scripts/changelog-release.test.mjs scripts/changelog-release-cleanup.test.mjs
 
+      - name: Run release-channels self-tests
+        run: node --test scripts/release-channels.test.mjs
+
       - name: Check zero-comments policy
         run: node scripts/check-no-comments.mjs --check --base "$BASE_SHA"
         env:

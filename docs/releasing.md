@@ -1,36 +1,54 @@
 # Cutting a release
 
-`v0.1.0-alpha.31` is a binaries-only release: its npm packaging, publishing,
-and npm smoke jobs are skipped. Binary release and smoke checks still run.
-
 A release is cut by pushing a `v*` tag: `.github/workflows/release-binaries.yml`
-builds every release target, signs and notarizes the macOS ones, publishes a
-GitHub Release and the npm packages (`@oxap/cli` and its platform packages,
-then `@oxap/sdk`). Nothing in it writes
-`CHANGELOG.md`, because a pull request does not either — **the release notes for
-a version are generated and committed before the tag is pushed**, by
-`scripts/changelog-release.mjs`.
+builds the six `oxap` binaries, signs and notarizes the macOS ones, packs every
+channel, smoke-tests the packed files, and only then publishes: the GitHub
+Release, npm (the six `@oxap/cli-<target>` packages, then `@oxap/cli`,
+`@oxap/sdk` and `@oxap/client`), crates.io (every crate whose manifest is
+publishable, dependencies first) and PyPI (`oxap-sdk`). Every registry is
+reached through OIDC trusted publishing; the workflow holds no registry token.
+After publishing, `release-smoke.yml` installs each channel from its registry.
 
-The ordering matters and is not recoverable afterwards: a tag with no section
-fails the `release` and `publish-npm` jobs, so the version never reaches npm and
-no GitHub Release is published. Those jobs run *after* the binaries are built, so
-you find out at the end of a long run rather than at the start.
+Nothing in it writes `CHANGELOG.md`, because a pull request does not either —
+**the release notes for a version are generated and committed before the tag is
+pushed**, by `scripts/changelog-release.mjs`. A tag with no section fails the
+`changelog` job, and every publish job needs it.
 
-**npm publishing does not work yet.** Every tagged run from `v0.1.0-alpha.4`
-through `v0.1.0-alpha.21` fails `publish-npm` with `E404` on the first `PUT` to
-`@oap-sdk/cli-<platform>`, and no `@oap-sdk` package exists on the registry
-(`npm view @oap-sdk/cli` answers `E404`). `v0.1.0-alpha.1` to `alpha.3` failed
-earlier, with `ENEEDAUTH`. The job carries no npm token: it publishes through
-npm's OIDC trusted publishing (`id-token: write`, `npm publish --provenance`),
-so the registry must already know this workflow as a trusted publisher for each
-package. Only the repository owner can arrange that: register `lsm/oxap`'s
-`release-binaries.yml` as the trusted publisher on the six
-`@oxap/cli-<platform>` packages, then on `@oxap/cli`, the entry package whose
-`oxap` bin runs the platform binary and which the workflow publishes after
-them, and on `@oxap/sdk`. Until then a release
-reaches GitHub and not npm, and two red jobs on every tag are expected rather
-than a regression: `publish-npm`, and the release smoke's `Published npm
-package`, which runs after a failed publish and finds nothing to install.
+`scripts/release-channels.mjs` is the one list of what ships. `versions`
+refuses a tag that the root and client `package.json`, `pyproject.toml`,
+`build.zig.zon` and each publishable crate do not all carry; `crates` prints the
+crates in publish order; `registry --version V` says which packages each
+registry already holds.
+
+## A dry run
+
+Run the workflow by hand on the commit you mean to tag:
+
+```sh
+gh workflow run release-binaries.yml --repo lsm/oxap --ref main
+```
+
+It builds, signs, packs and smoke-tests exactly as a tag does and publishes
+nothing. Its `release-bundle` artifact holds the npm tarballs, the `.crate`
+files, the wheel and sdist, the six archives, one `SHA256SUMS.txt` over all of
+them, and `PUBLISH-BY-HAND.md`, which the run's summary also shows.
+
+## The first release of a package
+
+npm and crates.io only accept a trusted publisher for a package that already
+exists, so each new package's first version is published by hand from a dry
+run's bundle. `PUBLISH-BY-HAND.md` is the ordered list of commands for that, in
+one sitting: npm, then crates.io, then the trusted publishers on all three
+registries (PyPI takes a pending publisher, so `oxap-sdk` needs no hand
+upload), then the tag. It sets `RELEASE_BOOTSTRAP=true` before tagging: with
+it, the npm and crates jobs only check that the hand-published versions exist,
+and fail if one is missing. Delete the variable once the tag run is green.
+
+## A run that fails part-way
+
+Each publish job publishes only what its registry lacks, so re-running the
+failed jobs of the same tag run fills in the missing channels without touching
+what is already out. Never move a tag or bump the version to recover.
 
 ## The steps
 

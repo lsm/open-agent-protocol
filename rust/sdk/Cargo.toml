@@ -1,6 +1,6 @@
 [package]
 name = "oxap-sdk"
-version = "0.1.0"
+version = "0.1.0-alpha.33"
 edition = "2021"
 rust-version = "1.82"
 description = "Rust SDK for the Open Agent Protocol project's runtime, spoken as OAP to `oapx serve agent,provider --stdio`"
