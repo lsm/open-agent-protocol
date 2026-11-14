@@ -494,7 +494,8 @@ shutdown and says what is still running, and a second forces it`; Go:
 `TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Rust maps them
 the same way on stdio, with a third signal also ending serving outright —
 Rust: `a_first_signal_drains_naming_the_live_run_and_a_second_forces_the_hub_out`,
-`a_signal_with_nothing_running_stops_the_hub_at_once`; its HTTP hub does not
+`a_signal_with_nothing_running_stops_the_hub_at_once`,
+`a_third_signal_ends_serving_while_an_earlier_one_is_parked`; its HTTP hub does not
 map them yet. Stdin EOF still ends serving in every tree.
 
 Stdin EOF, and where a tree has not yet mapped them, SIGINT/SIGTERM, end
@@ -2176,7 +2177,7 @@ for the next exit. Go's context cancels the same call, which is why Go's
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
 | The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
-| SIGINT and SIGTERM end serving as Decision 0050 rule 4 maps them, and the exit is zero | Go: the first starts a graceful shutdown, the second forces it, a third ends serving outright, and `runHub` returns nil. Zig: `oapx serve` installs both handlers before it serves; the first signal starts a graceful shutdown and the second forces it, and once serving ends the sweep runs on the signal path exactly as it runs on a hangup |
+| SIGINT and SIGTERM end serving as Decision 0050 rule 4 maps them, and the exit is zero | Go: the first starts a graceful shutdown, the second forces it, a third ends serving outright, and `runHub` returns nil. Zig: `oapx serve` installs both handlers before it serves; the first signal starts a graceful shutdown and the second forces it, and once serving ends the sweep runs on the signal path exactly as it runs on a hangup. Rust: `oap-rust-hub serve --stdio` maps them as Go does, a third ending serving even while an earlier shutdown is parked; its HTTP hub does not map them yet |
 | **Where a signal can be taken, it is; where the loop cannot observe one, the default disposition stands** | Zig: `hubTakesSignals` gates the handler and the pollable handle on the same answer, because installing a handler the loop never polls for is worse than not installing one. On Windows the stdio read is not pollable, so the hub installs no console handler, says so on stderr, and Ctrl+C terminates the process as it did before — a bounded sweep on a signal is [#460](https://github.com/lsm/open-agent-protocol/issues/460)'s work, not this rule's |
 
 ## Known gaps

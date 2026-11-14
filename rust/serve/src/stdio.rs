@@ -110,6 +110,7 @@ pub struct Signals {
     stopping: Arc<std::sync::RwLock<Stopping>>,
     seen: Arc<std::sync::atomic::AtomicUsize>,
     ended: Arc<std::sync::atomic::AtomicBool>,
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Signals {
@@ -119,6 +120,7 @@ impl Signals {
             stopping: Arc::default(),
             seen: Arc::default(),
             ended: Arc::default(),
+            abandoned: Arc::default(),
         }
     }
 
@@ -126,7 +128,7 @@ impl Signals {
         use oxap_protocol::ShutdownMode;
         use std::sync::atomic::Ordering;
         if count > 2 {
-            self.ended.store(true, Ordering::SeqCst);
+            self.abandoned.store(true, Ordering::SeqCst);
             return None;
         }
         let mut stopping = self
@@ -222,6 +224,7 @@ pub fn serve_signalled(
         pumps: Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
         stopping: signals.stopping.clone(),
         ended: signals.ended.clone(),
+        abandoned: signals.abandoned.clone(),
         inflight: Arc::new(Inflight::new(options.max_ops)),
         broken: Arc::default(),
         pending: Arc::default(),
@@ -366,6 +369,7 @@ struct Serving {
     pumps: Arc<Pumps>,
     stopping: Arc<std::sync::RwLock<Stopping>>,
     ended: Arc<std::sync::atomic::AtomicBool>,
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
     inflight: Arc<Inflight>,
     broken: Arc<std::sync::Mutex<Option<StdioError>>>,
     pending: Arc<Held>,
@@ -604,11 +608,14 @@ impl Serving {
 
     fn next_frame(&self, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
         loop {
-            let draining = self
-                .stopping
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .draining;
+            if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let draining = match self.stopping.try_read() {
+                Ok(stopping) => stopping.draining,
+                Err(std::sync::TryLockError::Poisoned(stopping)) => stopping.into_inner().draining,
+                Err(std::sync::TryLockError::WouldBlock) => false,
+            };
             if self.ended.load(std::sync::atomic::Ordering::SeqCst)
                 || (draining && Stopping::drained(&self.hub))
             {

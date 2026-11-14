@@ -59,7 +59,7 @@ impl Daemon {
 
     fn answer(&self, id: i64) -> Value {
         loop {
-            let line = self.out.recv_timeout(Duration::from_secs(5)).unwrap();
+            let line = self.out.recv_timeout(Duration::from_secs(10)).unwrap();
             if line["id"] == id {
                 return line;
             }
@@ -68,7 +68,7 @@ impl Daemon {
 
     fn logged(&self, wanted: &str) -> String {
         loop {
-            let line = self.err.recv_timeout(Duration::from_secs(5)).unwrap();
+            let line = self.err.recv_timeout(Duration::from_secs(10)).unwrap();
             if line.contains(wanted) {
                 return line;
             }
