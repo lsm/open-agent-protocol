@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from typing import Dict
 
-from oap_sdk import MakaiStreamError, connect
+from oxap_sdk import MakaiStreamError, connect
 
 
 SLOW_HOST = r'''

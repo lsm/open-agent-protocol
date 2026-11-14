@@ -18,7 +18,7 @@ SOURCE = r'''import json
 import os
 import sys
 
-from oap_sdk.binary import BinaryResolverOptions, resolve_makai_binary
+from oxap_sdk.binary import BinaryResolverOptions, resolve_makai_binary
 
 options = BinaryResolverOptions(cache_dir=os.environ["PROBE_CACHE"])
 binary_url = os.environ.get("PROBE_OPTION_URL")

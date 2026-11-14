@@ -4,8 +4,8 @@ import sys
 import unittest
 from typing import Any, Dict
 
-from oap_sdk import Usage, AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
-from oap_sdk._oap import _messages
+from oxap_sdk import Usage, AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
+from oxap_sdk._oap import _messages
 
 
 HOST = r'''
@@ -285,7 +285,7 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
 class OAPOpenTests(unittest.TestCase):
     def test_an_endpoint_that_would_ignore_tools_or_an_output_limit_refuses_them_client_side(self) -> None:
         from types import SimpleNamespace
-        from oap_sdk._oap import _open_payload
+        from oxap_sdk._oap import _open_payload
         bare: Any = SimpleNamespace(agent_endpoint="oapx.agent-control", agent_features=frozenset())
         for tools, options in (([ToolDefinition(name="lookup", description="", parameters_schema_json="{}")], None),
                                (None, RunOptions(max_tokens=10))):

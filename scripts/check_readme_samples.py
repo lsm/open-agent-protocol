@@ -45,15 +45,15 @@ def extract(markdown: str) -> list[tuple[int, list[str]]]:
     return blocks
 
 
-IMPORTS = "import asyncio\nimport os\n\nimport oap_sdk\n"
+IMPORTS = "import asyncio\nimport os\n\nimport oxap_sdk\n"
 
 # The names the prose establishes before a fragment, with the types it
 # establishes them as, so an attribute reached through one is checked against
 # the SDK rather than against Any.
 ESTABLISHED = {
-    "client": "oap_sdk.MakaiClient",
+    "client": "oxap_sdk.MakaiClient",
     "model_ref": "str",
-    "messages": "list[oap_sdk.ChatMessage]",
+    "messages": "list[oxap_sdk.ChatMessage]",
 }
 
 
@@ -136,7 +136,7 @@ def prepare(body: list[str]) -> tuple[str, int]:
 
 
 def sdk_resolves(work: Path) -> bool:
-    """Whether mypy can see real types behind `oap_sdk`, not `Any`.
+    """Whether mypy can see real types behind `oxap_sdk`, not `Any`.
 
     `--ignore-missing-imports` is what makes an absent SDK survivable, and it
     is also what makes this check worthless without one: the import becomes
@@ -155,7 +155,7 @@ def sdk_resolves(work: Path) -> bool:
     mode reappearing one level up.
     """
     probe = work / "probe_sdk.py"
-    probe.write_text("import oap_sdk\n\nclient: oap_sdk.MakaiClient\nreveal_type(client)\n")
+    probe.write_text("import oxap_sdk\n\nclient: oxap_sdk.MakaiClient\nreveal_type(client)\n")
     seen = subprocess.run(
         [sys.executable, "-m", "mypy", "--no-error-summary", "--ignore-missing-imports", str(probe)],
         capture_output=True,
@@ -174,7 +174,7 @@ def main() -> int:
         samples = Path(work)
         if not sdk_resolves(samples):
             return fail(
-                "oap_sdk is Any to mypy, so every sample would pass without being checked — "
+                "oxap_sdk is Any to mypy, so every sample would pass without being checked — "
                 "install the SDK with its dev extras first (pip install -e 'sdk/python[dev]')"
             )
 
@@ -184,7 +184,7 @@ def main() -> int:
             (samples / f"sample_{start}.py").write_text(text)
             above[start] = offset
 
-        print(f"type-checking {len(blocks)} README samples against the installed oap_sdk...")
+        print(f"type-checking {len(blocks)} README samples against the installed oxap_sdk...")
         result = subprocess.run(
             [
                 sys.executable,

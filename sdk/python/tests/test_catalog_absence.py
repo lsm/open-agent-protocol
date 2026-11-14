@@ -5,8 +5,8 @@ import sys
 import unittest
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
-from oap_sdk import MakaiProtocolError, connect
-from oap_sdk.types import ListModelsResponse
+from oxap_sdk import MakaiProtocolError, connect
+from oxap_sdk.types import ListModelsResponse
 
 HOST = r'''
 import json, os, sys

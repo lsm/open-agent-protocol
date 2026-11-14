@@ -18,10 +18,10 @@ namespaces over profiled OAP 0.1 newline-delimited JSON:
 Quick start::
 
     import asyncio
-    import oap_sdk
+    import oxap_sdk
 
     async def main() -> None:
-        async with oap_sdk.connect() as client:
+        async with oxap_sdk.connect() as client:
             model = await client.models.resolve(
                 provider_id="anthropic",
                 api="anthropic-messages",
@@ -30,7 +30,7 @@ Quick start::
             response = await client.provider.complete(
                 model_ref=model.model_ref,
                 messages=[{"role": "user", "content": "Write a haiku about streams."}],
-                options=oap_sdk.RunOptions(max_tokens=128),
+                options=oxap_sdk.RunOptions(max_tokens=128),
             )
             print(response.text)
 
@@ -107,7 +107,7 @@ from .types import (
     Usage,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.0a33"
 
 __all__ = [
     "__version__",

@@ -13,9 +13,9 @@ from typing import Any, Dict, Iterator, List
 import pytest
 
 from conftest import FIXTURE_SERVER, process_alive
-from oap_sdk.errors import MakaiProtocolError
-from oap_sdk.sync import SyncMakaiClient, connect_sync
-from oap_sdk.types import MessageEnd, TextDelta
+from oxap_sdk.errors import MakaiProtocolError
+from oxap_sdk.sync import SyncMakaiClient, connect_sync
+from oxap_sdk.types import MessageEnd, TextDelta
 
 MODEL_REF = "anthropic/anthropic-messages@claude-sonnet-4-5"
 PROVIDER = "open-agent-protocol.model-provider-core"

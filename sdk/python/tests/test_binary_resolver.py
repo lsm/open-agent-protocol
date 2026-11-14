@@ -11,7 +11,7 @@ from typing import Iterator
 
 import pytest
 
-from oap_sdk.binary import BinaryResolverOptions, resolve_makai_binary
+from oxap_sdk.binary import BinaryResolverOptions, resolve_makai_binary
 
 
 @pytest.fixture(autouse=True)
