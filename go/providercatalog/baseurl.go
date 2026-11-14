@@ -8,7 +8,7 @@ const OXAPGlobalBaseURLEnv = "OXAP_BASE_URL"
 
 func GlobalBaseURL(env []EnvironmentValue) string {
 	for _, held := range env {
-		if held.Name == OXAPGlobalBaseURLEnv {
+		if held.Name == OXAPGlobalBaseURLEnv && held.Value != "" {
 			return held.Value
 		}
 	}

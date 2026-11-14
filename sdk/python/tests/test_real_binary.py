@@ -34,9 +34,9 @@ from pathlib import Path
 import pytest
 
 from conftest import process_alive
-from oap_sdk.client import MakaiClient
-from oap_sdk.errors import MakaiProtocolError, MakaiStreamError
-from oap_sdk.transport import StdioTransport
+from oxap_sdk.client import MakaiClient
+from oxap_sdk.errors import MakaiProtocolError, MakaiStreamError
+from oxap_sdk.transport import StdioTransport
 
 pytestmark = pytest.mark.real_binary
 
@@ -62,7 +62,7 @@ CATALOG_CREDENTIALS = catalog_credential_names()
 
 
 def smoke_env() -> dict[str, str]:
-    home = tempfile.mkdtemp(prefix="oap-sdk-py-home-")
+    home = tempfile.mkdtemp(prefix="oxap-sdk-py-home-")
     atexit.register(shutil.rmtree, home, ignore_errors=True)
     os.makedirs(os.path.join(home, ".oapx"), mode=0o700)
     with open(os.path.join(home, ".oapx", "providers.json"), "w") as handle:
@@ -217,7 +217,7 @@ async def test_handshake_timeout_is_respected(real_binary: str) -> None:
 
 
 async def test_resolver_finds_the_binary_from_the_environment(real_binary: str) -> None:
-    from oap_sdk.binary import resolve_makai_binary
+    from oxap_sdk.binary import resolve_makai_binary
 
     assert os.path.samefile(resolve_makai_binary(), real_binary)
 

@@ -1,6 +1,6 @@
 # OAP Python SDK
 
-`oap-sdk` (imported as `oap_sdk`) uses one combined OAP 0.1 stdio endpoint by default:
+`oxap-sdk` (imported as `oxap_sdk`) uses one combined OAP 0.1 stdio endpoint by default:
 
 ```text
 oapx serve agent,provider --stdio
@@ -8,23 +8,23 @@ oapx serve agent,provider --stdio
 
 It multiplexes `agent-control-core` and `model-provider-core` profiles over that connection. The public `MakaiClient` name remains for source compatibility.
 
-The package requires Python 3.11+. Install from a checkout with `pip install ./sdk/python` (it is not yet published to PyPI).
+The package requires Python 3.11+. Install from a checkout with `pip install ./sdk/python` (it is not yet published to PyPI). It was called `oap-sdk` / `oap_sdk` before; no `oap_sdk` module is kept, so change the import. The `oap-sdk` project on PyPI is unrelated.
 
 ## Connect and call a provider
 
 ```python
 import asyncio
-import oap_sdk
+import oxap_sdk
 
 async def main() -> None:
-    async with oap_sdk.connect() as client:
+    async with oxap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic", model_id="claude-sonnet-4-5"
         )
         response = await client.provider.complete(
             model_ref=model.model_ref,
             messages=[{"role": "user", "content": "Write a haiku about streams."}],
-            options=oap_sdk.RunOptions(max_tokens=128),
+            options=oxap_sdk.RunOptions(max_tokens=128),
         )
         print(response.text)
 
@@ -62,14 +62,14 @@ objects retain their ordinary JSON decoding.
 `client.agent` uses the agent-control profile. A session has a default model, which can be changed between runs. A per-call `model_ref` overrides that default for one submit. `available_models` reads the session's effective catalog, distinct from direct provider discovery.
 
 ```python
-async with oap_sdk.connect() as client:
+async with oxap_sdk.connect() as client:
     session = await client.agent.open_session("my-session")
     session_id = session["session_id"]
     catalog = await client.agent.available_models(session_id)
     await client.agent.switch_model(session_id, catalog["models"][0]["id"])
     response = await client.agent.run(
         messages=[{"role": "user", "content": "Hello"}],
-        options=oap_sdk.RunOptions(session_id=session_id),
+        options=oxap_sdk.RunOptions(session_id=session_id),
     )
 ```
 
@@ -82,8 +82,8 @@ The optional `client.agent.attach_provider(session_id, {"id": ..., "provider_id"
 `client.auth.list_providers()` and `.login()` use agent-profile `+auth` on the local stdio connection. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`. `openai-codex` offers two ways at once: its URL is the ChatGPT sign-in, which returns to a `localhost:1455` callback the runtime listens on, and its instructions also give `https://auth.openai.com/codex/device` and a one-time code for signing in from any other device, which needs device code login turned on in ChatGPT's security settings (or by a workspace admin). Whichever finishes first completes the login. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
 
 ```python
-handlers = oap_sdk.AuthFlowHandlers(
-    on_event=lambda event: print(event.url) if isinstance(event, oap_sdk.AuthUrlEvent) else None,
+handlers = oxap_sdk.AuthFlowHandlers(
+    on_event=lambda event: print(event.url) if isinstance(event, oxap_sdk.AuthUrlEvent) else None,
 )
 await client.auth.login("anthropic", handlers)
 ```
@@ -94,7 +94,7 @@ await client.auth.login("anthropic", handlers)
 
 `connect()` accepts `command`, `args`, `cwd`, `env`, a `BinaryResolverOptions`, `auth`, and timeouts in seconds. `response_timeout` bounds each request's reply, the acceptance of a run or inference included, and never a running run; `idle_timeout`, off by default, cancels a run or inference that sends no event for that long. The default args are `("serve", "agent,provider", "--stdio")`. Binary resolution honors `OXAP_SDK_BINARY_PATH` and then the legacy `OAP_SDK_BINARY_PATH`, an explicit path or checksum-verified URL, local `zig-out/bin/oxap` and `zig/zig-out/bin/oxap` before the `oapx` names, then `oxap` and then `oapx` on `PATH`. An `OXAP_SDK_BINARY_URL` likewise outranks `OAP_SDK_BINARY_URL`, and each environment URL takes the checksum written beside it, so a checksum is never borrowed across the two pairs; `checksum_sha256` from the options is the fallback for any URL. The legacy names stay read-compatible.
 
-`oap_sdk.connect_sync()` supplies the same API through a blocking wrapper for scripts; do not call it inside a running event loop. The async and sync clients own their child process and should be closed.
+`oxap_sdk.connect_sync()` supplies the same API through a blocking wrapper for scripts; do not call it inside a running event loop. The async and sync clients own their child process and should be closed.
 
 Failures are typed as `MakaiStreamError`, `MakaiAuthRequiredError`, `MakaiProtocolError`, or `MakaiAuthError`. Unsupported operations carry code `unsupported_feature`. The `Makai` class names remain for compatibility.
 

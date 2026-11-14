@@ -5,7 +5,7 @@
  *
  * Nothing compiled the README, so its samples rotted silently: the package
  * rename left twelve `from "makai"` import lines that no longer resolve, and
- * the suite stayed green. Each block is written to a temp file, `oap-sdk` is
+ * the suite stayed green. Each block is written to a temp file, `@oxap/sdk` is
  * mapped to the SDK entrypoint, and `tsc --noEmit` judges the set. Errors are
  * reported at their README line, not the temp file's.
  *
@@ -80,7 +80,7 @@ writeFileSync(
         types: ["node"],
         typeRoots: [join(ROOT, "node_modules", "@types")],
         baseUrl: ".",
-        paths: { "oap-sdk": [ENTRY] },
+        paths: { "@oxap/sdk": [ENTRY] },
       },
       include: ["samples/**/*.ts"],
     },

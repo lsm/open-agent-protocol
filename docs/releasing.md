@@ -6,7 +6,7 @@ and npm smoke jobs are skipped. Binary release and smoke checks still run.
 A release is cut by pushing a `v*` tag: `.github/workflows/release-binaries.yml`
 builds every release target, signs and notarizes the macOS ones, publishes a
 GitHub Release and the npm packages (`@oxap/cli` and its platform packages,
-and the SDK). Nothing in it writes
+then `@oxap/sdk`). Nothing in it writes
 `CHANGELOG.md`, because a pull request does not either — **the release notes for
 a version are generated and committed before the tag is pushed**, by
 `scripts/changelog-release.mjs`.
@@ -27,8 +27,7 @@ package. Only the repository owner can arrange that: register `lsm/oxap`'s
 `release-binaries.yml` as the trusted publisher on the six
 `@oxap/cli-<platform>` packages, then on `@oxap/cli`, the entry package whose
 `oxap` bin runs the platform binary and which the workflow publishes after
-them, and on the main package, which is published unscoped as `oap-sdk` and
-needs its own ownership and trusted-publisher setup. Until then a release
+them, and on `@oxap/sdk`. Until then a release
 reaches GitHub and not npm, and two red jobs on every tag are expected rather
 than a regression: `publish-npm`, and the release smoke's `Published npm
 package`, which runs after a failed publish and finds nothing to install.

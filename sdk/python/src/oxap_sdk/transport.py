@@ -25,7 +25,7 @@ __all__ = ["Frame", "StdioTransport", "FrameRoute"]
 
 Frame = Dict[str, Any]
 
-logger = logging.getLogger("oap_sdk.transport")
+logger = logging.getLogger("oxap_sdk.transport")
 
 DEFAULT_HANDSHAKE_TIMEOUT_S = 5.0
 DEFAULT_PROTOCOL_VERSION = "0.1"

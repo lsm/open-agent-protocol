@@ -83,10 +83,12 @@ daemon client). The latter builds `./go/cmd/goap`; set `OAP_GO` if `go` is not o
 `OAP_SDK_BINARY_PATH` is what gates the SDKs' real-binary coverage. Every test
 in `sdk/typescript/test/makai_binary_smoke.test.ts` and in
 `go/sdk/binary_smoke_test.go` skips when it is unset, so both SDKs pass green
-with zero end-to-end binary coverage. A binary found through `zig-out` or the
-`@oxap/cli-*` platform package does not switch the TypeScript tests on, and
+with zero end-to-end binary coverage. A binary found through `zig-out` or an
+`@oxap/cli-*` or `@oap-sdk/cli-*` platform package does not switch the TypeScript tests on, and
 that package outranks both local build paths, so a fresh `zig build` alone is
-not what either SDK exercises. Export the variable when you mean to. CI's
+not what either SDK exercises. The SDK itself is published as `@oxap/sdk` and
+takes its runtime from the optional, same-version `@oxap/cli`, so installing
+the SDK never installs a CLI that depends back on it. Export the variable when you mean to. CI's
 `go-sdk-smoke` job does exactly that: it builds `oapx` and runs
 `go test -race ./go/sdk/...` with the variable set, which is the only place the
 Go SDK talks to a real runtime.
@@ -192,7 +194,7 @@ one it serves. They share the base envelope and vocabulary but not
 `ProtocolError` — the code sets are disjoint. A role is a noun, so `serve` takes
 an argument rather than a flag (decision 0019). State lives under `~/.oxap`, and a
 workspace's under `.oxap/`; while only the old `~/.oapx` or `.oapx/` exists, that
-one is still read and written, and nothing is moved. An `OXAP_*` variable wins
+one is still read and written, and nothing is moved. A non-empty `OXAP_*` variable wins
 over its `OAPX_*` spelling, which is still read. On macOS credentials are
 Keychain-first under `ai.hyperneo.oap`, falling back to `auth.json` in that state
 directory, so clearing that file alone leaves live credentials behind.

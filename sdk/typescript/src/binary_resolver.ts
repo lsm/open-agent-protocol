@@ -203,15 +203,16 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
   }
 
   const platformKey = `${process.platform}-${process.arch}`;
-  const bundledPackage = `@oxap/cli-${platformKey}`;
   const resolveModule = options.resolveModule ?? ((specifier: string) => require.resolve(specifier));
-  for (const name of binaryNamesForPlatform()) {
-    try {
-      const bundledPath = resolveModule(`${bundledPackage}/bin/${name}`);
-      logger.debug("binary: resolved from bundled package", { path: bundledPath, package: bundledPackage });
-      return bundledPath;
-    } catch {
-      logger.debug("binary: bundled package not found", { package: bundledPackage, binary: name });
+  for (const bundledPackage of [`@oxap/cli-${platformKey}`, `@oap-sdk/cli-${platformKey}`]) {
+    for (const name of binaryNamesForPlatform()) {
+      try {
+        const bundledPath = resolveModule(`${bundledPackage}/bin/${name}`);
+        logger.debug("binary: resolved from bundled package", { path: bundledPath, package: bundledPackage });
+        return bundledPath;
+      } catch {
+        logger.debug("binary: bundled package not found", { package: bundledPackage, binary: name });
+      }
     }
   }
 

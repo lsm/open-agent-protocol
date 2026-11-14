@@ -22,8 +22,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
 
-from oap_sdk.client import AuthOptions, MakaiClient
-from oap_sdk.transport import StdioTransport
+from oxap_sdk.client import AuthOptions, MakaiClient
+from oxap_sdk.transport import StdioTransport
 
 FIXTURE_SERVER = str(Path(__file__).parent / "fixtures" / "fake_server.py")
 
@@ -99,7 +99,7 @@ class FakeServerFactory:
 
 @pytest.fixture
 async def fake() -> AsyncIterator[FakeServerFactory]:
-    with tempfile.TemporaryDirectory(prefix="oap-sdk-py-tests-") as directory:
+    with tempfile.TemporaryDirectory(prefix="oxap-sdk-py-tests-") as directory:
         factory = FakeServerFactory(Path(directory))
         try:
             yield factory

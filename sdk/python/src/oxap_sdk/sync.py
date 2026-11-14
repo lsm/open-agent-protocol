@@ -1,10 +1,10 @@
-"""A blocking convenience wrapper around :class:`~oap_sdk.client.MakaiClient`.
+"""A blocking convenience wrapper around :class:`~oxap_sdk.client.MakaiClient`.
 
 The async client is the real API. This module runs it on a private event loop
 in a background thread so scripts and REPLs can use Makai without an
 ``async def main()``::
 
-    with oap_sdk.connect_sync() as client:
+    with oxap_sdk.connect_sync() as client:
         model = client.models.resolve(provider_id="anthropic", model_id="...")
         for event in client.provider.stream(model_ref=model.model_ref, messages=[...]):
             ...
@@ -69,7 +69,7 @@ class _LoopThread:
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target=self._run, name="oap-sdk-sync-loop", daemon=True
+            target=self._run, name="oxap-sdk-sync-loop", daemon=True
         )
         self._thread.start()
 
@@ -128,7 +128,7 @@ def _iterate(
 
 
 class SyncAuthApi:
-    """Blocking view of :class:`~oap_sdk.auth.AuthApi`."""
+    """Blocking view of :class:`~oxap_sdk.auth.AuthApi`."""
 
     def __init__(self, loop: _LoopThread, client: MakaiClient) -> None:
         self._loop = loop
@@ -142,7 +142,7 @@ class SyncAuthApi:
 
 
 class SyncModelsApi:
-    """Blocking view of :class:`~oap_sdk.models.ModelsApi`."""
+    """Blocking view of :class:`~oxap_sdk.models.ModelsApi`."""
 
     def __init__(self, loop: _LoopThread, client: MakaiClient) -> None:
         self._loop = loop
@@ -156,7 +156,7 @@ class SyncModelsApi:
 
 
 class SyncProviderApi:
-    """Blocking view of :class:`~oap_sdk.execution.ProviderApi`."""
+    """Blocking view of :class:`~oxap_sdk.execution.ProviderApi`."""
 
     def __init__(self, loop: _LoopThread, client: MakaiClient) -> None:
         self._loop = loop
@@ -193,7 +193,7 @@ class SyncProviderApi:
 
 
 class SyncAgentApi:
-    """Blocking view of :class:`~oap_sdk.execution.AgentApi`."""
+    """Blocking view of :class:`~oxap_sdk.execution.AgentApi`."""
 
     def __init__(self, loop: _LoopThread, client: MakaiClient) -> None:
         self._loop = loop
@@ -301,7 +301,7 @@ def connect_sync(
 ) -> SyncMakaiClient:
     """Start a runtime and return a blocking client.
 
-    Accepts the same arguments as :func:`oap_sdk.connect`. Raises
+    Accepts the same arguments as :func:`oxap_sdk.connect`. Raises
     :class:`RuntimeError` when called from inside a running event loop.
     """
     try:
@@ -310,7 +310,7 @@ def connect_sync(
         pass
     else:
         raise RuntimeError(
-            "connect_sync() cannot be called from a running event loop; use oap_sdk.connect()"
+            "connect_sync() cannot be called from a running event loop; use oxap_sdk.connect()"
         )
 
     loop = _LoopThread()
