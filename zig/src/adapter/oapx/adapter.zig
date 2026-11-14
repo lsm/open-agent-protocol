@@ -68,7 +68,7 @@ const unsaved_features = [_]contract.Feature{
 };
 
 const features = unsaved_features ++ [_]contract.Feature{
-    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "loads the transcript of a session the terminal UI saved under ~/.oxap/sessions into a fresh loop; no run is resumed" },
+    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "loads the transcript of a session the terminal UI saved under ~/.oapx/sessions into a fresh loop; no run is resumed" },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -80,7 +80,7 @@ pub const descriptor = contract.Descriptor{
 };
 
 const transcript_features = features ++ [_]contract.Feature{
-    .{ .key = contract.feature_transcript_load, .level = .native, .reason = "reads the session saved under ~/.oxap/sessions, every message and completed compaction in file order, held or closed; transcript_cursor is a cursor after its newest entry" },
+    .{ .key = contract.feature_transcript_load, .level = .native, .reason = "reads the session saved under ~/.oapx/sessions, every message and completed compaction in file order, held or closed; transcript_cursor is a cursor after its newest entry" },
 };
 
 const transcript_descriptor = contract.Descriptor{
