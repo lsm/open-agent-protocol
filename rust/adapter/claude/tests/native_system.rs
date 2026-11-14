@@ -137,11 +137,11 @@ fn a_session_state_frame_needs_its_state() {
 #[test]
 fn an_unrecognised_system_subtype_is_a_notice_that_keeps_its_bytes() {
     let frame = r#"{"type":"system","subtype":"future_subtype","data":{"anything":true},"session_id":"s","uuid":"n1"}"#;
-    let notice = notice("future_subtype", frame);
-    assert_eq!(notice.subtype, "future_subtype");
-    assert_eq!(notice.session_id, "s");
-    assert_eq!(notice.uuid, "n1");
-    assert_eq!(notice.raw, frame.as_bytes());
+    let future = notice("future_subtype", frame);
+    assert_eq!(future.subtype, "future_subtype");
+    assert_eq!(future.session_id, "s");
+    assert_eq!(future.uuid, "n1");
+    assert_eq!(future.raw, frame.as_bytes());
     let named = notice(
         "compact_boundary",
         r#"{"type":"system","subtype":"informational","uuid":"n2"}"#,

@@ -1,6 +1,6 @@
 mod decode;
 
-use oxap_adapter::gojson::{raw, slice, strings, structure, zero};
+use oxap_adapter::gojson::{raw, slice, strings, structure, structures, zero};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
@@ -78,6 +78,14 @@ where
         return Ok(None);
     }
     slice(&raw).map(Some)
+}
+
+fn optional_strings<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let items = Option::<Vec<Option<String>>>::deserialize(deserializer)?;
+    Ok(items.map(|items| items.into_iter().map(Option::unwrap_or_default).collect()))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -362,4 +370,78 @@ pub struct ConversationResetFrame {
     pub uuid: String,
     #[serde(default, deserialize_with = "zero")]
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct McpServer {
+    #[serde(default, deserialize_with = "zero")]
+    pub name: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct InitFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub model: String,
+    #[serde(default, deserialize_with = "optional_strings")]
+    pub tools: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "structures")]
+    pub mcp_servers: Vec<McpServer>,
+    #[serde(default, rename = "permissionMode", deserialize_with = "zero")]
+    pub permission_mode: String,
+    #[serde(default, deserialize_with = "strings")]
+    pub capabilities: Vec<String>,
+    #[serde(default, deserialize_with = "zero")]
+    pub claude_code_version: String,
+    #[serde(default, rename = "apiKeySource", deserialize_with = "zero")]
+    pub api_key_source: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub cwd: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct StatusFrame {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub compact_result: Option<String>,
+    #[serde(default)]
+    pub compact_error: Option<String>,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+}
+
+impl StatusFrame {
+    pub fn compacting(&self) -> bool {
+        self.status.as_deref() == Some(STATUS_COMPACTING)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SessionStateFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub state: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SystemNotice {
+    #[serde(default, deserialize_with = "zero")]
+    pub subtype: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(skip)]
+    pub raw: Vec<u8>,
 }
