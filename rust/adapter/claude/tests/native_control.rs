@@ -136,3 +136,37 @@ fn an_unconfigured_reverse_request_reads_as_unknown_without_its_body() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn a_raw_member_keeps_a_lone_surrogate_escape_as_go_s_raw_message_does() {
+    match decode(
+        CONTROL_CAN_USE_TOOL,
+        r#"{"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Bash\ud800","input":{"command":"echo \ud800"},"permission_suggestions":["\ud800 x"],"tool_use_id":"t"}}"#,
+    ) {
+        ControlRequest::CanUseTool(ask) => {
+            assert_eq!(ask.tool_name, "Bash\u{fffd}");
+            assert_eq!(
+                ask.input.as_deref().map(|raw| raw.get()),
+                Some(r#"{"command":"echo \ud800"}"#)
+            );
+            assert_eq!(
+                ask.permission_suggestions.as_deref().map(|raw| raw.get()),
+                Some(r#"["\ud800 x"]"#)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    match decode(
+        CONTROL_MCP_MESSAGE,
+        r#"{"type":"control_request","request_id":"r","request":{"subtype":"mcp_message","server_name":"o\ud800","message":{"result":"\ud800"}}}"#,
+    ) {
+        ControlRequest::McpMessage(message) => {
+            assert_eq!(message.server_name, "o\u{fffd}");
+            assert_eq!(
+                message.message.as_deref().map(|raw| raw.get()),
+                Some(r#"{"result":"\ud800"}"#)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
