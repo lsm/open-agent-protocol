@@ -164,7 +164,9 @@ it.
 `clients/ts/package.json` (`@oxap/client`) follows the same release line and is
 bumped by hand with the others. No workflow in this repository releases it yet —
 `release-binaries.yml` does not mention it — so the tagged run does not
-overwrite its version.
+overwrite its version, and the `NPM_DIST_TAG` rule below does not reach it.
+Whoever publishes it passes the tag themselves: current npm refuses a bare
+`npm publish` of a prerelease, so an alpha needs `npm publish --tag next`.
 
 The `NPM_DIST_TAG` rule already sends a version containing `-` to `next`, so
 the alpha line publishes under the right tag with no further change.

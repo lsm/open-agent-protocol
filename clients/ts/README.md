@@ -473,5 +473,7 @@ npm test
 
 The package is publishable as `@oxap/client`: public access, `files`, `main`
 and `types` point at `dist/src`, and `npm pack` builds it. Its version follows
-the OXAP release line. Nothing is published yet and no workflow releases it;
+the OXAP release line, so an alpha publishes with `npm publish --tag next`;
+current npm refuses a bare publish of a prerelease. The tarball carries the
+CC0 `LICENSE`. Nothing is published yet and no workflow releases it;
 until one does, consumers should pin a commit of this repository.

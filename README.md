@@ -1019,8 +1019,8 @@ for await (const envelope of events) {
 }
 ```
 
-See `clients/ts/README.md` for the full surface. npm publishing is
-intentionally out of scope; the package is consumed from a checkout.
+See `clients/ts/README.md` for the full surface. The package is publishable as
+`@oxap/client` but not published yet; until it is, consume it from a checkout.
 
 Harness pins:
 
