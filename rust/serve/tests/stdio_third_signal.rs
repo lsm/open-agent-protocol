@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::executor::block_on;
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, EventStream, InteractionResolution, OpenRequest, Recovery,
     ResumeRequest, Session, SubmitRequest,
 };
-use oap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
-use oap_serve::stdio::{serve_signalled, Signals, StdioOptions};
-use oap_serve::{Hub, Registry};
+use oxap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
+use oxap_serve::stdio::{serve_signalled, Signals, StdioOptions};
+use oxap_serve::{Hub, Registry};
 
 struct Gate {
     armed: AtomicBool,
@@ -83,18 +83,32 @@ impl Session for ParkedSession {
     }
 }
 
-struct Held;
+struct Held(mpsc::Receiver<Vec<u8>>, mpsc::Sender<()>);
 
 impl Read for Held {
-    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-        loop {
-            std::thread::park();
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let _ = self.1.send(());
+        match self.0.recv() {
+            Ok(frame) => {
+                buffer[..frame.len()].copy_from_slice(&frame);
+                Ok(frame.len())
+            }
+            Err(_) => Ok(0),
         }
     }
 }
 
 #[test]
 fn a_third_signal_ends_serving_while_an_earlier_one_is_parked() {
+    third_signal(false);
+}
+
+#[test]
+fn a_third_signal_ends_serving_after_eof_while_shutdown_is_parked() {
+    third_signal(true);
+}
+
+fn third_signal(eof: bool) {
     let (entered, parked) = mpsc::channel();
     let (released, release) = mpsc::channel();
     let gate = Arc::new(Gate {
@@ -124,11 +138,13 @@ fn a_third_signal_ends_serving_while_an_earlier_one_is_parked() {
     gate.armed.store(true, Ordering::SeqCst);
     let signals = Signals::new(&hub);
     let (done, served) = mpsc::channel();
+    let (input, frames) = mpsc::channel();
+    let (reading, reads) = mpsc::channel();
     let serving = signals.clone();
     std::thread::spawn(move || {
         let _ = done.send(serve_signalled(
             &serving,
-            BufReader::new(Held),
+            BufReader::new(Held(frames, reading)),
             support::Captured::default(),
             &StdioOptions::default(),
         ));
@@ -138,6 +154,15 @@ fn a_third_signal_ends_serving_while_an_earlier_one_is_parked() {
     parked
         .recv_timeout(Duration::from_secs(10))
         .expect("the first signal never reached the session");
+    reads.recv_timeout(Duration::from_secs(10)).unwrap();
+    if eof {
+        drop(input);
+    } else {
+        input
+            .send(b"{\"id\":1,\"op\":\"open\",\"adapter\":\"memory\"}\n".to_vec())
+            .unwrap();
+        reads.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
     assert!(signals.signal(3).is_none());
     let ended = served.recv_timeout(Duration::from_secs(10));
     let _ = released.send(());
@@ -145,4 +170,5 @@ fn a_third_signal_ends_serving_while_an_earlier_one_is_parked() {
         ended.is_ok(),
         "the third signal did not end serving while the first was parked"
     );
+    assert!(ended.unwrap().is_ok(), "third signal must return Ok");
 }
