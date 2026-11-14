@@ -205,14 +205,25 @@ fn a_cancel_during_turn_start_waits_for_the_turn_as_go_does() {
         })
     };
     arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (entered, started) = crossbeam_channel::bounded(0);
+    let (answered, settled) = crossbeam_channel::bounded(1);
     let cancelling = {
         let session = session.clone();
-        std::thread::spawn(move || session.cancel(&"run-2".into()))
+        std::thread::spawn(move || {
+            let _ = entered.send(());
+            let _ = answered.send(session.cancel(&"run-2".into()));
+        })
     };
-    std::thread::sleep(Duration::from_millis(200));
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let early = settled.recv_timeout(Duration::from_millis(500));
+    assert!(
+        matches!(early, Err(crossbeam_channel::RecvTimeoutError::Timeout)),
+        "the cancel answered while turn/start was still in flight: {early:?}"
+    );
     release.send(()).unwrap();
     let run = submitting.join().unwrap().unwrap();
-    let answer = cancelling.join().unwrap();
+    let answer = settled.recv_timeout(Duration::from_secs(5)).unwrap();
+    cancelling.join().unwrap();
     assert_eq!(run.as_ref().map(|run| run.as_str()), Some("run-2"));
     assert_eq!(
         answer
