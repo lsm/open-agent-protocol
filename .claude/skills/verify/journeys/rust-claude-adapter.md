@@ -4,9 +4,9 @@ Follow shared setup and the verification mutex in SKILL.md. Run from the
 repository root.
 
 ```sh
-(cd rust && cargo test -p oap-adapter-claude --test native_messages)
-(cd rust && cargo test -p oap-adapter-claude --test native_results)
-(cd rust && cargo test -p oap-adapter-claude --all-features)
+(cd rust && cargo test -p oxap-adapter-claude --test native_messages)
+(cd rust && cargo test -p oxap-adapter-claude --test native_results)
+(cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
 `tests/native_results.rs` ports Go's `TestResultArbitrationInputs` and

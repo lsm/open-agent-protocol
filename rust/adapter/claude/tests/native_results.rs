@@ -1,4 +1,4 @@
-use oap_adapter_claude::native::{
+use oxap_adapter_claude::native::{
     decode_observation, Observation, ResultFrame, StreamEventFrame, RESULT_ERROR_DURING_EXECUTION,
     RESULT_ERROR_MAX_TURNS, RESULT_SUCCESS, TERMINAL_COMPLETED, TYPE_RESULT, TYPE_STREAM_EVENT,
 };
