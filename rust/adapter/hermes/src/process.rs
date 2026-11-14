@@ -1,9 +1,12 @@
 use std::io::Read;
+use std::os::unix::net::UnixStream;
+use std::process::ChildStdout;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{select, Receiver, Sender};
+use crossbeam_channel::{select, Receiver};
 use oxap_adapter::process::{wait_error, Child, ChildConfig};
+use rustix::event::{poll, PollFd, PollFlags};
 
 use crate::native::{decode_strict, Event, ReadyPayload, EVENT_GATEWAY_READY};
 use crate::rpc::{
@@ -36,52 +39,21 @@ pub struct Process {
 }
 
 struct Stdout {
-    chunks: Receiver<Vec<u8>>,
-    shut: Receiver<()>,
-    held: Vec<u8>,
-    at: usize,
-}
-
-impl Stdout {
-    fn pump(mut pipe: impl Read + Send + 'static) -> (Self, Sender<()>) {
-        let (sender, chunks) = crossbeam_channel::bounded(0);
-        let (shutter, shut) = crossbeam_channel::bounded(0);
-        std::thread::spawn(move || {
-            let mut chunk = vec![0u8; 64 * 1024];
-            while let Ok(read) = pipe.read(&mut chunk) {
-                if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
-                    break;
-                }
-            }
-        });
-        let stdout = Self {
-            chunks,
-            shut,
-            held: Vec::new(),
-            at: 0,
-        };
-        (stdout, shutter)
-    }
+    pipe: ChildStdout,
+    shut: UnixStream,
 }
 
 impl Read for Stdout {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.at == self.held.len() {
-            select! {
-                recv(self.chunks) -> chunk => match chunk {
-                    Ok(chunk) => {
-                        self.held = chunk;
-                        self.at = 0;
-                    }
-                    Err(_) => return Ok(0),
-                },
-                recv(self.shut) -> _ => return Ok(0),
-            }
+        let mut descriptors = [
+            PollFd::new(&self.pipe, PollFlags::IN),
+            PollFd::new(&self.shut, PollFlags::IN),
+        ];
+        poll(&mut descriptors, None)?;
+        if !descriptors[1].revents().is_empty() {
+            return Ok(0);
         }
-        let take = out.len().min(self.held.len() - self.at);
-        out[..take].copy_from_slice(&self.held[self.at..self.at + take]);
-        self.at += take;
-        Ok(take)
+        self.pipe.read(out)
     }
 }
 
@@ -130,7 +102,8 @@ impl Process {
         if config.path.is_empty() {
             return Err(handshake("executable path is required"));
         }
-        let (child, stdout) = Child::spawn(&ChildConfig {
+        let (shut, shutter) = UnixStream::pair().map_err(|failure| error(Fault::Io(failure)))?;
+        let (child, pipe) = Child::spawn(&ChildConfig {
             path: config.path.clone(),
             args: config.args.clone(),
             dir: config.dir.clone(),
@@ -139,10 +112,9 @@ impl Process {
         })
         .map_err(|failure| error(Fault::Io(failure)))?;
         let releaser = child.clone();
-        let (stdout, shutter) = Stdout::pump(stdout);
         let client = RpcClient::new(
             DIALECT,
-            stdout,
+            Stdout { pipe, shut },
             child.writer(),
             ClientOptions {
                 frame_limit: config.frame_limit,
