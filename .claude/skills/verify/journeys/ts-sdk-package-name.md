@@ -11,16 +11,18 @@ Install dependencies once, from the repository root:
 npm ci --ignore-scripts
 ```
 
-## The package identity and its runtime dependency
+## The package identity, and no source pin on the CLI
 
 ```sh
-node -p 'const p=require("./package.json"); `${p.name} ${p.version} ${p.optionalDependencies["@oxap/cli"]}`'
-node -p 'const l=require("./package-lock.json"); `${l.name} ${l.packages[""].name} ${l.packages["node_modules/@oxap/cli"].version} ${l.packages["node_modules/@oxap/cli"].optional}`'
+node -p 'const p=require("./package.json"); `${p.name} ${p.version} ${(p.optionalDependencies||{})["@oxap/cli"]}`'
+node -p 'const l=require("./package-lock.json"); `${l.name} ${l.packages[""].name} ${l.packages["node_modules/@oxap/cli"]}`'
 ```
 
-Both lines must name `@oxap/sdk` at the same version, and the lock must carry
-`@oxap/cli` at that version marked optional. `npm ci` above must exit 0, which
-it does only when the lock agrees with the manifest.
+Both lines must name `@oxap/sdk` at the same version and end in `undefined`.
+The `@oxap/cli` pin lives only in `scripts/package-npm.ts`, which writes it into
+the packed manifest (see the tagged-release step below): npm cannot write or
+repair a lock entry for a package the registry does not have, so a source pin
+leaves `npm ci` out of sync on the next version bump. `npm ci` above must exit 0.
 
 ## The packed tarball installs and works as a consumer
 
@@ -47,14 +49,14 @@ Require `check-readme-samples: OK`. Every `ts` block is type-checked against
 ## The CLI never depends back on the SDK
 
 ```sh
-grep -c '"@oxap/sdk"' dist/npm/cli-*/package.json 2>/dev/null || echo "no CLI packages built yet"
+node -e 'const fs=require("fs"),d="dist/npm";const m=(fs.existsSync(d)?fs.readdirSync(d):[]).filter(n=>n.startsWith("cli")).map(n=>`${d}/${n}/package.json`).filter(f=>fs.existsSync(f));if(!m.length){console.log("no CLI packages built yet");process.exit(0)}const bad=m.filter(f=>{const p=JSON.parse(fs.readFileSync(f,"utf8"));return [p.dependencies,p.optionalDependencies].some(x=>x&&"@oxap/sdk" in x)});console.log(`${m.length} CLI manifests, ${bad.length} name @oxap/sdk`,...bad);process.exit(bad.length?1:0)'
 ```
 
-While `@oxap/cli` is still packaged under its old name (the separate CLI PR),
-there is no `dist/npm/cli-*`; once it lands, none of those files may name
-`@oxap/sdk` in `dependencies` or `optionalDependencies`. This grep is the only
-check of that rule: the lockfile entry for `@oxap/cli` carries no dependency
-fields, so nothing there can show it.
+Before any packaging run it prints `no CLI packages built yet`. Once
+`dist/npm/cli*` exists, require `<n> CLI manifests, 0 name @oxap/sdk` and exit
+0: none of them may name `@oxap/sdk` in `dependencies` or
+`optionalDependencies`, and any that does is listed and the step exits 1. This
+is the only check of that rule.
 
 ## A tagged release pins the CLI at the tag's version
 

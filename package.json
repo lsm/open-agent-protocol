@@ -39,8 +39,5 @@
     "lossless-json": "4.3.2",
     "nanoid": "^5.1.5",
     "ulid": "^3.0.2"
-  },
-  "optionalDependencies": {
-    "@oxap/cli": "0.1.0-alpha.32"
   }
 }
