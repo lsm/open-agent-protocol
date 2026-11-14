@@ -155,8 +155,8 @@ If those notes are ever wanted back into the file, that is where they are — a
 deliberate revert of one commit, not a regeneration.
 
 Every package carries the release version, and the `versions` job refuses a
-run where they disagree: the root and `clients/ts` `package.json` (with their
-lockfiles), `sdk/python/pyproject.toml` in its PEP 440 spelling (`0.1.0a33` for
+run where they disagree: the root and `clients/ts` `package.json`,
+`sdk/python/pyproject.toml` in its PEP 440 spelling (`0.1.0a33` for
 `0.1.0-alpha.33`), `zig/build.zig.zon` (the default for `-Dversion`, so what a
 local `oxap --version` prints) and every publishable crate. A dispatch builds
 and names its artifacts under that version, and a tag must equal it, so bump
