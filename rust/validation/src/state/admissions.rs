@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::interactions::Interaction;
 use super::runs::Run;

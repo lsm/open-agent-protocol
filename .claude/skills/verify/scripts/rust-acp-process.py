@@ -32,9 +32,9 @@ def main():
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml',
-         '-p', 'oap-adapter-acp', '--example', 'process'], output / 'build.log')
+         '-p', 'oxap-adapter-acp', '--example', 'process'], output / 'build.log')
     run(['cargo', 'test', '--manifest-path', 'rust/Cargo.toml',
-         '-p', 'oap-adapter', '--test', 'jsonrpc_backpressure', '--', '--nocapture'],
+         '-p', 'oxap-adapter', '--test', 'jsonrpc_backpressure', '--', '--nocapture'],
         output / 'backpressure.log')
     binary = ROOT / 'rust/target/debug/examples/process'
     with tempfile.TemporaryDirectory(prefix='oap-rust-acp-') as temporary:

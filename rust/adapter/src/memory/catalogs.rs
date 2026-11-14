@@ -1,4 +1,4 @@
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::admit::{compaction_threshold, effective_policy, session_sources};
 use super::descriptor::features;

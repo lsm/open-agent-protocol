@@ -1,6 +1,6 @@
 use std::io::{Cursor, Read, Write};
 
-use oap_adapter_copilot::rpc::{Decoder, Encoder, FrameError};
+use oxap_adapter_copilot::rpc::{Decoder, Encoder, FrameError};
 
 struct Fragments(Cursor<Vec<u8>>);
 

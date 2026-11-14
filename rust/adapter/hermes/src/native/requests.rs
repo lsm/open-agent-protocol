@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_adapter::gojson::{go_quote, raw, strings, structures, zero};
+use oxap_adapter::gojson::{go_quote, raw, strings, structures, zero};
 use serde::{Deserialize, Serialize};
 
 use super::{decode_strict, go_lossy, Raw};
@@ -261,7 +261,7 @@ pub fn decode_server_request(method: &str, params: &[u8]) -> Result<Option<Serve
 pub fn request_session_id(params: &[u8]) -> String {
     let text = go_lossy(params);
     let Ok(Members(members)) =
-        serde_json::from_str::<Members>(&oap_adapter::gojson::replace_lone_surrogates(&text))
+        serde_json::from_str::<Members>(&oxap_adapter::gojson::replace_lone_surrogates(&text))
     else {
         return String::new();
     };

@@ -162,7 +162,7 @@ def main():
         "go": [str(goap), "validate", "--format", "json"],
         "zig": [str(args.oapx.resolve()), "validate", "--format", "json"],
         "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
-                 "-p", "oap-validation", "--example", "validate", "--"],
+                 "-p", "oxap-validation", "--example", "validate", "--"],
     }
     for source in ("go", "zig"):
         for label, command in commands.items():

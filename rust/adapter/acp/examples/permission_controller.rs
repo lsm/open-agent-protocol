@@ -4,12 +4,12 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::Inbound;
-use oap_adapter::InteractionResolution;
-use oap_adapter_acp::{
+use oxap_adapter::jsonrpc::Inbound;
+use oxap_adapter::InteractionResolution;
+use oxap_adapter_acp::{
     native::*, pin, process::*, Permissions, PromptBridge, TextRun, TextRunContext,
 };
-use oap_protocol::PermissionResolveRequest;
+use oxap_protocol::PermissionResolveRequest;
 use serde_json::{json, Value};
 
 fn main() {
@@ -39,7 +39,7 @@ fn main() {
             shutdown_timeout: Some(Duration::from_millis(300)),
             client_info: Some(Implementation {
                 name: "open-agent-protocol".into(),
-                version: oap_protocol::VERSION.into(),
+                version: oxap_protocol::VERSION.into(),
                 ..Implementation::default()
             }),
             ..ProcessConfig::default()

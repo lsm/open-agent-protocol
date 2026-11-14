@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter_acp::{
+use oxap_adapter_acp::{
     native::PromptParams,
     process::{Process, ProcessConfig},
     Permissions, PromptBridge, TextRun, TextRunContext,

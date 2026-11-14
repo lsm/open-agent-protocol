@@ -2,16 +2,18 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use futures::executor::block_on;
-use oap_adapter::jsonrpc::{Error, Fault, Inbound, IncomingRequest, Message, RequestId, Responder};
-use oap_adapter_acp::process::{Process, ProcessConfig};
-use oap_adapter_acp::PromptBridge;
+use oxap_adapter::jsonrpc::{
+    Error, Fault, Inbound, IncomingRequest, Message, RequestId, Responder,
+};
+use oxap_adapter_acp::process::{Process, ProcessConfig};
+use oxap_adapter_acp::PromptBridge;
 use serde_json::json;
 
 struct Foreign;
 
 impl Responder for Foreign {
     fn send(&self, _: Message) -> Result<(), Error> {
-        Err(oap_adapter_acp::process::DIALECT
+        Err(oxap_adapter_acp::process::DIALECT
             .error(Fault::Transport("foreign writer called".into())))
     }
 }
@@ -39,7 +41,7 @@ fn owned_notifications_and_reverse_replies_preserve_the_native_wire() {
     }));
     let request = receive.recv_timeout(Duration::from_secs(3)).unwrap();
     let foreign = Arc::new(IncomingRequest::new(
-        oap_adapter_acp::process::DIALECT,
+        oxap_adapter_acp::process::DIALECT,
         RequestId::String("native".into()),
         "fixture",
         None,

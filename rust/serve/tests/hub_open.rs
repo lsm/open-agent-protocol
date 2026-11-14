@@ -2,13 +2,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
     Recovery, ResumeRequest, Session, SubmitRequest,
 };
-use oap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState, SessionStatus};
-use oap_serve::{Hub, HubError, Registry, DEFAULT_PARTICIPANT};
+use oxap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState, SessionStatus};
+use oxap_serve::{Hub, HubError, Registry, DEFAULT_PARTICIPANT};
 
 #[derive(Clone, Copy)]
 enum Answer {

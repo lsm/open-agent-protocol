@@ -1,6 +1,6 @@
 mod support;
 
-use oap_adapter::memory::{model_catalog, MODEL_PRIMARY};
+use oxap_adapter::memory::{model_catalog, MODEL_PRIMARY};
 use support::*;
 
 fn switch(
@@ -241,7 +241,7 @@ fn the_tool_catalog_adds_the_session_s_sources_and_provided_tools_only_when_scop
     assert_eq!(unscoped.revision, CAPABILITY_REVISION);
     assert_eq!(
         unscoped.tools.sources,
-        oap_adapter::memory::declared_sources()
+        oxap_adapter::memory::declared_sources()
     );
     assert_eq!(names(unscoped), ["scripted_tool"]);
     let scoped = ToolsListRequest {

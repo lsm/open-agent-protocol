@@ -3,7 +3,7 @@
 From the repository root, run:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test transcript_pages
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test transcript_pages
 python3 .claude/skills/verify/scripts/rust-transcript-pages.py --output-dir /tmp/oap-transcript-pages-<unique>
 ```
 

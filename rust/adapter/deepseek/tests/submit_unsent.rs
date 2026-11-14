@@ -4,13 +4,13 @@ use std::sync::Arc;
 use std::task::{Context, Waker};
 use std::time::{Duration, Instant};
 
-use oap_adapter::{Error, OpenRequest, SubmitRequest};
-use oap_adapter_deepseek::adapter::{Adapter, Config};
-use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
-use oap_adapter_deepseek::process::ProcessConfig;
-use oap_adapter_deepseek::runtime::Runtime;
-use oap_adapter_deepseek::session::Session;
-use oap_protocol::{
+use oxap_adapter::{Error, OpenRequest, SubmitRequest};
+use oxap_adapter_deepseek::adapter::{Adapter, Config};
+use oxap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
+use oxap_adapter_deepseek::process::ProcessConfig;
+use oxap_adapter_deepseek::runtime::Runtime;
+use oxap_adapter_deepseek::session::Session;
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, Participant, SessionStatus,
 };
 
@@ -108,7 +108,7 @@ fn a_submit_dropped_before_its_prompt_is_sent_never_sends_it() {
         std::thread::spawn(move || session.submit(request("first")))
     };
     until("the first prompt was not sent", || prompts() == 1);
-    let mut dropped = oap_adapter::Session::submit(
+    let mut dropped = oxap_adapter::Session::submit(
         &*session,
         SubmitRequest {
             request: request("dropped"),

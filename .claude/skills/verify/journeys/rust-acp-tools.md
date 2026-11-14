@@ -6,7 +6,7 @@ this checkout's root with the ReleaseSafe validator built.
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-results.py --suite tools --output-dir /tmp/oap-tools-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-text.py --output-dir /tmp/oap-tools-engine-<unique>
-(cd rust && cargo test -p oap-adapter-acp)
+(cd rust && cargo test -p oxap-adapter-acp)
 ```
 
 The tools suite uses the same standalone public Rust and Go Adapter/Session

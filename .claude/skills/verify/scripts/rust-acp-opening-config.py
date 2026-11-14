@@ -132,12 +132,12 @@ def main():
     parser.add_argument('--output-dir', required=True, type=Path)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--example', 'opening_config'], output / 'rust-build.log')
+    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp', '--example', 'opening_config'], output / 'rust-build.log')
     (output / 'reference.go').write_text(GO)
     peer.run(['gofmt', '-w', str(output / 'reference.go')], output / 'gofmt.log')
     peer.run(['go', 'build', '-o', str(output / 'reference'), str(output / 'reference.go')], output / 'go-build.log')
     peer.run(['go', 'build', '-o', str(output / 'goap'), './go/cmd/goap'], output / 'goap-build.log')
-    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-validation', '--example', 'validate'], output / 'validator-build.log')
+    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-validation', '--example', 'validate'], output / 'validator-build.log')
     agent = Path(__file__).with_name('fixtures') / 'acp-opening-config-agent.py'
     for name, (patch, request) in scenarios().items():
         case = output / name

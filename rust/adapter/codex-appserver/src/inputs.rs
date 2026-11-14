@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use oap_adapter::gojson::decode;
-use oap_adapter::{index_input_answers, Error};
-use oap_protocol::{
+use oxap_adapter::gojson::decode;
+use oxap_adapter::{index_input_answers, Error};
+use oxap_protocol::{
     EnvelopeType, InputOption, InputQuestion, InputQuestionKind, InteractionId, RunId, RunStatus,
     RunStatusUpdatedPayload, SessionStatus, ToolCallId, UserInputRequestedPayload,
     UserInputResolutionStatus, UserInputResolveRequest, UserInputResolvedPayload,
@@ -53,7 +53,7 @@ fn questions(params: &UserInputRequestParams) -> Result<Vec<InputQuestion>, &'st
 
 fn answers(
     questions: &[InputQuestion],
-    given: &[oap_protocol::InputAnswer],
+    given: &[oxap_protocol::InputAnswer],
 ) -> Option<BTreeMap<String, UserInputAnswer>> {
     let indexed = index_input_answers(questions, given).ok()?;
     let mut answers = BTreeMap::new();

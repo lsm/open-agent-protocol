@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode, RunId,
 };
-use oap_serve::{Hub, HubError, Registry, WorkStatus};
+use oxap_serve::{Hub, HubError, Registry, WorkStatus};
 
 fn opened(hub: &Hub, id: &str) {
     block_on(hub.open(

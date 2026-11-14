@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use oap_adapter::gojson::go_quote;
-use oap_adapter::jsonrpc::NotificationMessage;
-use oap_adapter::subscriber::Subscriber;
-use oap_adapter::{Error, EventStream};
-use oap_protocol::{
+use oxap_adapter::gojson::go_quote;
+use oxap_adapter::jsonrpc::NotificationMessage;
+use oxap_adapter::subscriber::Subscriber;
+use oxap_adapter::{Error, EventStream};
+use oxap_protocol::{
     ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeId,
     EnvelopeType, Message, MessageContent, MessageId, MessageRole, ProtocolError,
     RunCompletedPayload, RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionId, Usage,
@@ -44,7 +44,7 @@ pub struct TextRun {
     native_messages: BTreeMap<String, MessageId>,
     subscriber: Subscriber,
     pub(crate) followers: Vec<Subscriber>,
-    pub(crate) journal: Option<oap_adapter::journal::Journal>,
+    pub(crate) journal: Option<oxap_adapter::journal::Journal>,
     usage_scope: Arc<Mutex<UsageScope>>,
     pub(crate) terminal_usage: Option<Usage>,
     extensions: Extensions,

@@ -20,15 +20,15 @@ records where each tree stands against it. Rule-level validator coverage is in
 | Validator: agent semantic rules (77 codes) | partial: 62 codes; 9 in open PRs; 87 fixtures excused | done | missing |
 | Validator: provider-profile rules | done | done | missing |
 | Pack loading (20 codes) | partial: 5; #1261 adds 10 | done | missing |
-| Harness catalog and pins | done | done | done: `oap-harness` reads the catalog and runs every catalog drift rule (#1442) |
+| Harness catalog and pins | done | done | done: `oxap-harness` reads the catalog and runs every catalog drift rule (#1442) |
 | Adapters: acp, claude, codex, deepseek, hermes, opencode, pi | done (shared corpora) | done (shared corpora) | missing |
 | Adapter: copilot | done | missing | missing |
-| Memory reference adapter | done | done | done: `oap_adapter::memory`, which `oap-rust-hub serve agent` serves through every `goap conformance` check and the memory parity fixture |
+| Memory reference adapter | done | done | done: `oxap_adapter::memory`, which `oap-rust-hub serve agent` serves through every `goap conformance` check and the memory parity fixture |
 | Hub, stdio | done | done | done |
 | Hub, HTTP and SSE | done | done | partial: the gates, the read-only routes, tools, models, open with its held subscription, submit, resolve, cancel, settings, close, SSE events, transcript, the work routes and shutdown; `oap-rust-hub serve --addr` serves them on a loopback allowlist; `TestHubHTTPAnswersGoapAndRustTheSame` holds 27 requests to goap's answers; the hub's signals pending |
-| `serve agent` endpoint | done | done | done: `oap_serve::endpoint`, served by `oap-rust-hub serve agent`, passes every `goap conformance` check in CI and maps SIGINT and SIGTERM as Go does |
+| `serve agent` endpoint | done | done | done: `oxap_serve::endpoint`, served by `oap-rust-hub serve agent`, passes every `goap conformance` check in CI and maps SIGINT and SIGTERM as Go does |
 | Conformance runner | partial: asks no `session.list` | done | missing |
-| Binding and run stores | done | done | done: `oap-binding`'s file and memory session histories and run store (#1473); the hub records opens, closes and refusals (#1489) |
+| Binding and run stores | done | done | done: `oxap-binding`'s file and memory session histories and run store (#1473); the hub records opens, closes and refusals (#1489) |
 | `transcript.load` (Decision 0051) | done | partial: hub route pending | partial: the stdio op and the HTTP route; no Rust adapter has a reader yet |
 | Shutdown (Decision 0050) | partial: signals and restart recovery pending | partial: same | partial: the stdio op, `POST /shutdown`, the endpoint's request and its signals; the hub's signals and restart recovery pending |
 | Client SDK | n/a (oapx is the runtime) | done | done (delegates to oapx) |

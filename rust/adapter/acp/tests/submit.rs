@@ -5,9 +5,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, Error, OpenRequest, Session, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter::{Adapter as _, Error, OpenRequest, Session, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, Participant, SessionStatus,
 };
 use serde_json::{json, Value};
@@ -290,7 +290,7 @@ fn model_switch_snapshot_preserves_the_active_text_run() {
     let (admission, stream) = block_on(session.submit(submit("hi"))).unwrap();
     fixture.wait("prompt");
     let (_, state) = block_on(session.model_switcher().unwrap().switch_model(
-        oap_protocol::SessionModelSwitchRequest {
+        oxap_protocol::SessionModelSwitchRequest {
             session_id: "session".into(),
             model_id: "luna".into(),
             allow_degraded_features: vec!["session.model.switch".into()],

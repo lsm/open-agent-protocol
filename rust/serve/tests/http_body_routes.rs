@@ -2,21 +2,21 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
 use futures::executor::block_on;
-use oap_protocol::{
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     RequestedDeliveryMode, RunCancelRequest,
 };
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn started() -> (Hub, SocketAddr) {
     let hub = Hub::new(Registry::default_registry());
     block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "s".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();

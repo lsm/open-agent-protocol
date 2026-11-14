@@ -1,8 +1,8 @@
 use std::cell::Cell;
 
-use oap_adapter::Error;
-use oap_adapter_deepseek::prompt::native_prompt;
-use oap_protocol::{
+use oxap_adapter::Error;
+use oxap_adapter_deepseek::prompt::native_prompt;
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
 

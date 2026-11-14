@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use oap_protocol::{InputAnswer, InputQuestion};
+use oxap_protocol::{InputAnswer, InputQuestion};
 
 use crate::Error;
 

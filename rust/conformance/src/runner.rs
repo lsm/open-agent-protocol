@@ -1,4 +1,4 @@
-use oap_protocol::{
+use oxap_protocol::{
     CapabilitiesRequest, CapabilityDescriptor, Envelope, EnvelopeId, EnvelopeType, ErrorResponse,
     InitializeRequest, InitializeResponse, Participant, SessionId, SessionOpenRequest,
     SessionState, SupportLevel, FEATURE_SESSION_MODEL_SWITCH, PROFILE, VERSION,
@@ -271,8 +271,8 @@ fn decode_payload<T: DeserializeOwned + Default>(answer: &Envelope) -> Result<T,
     let payload = answer
         .payload
         .as_ref()
-        .ok_or_else(|| oap_protocol::Error::MissingPayload.to_string())?;
-    oap_adapter::gojson::structure(&mut serde_json::Deserializer::from_str(payload.get())).map_err(
+        .ok_or_else(|| oxap_protocol::Error::MissingPayload.to_string())?;
+    oxap_adapter::gojson::structure(&mut serde_json::Deserializer::from_str(payload.get())).map_err(
         |error| {
             format!(
                 "{} payload could not be decoded as an object ({:?})",

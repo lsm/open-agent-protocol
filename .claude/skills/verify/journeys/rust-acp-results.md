@@ -6,7 +6,7 @@ repository root after building the ReleaseSafe validator.
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-results.py --output-dir /tmp/oap-results-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-text.py --output-dir /tmp/oap-results-engine-<unique>
-(cd rust && cargo test -p oap-adapter-acp)
+(cd rust && cargo test -p oxap-adapter-acp)
 ```
 
 The first script builds standalone public Rust and Go adapter/session consumers.

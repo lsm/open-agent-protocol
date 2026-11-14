@@ -1,4 +1,4 @@
-use oap_adapter::gojson::{
+use oxap_adapter::gojson::{
     go_marshal, go_quote, reject_duplicate_keys, replace_lone_surrogates, WalkError, NESTING_LIMIT,
 };
 

@@ -461,7 +461,7 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`; Rust (`oap_serve::stdio`):
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`; Rust (`oxap_serve::stdio`):
 `a_shutdown_with_nothing_running_stops_serving_with_input_still_open`,
 `a_shutdown_naming_no_mode_while_a_run_is_live_asks_the_host_to_choose`,
 `a_graceful_shutdown_refuses_new_work_and_stops_once_its_runs_settle`, with a

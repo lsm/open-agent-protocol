@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     PermissionRequestedPayload, PermissionResolveRequest, RequestedDeliveryMode, RunCancelRequest,
     RunId, SessionStateRequest,
 };
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::{Hub, HubSession, Registry};
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::{Hub, HubSession, Registry};
 use serde_json::Value;
 
 fn opened() -> (Hub, Arc<HubSession>) {

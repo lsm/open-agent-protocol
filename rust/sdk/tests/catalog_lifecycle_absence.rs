@@ -1,8 +1,8 @@
 mod common;
 
-use oap_sdk::{ListModelsRequest, ModelLifecycle};
+use oxap_sdk::{ListModelsRequest, ModelLifecycle};
 
-async fn oap_list(shape: &str, include_deprecated: Option<bool>) -> Vec<oap_sdk::ModelDescriptor> {
+async fn oap_list(shape: &str, include_deprecated: Option<bool>) -> Vec<oxap_sdk::ModelDescriptor> {
     let client = oap_client(shape).await;
     client
         .models()
@@ -47,9 +47,9 @@ async fn the_oap_filter_drops_only_a_stated_deprecated_lifecycle() {
     );
 }
 
-async fn oap_client(shape: &str) -> oap_sdk::Client {
+async fn oap_client(shape: &str) -> oxap_sdk::Client {
     let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_oap-protocol-fake"));
-    oap_sdk::ClientBuilder::new()
+    oxap_sdk::ClientBuilder::new()
         .command(binary)
         .args([format!("--catalog-shape={shape}")])
         .env_clear()

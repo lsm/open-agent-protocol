@@ -4,8 +4,8 @@ use std::io::{PipeWriter, Write};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use oap_serve::endpoint::{Endpoint, EndpointError, EndpointOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::endpoint::{Endpoint, EndpointError, EndpointOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::{json, Value};
 
 struct Serving {

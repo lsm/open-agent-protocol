@@ -5,14 +5,14 @@ use std::time::{Duration, Instant};
 
 use futures::future::{select, Either};
 use futures::StreamExt;
-use oap_protocol::{
+use oxap_protocol::{
     CapabilitiesRequest, Envelope, EnvelopeType, InitializeRequest, InitializeResponse, Message,
     MessageContent, MessageRole, MessageSubmitRequest, MessageSubmitResponse, RecoveryMetadata,
     RunCancelRequest, RunCancelResponse, RunStatus, RunStatusUpdatedPayload, SessionOpenRequest,
     SessionState, SessionStatus, SupportLevel, ToolsListRequest, FEATURE_INSTRUCTIONS,
     FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT, FEATURE_TOOL_SELECTION, PROFILE, VERSION,
 };
-use oap_validation::Validator;
+use oxap_validation::Validator;
 
 use crate::{Descriptor, EventStream, OpenRequest, ToolCatalog};
 

@@ -1,4 +1,4 @@
-pub use oap_adapter::jsonrpc::{
+pub use oxap_adapter::jsonrpc::{
     ClientOptions, Dialect, Error, Fault, Inbound, NotificationMessage, RpcClient, Started,
     DEFAULT_FRAME_LIMIT,
 };

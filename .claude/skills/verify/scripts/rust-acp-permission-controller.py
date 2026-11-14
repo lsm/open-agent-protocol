@@ -33,7 +33,7 @@ def main():
     parser.add_argument('--output-dir',required=True,type=Path)
     output=parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True,exist_ok=False)
-    built=subprocess.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example','permission_controller_ownership'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+    built=subprocess.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--example','permission_controller_ownership'],cwd=ROOT,capture_output=True,text=True,timeout=180)
     (output/'build.log').write_text(built.stdout+built.stderr)
     assert built.returncode==0,built.stderr
     with tempfile.TemporaryDirectory(prefix='oap-permission-owner-') as temporary:
@@ -88,7 +88,7 @@ def main():
                     os.kill(int((case/'pid').read_text()),signal.SIGKILL)
     observed=[]
     for name in ['malformed_request_is_answered','a_second_run_with_restarted_ids']:
-        result=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permission_controller',name,'--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+        result=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--test','permission_controller',name,'--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
         (output/(name+'.log')).write_text(result.stdout+result.stderr)
         assert result.returncode==0,result.stdout+result.stderr
         for line in result.stdout.splitlines():

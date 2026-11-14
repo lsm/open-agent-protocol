@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::{Phase, Validator};
+use oxap_validation::{Phase, Validator};
 
 #[test]
 fn reopen_admissions_and_refusals_require_the_advertised_gate() {

@@ -1,4 +1,4 @@
-use oap_validation::{codes, Diagnostic, Validator};
+use oxap_validation::{codes, Diagnostic, Validator};
 use serde_json::{json, Value};
 
 fn fixture(name: &str) -> Vec<Value> {

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_harness::{current, Catalog, Error, Status, FILES, SCHEMA_FILE};
+use oxap_harness::{current, Catalog, Error, Status, FILES, SCHEMA_FILE};
 
 fn harnesses_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../harnesses")

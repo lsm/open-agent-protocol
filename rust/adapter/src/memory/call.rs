@@ -1,4 +1,4 @@
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::session::{golden_arguments, surfaced, Emit, Inner, Stage};
 use crate::{CallResolution, Error};

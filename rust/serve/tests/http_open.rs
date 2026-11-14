@@ -2,12 +2,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use oap_protocol::{
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, OpenMessage,
     RequestedDeliveryMode, SessionOpenRequest,
 };
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn started(options: HttpOptions) -> (Hub, SocketAddr) {
@@ -163,7 +163,7 @@ fn an_open_citing_a_stale_revision_is_a_409_naming_both_revisions() {
     assert_eq!(error["details"]["current_revision"], "stale-rev");
     assert_eq!(
         error["details"]["expected_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
 }
 

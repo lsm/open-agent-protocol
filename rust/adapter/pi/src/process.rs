@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{select, Receiver};
-use oap_adapter::process::{wait_error, Child, ChildConfig};
+use oxap_adapter::process::{wait_error, Child, ChildConfig};
 use serde_json::value::RawValue;
 
 use crate::client::Client;

@@ -4,9 +4,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::task::noop_waker;
-use oap_adapter::{Adapter as _, Error, OpenRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{ModelsRequest, Participant};
+use oxap_adapter::{Adapter as _, Error, OpenRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{ModelsRequest, Participant};
 use serde_json::{json, Value};
 
 pub fn wait<T>(future: impl Future<Output = T>) -> T {

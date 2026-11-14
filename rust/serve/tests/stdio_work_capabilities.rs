@@ -3,10 +3,10 @@ mod support;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use oap_adapter::{Adapter, BoxFuture, Descriptor, Error, OpenRequest, Session};
-use oap_protocol::{CapabilityDescriptor, FeatureSupport, SupportLevel};
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::{Hub, Registry};
+use oxap_adapter::{Adapter, BoxFuture, Descriptor, Error, OpenRequest, Session};
+use oxap_protocol::{CapabilityDescriptor, FeatureSupport, SupportLevel};
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::{json, Value};
 
 struct Advertising(BTreeMap<String, FeatureSupport>, &'static str);

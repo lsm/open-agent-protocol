@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--output-dir', required=True, type=Path)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    build = subprocess.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--example', 'opening_config_owner'], cwd=ROOT, capture_output=True, text=True, timeout=180)
+    build = subprocess.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp', '--example', 'opening_config_owner'], cwd=ROOT, capture_output=True, text=True, timeout=180)
     (output / 'build.log').write_text(build.stdout + build.stderr)
     assert build.returncode == 0, build.stderr
     agent = Path(__file__).with_name('fixtures') / 'acp-opening-config-agent.py'

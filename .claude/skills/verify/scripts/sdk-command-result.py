@@ -40,7 +40,7 @@ def main():
                  "--output-dir", str(output / "wire"), "--oapx", str(args.oapx.resolve())])
     go = output / "go-consumer"
     run("go-build", ["go", "build", "-o", str(go), "./go/sdk/examples/command-result"])
-    run("rust-build", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-sdk", "--example", "command_result"])
+    run("rust-build", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-sdk", "--example", "command_result"])
     run("ts-build", ["npm", "run", "build:sdk"])
     run("client-build", ["npm", "--prefix", "clients/ts", "run", "build"])
     parse = """

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_adapter::gojson::{
+use oxap_adapter::gojson::{
     go_quote, reject_duplicate_keys, replace_lone_surrogates, strings, structure, zero,
 };
 use serde::{Deserialize, Deserializer};
@@ -114,7 +114,7 @@ struct Chunk {
     _kind: String,
     #[serde(default, deserialize_with = "zero")]
     time: i64,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::raw")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
     chunk: Raw,
 }
 

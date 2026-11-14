@@ -1,4 +1,4 @@
-# oap-adapter-deepseek
+# oxap-adapter-deepseek
 
 The Rust port of `go/adapter/deepseek`: an OAP adapter over the DeepSeek
 harness SDK runtime's JSON-RPC on stdio, pinned by
@@ -22,7 +22,7 @@ prompt results decode leniently, as Go's client does. Three of Go's
   key in its exact case, so nothing observes the difference.
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029, and serializing
   a type here does not; the rpc layer writes every frame through
-  `oap_adapter::gojson::go_marshal`.
+  `oxap_adapter::gojson::go_marshal`.
 - A malformed document or a mistyped member is refused with the duplicate-key
   walker's `invalid JSON` or with serde_json's wording rather than Go's. A
   trailing value carries Go's `trailing JSON value`.
@@ -119,13 +119,13 @@ child that finished with an error or on max tokens fails it with
 running child fails it with `deepseek_child_lifecycle`, including children
 the admission buffered.
 
-`Session` implements the `oap_adapter::Session` contract, where cancelling
+`Session` implements the `oxap_adapter::Session` contract, where cancelling
 means dropping the future. Dropping a `submit` while its `session/prompt` still
 awaits the receipt closes the JSON-RPC connection: the run is aborted before
 admission, with no `run.started` or `run.failed`, and the session is closed. A
 result already returned wins over the drop, as in Go. Once the receipt is in,
 dropping the wait for admission leaves the run with the session, which still
-admits and settles it. `Adapter` implements `oap_adapter::Adapter`: dropping
+admits and settles it. `Adapter` implements `oxap_adapter::Adapter`: dropping
 an `open` before the runtime answers `initialize` kills and reaps the runtime,
 as Go's `Open` stops when its context is cancelled.
 

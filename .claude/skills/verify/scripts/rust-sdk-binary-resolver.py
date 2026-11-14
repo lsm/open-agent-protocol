@@ -19,10 +19,10 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-oap-sdk = { path = "SDK_PATH", features = ["download"] }
+oxap-sdk = { path = "SDK_PATH", features = ["download"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 '''
-SOURCE = r'''use oap_sdk::BinaryResolver;
+SOURCE = r'''use oxap_sdk::BinaryResolver;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {

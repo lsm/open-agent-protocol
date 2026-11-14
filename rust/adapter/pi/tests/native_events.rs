@@ -1,4 +1,4 @@
-use oap_adapter_pi::native::{
+use oxap_adapter_pi::native::{
     decode_strict, validate_event, ExtensionUiRequest, ExtensionUiResponse,
 };
 

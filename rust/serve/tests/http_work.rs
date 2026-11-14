@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn started() -> (Hub, SocketAddr) {

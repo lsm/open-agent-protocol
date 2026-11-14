@@ -10,7 +10,9 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use oap_sdk::{Client, ClientBuilder, Error, ExecutionRequest, ListModelsRequest, StreamErrorKind};
+use oxap_sdk::{
+    Client, ClientBuilder, Error, ExecutionRequest, ListModelsRequest, StreamErrorKind,
+};
 
 #[tokio::test]
 async fn connects_and_completes_the_handshake() {

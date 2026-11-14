@@ -1,16 +1,16 @@
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
     Recovery, ResumeRequest, Session, SubmitRequest, CONTROL_UNSATISFIABLE,
 };
-use oap_binding::{Action, MemoryStore, Store};
-use oap_protocol::{
+use oxap_binding::{Action, MemoryStore, Store};
+use oxap_protocol::{
     MessageSubmitResponse, RunCancelResponse, RunId, SessionState, FEATURE_OPEN_REOPEN,
 };
-use oap_serve::{Hub, HubError, HubOptions, Registry};
+use oxap_serve::{Hub, HubError, HubOptions, Registry};
 
 struct Native {
     inner: Memory,

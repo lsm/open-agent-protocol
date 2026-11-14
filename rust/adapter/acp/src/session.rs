@@ -4,14 +4,14 @@ use std::thread::JoinHandle;
 
 use futures::{FutureExt, StreamExt};
 use futures_util::lock::Mutex as AsyncMutex;
-use oap_adapter::journal::Journal;
-use oap_adapter::jsonrpc::Inbound;
-use oap_adapter::subscriber::Subscriber;
-use oap_adapter::{
+use oxap_adapter::journal::Journal;
+use oxap_adapter::jsonrpc::Inbound;
+use oxap_adapter::subscriber::Subscriber;
+use oxap_adapter::{
     BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution, ModelLister,
     ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session as SessionContract, SubmitRequest,
 };
-use oap_protocol::{
+use oxap_protocol::{
     InteractionId, MessageSubmitResponse, ModelDescriptor, ModelsRequest, ModelsResponse,
     RecoveryMetadata, RunCancelResponse, RunId, SessionState, SessionStatus, FEATURE_MODELS_LIST,
     VERSION,
@@ -192,7 +192,7 @@ impl Session {
                         request
                             .tool_sources
                             .iter()
-                            .map(oap_protocol::ToolSourceAttachment::descriptor),
+                            .map(oxap_protocol::ToolSourceAttachment::descriptor),
                     )
                     .collect(),
                 ..SessionState::default()

@@ -48,7 +48,7 @@ def main():
 
     for name, command in [
         ("go", ["go", "build", "-o", str(output / "goap"), "./go/cmd/goap"]),
-        ("rust", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"]),
+        ("rust", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"]),
         ("zig", ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"]),
     ]:
         result = run(command, f"{name}-build")
@@ -205,7 +205,7 @@ def main():
             ("zig", ROOT / "zig/src/validation/semantic.zig", 'std.mem.eql(u8, run.session, session_id) and (run_id.len == 0 or std.mem.eql(u8, run.id, run_id))', '(run_id.len == 0 or std.mem.eql(u8, run.id, run_id))', "anchor-foreign-admission-before-snapshot"),
         ])
         builds = {
-            "rust": ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"],
+            "rust": ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"],
             "go": ["go", "build", "-o", str(output / "goap"), "./go/cmd/goap"],
             "zig": ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"],
         }

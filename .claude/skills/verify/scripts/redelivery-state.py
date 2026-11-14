@@ -24,7 +24,7 @@ def run(command, output, label):
 def build(language, output, label):
     commands = {
         "go": ["go", "build", "-o", str(output / "goap"), "./go/cmd/goap"],
-        "rust": ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"],
+        "rust": ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"],
         "zig": ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"],
     }
     result = run(commands[language], output, label + "-build")

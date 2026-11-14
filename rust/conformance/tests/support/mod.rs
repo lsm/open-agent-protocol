@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use oap_conformance::Client;
+use oxap_conformance::Client;
 
 const ENDPOINT: &str = r#"
 import json,sys

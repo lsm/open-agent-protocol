@@ -1,4 +1,4 @@
-use oap_provider_catalog::{Catalog, Error};
+use oxap_provider_catalog::{Catalog, Error};
 
 const SCHEMA: &str = r##"{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"catalog.schema.json","type":"object","required":["providers"],"properties":{"providers":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/provider"}}},"additionalProperties":false,"$defs":{"provider":{"type":"object","required":["id"],"properties":{"id":{"type":"string","minLength":1},"endpoints":{"type":"array","items":{"type":"object","required":["wire","base_url"],"properties":{"wire":{"type":"string","minLength":1},"base_url":{"type":"string","minLength":1},"region":{"type":"string","minLength":1}},"additionalProperties":false}}},"additionalProperties":false}}}"##;
 

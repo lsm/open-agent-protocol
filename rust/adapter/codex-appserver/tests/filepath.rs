@@ -1,4 +1,4 @@
-use oap_adapter_codex_appserver::filepath::clean;
+use oxap_adapter_codex_appserver::filepath::clean;
 
 #[derive(serde::Deserialize)]
 struct Case {

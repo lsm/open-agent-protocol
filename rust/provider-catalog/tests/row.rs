@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use oap_provider_catalog::{is_responses_only_model, joins_wire, Catalog, Endpoint, Provider};
+use oxap_provider_catalog::{is_responses_only_model, joins_wire, Catalog, Endpoint, Provider};
 
 fn held() -> &'static Catalog {
     Catalog::embedded()

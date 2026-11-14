@@ -1,4 +1,4 @@
-use oap_adapter_hermes::native::{
+use oxap_adapter_hermes::native::{
     decode_server_request, decode_strict, request_session_id, ApprovalResult, ServerRequest,
     SessionInfoPayload, SubagentPayload,
 };

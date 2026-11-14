@@ -3,9 +3,9 @@ mod support;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use oap_adapter::{Adapter, BoxFuture, Descriptor, Error, OpenRequest, Session};
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::{Hub, Registry};
+use oxap_adapter::{Adapter, BoxFuture, Descriptor, Error, OpenRequest, Session};
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 #[derive(Default)]
@@ -168,7 +168,7 @@ fn a_refusal_queued_behind_a_stalled_writer_is_reported_dropped_though_it_left_t
         },
     );
     assert!(
-        matches!(served, Err(oap_serve::stdio::StdioError::RequestsDropped)),
+        matches!(served, Err(oxap_serve::stdio::StdioError::RequestsDropped)),
         "{served:?}"
     );
 }

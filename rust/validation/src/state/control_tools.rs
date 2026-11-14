@@ -1,7 +1,7 @@
 use super::interactions::Interaction;
 use super::{os, payload, s, State};
 use crate::codes;
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde_json::Value;
 use std::collections::HashSet;
 

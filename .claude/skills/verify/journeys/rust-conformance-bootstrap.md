@@ -4,7 +4,7 @@ Use shared setup from `SKILL.md`, then run
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp/oap-conformance-bootstrap-<unique-name>
-cargo test --manifest-path rust/Cargo.toml -p oap-conformance --test runner
+cargo test --manifest-path rust/Cargo.toml -p oxap-conformance --test runner
 ```
 
 The standalone consumer drives `Runner` against the rebuilt Rust endpoint.

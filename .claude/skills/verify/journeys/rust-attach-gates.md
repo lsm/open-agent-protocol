@@ -3,7 +3,7 @@
 Run from the repository root, with no concurrent Rust builds during mutations:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test attach_gates
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test attach_gates
 python3 .claude/skills/verify/scripts/rust-attach-gates.py --mutation-check --output-dir /tmp/oap-attach-gates-<unique-name>
 ```
 

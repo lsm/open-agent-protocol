@@ -1,4 +1,4 @@
-use oap_adapter::gotime::rfc3339_millis;
+use oxap_adapter::gotime::rfc3339_millis;
 
 #[test]
 fn rfc3339_reads_offsets_and_fractions_as_unix_milliseconds() {

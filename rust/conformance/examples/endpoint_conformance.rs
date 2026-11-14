@@ -2,7 +2,7 @@
 fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     use std::process::{Command, ExitCode};
 
-    use oap_conformance::{run, Options};
+    use oxap_conformance::{run, Options};
 
     let mut args = std::env::args().skip(1);
     let Some(executable) = args.next() else {

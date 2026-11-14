@@ -2,8 +2,8 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
 use futures::executor::block_on;
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn started(hub: Hub, options: HttpOptions) -> SocketAddr {
@@ -59,9 +59,9 @@ fn the_read_only_routes_answer_as_the_stdio_ops_do() {
     let hub = hub();
     block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "s".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();
@@ -242,9 +242,9 @@ fn a_query_limit_is_read_only_by_the_route_that_takes_one_and_a_path_keeps_its_p
     let hub = hub();
     block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "a+b".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();
@@ -280,9 +280,9 @@ fn an_escaped_slash_stays_inside_its_segment() {
     let hub = hub();
     block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "a/b".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();

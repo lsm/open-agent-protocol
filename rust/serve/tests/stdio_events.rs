@@ -3,13 +3,13 @@ mod support;
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode, RunId,
 };
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::{Hub, HubSession, Registry};
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::{Hub, HubSession, Registry};
 use serde_json::Value;
 
 fn opened(capacity: usize) -> (Hub, Arc<HubSession>) {
@@ -337,11 +337,11 @@ fn a_host_that_stops_reading_cannot_hold_serve_past_its_shutdown_window() {
     );
     let took = began.elapsed();
     assert!(
-        matches!(served, Err(oap_serve::stdio::StdioError::ShutdownStalled)),
+        matches!(served, Err(oxap_serve::stdio::StdioError::ShutdownStalled)),
         "{served:?}"
     );
-    assert!(took >= oap_serve::stdio::SHUTDOWN_WINDOW / 2, "{took:?}");
-    assert!(took < oap_serve::stdio::SHUTDOWN_WINDOW * 2, "{took:?}");
+    assert!(took >= oxap_serve::stdio::SHUTDOWN_WINDOW / 2, "{took:?}");
+    assert!(took < oxap_serve::stdio::SHUTDOWN_WINDOW * 2, "{took:?}");
 }
 
 #[test]
@@ -361,10 +361,10 @@ fn refusals_a_stalled_host_cannot_take_are_dropped_and_reported_rather_than_stal
         let _ = done.send(served);
     });
     let served = finished
-        .recv_timeout(oap_serve::stdio::SHUTDOWN_WINDOW * 3)
+        .recv_timeout(oxap_serve::stdio::SHUTDOWN_WINDOW * 3)
         .expect("serve stalled on a full output queue");
     assert!(
-        matches!(served, Err(oap_serve::stdio::StdioError::RequestsDropped)),
+        matches!(served, Err(oxap_serve::stdio::StdioError::RequestsDropped)),
         "{served:?}"
     );
 }
@@ -382,7 +382,7 @@ fn refusals_still_held_at_a_stalled_teardown_are_reported_dropped_before_the_sta
         &StdioOptions::default(),
     );
     assert!(
-        matches!(served, Err(oap_serve::stdio::StdioError::RequestsDropped)),
+        matches!(served, Err(oxap_serve::stdio::StdioError::RequestsDropped)),
         "{served:?}"
     );
 }

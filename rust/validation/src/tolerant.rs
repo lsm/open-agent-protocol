@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use oap_protocol::{Admission, RequestedDeliveryMode, RunStatus};
+use oxap_protocol::{Admission, RequestedDeliveryMode, RunStatus};
 use serde_json::{json, Value};
 
 pub(crate) fn widen(document: &Value) -> Value {

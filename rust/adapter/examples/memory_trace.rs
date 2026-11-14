@@ -2,12 +2,12 @@ use std::error::Error;
 
 use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{
     Adapter, CallResolution, CompactRequest, EventStream, InteractionResolution, OpenRequest,
     SubmitRequest,
 };
-use oap_protocol::*;
+use oxap_protocol::*;
 
 type Failure = Box<dyn Error>;
 

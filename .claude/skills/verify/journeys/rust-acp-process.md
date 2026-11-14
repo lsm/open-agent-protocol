@@ -5,8 +5,8 @@ consumer and retain its actual stdio wire, output and cleanup observations:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-process.py --output-dir /tmp/oap-rust-acp-process-<unique>
-(cd rust && cargo test -p oap-adapter-acp)
-(cd rust && cargo test -p oap-adapter --features testkit --test testkit --test jsonrpc_client --test jsonrpc_backpressure)
+(cd rust && cargo test -p oxap-adapter-acp)
+(cd rust && cargo test -p oxap-adapter --features testkit --test testkit --test jsonrpc_client --test jsonrpc_backpressure)
 ```
 
 The public `process::Process` example starts a credential-free Python ACP agent

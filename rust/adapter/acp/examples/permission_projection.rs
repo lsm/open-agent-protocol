@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::{Inbound, IncomingRequest};
-use oap_adapter::{Error, InteractionResolution};
-use oap_adapter_acp::{native::*, pin, process::*, PromptBridge, TextRun, TextRunContext};
-use oap_protocol::{InteractionId, PermissionResolveRequest};
+use oxap_adapter::jsonrpc::{Inbound, IncomingRequest};
+use oxap_adapter::{Error, InteractionResolution};
+use oxap_adapter_acp::{native::*, pin, process::*, PromptBridge, TextRun, TextRunContext};
+use oxap_protocol::{InteractionId, PermissionResolveRequest};
 use serde_json::{json, Value};
 
 type Requests = Arc<Mutex<BTreeMap<InteractionId, Arc<IncomingRequest>>>>;
@@ -58,7 +58,7 @@ fn main() {
             shutdown_timeout: Some(Duration::from_millis(300)),
             client_info: Some(Implementation {
                 name: "open-agent-protocol".into(),
-                version: oap_protocol::VERSION.into(),
+                version: oxap_protocol::VERSION.into(),
                 ..Implementation::default()
             }),
             ..ProcessConfig::default()

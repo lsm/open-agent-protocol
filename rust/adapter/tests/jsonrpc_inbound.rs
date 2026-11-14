@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use oap_adapter::jsonrpc::{
+use oxap_adapter::jsonrpc::{
     Dialect, Error, Fault, IncomingRequest, Kind, Message, RequestId, Responder,
 };
 use serde_json::value::RawValue;

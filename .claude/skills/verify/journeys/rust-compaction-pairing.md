@@ -3,7 +3,7 @@
 From the repository root, run:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test compaction_pairing
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test compaction_pairing
 python3 .claude/skills/verify/scripts/rust-compaction-pairing.py --output-dir /tmp/oap-compaction-pairing-<unique>
 ```
 

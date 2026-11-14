@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageSubmitRequest, Participant, PermissionRequestedPayload,
     PermissionResolveRequest,
 };
@@ -29,7 +29,7 @@ impl Drop for Fixture {
     }
 }
 
-fn open(mode: &str, turns: usize) -> (Fixture, Box<dyn oap_adapter::Session>, Arc<Mutex<Inner>>) {
+fn open(mode: &str, turns: usize) -> (Fixture, Box<dyn oxap_adapter::Session>, Arc<Mutex<Inner>>) {
     let fixture = Fixture(std::env::temp_dir().join(format!(
         "oap-permission-hot-path-{}-{}",
         std::process::id(),
@@ -121,7 +121,7 @@ sys.stdin.read()
     (fixture, session, inner)
 }
 
-fn submit(session: &dyn oap_adapter::Session) -> oap_adapter::EventStream {
+fn submit(session: &dyn oxap_adapter::Session) -> oxap_adapter::EventStream {
     block_on(session.submit(SubmitRequest {
         request: MessageSubmitRequest {
             session_id: "session".into(),
@@ -265,7 +265,7 @@ fn streamed_text_progresses_while_a_native_permission_reply_is_blocked() {
     assert_eq!(event.envelope_type.as_str(), "content.delta");
     assert_eq!(
         event
-            .decode_payload::<oap_protocol::ContentDeltaPayload>()
+            .decode_payload::<oxap_protocol::ContentDeltaPayload>()
             .unwrap()
             .part
             .text,
@@ -394,11 +394,11 @@ fn settled_permission_history_has_a_fixed_capacity() {
     let retained = inner.lock().unwrap().resolved_permissions.len();
     assert_eq!(
         block_on(session.resolve(first.unwrap())),
-        Err(oap_adapter::Error::InteractionNotFound)
+        Err(oxap_adapter::Error::InteractionNotFound)
     );
     assert_eq!(
         block_on(session.resolve(last.unwrap())),
-        Err(oap_adapter::Error::InteractionResolved)
+        Err(oxap_adapter::Error::InteractionResolved)
     );
     block_on(session.close()).unwrap();
     reaped(&fixture);

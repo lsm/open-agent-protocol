@@ -4,7 +4,7 @@ Follow shared setup in SKILL.md, then run from the repository root:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-text.py --output-dir /tmp/oap-text-engine-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test text)
+(cd rust && cargo test -p oxap-adapter-acp --test text)
 ```
 
 The script builds standalone public Rust and Go consumers. Rust combines

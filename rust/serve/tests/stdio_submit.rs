@@ -1,11 +1,11 @@
 mod support;
 
-use oap_protocol::{
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     RequestedDeliveryMode, SessionCompactRequest,
 };
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, Registry};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, Registry};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -36,9 +36,9 @@ fn opened() -> Hub {
     let hub = Hub::new(Registry::default_registry());
     futures::executor::block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "s".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();

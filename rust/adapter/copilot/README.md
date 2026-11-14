@@ -1,4 +1,4 @@
-# oap-adapter-copilot
+# oxap-adapter-copilot
 
 The Rust port of `go/adapter/copilot`: an OAP adapter over the GitHub Copilot
 CLI's headless JSON-RPC, pinned by `harnesses/copilot-cli.json` and judged by

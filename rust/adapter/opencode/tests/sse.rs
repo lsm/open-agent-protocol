@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use oap_adapter_opencode::sse::{Error, SseDecoder};
+use oxap_adapter_opencode::sse::{Error, SseDecoder};
 
 fn decoder(stream: &str, limit: usize) -> SseDecoder<Cursor<Vec<u8>>> {
     SseDecoder::new(Cursor::new(stream.as_bytes().to_vec()), limit)

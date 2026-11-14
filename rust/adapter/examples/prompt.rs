@@ -5,9 +5,9 @@ use std::error::Error as StdError;
 use std::sync::atomic::Ordering;
 
 use futures::{executor::block_on, FutureExt};
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{run_to_terminal, Adapter, Error, OpenRequest, RunErrorKind};
-use oap_protocol::*;
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{run_to_terminal, Adapter, Error, OpenRequest, RunErrorKind};
+use oxap_protocol::*;
 use prompt_support::ScriptSession;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -75,7 +75,7 @@ fn memory() -> Result<Value, Box<dyn StdError>> {
 
 fn replay(input: Input) -> Result<Value, Box<dyn StdError>> {
     if let Some(message) = input.message {
-        return Ok(match oap_adapter::message_text(&message) {
+        return Ok(match oxap_adapter::message_text(&message) {
             Ok(text) => json!({"kind":"completed", "text":text}),
             Err(_) => json!({"kind":"content", "text":""}),
         });

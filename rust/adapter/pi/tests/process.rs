@@ -2,10 +2,10 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use oap_adapter_pi::client::Client;
-use oap_adapter_pi::native::Command;
-use oap_adapter_pi::process::{Process, ProcessConfig};
-use oap_adapter_pi::rpc::Error;
+use oxap_adapter_pi::client::Client;
+use oxap_adapter_pi::native::Command;
+use oxap_adapter_pi::process::{Process, ProcessConfig};
+use oxap_adapter_pi::rpc::Error;
 
 static SPAWNING: Mutex<()> = Mutex::new(());
 

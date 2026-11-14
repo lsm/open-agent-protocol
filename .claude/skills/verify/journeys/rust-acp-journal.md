@@ -5,7 +5,7 @@ root, after the baseline builds ReleaseSafe oapx, run:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-journal.py --output-dir "$EVIDENCE/journal"
-(cd rust && cargo test -p oap-adapter-acp --test journal)
+(cd rust && cargo test -p oxap-adapter-acp --test journal)
 ```
 
 The normal public Adapter/Session consumer and Go reference drive the same

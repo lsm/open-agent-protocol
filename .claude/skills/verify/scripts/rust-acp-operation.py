@@ -26,7 +26,7 @@ def main():
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     build = subprocess.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml',
-                            '-p', 'oap-adapter-acp', '--example', 'operation'],
+                            '-p', 'oxap-adapter-acp', '--example', 'operation'],
                            cwd=ROOT, capture_output=True, text=True, timeout=180)
     (output / 'build.log').write_text(build.stdout + build.stderr)
     assert build.returncode == 0, build.stderr

@@ -1,6 +1,6 @@
 use std::io::{Cursor, Write};
 
-use oap_adapter::jsonrpc::{Decoder, Dialect, Encoder, Fault, Kind, Message};
+use oxap_adapter::jsonrpc::{Decoder, Dialect, Encoder, Fault, Kind, Message};
 
 const STRICT: Dialect = Dialect::strict("deepseek");
 const LENIENT: Dialect = Dialect::lenient("acp");

@@ -1,4 +1,4 @@
-use oap_validation::{codes, Validator};
+use oxap_validation::{codes, Validator};
 use serde_json::{json, Value};
 
 fn envelope(mut value: Value) -> Value {

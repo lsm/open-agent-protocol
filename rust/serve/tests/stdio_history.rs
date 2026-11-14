@@ -3,9 +3,9 @@ mod support;
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_binding::MemoryStore;
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_binding::MemoryStore;
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, HubOptions, Registry};
 use serde_json::Value;
 
 fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
@@ -23,9 +23,9 @@ fn recorded(ids: &[&str]) -> Hub {
     for id in ids {
         block_on(hub.open(
             "memory",
-            oap_adapter::OpenRequest {
+            oxap_adapter::OpenRequest {
                 session_id: (*id).into(),
-                ..oap_adapter::OpenRequest::default()
+                ..oxap_adapter::OpenRequest::default()
             },
         ))
         .unwrap();
@@ -44,7 +44,7 @@ fn capabilities_answers_the_adapters_descriptor_under_its_revision() {
     assert_eq!(response["type"], "capabilities.response", "{}", answered[0]);
     assert_eq!(
         response["capability_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
     assert!(response["in_reply_to"]
         .as_str()

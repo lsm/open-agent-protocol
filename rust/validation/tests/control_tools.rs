@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::{codes, Phase, Validator};
+use oxap_validation::{codes, Phase, Validator};
 
 #[test]
 fn control_tool_settlement_binding_and_disclosed_limits_match_the_shared_fixtures() {

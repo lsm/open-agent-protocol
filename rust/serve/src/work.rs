@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use oap_protocol::{
+use oxap_protocol::{
     ContentPartType, Envelope, EnvelopeType, InteractionId, Message, MessageRole, RunId, RunStatus,
     RunStatusUpdatedPayload, SessionId, SessionStatus,
 };
@@ -235,11 +235,11 @@ impl HubSession {
     async fn work_of(&self) -> Option<Work> {
         let state = match self.state().await {
             Ok(state) => state,
-            Err(HubError::Adapter(oap_adapter::Error::SessionClosed)) => return None,
-            Err(_) => oap_protocol::SessionState {
+            Err(HubError::Adapter(oxap_adapter::Error::SessionClosed)) => return None,
+            Err(_) => oxap_protocol::SessionState {
                 session_id: self.id().clone(),
                 status: SessionStatus::ERROR,
-                ..oap_protocol::SessionState::default()
+                ..oxap_protocol::SessionState::default()
             },
         };
         if state.status == SessionStatus::CLOSED {
@@ -380,7 +380,7 @@ mod tests {
                 .iter()
                 .map(|text| Message {
                     role: MessageRole::USER,
-                    content: oap_protocol::MessageContent::from_text(text),
+                    content: oxap_protocol::MessageContent::from_text(text),
                     ..Message::default()
                 })
                 .collect()

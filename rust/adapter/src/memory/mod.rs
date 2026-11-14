@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde_json::value::RawValue;
 
 pub use admit::history_tokens;

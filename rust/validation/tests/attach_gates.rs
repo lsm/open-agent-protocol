@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_validation::{Phase, Validator};
+use oxap_validation::{Phase, Validator};
 use serde_json::Value;
 
 fn fixture(kind: &str, name: &str) -> Value {

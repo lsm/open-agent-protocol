@@ -4,13 +4,13 @@ Use the shared setup and verification mutex in `SKILL.md`, then run from the
 repository root:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-protocol --test vocabulary
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --lib --test packed_traces
+cargo test --manifest-path rust/Cargo.toml -p oxap-protocol --test vocabulary
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --lib --test packed_traces
 python3 .claude/skills/verify/scripts/rust-vocabulary.py --output-dir /tmp/oap-vocabulary-<unique>
 python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oxap --output-dir /tmp/oap-vocabulary-packed-<unique>
 python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-vocabulary-schemas-<unique>
 python3 .claude/skills/verify/scripts/rust-go-parity.py --output-dir /tmp/oap-vocabulary-parity-<unique>
-cargo doc --manifest-path rust/Cargo.toml -p oap-protocol --no-deps
+cargo doc --manifest-path rust/Cargo.toml -p oxap-protocol --no-deps
 cargo test --manifest-path rust/Cargo.toml --workspace --all-features -- --test-threads=1
 bash .claude/skills/verify/scripts/check.sh
 ```

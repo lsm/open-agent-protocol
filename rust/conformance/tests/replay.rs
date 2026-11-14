@@ -3,8 +3,8 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use oap_conformance::{framing_contract, Client, Runner};
-use oap_protocol::{Envelope, EnvelopeType};
+use oxap_conformance::{framing_contract, Client, Runner};
+use oxap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 const ENDPOINT: &str = r#"

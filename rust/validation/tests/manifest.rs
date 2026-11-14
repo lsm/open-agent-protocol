@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use oap_validation::{Phase, ProviderValidator, Validator};
+use oxap_validation::{Phase, ProviderValidator, Validator};
 use serde::Deserialize;
 use serde_json::Value;
 

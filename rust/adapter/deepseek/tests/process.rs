@@ -3,8 +3,8 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use oap_adapter_deepseek::native::{InitializeParams, SERVER_NAME, SERVER_VERSION};
-use oap_adapter_deepseek::process::{Process, ProcessConfig};
+use oxap_adapter_deepseek::native::{InitializeParams, SERVER_NAME, SERVER_VERSION};
+use oxap_adapter_deepseek::process::{Process, ProcessConfig};
 
 static SPAWNING: Mutex<()> = Mutex::new(());
 

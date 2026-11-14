@@ -1,6 +1,6 @@
-use oap_adapter::{Error, NativeTurn};
-use oap_binding::{Action, Entry};
-use oap_protocol::SessionId;
+use oxap_adapter::{Error, NativeTurn};
+use oxap_binding::{Action, Entry};
+use oxap_protocol::SessionId;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -135,7 +135,7 @@ fn unheld(hub: &Hub, id: &SessionId) -> Result<Option<Entry>, Refusal> {
         return Ok(None);
     };
     let entries = bindings.sessions().map_err(|_| history_unreadable())?;
-    Ok(oap_binding::sessions(&entries)
+    Ok(oxap_binding::sessions(&entries)
         .into_iter()
         .find(|entry| entry.record.session_id == id.as_str()))
 }
@@ -300,7 +300,7 @@ pub(crate) fn capabilities(hub: &Hub) -> Result<Value, Refusal> {
                 .capabilities
                 .features
                 .get(key)
-                .is_none_or(|feature| feature.level == oap_protocol::SupportLevel::UNAVAILABLE)
+                .is_none_or(|feature| feature.level == oxap_protocol::SupportLevel::UNAVAILABLE)
         };
         let verbs: Vec<&str> = VERBS
             .iter()
@@ -334,7 +334,7 @@ const LIST_LIMIT_DEFAULT: i64 = 50;
 const LIST_LIMIT_MAX: i64 = 100;
 const NATIVE_DEPTH_MAX: usize = 500;
 
-fn native_work(adapter: &str, listing: &oap_adapter::NativeListing) -> WorkJson {
+fn native_work(adapter: &str, listing: &oxap_adapter::NativeListing) -> WorkJson {
     WorkJson {
         work_ref: WorkRef {
             adapter: adapter.to_owned(),
@@ -409,7 +409,7 @@ fn session_for_native(hub: &Hub, adapter: &str, native: &str) -> Option<SessionI
         .map(|entry| entry.id().clone())
 }
 
-type Natives = (Vec<(String, oap_adapter::NativeListing)>, Vec<Value>);
+type Natives = (Vec<(String, oxap_adapter::NativeListing)>, Vec<Value>);
 
 fn natives_for(
     hub: &Hub,
@@ -436,12 +436,12 @@ fn natives_for(
             let Some(lister) = implementation.native_lister() else {
                 continue;
             };
-            block_on(lister.native_list(oap_adapter::NativeListRequest { directory, limit }))
+            block_on(lister.native_list(oxap_adapter::NativeListRequest { directory, limit }))
         } else {
             let Some(searcher) = implementation.native_searcher() else {
                 continue;
             };
-            block_on(searcher.native_search(oap_adapter::NativeSearchRequest {
+            block_on(searcher.native_search(oxap_adapter::NativeSearchRequest {
                 directory,
                 limit,
                 term: search.clone(),
@@ -517,7 +517,7 @@ pub(crate) fn list(hub: &Hub, request: ListRequest) -> Result<Value, Refusal> {
     let entries = match hub.bindings() {
         None => Vec::new(),
         Some(bindings) => {
-            oap_binding::sessions(&bindings.sessions().map_err(|_| history_unreadable())?)
+            oxap_binding::sessions(&bindings.sessions().map_err(|_| history_unreadable())?)
         }
     };
     for entry in entries {
@@ -643,7 +643,7 @@ pub(crate) fn list(hub: &Hub, request: ListRequest) -> Result<Value, Refusal> {
 
 static ENVELOPES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn envelope_id() -> oap_protocol::EnvelopeId {
+fn envelope_id() -> oxap_protocol::EnvelopeId {
     let next = ENVELOPES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     format!("work-{next}").into()
 }
@@ -710,16 +710,16 @@ fn submit_refusal(err: HubError) -> Refusal {
 }
 
 fn submitted(entry: &std::sync::Arc<crate::HubSession>, message: &str) -> Result<(), HubError> {
-    block_on(entry.submit(oap_adapter::SubmitRequest {
-        request: oap_protocol::MessageSubmitRequest {
+    block_on(entry.submit(oxap_adapter::SubmitRequest {
+        request: oxap_protocol::MessageSubmitRequest {
             session_id: entry.id().clone(),
-            messages: vec![oap_protocol::Message {
-                role: oap_protocol::MessageRole::USER,
-                content: oap_protocol::MessageContent::from_text(message),
-                ..oap_protocol::Message::default()
+            messages: vec![oxap_protocol::Message {
+                role: oxap_protocol::MessageRole::USER,
+                content: oxap_protocol::MessageContent::from_text(message),
+                ..oxap_protocol::Message::default()
             }],
-            delivery: oap_protocol::RequestedDeliveryMode::AUTO,
-            ..oap_protocol::MessageSubmitRequest::default()
+            delivery: oxap_protocol::RequestedDeliveryMode::AUTO,
+            ..oxap_protocol::MessageSubmitRequest::default()
         },
         envelope_id: envelope_id(),
     }))
@@ -752,7 +752,7 @@ pub(crate) fn start(
     if let Some(native) = text(&given, "native_id") {
         return adopt(hub, adapter, native, &given, raw);
     }
-    let opened = block_on(hub.open(adapter, oap_adapter::OpenRequest::default()))
+    let opened = block_on(hub.open(adapter, oxap_adapter::OpenRequest::default()))
         .map_err(|err| open_refusal(err, adapter))?;
     let entry = opened.session;
     if let Err(err) = submitted(&entry, text(&given, "message").unwrap_or_default()) {
@@ -781,7 +781,7 @@ fn adopt(
     let recorded = match hub.bindings() {
         None => Vec::new(),
         Some(bindings) => {
-            oap_binding::sessions(&bindings.sessions().map_err(|_| history_unreadable())?)
+            oxap_binding::sessions(&bindings.sessions().map_err(|_| history_unreadable())?)
         }
     };
     let bound = session_for_native(hub, adapter, native).or_else(|| {
@@ -803,11 +803,11 @@ fn adopt(
     }
     let opened = block_on(hub.open(
         adapter,
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             reopen: true,
             adopted: true,
             native_session_id: native.to_owned(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .map_err(|err| open_refusal(err, adapter))?;
@@ -824,7 +824,7 @@ fn native_running(hub: &Hub, adapter: &str, native: &str) -> Result<bool, Refusa
     let Some(lister) = implementation.native_lister() else {
         return Ok(false);
     };
-    let listed = block_on(lister.native_list(oap_adapter::NativeListRequest {
+    let listed = block_on(lister.native_list(oxap_adapter::NativeListRequest {
         directory: hub.registry().working_directory(adapter).to_owned(),
         limit: 50,
     }))
@@ -849,10 +849,10 @@ pub(crate) fn send(
         if let Some(entry) = unheld(hub, id)? {
             block_on(hub.open(
                 &entry.record.adapter,
-                oap_adapter::OpenRequest {
+                oxap_adapter::OpenRequest {
                     session_id: id.clone(),
                     reopen: true,
-                    ..oap_adapter::OpenRequest::default()
+                    ..oxap_adapter::OpenRequest::default()
                 },
             ))
             .map_err(|err| open_refusal(err, &entry.record.adapter))?;

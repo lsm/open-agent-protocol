@@ -1,4 +1,4 @@
-use oap_protocol::{Envelope, EnvelopeId, EnvelopeType, RunId};
+use oxap_protocol::{Envelope, EnvelopeId, EnvelopeType, RunId};
 
 use crate::{ClientError, ControlFrame};
 

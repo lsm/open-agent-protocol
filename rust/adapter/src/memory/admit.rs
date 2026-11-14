@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde_json::value::RawValue;
 
 use super::{

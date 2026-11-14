@@ -6,11 +6,11 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{task::noop_waker, StreamExt};
-use oap_adapter::{
+use oxap_adapter::{
     Adapter as _, Error, EventStream, OpenRequest, ResumeRequest, Session, SubmitRequest,
 };
-use oap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     Envelope, Message, MessageContent, MessageRole, MessageSubmitRequest, Participant, RunId,
     SessionStatus,
 };
@@ -219,7 +219,7 @@ fn the_captured_replay_case_resumes_the_actual_completed_public_run() {
     assert_eq!(observed, None, "captured public replay was refused");
 }
 
-fn submit(session: &dyn Session) -> (oap_protocol::MessageSubmitResponse, EventStream) {
+fn submit(session: &dyn Session) -> (oxap_protocol::MessageSubmitResponse, EventStream) {
     wait(session.submit(SubmitRequest {
         request: MessageSubmitRequest {
             session_id: "session".into(),

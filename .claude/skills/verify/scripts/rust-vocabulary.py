@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[4]
-SOURCE = '''use oap_protocol::{Admission, EnvelopeType, RequestedDeliveryMode, RunStatus};
+SOURCE = '''use oxap_protocol::{Admission, EnvelopeType, RequestedDeliveryMode, RunStatus};
 use serde_json::{json, Value};
 fn main() {
     let mut rows: Vec<Value> = Vec::new();
@@ -41,7 +41,7 @@ def main():
     (project / "src/main.rs").write_text(SOURCE)
     (project / "Cargo.toml").write_text(
         '[package]\nname="vocabulary-consumer"\nversion="0.0.0"\nedition="2021"\n'
-        f'[dependencies]\noap-protocol={{path={json.dumps(str(ROOT / "rust/protocol"))}}}\nserde_json="1"\n')
+        f'[dependencies]\noxap-protocol={{path={json.dumps(str(ROOT / "rust/protocol"))}}}\nserde_json="1"\n')
     result = subprocess.run(["cargo", "run", "--quiet", "--offline", "--manifest-path",
                              str(project / "Cargo.toml"), "--target-dir", str(ROOT / "rust/target")],
                             cwd=ROOT, capture_output=True, text=True, timeout=600)

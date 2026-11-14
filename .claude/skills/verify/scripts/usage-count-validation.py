@@ -34,7 +34,7 @@ def main():
     goap = output / "goap"
     builds = [["python3", "scripts/generate-usage-count-fixtures.py", "--check"],
               ["go", "build", "-o", str(goap), "./go/cmd/goap"],
-              ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"],
+              ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"],
               ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"]]
     for index, command in enumerate(builds):
         status, stdout = run(command, output, f"build-{index}")

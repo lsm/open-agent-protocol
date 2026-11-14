@@ -3,7 +3,7 @@
 Run from the repository root:
 
 ```sh
-(cd rust && cargo test -p oap-validation --test catalog_shape)
+(cd rust && cargo test -p oxap-validation --test catalog_shape)
 python3 .claude/skills/verify/scripts/rust-catalog-shape.py --output-dir /tmp/oap-catalog-shape-<unique-name>
 ```
 

@@ -1,4 +1,4 @@
-pub use oap_adapter::jsonrpc::{
+pub use oxap_adapter::jsonrpc::{
     Dialect, Error, ErrorObject, Fault, Inbound, IncomingRequest, Kind, Message,
     NotificationMessage, RequestId, Responder,
 };

@@ -111,12 +111,12 @@ def main():
     parser.add_argument('--output-dir', required=True, type=Path)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--example', 'journal'], output/'rust-build.log')
+    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp', '--example', 'journal'], output/'rust-build.log')
     (output/'reference.go').write_text(GO)
     peer.run(['gofmt', '-w', str(output/'reference.go')], output/'gofmt.log')
     peer.run(['go', 'build', '-o', str(output/'reference'), str(output/'reference.go')], output/'go-build.log')
     peer.run(['go', 'build', '-o', str(output/'goap'), './go/cmd/goap'], output/'goap-build.log')
-    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-validation', '--example', 'validate'], output/'validator-build.log')
+    peer.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-validation', '--example', 'validate'], output/'validator-build.log')
     agent = Path(__file__).with_name('fixtures')/'acp-journal-agent.py'
     for mode in ['default', 'complete', 'evicted', 'cross-run', 'active', 'close', 'overflow', 'large-close', 'reopen']:
         case = output/mode
@@ -174,7 +174,7 @@ def main():
                 assert checked.returncode == 0, (mode, language, raw)
         disposition = 'expected missing_run_terminal for the unconfirmed prefix' if mode in ['close','overflow'] else 'complete original trace accepted'
         print(f'PASS {mode}: actual Go/Rust recovery/events and parsed native frames agree, three validators: {disposition}, children reaped', flush=True)
-    peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','journal','--','--nocapture'], output/'integration.log')
+    peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--test','journal','--','--nocapture'], output/'integration.log')
     print(f'PASS ACP bounded journal/replay. Only clocks and staged revision normalized; raw close diagnostics retained. Evidence: {output}', flush=True)
 
 

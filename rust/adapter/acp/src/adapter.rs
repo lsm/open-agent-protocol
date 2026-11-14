@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use oap_adapter::{
+use oxap_adapter::{
     refuse_unadvertised_settings, Adapter as AdapterContract, Admitter, BoxFuture, Descriptor,
     Error, JournalDescriptor, OpenRequest, Session,
 };
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, EndpointDescriptor, FeatureSupport, SupportLevel, ToolSourceDescriptor,
     FEATURE_COMPACTION_POLICY, FEATURE_MODELS_LIST, FEATURE_OPEN_REOPEN,
     FEATURE_SESSION_MODEL_SWITCH, FEATURE_SESSION_REASONING, FEATURE_TOOL_SOURCES_ATTACH,
@@ -36,8 +36,8 @@ pub struct Adapter {
     runtime: crate::Runtime,
 }
 
-pub fn pin() -> &'static oap_harness::Version {
-    oap_harness::current("acp").expect("embedded ACP catalog has a current version")
+pub fn pin() -> &'static oxap_harness::Version {
+    oxap_harness::current("acp").expect("embedded ACP catalog has a current version")
 }
 
 impl Adapter {
@@ -63,7 +63,7 @@ impl Adapter {
             if !seen.insert(&server.name) {
                 return Err(Error::Harness(format!(
                     "acp adapter: MCP server {} is configured twice",
-                    oap_adapter::gojson::go_quote(&server.name)
+                    oxap_adapter::gojson::go_quote(&server.name)
                 )));
             }
         }

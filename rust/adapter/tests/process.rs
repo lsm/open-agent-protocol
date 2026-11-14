@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use oap_adapter::process::{redact, wait_error, Child, ChildConfig};
+use oxap_adapter::process::{redact, wait_error, Child, ChildConfig};
 
 static SPAWNING: Mutex<()> = Mutex::new(());
 

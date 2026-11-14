@@ -3,10 +3,10 @@ mod support;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use oap_adapter::runtime::Runtime;
-use oap_adapter::{Error, CONTROL_UNADVERTISED, CONTROL_UNSATISFIABLE};
-use oap_adapter_codex_appserver::session::Session;
-use oap_protocol::{
+use oxap_adapter::runtime::Runtime;
+use oxap_adapter::{Error, CONTROL_UNADVERTISED, CONTROL_UNSATISFIABLE};
+use oxap_adapter_codex_appserver::session::Session;
+use oxap_protocol::{
     Admission, ContentPart, EffectiveDeliveryMode, Message, MessageContent, MessageRole,
     MessageSubmitRequest, RequestedDeliveryMode, RunStatus, SessionStatus, FEATURE_INSTRUCTIONS,
     FEATURE_STRUCTURED_OUTPUT,

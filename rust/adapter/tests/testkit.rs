@@ -2,7 +2,7 @@
 
 mod support;
 
-use oap_adapter::testkit::{self, RunTrace, DEFAULT_TIMEOUT};
+use oxap_adapter::testkit::{self, RunTrace, DEFAULT_TIMEOUT};
 use support::*;
 
 fn cancelled_run() -> (MessageSubmitResponse, Vec<Envelope>) {

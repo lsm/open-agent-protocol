@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use futures_core::Stream;
-use oap_protocol::{
+use oxap_protocol::{
     ActionCallResolveRequest, ActionCallResolveResponse, CapabilityDescriptor, EnvelopeId,
     MessageSubmitRequest, MessageSubmitResponse, ModelsRequest, ModelsResponse, ParticipantId,
     PermissionResolveRequest, RunCancelResponse, RunId, SessionCompactRequest,
@@ -15,7 +15,7 @@ use crate::{Error, OpenRequest, ReplayGap};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 
-pub type EventStream = Pin<Box<dyn Stream<Item = Result<oap_protocol::Envelope, Error>> + Send>>;
+pub type EventStream = Pin<Box<dyn Stream<Item = Result<oxap_protocol::Envelope, Error>> + Send>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct JournalDescriptor {

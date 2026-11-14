@@ -1,7 +1,7 @@
 mod support;
 
-use oap_serve::stdio::{serve, StdioError, StdioOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::stdio::{serve, StdioError, StdioOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn run(input: &str, options: StdioOptions) -> (Vec<Value>, Result<(), StdioError>) {
@@ -211,16 +211,16 @@ fn an_adapter_whose_descriptor_carries_no_revision_is_listed_with_an_error() {
 
 struct Bare;
 
-impl oap_adapter::Adapter for Bare {
-    fn probe(&self) -> oap_adapter::BoxFuture<'_, oap_adapter::Descriptor> {
-        Box::pin(async { Ok(oap_adapter::Descriptor::default()) })
+impl oxap_adapter::Adapter for Bare {
+    fn probe(&self) -> oxap_adapter::BoxFuture<'_, oxap_adapter::Descriptor> {
+        Box::pin(async { Ok(oxap_adapter::Descriptor::default()) })
     }
 
     fn open(
         &self,
-        _: oap_adapter::OpenRequest,
-    ) -> oap_adapter::BoxFuture<'_, Box<dyn oap_adapter::Session>> {
-        Box::pin(async { Err(oap_adapter::Error::SessionClosed) })
+        _: oxap_adapter::OpenRequest,
+    ) -> oxap_adapter::BoxFuture<'_, Box<dyn oxap_adapter::Session>> {
+        Box::pin(async { Err(oxap_adapter::Error::SessionClosed) })
     }
 }
 

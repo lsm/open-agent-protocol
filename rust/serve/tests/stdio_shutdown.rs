@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
-use oap_serve::stdio::{serve, StdioOptions, SHUTDOWN_WINDOW};
-use oap_serve::{Hub, Registry};
+use oxap_serve::stdio::{serve, StdioOptions, SHUTDOWN_WINDOW};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 struct Held(std::io::Cursor<Vec<u8>>);
@@ -53,7 +53,7 @@ fn served_within(hub: Arc<Hub>, input: BufReader<Held>) -> Option<Vec<Value>> {
     )
 }
 
-fn with_a_run() -> (Arc<Hub>, oap_protocol::RunId) {
+fn with_a_run() -> (Arc<Hub>, oxap_protocol::RunId) {
     let hub = Hub::new(Registry::default_registry());
     let opened = block_on(hub.open(
         "memory",

@@ -1,4 +1,4 @@
-use oap_validation::Validator;
+use oxap_validation::Validator;
 
 fn unapplied(fixture: &str) -> Vec<(String, String, String, String)> {
     let path = format!(

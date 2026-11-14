@@ -5,8 +5,8 @@ root with a unique evidence directory:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-prompt.py --output-dir /tmp/oap-acp-prompt-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test prompt)
-(cd rust && cargo test -p oap-adapter --test jsonrpc_client)
+(cd rust && cargo test -p oxap-adapter-acp --test prompt)
+(cd rust && cargo test -p oxap-adapter --test jsonrpc_client)
 ```
 
 The public `prompt` consumer uses a real synthetic ACP stdio process with an

@@ -1,4 +1,4 @@
-use oap_adapter_deepseek::native::{decode_strict, Event};
+use oxap_adapter_deepseek::native::{decode_strict, Event};
 
 fn check(kind: &str, data: &str) -> Result<(), String> {
     check_event(&format!(

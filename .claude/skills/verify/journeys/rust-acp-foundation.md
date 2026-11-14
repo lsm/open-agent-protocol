@@ -4,7 +4,7 @@ After the baseline builds ReleaseSafe `oapx`, run from the repository root:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-foundation.py --output-dir /tmp/oap-acp-foundation-<unique>
-(cd rust && cargo test -p oap-adapter-acp)
+(cd rust && cargo test -p oxap-adapter-acp)
 ```
 
 The standalone Rust library consumer calls the public ACP `Adapter` through the

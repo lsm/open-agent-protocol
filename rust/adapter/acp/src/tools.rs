@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use oap_adapter::gojson::replace_lone_surrogates;
-use oap_protocol::{ActionCallPayload, EnvelopeType, ProtocolError, ToolCallId};
+use oxap_adapter::gojson::replace_lone_surrogates;
+use oxap_protocol::{ActionCallPayload, EnvelopeType, ProtocolError, ToolCallId};
 use serde_json::value::RawValue;
 
 use crate::native::{decode, ToolCall, ToolCallUpdate};

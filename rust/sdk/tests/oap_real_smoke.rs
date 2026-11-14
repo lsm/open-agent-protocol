@@ -1,4 +1,4 @@
-use oap_sdk::{ClientBuilder, ListModelsRequest};
+use oxap_sdk::{ClientBuilder, ListModelsRequest};
 
 #[tokio::test]
 async fn combined_profiles_and_auth_status_on_real_binary() {

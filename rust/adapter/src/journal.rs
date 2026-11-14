@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
 use futures_core::Stream;
-use oap_protocol::{Envelope, SessionState};
+use oxap_protocol::{Envelope, SessionState};
 
 use crate::{Error, EventStream, Recovery, ReplayGap};
 

@@ -79,7 +79,7 @@ def main():
     parser.add_argument('--output-dir', required=True, type=Path)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    built = subprocess.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--example', 'session_owner'],
+    built = subprocess.run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp', '--example', 'session_owner'],
                            cwd=ROOT, capture_output=True, text=True, timeout=180)
     (output / 'build.log').write_text(built.stdout + built.stderr)
     assert built.returncode == 0, built.stderr

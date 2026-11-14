@@ -220,12 +220,12 @@ def main():
     parser.add_argument('--output-dir',required=True,type=Path)
     output=parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True,exist_ok=False)
-    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example','attachments'],output/'rust-build.log')
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--example','attachments'],output/'rust-build.log')
     (output/'reference.go').write_text(GO)
     peer.run(['gofmt','-w',str(output/'reference.go')],output/'gofmt.log')
     peer.run(['go','build','-o',str(output/'reference'),str(output/'reference.go')],output/'go-build.log')
     peer.run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'],output/'goap-build.log')
-    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate'],output/'validator-build.log')
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-validation','--example','validate'],output/'validator-build.log')
     agent=Path(__file__).with_name('fixtures')/'acp-attachments-agent.py'
     for name,(request,native,expected) in scenarios().items():
         case=output/name;case.mkdir()
@@ -268,7 +268,7 @@ def main():
             assert requested==[dict(name='filesystem',command='/usr/local/bin/mcp-filesystem',args=['--root','/workspace'],env=[dict(name='MCP_TOKEN',value='operator-secret'),dict(name='MCP_MODE',value='readonly')])],requested
         disposition = f'{validated} actual state exchanges pass three validators' if validated else 'preflight refusal, no native startup' if expected is not None else 'cancelled after actual native MCP request, no Session published'
         print(f'PASS {name}: Go/Rust public outcome and native wire agree; {disposition}; admission consistent; native children reaped',flush=True)
-    peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','attachments','--test','attachment_cases','--','--nocapture'],output/'integration.log')
+    peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--test','attachments','--test','attachment_cases','--','--nocapture'],output/'integration.log')
     print(f'PASS ACP per-open MCP attachments. Only clocks/staged revision normalized; raw diagnostic wording retained. Evidence: {output}',flush=True)
 
 

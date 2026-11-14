@@ -3,11 +3,11 @@ use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use oap_binding::FileStore;
-use oap_serve::endpoint::{Endpoint, EndpointOptions};
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_binding::FileStore;
+use oxap_serve::endpoint::{Endpoint, EndpointOptions};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::{Hub, HubOptions, Registry};
 
 const USAGE: &str = "usage: oap-rust-hub serve [--addr=A | --stdio] [--session-history=PATH] [--config=F] serves many sessions; oap-rust-hub serve agent [--backend=B] [--config=F] [--stdio] [--session-history=PATH] serves one";
 
@@ -166,7 +166,7 @@ fn serve_on(hub: &Hub, addr: &str) -> Result<(), String> {
     .map_err(|err| err.to_string())
 }
 
-fn signal_line(count: usize, answer: &oap_protocol::EndpointShutdownResponse) -> String {
+fn signal_line(count: usize, answer: &oxap_protocol::EndpointShutdownResponse) -> String {
     let active: Vec<String> = answer
         .active_runs
         .iter()

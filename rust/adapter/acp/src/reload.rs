@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
-use oap_protocol::FEATURE_OPEN_REOPEN;
+use oxap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
+use oxap_protocol::FEATURE_OPEN_REOPEN;
 use serde_json::value::RawValue;
 
 use crate::native::{McpServer, SessionReopenParams, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME};

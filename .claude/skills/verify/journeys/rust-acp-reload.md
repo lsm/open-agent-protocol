@@ -6,7 +6,7 @@ ReleaseSafe `oapx`, run from the repository root:
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-reload.py --output-dir "$EVIDENCE/reload"
 python3 .claude/skills/verify/scripts/rust-acp-reload-ownership.py --output-dir "$EVIDENCE/reload-ownership"
-(cd rust && cargo test -p oap-adapter-acp --test reload)
+(cd rust && cargo test -p oxap-adapter-acp --test reload)
 ```
 
 The public Adapter/Session consumer opens an existing bound ACP conversation

@@ -4,9 +4,9 @@ Follow shared setup and the verification mutex in SKILL.md. Run from the
 repository root.
 
 ```sh
-(cd rust && cargo test -p oap-adapter-acp --test corpus -- --nocapture)
-(cd rust && cargo test -p oap-adapter-acp --all-features)
-(cd rust && cargo test -p oap-serve --all-features --no-fail-fast)
+(cd rust && cargo test -p oxap-adapter-acp --test corpus -- --nocapture)
+(cd rust && cargo test -p oxap-adapter-acp --all-features)
+(cd rust && cargo test -p oxap-serve --all-features --no-fail-fast)
 python3 .claude/skills/verify/scripts/rust-acp-foundation.py --output-dir /tmp/oap-acp-foundation-<unique>
 ```
 

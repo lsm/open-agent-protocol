@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     Message, MessageContent, MessageSubmitRequest, Participant, PermissionRequestedPayload,
     PermissionResolveRequest,
 };

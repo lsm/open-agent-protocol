@@ -1,4 +1,4 @@
-use oap_adapter_hermes::native::{
+use oxap_adapter_hermes::native::{
     decode_strict, DeltaPayload, Event, MessageCompletePayload, ToolCompletePayload,
     ToolStartPayload, Usage, UsageTickPayload,
 };

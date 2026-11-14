@@ -45,7 +45,7 @@ def main():
     parser.add_argument('--output-dir',required=True,type=Path)
     output=parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True,exist_ok=False)
-    built=subprocess.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example','session_permission_ownership'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+    built=subprocess.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--example','session_permission_ownership'],cwd=ROOT,capture_output=True,text=True,timeout=180)
     (output/'build.log').write_text(built.stdout+built.stderr)
     assert built.returncode==0,built.stderr
     with tempfile.TemporaryDirectory(prefix='oap-session-permission-owner-') as temporary:
@@ -98,7 +98,7 @@ def main():
                     (case/'failure-observations.json').write_text(json.dumps(observations,indent=2))
                 if (case/'pid').exists() and not outbound.ownership.absent(int((case/'pid').read_text())):
                     os.kill(int((case/'pid').read_text()),signal.SIGKILL)
-    result=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permissions','--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+    result=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--test','permissions','--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
     (output/'public-history.log').write_text(result.stdout+result.stderr)
     assert result.returncode==0,result.stdout+result.stderr
     proof=json.loads(next(line.split('model-metadata-proof ',1)[1] for line in result.stdout.splitlines() if 'model-metadata-proof ' in line))
@@ -106,7 +106,7 @@ def main():
     assert proof['sampled_timestamp']==proof['switched_timestamp'],proof
     (output/'metadata-state.json').write_text(json.dumps(proof,indent=2))
     print('PASS public history, idle asks, refusal and model metadata: a state read preserves the newer model-switch timestamp',flush=True)
-    resources=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--lib','--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
+    resources=subprocess.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--lib','--','--nocapture'],cwd=ROOT,capture_output=True,text=True,timeout=180)
     (output/'resource-checks.log').write_text(resources.stdout+resources.stderr)
     assert resources.returncode==0,resources.stdout+resources.stderr
     patterns={

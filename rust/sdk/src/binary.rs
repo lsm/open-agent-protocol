@@ -231,7 +231,7 @@ impl BinaryResolver {
     #[cfg(not(feature = "download"))]
     async fn download(&self, url: &str, target: &Path, _checksum: &str) -> Result<PathBuf> {
         Err(Error::transport(format!(
-            "{url} is not cached at {} and this build of the oap-sdk crate cannot download it; \
+            "{url} is not cached at {} and this build of the oxap-sdk crate cannot download it; \
              enable the `download` feature or set {ENV_BINARY_PATH}",
             target.display()
         )))

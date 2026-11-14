@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 pub use futures::executor::block_on;
 pub use futures::{FutureExt, StreamExt};
-pub use oap_adapter::memory::{
+pub use oxap_adapter::memory::{
     Clock, Config, IdGenerator, Memory, MemorySession, CAPABILITY_REVISION, MODEL_SECONDARY,
 };
-pub use oap_adapter::Error;
-pub use oap_adapter::*;
-pub use oap_protocol::*;
+pub use oxap_adapter::Error;
+pub use oxap_adapter::*;
+pub use oxap_protocol::*;
 use serde_json::value::RawValue;
 
 #[derive(Default)]
@@ -464,9 +464,9 @@ pub fn validate(
     open: &OpenRequest,
     submissions: &[Submission],
     events: &[Envelope],
-) -> oap_validation::ValidationResult {
+) -> oxap_validation::ValidationResult {
     let data = trace(open, submissions, &descriptor(), events);
-    oap_validation::Validator::new()
+    oxap_validation::Validator::new()
         .unwrap()
         .validate(&data, "memory")
 }
@@ -608,12 +608,12 @@ pub const SUBMIT: [EnvelopeType; 2] = [
     EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE,
 ];
 
-pub fn flow(open: &OpenRequest, parts: &[&[Envelope]]) -> oap_validation::ValidationResult {
+pub fn flow(open: &OpenRequest, parts: &[&[Envelope]]) -> oxap_validation::ValidationResult {
     let mut trace = opening(open);
     for part in parts {
         trace.extend_from_slice(part);
     }
-    oap_validation::Validator::new()
+    oxap_validation::Validator::new()
         .unwrap()
         .validate(&serde_json::to_vec(&trace).unwrap(), "memory-flow")
 }

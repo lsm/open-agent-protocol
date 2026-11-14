@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 
-use oap_adapter::{
+use oxap_adapter::{
     duplicate_environment_name, refuse_unadvertised_tool_sources, refuse_unadvertised_tools, Error,
     OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
-use oap_protocol::{
+use oxap_protocol::{
     FeatureSupport, SupportLevel, FEATURE_TOOL_SOURCES_ATTACH, LIMIT_TRANSPORTS, MODE_SESSION_OPEN,
     TOOL_SOURCE_PROCESS,
 };

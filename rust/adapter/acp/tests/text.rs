@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::NotificationMessage;
-use oap_adapter::Error;
-use oap_adapter_acp::{native::PromptResult, TextRun, TextRunContext, UsageScope};
-use oap_protocol::{EnvelopeType, RunStatus};
+use oxap_adapter::jsonrpc::NotificationMessage;
+use oxap_adapter::Error;
+use oxap_adapter_acp::{native::PromptResult, TextRun, TextRunContext, UsageScope};
+use oxap_protocol::{EnvelopeType, RunStatus};
 use serde_json::{json, Value};
 
 fn engine() -> TextRun {
@@ -75,7 +75,7 @@ fn text_runs_emit_scoped_ordered_events_and_a_single_completed_message() {
         assert_eq!(event.capability_revision.as_deref(), Some("text-engine"));
     }
     let final_message = events[3]
-        .decode_payload::<oap_protocol::RunCompletedPayload>()
+        .decode_payload::<oxap_protocol::RunCompletedPayload>()
         .unwrap()
         .final_response;
     assert_eq!(final_message.id.unwrap().as_str(), "session/message");
@@ -128,7 +128,7 @@ fn malformed_or_foreign_updates_select_one_failure_before_late_completion() {
         assert_eq!(event.envelope_type, EnvelopeType::RUN_FAILED);
         assert_eq!(
             event
-                .decode_payload::<oap_protocol::RunFailedPayload>()
+                .decode_payload::<oxap_protocol::RunFailedPayload>()
                 .unwrap()
                 .error
                 .code,
@@ -238,7 +238,7 @@ fn known_stop_reasons_and_failures_keep_their_observed_payloads() {
         events[1]
             .as_ref()
             .unwrap()
-            .decode_payload::<oap_protocol::RunFailedPayload>()
+            .decode_payload::<oxap_protocol::RunFailedPayload>()
             .unwrap()
             .settled_by,
         "inferred"
@@ -262,7 +262,7 @@ fn malformed_tool_identity_is_refused() {
         events[2]
             .as_ref()
             .unwrap()
-            .decode_payload::<oap_protocol::RunFailedPayload>()
+            .decode_payload::<oxap_protocol::RunFailedPayload>()
             .unwrap()
             .error
             .code,

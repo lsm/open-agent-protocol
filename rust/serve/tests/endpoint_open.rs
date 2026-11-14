@@ -1,7 +1,7 @@
 mod support;
 
-use oap_serve::endpoint::{Endpoint, EndpointOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::endpoint::{Endpoint, EndpointOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::{json, Value};
 
 fn run(hub: &Hub, lines: &[Value]) -> Vec<Value> {
@@ -40,7 +40,7 @@ fn error(answer: &Value) -> &Value {
 fn an_open_answers_the_sessions_state_citing_the_request_and_its_revision() {
     let hub = Hub::new(Registry::default_registry());
     let mut open = request("session.open.request", "o", json!({"session_id": "s"}));
-    open["capability_revision"] = oap_adapter::memory::CAPABILITY_REVISION.into();
+    open["capability_revision"] = oxap_adapter::memory::CAPABILITY_REVISION.into();
     let answered = run(&hub, &[open.clone(), open]);
     let answer = &answered[0];
     assert_eq!(answer["type"], "session.open.response", "{answer}");
@@ -49,7 +49,7 @@ fn an_open_answers_the_sessions_state_citing_the_request_and_its_revision() {
     assert_eq!(answer["payload"]["session_id"], "s");
     assert_eq!(
         answer["capability_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
     assert!(hub.session(&"s".into()).is_ok());
     assert_eq!(error(&answered[1])["code"], "session_exists");

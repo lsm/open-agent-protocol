@@ -3,9 +3,9 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use oap_adapter::testkit::drain;
-use oap_adapter_codex_appserver::session::Session;
-use oap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest};
+use oxap_adapter::testkit::drain;
+use oxap_adapter_codex_appserver::session::Session;
+use oxap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest};
 use support::{adapter, request, Fake};
 
 fn open() -> (Arc<Fake>, Session) {

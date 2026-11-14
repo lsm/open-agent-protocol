@@ -5,7 +5,7 @@ use std::task::{Context, Poll, Waker};
 
 use crate::{Error, EventStream};
 use futures_core::Stream;
-use oap_protocol::Envelope;
+use oxap_protocol::Envelope;
 
 struct Queue {
     capacity: usize,

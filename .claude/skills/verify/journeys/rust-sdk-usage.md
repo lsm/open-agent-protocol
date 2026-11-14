@@ -6,7 +6,7 @@ After changing Rust SDK token types or usage mapping, run:
 python3 .claude/skills/verify/scripts/rust-sdk-usage.py --output-dir /tmp/oap-rust-sdk-usage-<unique-name>
 ```
 
-Build `oapx` in ReleaseSafe first. The script builds a standalone consumer importing the public `oap-sdk` crate
+Build `oapx` in ReleaseSafe first. The script builds a standalone consumer importing the public `oxap-sdk` crate
 and connects it to the credential-free OAP fixture process. Provider and agent
 unary and streaming results must keep absent usage unknown, preserve empty and
 partial usage, and retain independent zeros and all six `uint64` maxima exactly.

@@ -8,7 +8,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[4]
 RUST = ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
-        "-p", "oap-validation", "--example", "validate", "--", "--provider"]
+        "-p", "oxap-validation", "--example", "validate", "--", "--provider"]
 GO = ["go", "run", "./go/cmd/goap", "validate", "--provider", "--format", "json"]
 ZIG = ["./zig/zig-out/bin/oxap", "validate"]
 

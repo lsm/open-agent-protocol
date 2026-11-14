@@ -26,8 +26,8 @@ run go test ./go/validation
 run go test ./go/protocol
 (
     cd rust
-    run cargo test -p oap-validation --test manifest
-    run cargo test -p oap-protocol --test payloads
+    run cargo test -p oxap-validation --test manifest
+    run cargo test -p oxap-protocol --test payloads
     run cargo fmt --check
     run cargo clippy --all-targets --all-features -- -D warnings
     run cargo run -p nocomment -- --check

@@ -1,4 +1,4 @@
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, EnvelopeType, ErrorResponse, ModelsRequest, ModelsResponse,
     SessionListRequest, SessionListResponse, SessionListState, SessionModelSwitchRequest,
     SessionModelSwitchResponse, SessionState, SessionStateRequest, FEATURE_MODELS_LIST,

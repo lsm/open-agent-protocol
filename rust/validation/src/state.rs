@@ -31,7 +31,7 @@ mod transcript;
 use crate::pack::CompiledPacks;
 use std::collections::{HashMap, HashSet};
 
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde::de::DeserializeOwned;
 
 use crate::{codes, Diagnostic, Phase};

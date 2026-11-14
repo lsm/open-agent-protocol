@@ -15,7 +15,7 @@ pub mod subscriber;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-use oap_protocol::{
+use oxap_protocol::{
     CompactionPolicy, Participant, ReasoningLevel, SessionId, ToolDefinition, ToolSourceAttachment,
 };
 use serde_json::Value;

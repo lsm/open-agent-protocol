@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::pack::PackLoader;
+use oxap_validation::pack::PackLoader;
 
 #[test]
 fn resource_construction_refuses_external_references_and_identifiers() {

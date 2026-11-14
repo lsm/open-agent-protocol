@@ -1,4 +1,4 @@
-use oap_adapter_claude::native::{
+use oxap_adapter_claude::native::{
     decode_observation, AssistantFrame, Observation, UserFrame, TYPE_ASSISTANT, TYPE_KEEP_ALIVE,
     TYPE_USER,
 };

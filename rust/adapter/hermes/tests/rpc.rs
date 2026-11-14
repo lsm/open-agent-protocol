@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
-use oap_adapter::jsonrpc::{Decoder, Encoder, ErrorObject, Kind, Message, RequestId};
-use oap_adapter_hermes::rpc::DIALECT;
+use oxap_adapter::jsonrpc::{Decoder, Encoder, ErrorObject, Kind, Message, RequestId};
+use oxap_adapter_hermes::rpc::DIALECT;
 use serde_json::value::RawValue;
 
 fn parse(frame: &str) -> Result<Message, String> {

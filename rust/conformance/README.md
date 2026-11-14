@@ -1,11 +1,11 @@
-# oap-conformance
+# oxap-conformance
 
 The Rust port of `go/internal/conformance`, built in small steps under
 Decision 0052 and #1438.
 
 The first slice exposes `read_frame` and `write_frame` for newline-delimited
 endpoint envelopes and replay control frames. Envelope decoding uses
-`oap-protocol`; control frames keep an explicit `after: 0` and unsigned
+`oxap-protocol`; control frames keep an explicit `after: 0` and unsigned
 64-bit cursors. Blank lines are skipped and a final unterminated frame is read.
 
 `Transcript` excludes answers to registered probe IDs, deduplicates envelope

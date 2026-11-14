@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use oap_binding::{frame, Action, Entry, Error, FileStore, Record, Store};
+use oxap_binding::{frame, Action, Entry, Error, FileStore, Record, Store};
 
 struct Scratch(PathBuf);
 

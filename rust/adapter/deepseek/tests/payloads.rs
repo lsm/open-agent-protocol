@@ -1,4 +1,4 @@
-use oap_adapter_deepseek::native::{
+use oxap_adapter_deepseek::native::{
     decode_strict, InboxSpliced, TodoWrite, ToolError, ToolResult, TurnEnd, UserMessage,
 };
 

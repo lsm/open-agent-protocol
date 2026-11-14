@@ -1,6 +1,6 @@
 mod decode;
 
-use oap_adapter::gojson::{raw, slice, strings, structure, zero};
+use oxap_adapter::gojson::{raw, slice, strings, structure, zero};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 

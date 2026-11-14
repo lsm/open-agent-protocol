@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::value::RawValue;

@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use jsonschema::{Draft, Retrieve, Uri, Validator};
-use oap_validation::{SCHEMAS, SCHEMA_BASE};
+use oxap_validation::{SCHEMAS, SCHEMA_BASE};
 use serde_json::Value;
 
 struct Bundle;

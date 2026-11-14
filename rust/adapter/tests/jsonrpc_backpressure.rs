@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use oap_adapter::jsonrpc::{ClientOptions, Dialect, Inbound, RpcClient};
+use oxap_adapter::jsonrpc::{ClientOptions, Dialect, Inbound, RpcClient};
 
 const WAIT: Duration = Duration::from_secs(3);
 

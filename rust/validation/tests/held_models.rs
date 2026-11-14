@@ -1,4 +1,4 @@
-use oap_validation::Validator;
+use oxap_validation::Validator;
 
 fn drawn(fixture: &str) -> Vec<(String, String, String)> {
     let path = format!(

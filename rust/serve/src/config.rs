@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use oap_adapter::memory::{Config, Memory};
-use oap_protocol::ToolSourceAttachment;
+use oxap_adapter::memory::{Config, Memory};
+use oxap_protocol::ToolSourceAttachment;
 use serde_json::Value;
 
 use crate::{Registry, RegistryError};
@@ -92,7 +92,7 @@ impl Registry {
             path: path.display().to_string(),
             reason,
         };
-        if oap_validation::duplicate_key(&data).is_some() {
+        if oxap_validation::duplicate_key(&data).is_some() {
             return Err(parse("config: not one JSON object: DuplicateField".into()));
         }
         let top: BTreeMap<String, Value> = match serde_json::from_str(&data)
@@ -134,7 +134,7 @@ impl Registry {
             } else {
                 entry.kind.clone()
             };
-            let built: Arc<dyn oap_adapter::Adapter> = match kind.as_str() {
+            let built: Arc<dyn oxap_adapter::Adapter> = match kind.as_str() {
                 "memory" => Arc::new(Memory::new(Config {
                     journal_capacity: entry.journal_capacity as usize,
                     ..Config::default()
@@ -147,8 +147,8 @@ impl Registry {
                         ));
                     }
                     Arc::new(
-                        oap_adapter_acp::Adapter::new(oap_adapter_acp::Config {
-                            process: oap_adapter_acp::process::ProcessConfig {
+                        oxap_adapter_acp::Adapter::new(oxap_adapter_acp::Config {
+                            process: oxap_adapter_acp::process::ProcessConfig {
                                 path: entry.executable,
                                 args: entry.args,
                                 dir: entry.working_directory.clone(),

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use oap_protocol::Envelope;
+use oxap_protocol::Envelope;
 use serde_json::Value;
 
 use crate::diagnostic::sort_diagnostics;

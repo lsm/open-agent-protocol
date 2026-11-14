@@ -59,7 +59,7 @@ rebuilt, and all fixtures are replayed again after restoration. An interruption
 that kills Python itself requires checking source restoration before continuing.
 
 Before merging, integrate current main locally and run `go test ./go/validation`,
-`cargo test -p oap-validation --test manifest` from `rust/`, and
+`cargo test -p oxap-validation --test manifest` from `rust/`, and
 `zig build --build-file zig/build.zig test-unit-validation -Doptimize=ReleaseSafe`,
 then rerun the public CLI replay with zero disagreements. The shared skill's
 baseline and isolated PTY smoke remain required. This journey proves validator

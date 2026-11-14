@@ -1,11 +1,11 @@
 mod support;
 
-use oap_protocol::{
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, OpenMessage,
     RequestedDeliveryMode, SessionOpenRequest, ToolSourceAttachment,
 };
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, Registry};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn request(payload: &SessionOpenRequest, revision: Option<&str>) -> String {
@@ -95,7 +95,7 @@ fn an_open_citing_a_stale_revision_for_what_it_elects_is_refused_with_both_revis
     assert_eq!(error["details"]["current_revision"], "stale-rev");
     assert_eq!(
         error["details"]["expected_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
 }
 
@@ -105,7 +105,7 @@ fn an_open_attaching_an_unconfigured_process_source_is_refused_naming_it() {
     let attaching = SessionOpenRequest {
         tool_sources: vec![ToolSourceAttachment {
             id: "fs".into(),
-            kind: oap_protocol::TOOL_SOURCE_PROCESS.into(),
+            kind: oxap_protocol::TOOL_SOURCE_PROCESS.into(),
             ..ToolSourceAttachment::default()
         }],
         ..opening("s")
@@ -136,7 +136,7 @@ fn a_subscribing_open_answers_and_then_streams_on_its_own_id() {
     assert_eq!(answered[0]["result"]["type"], "session.open.response");
     assert_eq!(
         answered[0]["result"]["capability_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
     let closed: Vec<&Value> = answered
         .iter()

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use oap_adapter::{Error, OpenRequest, ReplayGap, ResumeRequest};
-use oap_protocol::{Envelope, EnvelopeType, Participant, RunId, SessionStatus};
+use oxap_adapter::{Error, OpenRequest, ReplayGap, ResumeRequest};
+use oxap_protocol::{Envelope, EnvelopeType, Participant, RunId, SessionStatus};
 use serde_json::value::RawValue;
 
 use crate::adapter::{Adapter, Config};

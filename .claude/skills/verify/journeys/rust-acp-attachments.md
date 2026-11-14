@@ -5,7 +5,7 @@ builds ReleaseSafe oapx, run from the repository root:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-attachments.py --output-dir "$EVIDENCE/attachments"
-(cd rust && cargo test -p oap-adapter-acp --test attachments --test attachment_cases)
+(cd rust && cargo test -p oxap-adapter-acp --test attachments --test attachment_cases)
 ```
 
 The normal public Rust Adapter/Session and Go reference drive identical

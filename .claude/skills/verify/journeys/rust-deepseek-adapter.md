@@ -4,14 +4,14 @@ Follow shared setup and the verification mutex in SKILL.md. Run from the
 repository root.
 
 ```sh
-(cd rust && cargo test -p oap-adapter-deepseek --test adapter)
-(cd rust && cargo test -p oap-adapter-deepseek --test session)
-(cd rust && cargo test -p oap-adapter-deepseek --test admission)
-(cd rust && cargo test -p oap-adapter-deepseek --test submit)
-(cd rust && cargo test -p oap-adapter-deepseek --test submit_drop)
-(cd rust && cargo test -p oap-adapter-deepseek --test submit_unsent)
-(cd rust && cargo test -p oap-adapter-deepseek --test corpus)
-(cd rust && cargo test -p oap-adapter-deepseek --all-features)
+(cd rust && cargo test -p oxap-adapter-deepseek --test adapter)
+(cd rust && cargo test -p oxap-adapter-deepseek --test session)
+(cd rust && cargo test -p oxap-adapter-deepseek --test admission)
+(cd rust && cargo test -p oxap-adapter-deepseek --test submit)
+(cd rust && cargo test -p oxap-adapter-deepseek --test submit_drop)
+(cd rust && cargo test -p oxap-adapter-deepseek --test submit_unsent)
+(cd rust && cargo test -p oxap-adapter-deepseek --test corpus)
+(cd rust && cargo test -p oxap-adapter-deepseek --all-features)
 ```
 
 `tests/go_capabilities.json` is Go's `Probe` capabilities for the catalog

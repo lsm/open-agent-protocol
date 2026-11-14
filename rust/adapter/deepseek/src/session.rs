@@ -2,12 +2,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crossbeam_channel::{select, Receiver};
 use futures_channel::oneshot;
-use oap_adapter::journal::{Journal, Reservation};
-use oap_adapter::{
+use oxap_adapter::journal::{Journal, Reservation};
+use oxap_adapter::{
     BoxFuture, Error, EventStream, InteractionResolution, Recovery, ResumeRequest,
     Session as SessionContract, SubmitRequest,
 };
-use oap_protocol::{
+use oxap_protocol::{
     ActionCallPayload, Admission as SubmitAdmission, ContentDeltaPayload, EffectiveDeliveryMode,
     Envelope, EnvelopeId, EnvelopeType, Message, MessageId, MessageRole, MessageSubmitRequest,
     MessageSubmitResponse, ProtocolError, RequestedDeliveryMode, RunCancelResponse,
@@ -734,7 +734,7 @@ impl Shared {
                     "deepseek_unknown_event",
                     format!(
                         "unknown required event {}",
-                        oap_adapter::gojson::go_quote(kind)
+                        oxap_adapter::gojson::go_quote(kind)
                     ),
                 ))
             }

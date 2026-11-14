@@ -3,13 +3,13 @@ mod support;
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, NativeListRequest, NativeLister, NativeListing,
     NativeSearchRequest, NativeSearcher, OpenRequest, Session,
 };
-use oap_binding::MemoryStore;
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_binding::MemoryStore;
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::{Hub, HubOptions, Registry};
 use serde_json::{json, Value};
 
 struct Listing(Arc<dyn Adapter>);

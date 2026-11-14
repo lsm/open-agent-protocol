@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use oap_sdk::{AgentEvent, Client, ClientBuilder, Error, ExecutionRequest, ProviderEvent};
+use oxap_sdk::{AgentEvent, Client, ClientBuilder, Error, ExecutionRequest, ProviderEvent};
 use serde_json::{json, Value};
 
 async fn observe(client: &Client, agent: bool, stream: bool) -> Result<Value, Error> {

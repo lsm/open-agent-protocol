@@ -31,7 +31,7 @@ def main():
     parser.add_argument('--output-dir', required=True, type=Path)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp',
+    run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp',
          '--example', 'foundation'], output / 'build.log')
     binary = ROOT / 'rust/target/debug/examples/foundation'
     option = {
@@ -146,7 +146,7 @@ if {mode!r} == 'close-timeout':
     ]
     path = output / 'open-models.trace.json'
     path.write_text(json.dumps(trace))
-    run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-validation',
+    run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-validation',
          '--example', 'validate'], output / 'validator-build.log')
     run(['go', 'build', '-o', str(output / 'goap'), './go/cmd/goap'], output / 'go-build.log')
     for name, command in [

@@ -1,17 +1,16 @@
 [package]
-name = "oap-conformance"
+name = "oxap-conformance"
 version = "0.1.0"
 edition = "2021"
 description = "Open Agent Protocol endpoint conformance runner"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
-publish = false
 
 [dependencies]
 crossbeam-channel = "0.5"
-oap-adapter = { path = "../adapter" }
-oap-protocol = { path = "../protocol" }
-oap-validation = { path = "../validation" }
+oxap-adapter = { path = "../adapter", version = "=0.1.0" }
+oxap-protocol = { path = "../protocol", version = "=0.1.0" }
+oxap-validation = { path = "../validation", version = "=0.1.0" }
 rustix = { version = "1", features = ["event"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

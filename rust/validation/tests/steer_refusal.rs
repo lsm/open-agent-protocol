@@ -1,4 +1,4 @@
-use oap_validation::Validator;
+use oxap_validation::Validator;
 
 const MISMATCH: &str = "session_state_mismatch";
 const ILLEGAL: &str = "illegal_run_transition";

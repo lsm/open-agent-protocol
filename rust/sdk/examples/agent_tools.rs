@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use oap_sdk::{AgentEvent, Client, ExecutionRequest, Tool};
+use oxap_sdk::{AgentEvent, Client, ExecutionRequest, Tool};
 use serde::Deserialize;
 
 #[derive(Deserialize)]

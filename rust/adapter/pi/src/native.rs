@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use oap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, zero};
+use oxap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, zero};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -116,7 +116,7 @@ pub struct Command {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(
-        deserialize_with = "oap_adapter::gojson::structures",
+        deserialize_with = "oxap_adapter::gojson::structures",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub images: Vec<ImageContent>,

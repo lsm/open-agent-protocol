@@ -3,7 +3,7 @@
 Run from the root:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test tools_list
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test tools_list
 python3 .claude/skills/verify/scripts/rust-tools-list.py --mutation-check --output-dir /tmp/oap-tools-list-<unique-name>
 python3 .claude/skills/verify/scripts/rust-tool-catalog.py --mutation-check --output-dir /tmp/oap-descriptor-catalog-<unique-name>
 ```

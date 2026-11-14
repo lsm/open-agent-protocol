@@ -1,4 +1,4 @@
-use oap_validation::{codes, duplicate_key, Phase, Validator};
+use oxap_validation::{codes, duplicate_key, Phase, Validator};
 
 const ONE: &str = r#"{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"c1","payload":{}}"#;
 

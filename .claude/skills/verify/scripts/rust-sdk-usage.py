@@ -10,7 +10,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = r'''use futures::StreamExt;
-use oap_sdk::{AgentEvent, ClientBuilder, ExecutionRequest, ProviderEvent};
+use oxap_sdk::{AgentEvent, ClientBuilder, ExecutionRequest, ProviderEvent};
 use serde_json::{json, Value};
 
 #[tokio::main(flavor = "current_thread")]
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(response) => json!({"agent":agent,"stream":false,"usage":response.usage}),
             Err(error) => json!({"agent":agent,"stream":false,"error":error.code()}),
         });
-        let mut terminal: Option<Result<Value, oap_sdk::Error>> = None;
+        let mut terminal: Option<Result<Value, oxap_sdk::Error>> = None;
         if agent {
             let mut events = Box::pin(client.agent().stream(request.clone()));
             while let Some(event) = events.next().await {
@@ -73,7 +73,7 @@ def validators(output):
     commands = {
         "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
         "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
-                 "-p", "oap-validation", "--example", "validate", "--"],
+                 "-p", "oxap-validation", "--example", "validate", "--"],
         "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate"],
     }
     cases = [({}, True), ({"input_tokens":0}, True),
@@ -118,8 +118,8 @@ def main():
     (consumer / "Cargo.toml").write_text(
         '[package]\nname="usage-consumer"\nversion="0.0.0"\nedition="2021"\n'
         '[dependencies]\nfutures="0.3"\nserde_json="1"\ntokio={version="1",features=["macros","rt"]}\n'
-        + f'oap-sdk={{path={json.dumps(str(ROOT / "rust/sdk"))}}}\n')
-    run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-sdk",
+        + f'oxap-sdk={{path={json.dumps(str(ROOT / "rust/sdk"))}}}\n')
+    run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-sdk",
          "--bin", "oap-protocol-fake"], output, "fixture-build")
     run(["cargo", "build", "--offline", "--manifest-path", str(consumer / "Cargo.toml"),
          "--target-dir", str(ROOT / "rust/target")], output, "consumer-build")

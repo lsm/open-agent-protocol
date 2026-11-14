@@ -1,10 +1,10 @@
 [package]
-name = "oap-sdk"
+name = "oxap-sdk"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 description = "Rust SDK for the Open Agent Protocol project's runtime, spoken as OAP to `oapx serve agent,provider --stdio`"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "MIT"
 readme = "README.md"
 keywords = ["ai", "llm", "streaming", "agent", "sdk"]

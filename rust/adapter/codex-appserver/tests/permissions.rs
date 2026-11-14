@@ -1,5 +1,5 @@
-use oap_adapter_codex_appserver::native::{ThreadResumeParams, ThreadResumeResponse};
-use oap_adapter_codex_appserver::permissions::confirm;
+use oxap_adapter_codex_appserver::native::{ThreadResumeParams, ThreadResumeResponse};
+use oxap_adapter_codex_appserver::permissions::confirm;
 
 fn sent(cwd: &str, approval_policy: &str, sandbox: &str) -> ThreadResumeParams {
     ThreadResumeParams {

@@ -3,16 +3,16 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, EventStream, InteractionResolution, OpenRequest, Recovery,
     ResumeRequest, Session, SubmitRequest, TranscriptLoader, TranscriptRequest,
 };
-use oap_binding::MemoryStore;
-use oap_protocol::{
+use oxap_binding::MemoryStore;
+use oxap_protocol::{
     MessageSubmitResponse, RunCancelResponse, RunId, SessionState, TranscriptLoadResponse,
 };
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, HubOptions, Registry};
 use serde_json::Value;
 
 struct Native(Box<dyn Session>);

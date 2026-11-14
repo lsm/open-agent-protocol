@@ -4,7 +4,7 @@ Use the shared setup and verification mutex in `SKILL.md`, then run from the
 repository root.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test tolerant --test packed_traces
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test tolerant --test packed_traces
 python3 .claude/skills/verify/scripts/rust-tolerant.py --output-dir /tmp/oap-rust-tolerant-<unique>
 ```
 

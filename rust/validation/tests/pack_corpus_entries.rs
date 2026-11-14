@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::pack::PackLoader;
+use oxap_validation::pack::PackLoader;
 
 #[test]
 fn staged_corpus_entry_check_accepts_the_shared_pack_manifests() {

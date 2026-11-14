@@ -7,7 +7,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[4]
 RUST = ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
-        "-p", "oap-validation", "--example", "validate", "--"]
+        "-p", "oxap-validation", "--example", "validate", "--"]
 COMMANDS = {
     "rust": RUST,
     "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
@@ -19,7 +19,7 @@ def mutations(output):
     path = ROOT / "rust/validation/src/state/admissions.rs"
     original = path.read_text()
     command = ["cargo", "test", "--manifest-path", "rust/Cargo.toml",
-               "-p", "oap-validation", "--test", "reopen"]
+               "-p", "oxap-validation", "--test", "reopen"]
     baseline = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=300)
     (output / "baseline.log").write_text(baseline.stdout + baseline.stderr)
     assert baseline.returncode == 0, "focused tests must pass before mutation"

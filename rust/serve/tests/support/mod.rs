@@ -3,8 +3,8 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use oap_serve::stdio::{serve, StdioOptions};
-use oap_serve::Hub;
+use oxap_serve::stdio::{serve, StdioOptions};
+use oxap_serve::Hub;
 use serde_json::Value;
 
 #[derive(Clone, Default)]

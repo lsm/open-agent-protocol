@@ -3,8 +3,8 @@ mod prompt_support;
 use std::sync::atomic::Ordering;
 
 use futures::{executor::block_on, FutureExt};
-use oap_adapter::{message_text, run_to_terminal, Error, RunErrorKind};
-use oap_protocol::*;
+use oxap_adapter::{message_text, run_to_terminal, Error, RunErrorKind};
+use oxap_protocol::*;
 use prompt_support::ScriptSession;
 use serde_json::json;
 

@@ -1,15 +1,14 @@
 [package]
-name = "oap-adapter-copilot"
+name = "oxap-adapter-copilot"
 version = "0.1.0"
 edition = "2021"
 description = "The Open Agent Protocol adapter over the GitHub Copilot CLI's headless JSON-RPC"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
-publish = false
 
 [dependencies]
-oap-adapter = { path = ".." }
-oap-harness = { path = "../../harness" }
+oxap-adapter = { path = "..", version = "=0.1.0" }
+oxap-harness = { path = "../../harness", version = "=0.1.0" }
 serde_json = { version = "1", features = ["raw_value"] }
 
 [dev-dependencies]

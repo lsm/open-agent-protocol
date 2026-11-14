@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use futures_util::lock::Mutex as AsyncMutex;
-use oap_adapter::jsonrpc::{Fault, IncomingRequest, NotificationMessage};
-use oap_adapter::{BoxFuture, Error, InteractionResolution};
-use oap_protocol::{InteractionId, ParticipantId, RunCancelResponse, RunStatus};
+use oxap_adapter::jsonrpc::{Fault, IncomingRequest, NotificationMessage};
+use oxap_adapter::{BoxFuture, Error, InteractionResolution};
+use oxap_protocol::{InteractionId, ParticipantId, RunCancelResponse, RunStatus};
 
 use crate::native::{
     decode, CancelParams, PermissionOutcome, PermissionRequest, PermissionResponse, PromptResult,
@@ -196,7 +196,7 @@ impl Permissions {
     pub(crate) fn prompt_failure(
         self: Arc<Self>,
         run: Arc<Mutex<TextRun>>,
-        error: oap_adapter::jsonrpc::Error,
+        error: oxap_adapter::jsonrpc::Error,
     ) -> BoxFuture<'static, ()> {
         self.transition(run, true, move |text, now| {
             if error.remote_code() == Some(-32800) && text.state().status == RunStatus::CANCELLING {

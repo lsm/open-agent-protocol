@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use oap_adapter::{
+use oxap_adapter::{
     CompactRequest, Error, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest,
     UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
-use oap_binding::{Action, Entry, Record, Store};
-use oap_protocol::{
+use oxap_binding::{Action, Entry, Record, Store};
+use oxap_protocol::{
     Admission, MessageSubmitResponse, RunCancelResponse, RunId, SessionCompactResponse, SessionId,
     SessionState, SessionStatus, FEATURE_OPEN_REOPEN, FEATURE_SESSION_COMPACT,
 };
@@ -51,7 +51,7 @@ pub enum HubError {
     #[error(transparent)]
     Adapter(#[from] Error),
     #[error(transparent)]
-    Binding(#[from] oap_binding::Error),
+    Binding(#[from] oxap_binding::Error),
 }
 
 #[derive(Default)]
@@ -187,7 +187,7 @@ impl Hub {
             (request.reopen, &self.shared.options.bindings, adopting)
         {
             let history = bindings.history(request.session_id.as_str())?;
-            let bound = oap_binding::state(&history)
+            let bound = oxap_binding::state(&history)
                 .filter(|bound| bound.record.adapter == adapter)
                 .ok_or_else(|| HubError::UnknownSession(request.session_id.clone()))?;
             request.native_session_id = bound.record.native_session_id.clone();
@@ -339,22 +339,22 @@ impl Hub {
         &self,
         cursor: &str,
         limit: i64,
-    ) -> Result<oap_protocol::SessionListResponse, HubError> {
+    ) -> Result<oxap_protocol::SessionListResponse, HubError> {
         let bindings = self
             .shared
             .options
             .bindings
             .as_ref()
             .ok_or(HubError::NoSessionHistory)?;
-        let page = oap_binding::list(&bindings.sessions()?, cursor, limit)?;
+        let page = oxap_binding::list(&bindings.sessions()?, cursor, limit)?;
         let sessions = page
             .entries
             .into_iter()
-            .map(|entry| oap_protocol::SessionListEntry {
+            .map(|entry| oxap_protocol::SessionListEntry {
                 state: if entry.live() {
-                    oap_protocol::SessionListState::LIVE
+                    oxap_protocol::SessionListState::LIVE
                 } else {
-                    oap_protocol::SessionListState::CLOSED
+                    oxap_protocol::SessionListState::CLOSED
                 },
                 session_id: entry.record.session_id.as_str().into(),
                 adapter: entry.record.adapter,
@@ -364,7 +364,7 @@ impl Hub {
                 directory: entry.record.directory,
             })
             .collect();
-        Ok(oap_protocol::SessionListResponse {
+        Ok(oxap_protocol::SessionListResponse {
             sessions,
             next_cursor: page.next_cursor,
         })
@@ -455,7 +455,7 @@ impl Hub {
         Ok(subscription)
     }
 
-    pub async fn probe(&self, name: &str) -> Result<oap_adapter::Descriptor, HubError> {
+    pub async fn probe(&self, name: &str) -> Result<oxap_adapter::Descriptor, HubError> {
         let adapter = self
             .shared
             .registry
@@ -468,7 +468,7 @@ impl Hub {
         Ok(descriptor)
     }
 
-    pub async fn adapters(&self) -> Vec<(String, Result<oap_adapter::Descriptor, HubError>)> {
+    pub async fn adapters(&self) -> Vec<(String, Result<oxap_adapter::Descriptor, HubError>)> {
         let mut statuses = Vec::new();
         for name in self.shared.registry.names() {
             let probed = self.probe(&name).await;
@@ -562,7 +562,7 @@ impl Drop for Reserved<'_> {
 pub struct HubSession {
     id: SessionId,
     adapter: String,
-    session: Box<dyn oap_adapter::Session>,
+    session: Box<dyn oxap_adapter::Session>,
     closed: AtomicBool,
     hub: Weak<Shared>,
     options: HubOptions,
@@ -577,7 +577,7 @@ pub struct SessionListing {
     pub adapter: String,
     pub status: SessionStatus,
     pub active_run_id: Option<RunId>,
-    pub active_runs: Vec<oap_protocol::ActiveRun>,
+    pub active_runs: Vec<oxap_protocol::ActiveRun>,
     pub created_ms: i64,
 }
 
@@ -721,8 +721,8 @@ impl HubSession {
 
     pub async fn models(
         &self,
-        mut request: oap_protocol::ModelsRequest,
-    ) -> Result<oap_adapter::Catalog, HubError> {
+        mut request: oxap_protocol::ModelsRequest,
+    ) -> Result<oxap_adapter::Catalog, HubError> {
         if !request.session_id.as_str().is_empty() && request.session_id != self.id {
             return Err(HubError::ScopeMismatch {
                 payload: request.session_id,
@@ -732,7 +732,7 @@ impl HubSession {
         request.session_id = self.id.clone();
         let lister = self.session.model_lister().ok_or_else(|| {
             Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
-                oap_protocol::FEATURE_MODELS_LIST,
+                oxap_protocol::FEATURE_MODELS_LIST,
             )))
         })?;
         let catalog = lister
@@ -758,8 +758,8 @@ impl HubSession {
 
     pub async fn tools(
         &self,
-        mut request: oap_protocol::ToolsListRequest,
-    ) -> Result<oap_adapter::ToolCatalog, HubError> {
+        mut request: oxap_protocol::ToolsListRequest,
+    ) -> Result<oxap_adapter::ToolCatalog, HubError> {
         if let Some(payload) = request.session_id.as_ref().filter(|id| **id != self.id) {
             return Err(HubError::ScopeMismatch {
                 payload: payload.clone(),
@@ -820,8 +820,8 @@ impl HubSession {
 
     pub async fn resolve_call(
         &self,
-        resolution: oap_adapter::CallResolution,
-    ) -> Result<oap_protocol::ActionCallResolveResponse, HubError> {
+        resolution: oxap_adapter::CallResolution,
+    ) -> Result<oxap_protocol::ActionCallResolveResponse, HubError> {
         if resolution.request.session_id != self.id {
             return Err(HubError::ScopeMismatch {
                 payload: resolution.request.session_id,
@@ -830,7 +830,7 @@ impl HubSession {
         }
         let resolver = self.session.call_resolver().ok_or_else(|| {
             Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
-                oap_protocol::FEATURE_TOOLS_PROVIDE,
+                oxap_protocol::FEATURE_TOOLS_PROVIDE,
             )))
         })?;
         Ok(resolver
@@ -841,8 +841,8 @@ impl HubSession {
 
     pub async fn switch_model(
         &self,
-        request: oap_protocol::SessionModelSwitchRequest,
-    ) -> Result<(oap_protocol::SessionModelSwitchResponse, SessionState), HubError> {
+        request: oxap_protocol::SessionModelSwitchRequest,
+    ) -> Result<(oxap_protocol::SessionModelSwitchResponse, SessionState), HubError> {
         if request.session_id != self.id {
             return Err(HubError::ScopeMismatch {
                 payload: request.session_id,
@@ -851,7 +851,7 @@ impl HubSession {
         }
         let switcher = self.session.model_switcher().ok_or_else(|| {
             Error::UnsupportedControl(Box::new(UnsupportedControl::unadvertised(
-                oap_protocol::FEATURE_SESSION_MODEL_SWITCH,
+                oxap_protocol::FEATURE_SESSION_MODEL_SWITCH,
             )))
         })?;
         let (response, state) = switcher
@@ -873,15 +873,15 @@ impl HubSession {
 
     pub async fn update_settings(
         &self,
-        request: oap_protocol::SessionSettingsUpdateRequest,
-    ) -> Result<(oap_protocol::SessionSettingsUpdateResponse, SessionState), HubError> {
+        request: oxap_protocol::SessionSettingsUpdateRequest,
+    ) -> Result<(oxap_protocol::SessionSettingsUpdateResponse, SessionState), HubError> {
         if request.session_id != self.id {
             return Err(HubError::ScopeMismatch {
                 payload: request.session_id,
                 addressed: self.id.clone(),
             });
         }
-        let keys = oap_adapter::open_setting_keys(
+        let keys = oxap_adapter::open_setting_keys(
             &request.reasoning_level,
             request.compaction_policy.as_ref(),
         );
@@ -890,7 +890,7 @@ impl HubSession {
         };
         let updater = self.session.settings_updater().ok_or_else(|| {
             Error::UnsupportedControl(Box::new(UnsupportedControl {
-                field: oap_adapter::open_setting_field(first).to_owned(),
+                field: oxap_adapter::open_setting_field(first).to_owned(),
                 ..UnsupportedControl::unadvertised(first)
             }))
         })?;

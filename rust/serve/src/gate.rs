@@ -1,5 +1,5 @@
-use oap_adapter::{open_setting_field, open_setting_keys, Descriptor, Error, UnsupportedControl};
-use oap_protocol::{
+use oxap_adapter::{open_setting_field, open_setting_keys, Descriptor, Error, UnsupportedControl};
+use oxap_protocol::{
     SessionOpenRequest, SupportLevel, ToolSourceAttachment, FEATURE_OPEN_REOPEN,
     FEATURE_OPEN_SUBSCRIBE, FEATURE_TOOL_SOURCES_ATTACH, MODE_SESSION_OPEN, TOOL_SOURCE_PROCESS,
 };

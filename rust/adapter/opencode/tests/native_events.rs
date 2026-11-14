@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_adapter_opencode::native::{
+use oxap_adapter_opencode::native::{
     decode_data, decode_event, durable, session_scoped, supported, valid_event_id,
     valid_session_id, Error, Event,
 };

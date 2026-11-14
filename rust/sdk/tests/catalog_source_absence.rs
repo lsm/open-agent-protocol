@@ -1,9 +1,9 @@
 mod common;
 
-use oap_sdk::{ListModelsRequest, ModelSource};
+use oxap_sdk::{ListModelsRequest, ModelSource};
 
-async fn client_with(shape: &str) -> oap_sdk::Client {
-    oap_sdk::ClientBuilder::new()
+async fn client_with(shape: &str) -> oxap_sdk::Client {
+    oxap_sdk::ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args([format!("--catalog-shape={shape}")])
         .connect()

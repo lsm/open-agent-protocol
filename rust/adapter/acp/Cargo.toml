@@ -1,20 +1,19 @@
 [package]
-name = "oap-adapter-acp"
+name = "oxap-adapter-acp"
 version = "0.1.0"
 edition = "2021"
 description = "The Open Agent Protocol adapter over an Agent Client Protocol v1 agent on stdio"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
-publish = false
 
 [dependencies]
 crossbeam-channel = "0.5"
 futures = "0.3"
 futures-channel = "0.3"
 futures-util = "0.3"
-oap-adapter = { path = ".." }
-oap-harness = { path = "../../harness" }
-oap-protocol = { path = "../../protocol" }
+oxap-adapter = { path = "..", version = "=0.1.0" }
+oxap-harness = { path = "../../harness", version = "=0.1.0" }
+oxap-protocol = { path = "../../protocol", version = "=0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 

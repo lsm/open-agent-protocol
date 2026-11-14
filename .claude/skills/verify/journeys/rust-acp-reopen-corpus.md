@@ -4,7 +4,7 @@ Follow shared setup and the verification mutex in SKILL.md. Run from the
 repository root.
 
 ```sh
-(cd rust && cargo test -p oap-adapter-acp --test corpus_reopen -- --nocapture)
+(cd rust && cargo test -p oxap-adapter-acp --test corpus_reopen -- --nocapture)
 ```
 
 The test spawns `tests/support/reopen_agent.py`, which replays the pinned

@@ -6,7 +6,7 @@ with the ReleaseSafe validator built.
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-permission-projection.py --consumer permission_controller --output-dir /tmp/oap-permission-controller-native-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-permission-controller.py --output-dir /tmp/oap-permission-controller-ownership-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test permission_controller)
+(cd rust && cargo test -p oxap-adapter-acp --test permission_controller)
 ```
 
 The first command uses the controller through its normal standalone native

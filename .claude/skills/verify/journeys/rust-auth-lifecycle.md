@@ -3,7 +3,7 @@
 From the repository root, run:
 
 ```sh
-(cd rust && cargo test -p oap-validation --test auth_lifecycle)
+(cd rust && cargo test -p oxap-validation --test auth_lifecycle)
 python3 .claude/skills/verify/scripts/rust-auth-lifecycle.py --output-dir /tmp/oap-auth-lifecycle-<unique-name>
 ```
 

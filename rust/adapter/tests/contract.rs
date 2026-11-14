@@ -1,8 +1,8 @@
 use futures::executor::block_on;
 use futures::StreamExt;
-use oap_adapter::Error;
-use oap_adapter::*;
-use oap_protocol::*;
+use oxap_adapter::Error;
+use oxap_adapter::*;
+use oxap_protocol::*;
 
 struct Echo;
 

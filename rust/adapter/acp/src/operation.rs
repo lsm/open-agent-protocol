@@ -6,8 +6,8 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use futures_channel::oneshot;
-use oap_adapter::jsonrpc::{Error, Fault, RpcClient};
-use oap_adapter::process::Child;
+use oxap_adapter::jsonrpc::{Error, Fault, RpcClient};
+use oxap_adapter::process::Child;
 use serde_json::value::RawValue;
 
 use crate::process::{Process, ProcessConfig, DIALECT};
@@ -130,7 +130,7 @@ impl Process {
                     crossbeam_channel::select! {
                         recv(response) -> result => break result.unwrap_or_else(|_| Err(worker_error())),
                         recv(inbound) -> message => match message {
-                            Ok(oap_adapter::jsonrpc::Inbound::Request(request)) => {
+                            Ok(oxap_adapter::jsonrpc::Inbound::Request(request)) => {
                                 if let Err(error) = request.respond_error(
                                     -32601,
                                     "method not supported during session reload",
@@ -138,8 +138,8 @@ impl Process {
                                     break Err(error);
                                 }
                             }
-                            Ok(oap_adapter::jsonrpc::Inbound::Barrier(ack)) => drop(ack),
-                            Ok(oap_adapter::jsonrpc::Inbound::Notification(_)) => (),
+                            Ok(oxap_adapter::jsonrpc::Inbound::Barrier(ack)) => drop(ack),
+                            Ok(oxap_adapter::jsonrpc::Inbound::Notification(_)) => (),
                             Err(_) => break Err(DIALECT.error(Fault::Closed)),
                         }
                     }

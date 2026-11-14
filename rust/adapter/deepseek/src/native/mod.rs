@@ -5,7 +5,7 @@ mod validate;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-use oap_adapter::gojson::{
+use oxap_adapter::gojson::{
     go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, slice, structure, structures,
     zero,
 };
@@ -31,7 +31,7 @@ pub const NOTIFY_SUBAGENT_STARTED: &str = "subagent.started";
 pub const NOTIFY_SUBAGENT_FINISHED: &str = "subagent.finished";
 
 pub static SERVER_VERSION: LazyLock<String> = LazyLock::new(|| {
-    oap_harness::current("deepseek-harness")
+    oxap_harness::current("deepseek-harness")
         .and_then(|version| version.admits.first().cloned())
         .expect("the harness catalog pins deepseek-harness with an admitted server version")
 });

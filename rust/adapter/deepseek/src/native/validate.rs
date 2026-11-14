@@ -1,4 +1,4 @@
-use oap_adapter::gojson::{go_quote, zero};
+use oxap_adapter::gojson::{go_quote, zero};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
@@ -300,9 +300,9 @@ fn valid_epoch_header(header: &EpochHeader) -> bool {
 struct TurnEndReason {
     #[serde(default, deserialize_with = "zero")]
     kind: String,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::raw")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
     reason: Raw,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::raw")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
     error: Raw,
 }
 

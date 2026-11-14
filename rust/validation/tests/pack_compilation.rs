@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::pack::PackLoader;
+use oxap_validation::pack::PackLoader;
 use serde_json::Value;
 
 #[test]

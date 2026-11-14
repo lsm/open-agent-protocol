@@ -1,16 +1,15 @@
 [package]
-name = "oap-validation"
+name = "oxap-validation"
 version = "0.1.0"
 edition = "2021"
 description = "Open Agent Protocol trace validator"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
-publish = false
 
 [dependencies]
 fluent-uri = "=0.4.1"
 jsonschema = { version = "=0.59.0", default-features = false, features = ["arbitrary-precision"] }
-oap-protocol = { path = "../protocol" }
+oxap-protocol = { path = "../protocol", version = "=0.1.0" }
 regex = "=1.13.1"
 regex-syntax = "=0.8.11"
 serde = { version = "1", features = ["derive"] }

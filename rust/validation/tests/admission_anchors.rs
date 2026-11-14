@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::{codes, Phase, Validator};
+use oxap_validation::{codes, Phase, Validator};
 
 #[test]
 fn admission_anchors_must_be_answered_by_the_claimed_admission() {

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use oap_adapter_codex_appserver::native::*;
+use oxap_adapter_codex_appserver::native::*;
 use serde::de::DeserializeOwned;
 use serde_json::value::RawValue;
 use serde_json::Value;

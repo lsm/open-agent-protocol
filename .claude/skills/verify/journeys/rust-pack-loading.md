@@ -12,8 +12,8 @@ handling. Shared trace parity includes load refusals and each fixture's mode.
 Run from the repository root:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_declarations
-cargo doc --manifest-path rust/Cargo.toml -p oap-validation --no-deps
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_declarations
+cargo doc --manifest-path rust/Cargo.toml -p oxap-validation --no-deps
 python3 .claude/skills/verify/scripts/rust-pack-declarations.py --output-dir /tmp/oap-pack-declarations-<unique>
 ```
 
@@ -42,7 +42,7 @@ resolution. Dependencies name a loaded pack at their exact version. Returned
 Reference ownership is checked by the third slice. Compilation and corpus validation follow separately.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_resources
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_resources
 python3 .claude/skills/verify/scripts/rust-pack-resources.py --output-dir /tmp/oap-pack-resources-<unique>
 ```
 
@@ -62,7 +62,7 @@ bundle. A globally loaded pack supplies no authority without a dependency.
 Identifiers stay in the owning pack namespace.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_references
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_references
 python3 .claude/skills/verify/scripts/rust-pack-resources.py --references --output-dir /tmp/oap-pack-references-<unique>
 ```
 
@@ -93,7 +93,7 @@ composed envelope schema and separate member schemas remain available with
 immutable construction data.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_compilation
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_compilation
 python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-pack-compiled-<unique>
 ```
 
@@ -119,7 +119,7 @@ agent, provider and load-error vocabularies. Optional null fields preserve their
 zero/default meaning, including null string-list elements.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_corpus_entries
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_corpus_entries
 python3 .claude/skills/verify/scripts/rust-pack-corpus-entries.py --output-dir /tmp/oap-pack-corpus-entries-<unique>
 ```
 
@@ -145,7 +145,7 @@ pack capability. Provider entries retain their profile-specific manifest rules.
 It preserves the narrower staged operation for existing consumers.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_corpus
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_corpus
 python3 .claude/skills/verify/scripts/rust-pack-corpus-entries.py --complete --output-dir /tmp/oap-pack-loader-complete-<unique>
 ```
 
@@ -167,7 +167,7 @@ following validator-integration slice.
 the library. The external consumer now calls this operation for each envelope.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test pack_schema_validation
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test pack_schema_validation
 go test ./go/validation -run '^TestPackedPrimaryDiagnostic' -count=1
 python3 .claude/skills/verify/scripts/rust-pack-compiled.py --output-dir /tmp/oap-pack-schema-operation-<unique>
 ```
@@ -190,7 +190,7 @@ Tolerant mode is exercised in `rust-tolerant.md`.
 ## Native strict packed traces
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test packed_traces
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test packed_traces
 python3 .claude/skills/verify/scripts/rust-packed-traces.py --zig zig/zig-out/bin/oxap --output-dir /tmp/oap-native-packed-<unique>
 ```
 

@@ -1,4 +1,4 @@
-use oap_adapter::gojson::{
+use oxap_adapter::gojson::{
     decode, go_float, raw, remarshal_any, strings, structure, structures, zero, Decode,
 };
 use serde::Deserialize;

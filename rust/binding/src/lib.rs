@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use oap_protocol::CompactionPolicy;
+use oxap_protocol::CompactionPolicy;
 use serde::{Deserialize, Serialize};
 
 mod file;

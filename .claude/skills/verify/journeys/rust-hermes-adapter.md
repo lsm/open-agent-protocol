@@ -4,8 +4,8 @@ Follow shared setup and the verification mutex in SKILL.md. Run from the
 repository root.
 
 ```sh
-(cd rust && cargo test -p oap-adapter-hermes --test rpc)
-(cd rust && cargo test -p oap-adapter-hermes --all-features)
+(cd rust && cargo test -p oxap-adapter-hermes --test rpc)
+(cd rust && cargo test -p oxap-adapter-hermes --all-features)
 ```
 
 `tests/rpc.rs` spells the text Go's `go/adapter/hermes/internal/rpc` prints

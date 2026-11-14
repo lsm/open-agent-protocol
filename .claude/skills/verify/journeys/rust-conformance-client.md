@@ -4,9 +4,9 @@ Use shared toolchain setup from `SKILL.md`, then run
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp/oap-conformance-client-<unique-name>
-cargo test --manifest-path rust/Cargo.toml -p oap-conformance --test client -- --nocapture
-cargo test --manifest-path rust/Cargo.toml -p oap-conformance --lib client::tests -- --nocapture
-cargo test --manifest-path rust/Cargo.toml -p oap-conformance
+cargo test --manifest-path rust/Cargo.toml -p oxap-conformance --test client -- --nocapture
+cargo test --manifest-path rust/Cargo.toml -p oxap-conformance --lib client::tests -- --nocapture
+cargo test --manifest-path rust/Cargo.toml -p oxap-conformance
 ```
 
 The standalone public consumer must match a capabilities response from the

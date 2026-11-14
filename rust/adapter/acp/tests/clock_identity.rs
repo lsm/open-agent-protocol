@@ -2,13 +2,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter_acp::{Runtime, TextRun, TextRunContext};
+use oxap_adapter_acp::{Runtime, TextRun, TextRunContext};
 use serde_json::Value;
 
 fn corpus_file(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
-        .join(&oap_adapter_acp::pin().corpus)
+        .join(&oxap_adapter_acp::pin().corpus)
         .join("cases/new-prompt-completed")
         .join(name)
 }
@@ -81,16 +81,16 @@ for line in sys.stdin:
         Self(path)
     }
 
-    fn config(&self, runtime: Option<Runtime>) -> oap_adapter_acp::Config {
+    fn config(&self, runtime: Option<Runtime>) -> oxap_adapter_acp::Config {
         let python = std::process::Command::new("python3")
             .args(["-c", "import sys; print(sys.executable)"])
             .output()
             .unwrap();
         assert!(python.status.success());
         let corpus = corpus_file("native.jsonl");
-        oap_adapter_acp::Config {
+        oxap_adapter_acp::Config {
             runtime,
-            process: oap_adapter_acp::process::ProcessConfig {
+            process: oxap_adapter_acp::process::ProcessConfig {
                 path: String::from_utf8(python.stdout).unwrap().trim().into(),
                 dir: self.0.to_string_lossy().into(),
                 args: vec![
@@ -115,8 +115,8 @@ impl Drop for Fixture {
 
 #[test]
 fn the_native_session_preserves_recorded_clock_and_identity_order() {
-    use oap_adapter::{Adapter as _, OpenRequest, SubmitRequest};
-    use oap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest, Participant};
+    use oxap_adapter::{Adapter as _, OpenRequest, SubmitRequest};
+    use oxap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest, Participant};
     let fixture = Fixture::new();
     let ticks = AtomicI64::new(1);
     let ids = std::sync::atomic::AtomicU64::new(0);
@@ -129,7 +129,7 @@ fn the_native_session_preserves_recorded_clock_and_identity_order() {
             )
         },
     );
-    let adapter = oap_adapter_acp::Adapter::new(fixture.config(Some(runtime))).unwrap();
+    let adapter = oxap_adapter_acp::Adapter::new(fixture.config(Some(runtime))).unwrap();
     let revision = adapter.describe().capability_revision;
     let session = block_on(adapter.open(OpenRequest {
         session_id: "session".into(),
@@ -206,8 +206,8 @@ fn the_native_session_preserves_recorded_clock_and_identity_order() {
 
 #[test]
 fn generated_session_ids_share_one_source_per_adapter() {
-    use oap_adapter::{Adapter as _, OpenRequest};
-    use oap_protocol::Participant;
+    use oxap_adapter::{Adapter as _, OpenRequest};
+    use oxap_protocol::Participant;
     let ids = std::sync::atomic::AtomicU64::new(0);
     for (runtime, prefix) in [
         (None, "session"),
@@ -220,7 +220,7 @@ fn generated_session_ids_share_one_source_per_adapter() {
         ),
     ] {
         let fixture = Fixture::new();
-        let adapter = oap_adapter_acp::Adapter::new(fixture.config(runtime)).unwrap();
+        let adapter = oxap_adapter_acp::Adapter::new(fixture.config(runtime)).unwrap();
         for number in 1..=2 {
             let session = block_on(adapter.open(OpenRequest {
                 participant: Participant {

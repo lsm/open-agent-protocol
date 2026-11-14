@@ -7,10 +7,10 @@ use std::task::Context;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::{executor::block_on, task::noop_waker};
-use oap_adapter::jsonrpc::Inbound;
-use oap_adapter_acp::native::{ContentBlock, PromptParams};
-use oap_adapter_acp::process::{Process, ProcessConfig};
-use oap_adapter_acp::PromptBridge;
+use oxap_adapter::jsonrpc::Inbound;
+use oxap_adapter_acp::native::{ContentBlock, PromptParams};
+use oxap_adapter_acp::process::{Process, ProcessConfig};
+use oxap_adapter_acp::PromptBridge;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 

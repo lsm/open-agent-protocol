@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_binding::MemoryStore;
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_binding::MemoryStore;
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_serve::{Hub, HubOptions, Registry};
 
 #[test]
 fn closing_the_hubs_sessions_cancels_a_live_run_first_and_records_the_close() {
@@ -43,7 +43,9 @@ fn closing_the_hubs_sessions_cancels_a_live_run_first_and_records_the_close() {
     assert!(
         matches!(
             block_on(entry.close()),
-            Err(oap_serve::HubError::Adapter(oap_adapter::Error::RunActive))
+            Err(oxap_serve::HubError::Adapter(
+                oxap_adapter::Error::RunActive
+            ))
         ),
         "the run must hold the session open for this test to mean anything"
     );

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::controls::Controls;
 use super::interactions::{Interaction, ToolTrack};

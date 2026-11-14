@@ -332,20 +332,20 @@ pub(crate) const DRAIN_POLL: std::time::Duration = std::time::Duration::from_mil
 
 #[derive(Default)]
 pub(crate) struct Stopping {
-    pub(crate) mode: Option<oap_protocol::ShutdownMode>,
+    pub(crate) mode: Option<oxap_protocol::ShutdownMode>,
     pub(crate) draining: bool,
 }
 
 impl Stopping {
     fn graceful(&self) -> bool {
-        self.mode == Some(oap_protocol::ShutdownMode::GRACEFUL)
+        self.mode == Some(oxap_protocol::ShutdownMode::GRACEFUL)
     }
 
     pub(crate) fn drained(hub: &Hub) -> bool {
         let runs = block_on(hub.nonterminal_runs());
         for run in runs
             .iter()
-            .filter(|run| run.status == oap_protocol::RunStatus::QUEUED)
+            .filter(|run| run.status == oxap_protocol::RunStatus::QUEUED)
         {
             block_on(hub.cancel_queued(run));
         }
@@ -354,7 +354,7 @@ impl Stopping {
 }
 
 pub(crate) fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) -> (Answer, bool) {
-    use oap_protocol::{EndpointShutdownResponse, ShutdownMode, ShutdownOutcome};
+    use oxap_protocol::{EndpointShutdownResponse, ShutdownMode, ShutdownOutcome};
     if let Err(refused) = request.only(&["request"]) {
         return (Err(refused), false);
     }
@@ -385,9 +385,9 @@ pub(crate) fn shutdown(hub: &Hub, request: &Request, stopping: &mut Stopping) ->
     if stopping.graceful() {
         runs.retain(|run| {
             let dropped =
-                run.status == oap_protocol::RunStatus::QUEUED && block_on(hub.cancel_queued(run));
+                run.status == oxap_protocol::RunStatus::QUEUED && block_on(hub.cancel_queued(run));
             if dropped {
-                lost.push(oap_protocol::ShutdownQueuedRun {
+                lost.push(oxap_protocol::ShutdownQueuedRun {
                     session_id: run.session_id.clone(),
                     run_id: run.run_id.clone(),
                 });
@@ -717,7 +717,7 @@ impl Serving {
 
 enum Subscribing {
     Refused(WireError),
-    Gap(oap_adapter::ReplayGap),
+    Gap(oxap_adapter::ReplayGap),
 }
 
 impl From<WireError> for Subscribing {
@@ -785,7 +785,7 @@ pub(crate) fn detailed(
 }
 
 pub(crate) fn refusal(err: &HubError) -> Option<WireError> {
-    use oap_adapter::Error;
+    use oxap_adapter::Error;
     match err {
         HubError::StaleRevision { expected, current } => Some(detailed(
             "stale_capabilities",
@@ -838,9 +838,9 @@ pub(crate) fn open(
     }
     let envelope = gate_request(
         request.request.as_deref(),
-        &[oap_protocol::EnvelopeType::SESSION_OPEN_REQUEST],
+        &[oxap_protocol::EnvelopeType::SESSION_OPEN_REQUEST],
     )?;
-    let asked: oap_protocol::SessionOpenRequest = payload(&envelope)?;
+    let asked: oxap_protocol::SessionOpenRequest = payload(&envelope)?;
     let attached = asked.subscribe.then(claim).transpose()?;
     if hub.registry().lookup(&request.adapter).is_none() {
         return Err(wire(
@@ -865,8 +865,8 @@ pub(crate) fn open(
                 "unsupported_feature",
                 &refused,
                 serde_json::json!({
-                    "feature": oap_protocol::FEATURE_TOOL_SOURCES_ATTACH,
-                    "reason": oap_adapter::CONTROL_UNSATISFIABLE,
+                    "feature": oxap_protocol::FEATURE_TOOL_SOURCES_ATTACH,
+                    "reason": oxap_adapter::CONTROL_UNSATISFIABLE,
                     "source": refused.tool_source,
                 }),
             )
@@ -881,11 +881,11 @@ pub(crate) fn open(
         })?;
         metadata.insert(key.clone(), value);
     }
-    let opening = oap_adapter::OpenRequest {
+    let opening = oxap_adapter::OpenRequest {
         session_id: asked.session_id.clone().unwrap_or_default(),
-        participant: oap_protocol::Participant {
+        participant: oxap_protocol::Participant {
             id: crate::DEFAULT_PARTICIPANT.into(),
-            ..oap_protocol::Participant::default()
+            ..oxap_protocol::Participant::default()
         },
         metadata,
         tool_sources,
@@ -894,7 +894,7 @@ pub(crate) fn open(
         reopen: asked.reopen,
         reasoning_level: asked.reasoning_level.clone(),
         compaction_policy: asked.compaction_policy.clone(),
-        ..oap_adapter::OpenRequest::default()
+        ..oxap_adapter::OpenRequest::default()
     };
     let opened = block_on(hub.open(&request.adapter, opening)).map_err(open_refusal)?;
     let named = asked
@@ -920,7 +920,7 @@ pub(crate) fn open(
     let mut admitted_run = None;
     let state = match &asked.message {
         Some(message) => {
-            let submitted = block_on(opened.session.submit(oap_adapter::SubmitRequest {
+            let submitted = block_on(opened.session.submit(oxap_adapter::SubmitRequest {
                 request: message.submit(opened.session.id().clone()),
                 envelope_id: envelope.id.clone(),
             }));
@@ -929,7 +929,7 @@ pub(crate) fn open(
                     admitted_run = admission
                         .run_id
                         .clone()
-                        .filter(|_| admission.admission != oap_protocol::Admission::STEERED);
+                        .filter(|_| admission.admission != oxap_protocol::Admission::STEERED);
                     crate::compound::with_admitted_run(
                         opened.state.clone(),
                         &admission,
@@ -945,8 +945,8 @@ pub(crate) fn open(
         }
         None => opened.state.clone(),
     };
-    let mut response = oap_protocol::Envelope::new(
-        oap_protocol::EnvelopeType::SESSION_OPEN_RESPONSE,
+    let mut response = oxap_protocol::Envelope::new(
+        oxap_protocol::EnvelopeType::SESSION_OPEN_RESPONSE,
         next_id(ids, "response"),
         &state,
     )
@@ -969,7 +969,7 @@ pub(crate) fn open(
                 let _ = rollback_run(hub, &opened.session, run);
             }
             match block_on(opened.session.rollback()) {
-                Ok(()) | Err(HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
+                Ok(()) | Err(HubError::Adapter(oxap_adapter::Error::SessionClosed)) => {
                     "the session was rolled back"
                 }
                 Err(_) => "rolling the session back failed and it may still be live",
@@ -991,10 +991,12 @@ fn open_refusal(err: HubError) -> WireError {
                     HubError::UnknownAdapter(_) => "unknown_adapter",
                     HubError::SessionExists(_) => "session_exists",
                     HubError::UnknownSession(_)
-                    | HubError::Adapter(oap_adapter::Error::UnknownSession(_)) => "unknown_session",
+                    | HubError::Adapter(oxap_adapter::Error::UnknownSession(_)) => {
+                        "unknown_session"
+                    }
                     HubError::ClosedAtOpen(_)
                     | HubError::SessionClosed(_)
-                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    | HubError::Adapter(oxap_adapter::Error::SessionClosed) => "session_closed",
                     _ => "open_failed",
                 },
                 err,
@@ -1043,14 +1045,16 @@ fn events(
         None => hub.subscribe(entry.id()),
     };
     let subscription = subscribed.map_err(|err| match err {
-        HubError::Adapter(oap_adapter::Error::ReplayGap(gap)) => Subscribing::Gap(gap),
+        HubError::Adapter(oxap_adapter::Error::ReplayGap(gap)) => Subscribing::Gap(gap),
         err => Subscribing::Refused(wire(
             match &err {
-                HubError::Adapter(oap_adapter::Error::SessionClosed)
+                HubError::Adapter(oxap_adapter::Error::SessionClosed)
                 | HubError::SessionClosed(_) => "session_closed",
                 HubError::NoRunToResume => "no_run_to_resume",
-                HubError::Adapter(oap_adapter::Error::ReplayCursorFuture) => "replay_cursor_future",
-                HubError::Adapter(oap_adapter::Error::RunNotFound) => "run_not_found",
+                HubError::Adapter(oxap_adapter::Error::ReplayCursorFuture) => {
+                    "replay_cursor_future"
+                }
+                HubError::Adapter(oxap_adapter::Error::RunNotFound) => "run_not_found",
                 HubError::UnknownSession(_) => "unknown_session",
                 _ => "internal",
             },
@@ -1150,7 +1154,7 @@ impl Pump {
                 return;
             }
         }
-        let mut delivered_run = oap_protocol::RunId::default();
+        let mut delivered_run = oxap_protocol::RunId::default();
         let mut delivered = self.resume_from;
         loop {
             match block_on(futures_next(&mut self.subscription)) {
@@ -1250,7 +1254,7 @@ impl Pump {
 
 fn futures_next(
     subscription: &mut Subscription,
-) -> impl std::future::Future<Output = Option<Result<oap_protocol::Envelope, HubError>>> + '_ {
+) -> impl std::future::Future<Output = Option<Result<oxap_protocol::Envelope, HubError>>> + '_ {
     std::future::poll_fn(move |context| {
         futures_core::Stream::poll_next(std::pin::Pin::new(&mut *subscription), context)
     })
@@ -1468,8 +1472,8 @@ const MAX_ENVELOPE_BYTES: usize = 16 << 20;
 
 fn gate_request(
     raw: Option<&RawValue>,
-    want: &[oap_protocol::EnvelopeType],
-) -> Result<oap_protocol::Envelope, WireError> {
+    want: &[oxap_protocol::EnvelopeType],
+) -> Result<oxap_protocol::Envelope, WireError> {
     let raw = raw
         .map(RawValue::get)
         .filter(|text| *text != "null")
@@ -1491,8 +1495,8 @@ fn gate_request(
     validator
         .validate(&value)
         .map_err(|err| wire("schema_invalid", err))?;
-    let envelope =
-        oap_protocol::Envelope::parse(raw.as_bytes()).map_err(|err| wire("malformed_json", err))?;
+    let envelope = oxap_protocol::Envelope::parse(raw.as_bytes())
+        .map_err(|err| wire("malformed_json", err))?;
     if !want.contains(&envelope.envelope_type) {
         let names: Vec<&str> = want.iter().map(|kind| kind.as_str()).collect();
         return Err(wire(
@@ -1508,7 +1512,7 @@ fn gate_request(
 }
 
 fn payload<T: serde::de::DeserializeOwned>(
-    envelope: &oap_protocol::Envelope,
+    envelope: &oxap_protocol::Envelope,
 ) -> Result<T, WireError> {
     envelope
         .decode_payload()
@@ -1516,14 +1520,14 @@ fn payload<T: serde::de::DeserializeOwned>(
 }
 
 fn reply(
-    kind: oap_protocol::EnvelopeType,
-    request: &oap_protocol::Envelope,
-    session_id: oap_protocol::SessionId,
-    run_id: oap_protocol::RunId,
+    kind: oxap_protocol::EnvelopeType,
+    request: &oxap_protocol::Envelope,
+    session_id: oxap_protocol::SessionId,
+    run_id: oxap_protocol::RunId,
     body: &impl Serialize,
     ids: &Ids,
 ) -> Answer {
-    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), body)
+    let mut response = oxap_protocol::Envelope::new(kind, next_id(ids, "response"), body)
         .map_err(|err| wire("internal", err))?;
     response.in_reply_to = Some(request.id.clone());
     response.session_id = Some(session_id);
@@ -1533,7 +1537,7 @@ fn reply(
 }
 
 fn adapter_code(err: &crate::HubError) -> &'static str {
-    use oap_adapter::Error;
+    use oxap_adapter::Error;
     match err {
         crate::HubError::ScopeMismatch { .. } => "scope_mismatch",
         crate::HubError::Adapter(Error::SessionClosed) => "session_closed",
@@ -1550,7 +1554,7 @@ fn adapter_code(err: &crate::HubError) -> &'static str {
 }
 
 fn transcript(hub: &Hub, request: &Request) -> Answer {
-    use oap_protocol::{TRANSCRIPT_LOAD_DEFAULT_LIMIT, TRANSCRIPT_LOAD_MAX_LIMIT};
+    use oxap_protocol::{TRANSCRIPT_LOAD_DEFAULT_LIMIT, TRANSCRIPT_LOAD_MAX_LIMIT};
     let limit = match request.limit {
         None => TRANSCRIPT_LOAD_DEFAULT_LIMIT,
         Some(limit) if (1..=TRANSCRIPT_LOAD_MAX_LIMIT).contains(&limit) => limit,
@@ -1561,7 +1565,7 @@ fn transcript(hub: &Hub, request: &Request) -> Answer {
             ))
         }
     };
-    let id = oap_protocol::SessionId::from(request.session_id.as_str());
+    let id = oxap_protocol::SessionId::from(request.session_id.as_str());
     let native = match hub.held_native(&id) {
         Some(native) => native,
         None => hub
@@ -1577,7 +1581,9 @@ fn transcript(hub: &Hub, request: &Request) -> Answer {
     let page =
         block_on(hub.transcript_page(&native, &request.cursor, limit as usize)).map_err(|err| {
             match err {
-                HubError::Adapter(oap_adapter::Error::InvalidCursor) => wire("invalid_cursor", err),
+                HubError::Adapter(oxap_adapter::Error::InvalidCursor) => {
+                    wire("invalid_cursor", err)
+                }
                 _ => wire("internal", err),
             }
         })?;
@@ -1586,8 +1592,8 @@ fn transcript(hub: &Hub, request: &Request) -> Answer {
             "unsupported_feature",
             "transcript: this session's adapter keeps no transcript it can read",
             serde_json::json!({
-                "feature": oap_protocol::FEATURE_TRANSCRIPT_LOAD,
-                "reason": oap_adapter::CONTROL_UNADVERTISED,
+                "feature": oxap_protocol::FEATURE_TRANSCRIPT_LOAD,
+                "reason": oxap_adapter::CONTROL_UNADVERTISED,
             }),
         ));
     };
@@ -1601,10 +1607,10 @@ fn submit_refusal(err: HubError) -> WireError {
             match &err {
                 HubError::ScopeMismatch { .. } => "scope_mismatch",
                 HubError::SessionClosed(_)
-                | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
-                HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
+                | HubError::Adapter(oxap_adapter::Error::SessionClosed) => "session_closed",
+                HubError::Adapter(oxap_adapter::Error::RunActive) => "run_active",
                 HubError::Adapter(
-                    oap_adapter::Error::InvalidSubmission | oap_adapter::Error::UnsupportedInput,
+                    oxap_adapter::Error::InvalidSubmission | oxap_adapter::Error::UnsupportedInput,
                 ) => "invalid_submission",
                 _ => "internal",
             },
@@ -1616,13 +1622,13 @@ fn submit_refusal(err: HubError) -> WireError {
 fn settings(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     let envelope = gate_request(
         request.request.as_deref(),
-        &[oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST],
+        &[oxap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_REQUEST],
     )?;
-    let asked: oap_protocol::SessionSettingsUpdateRequest = payload(&envelope)?;
+    let asked: oxap_protocol::SessionSettingsUpdateRequest = payload(&envelope)?;
     let entry = session(hub, &request.session_id)?;
     let (updated, _) = block_on(entry.update_settings(asked)).map_err(submit_refusal)?;
-    let mut response = oap_protocol::Envelope::new(
-        oap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE,
+    let mut response = oxap_protocol::Envelope::new(
+        oxap_protocol::EnvelopeType::SESSION_SETTINGS_UPDATE_RESPONSE,
         next_id(ids, "response"),
         &updated,
     )
@@ -1638,16 +1644,16 @@ fn catalog_refusal(err: HubError, otherwise: &'static str) -> WireError {
         return refused;
     }
     match err {
-        HubError::Adapter(oap_adapter::Error::ToolCatalogUnavailable) => detailed(
+        HubError::Adapter(oxap_adapter::Error::ToolCatalogUnavailable) => detailed(
             "unsupported_feature",
             &err,
             serde_json::json!({
-                "feature": oap_protocol::FEATURE_TOOLS_LIST,
-                "reason": oap_adapter::CONTROL_UNADVERTISED,
+                "feature": oxap_protocol::FEATURE_TOOLS_LIST,
+                "reason": oxap_adapter::CONTROL_UNADVERTISED,
             }),
         ),
         HubError::ScopeMismatch { .. } => wire("scope_mismatch", err),
-        HubError::SessionClosed(_) | HubError::Adapter(oap_adapter::Error::SessionClosed) => {
+        HubError::SessionClosed(_) | HubError::Adapter(oxap_adapter::Error::SessionClosed) => {
             wire("session_closed", err)
         }
         _ => wire(otherwise, err),
@@ -1656,12 +1662,12 @@ fn catalog_refusal(err: HubError, otherwise: &'static str) -> WireError {
 
 fn listing(
     ids: &Ids,
-    kind: oap_protocol::EnvelopeType,
+    kind: oxap_protocol::EnvelopeType,
     payload: &impl Serialize,
-    session_id: &oap_protocol::SessionId,
+    session_id: &oxap_protocol::SessionId,
     revision: String,
 ) -> Answer {
-    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), payload)
+    let mut response = oxap_protocol::Envelope::new(kind, next_id(ids, "response"), payload)
         .map_err(|err| wire("internal", err))?;
     response.in_reply_to = Some(next_id(ids, "request").into());
     response.session_id = Some(session_id.clone());
@@ -1670,7 +1676,7 @@ fn listing(
 }
 
 fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
-    use oap_protocol::EnvelopeType;
+    use oxap_protocol::EnvelopeType;
     let envelope = gate_request(
         request.request.as_deref(),
         &[
@@ -1682,23 +1688,23 @@ fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
     let (message, compaction) = if compacting {
         (
             None,
-            Some(payload::<oap_protocol::SessionCompactRequest>(&envelope)?),
+            Some(payload::<oxap_protocol::SessionCompactRequest>(&envelope)?),
         )
     } else {
         (
-            Some(payload::<oap_protocol::MessageSubmitRequest>(&envelope)?),
+            Some(payload::<oxap_protocol::MessageSubmitRequest>(&envelope)?),
             None,
         )
     };
     let entry = session(hub, &request.session_id)?;
     let admitted = match (message, compaction) {
-        (Some(message), _) => block_on(entry.submit(oap_adapter::SubmitRequest {
+        (Some(message), _) => block_on(entry.submit(oxap_adapter::SubmitRequest {
             request: message,
             envelope_id: envelope.id.clone(),
         }))
         .map(|admission| {
             let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
-            let steered = admission.admission == oap_protocol::Admission::STEERED;
+            let steered = admission.admission == oxap_protocol::Admission::STEERED;
             (
                 EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE,
                 serde_json::to_value(&admission),
@@ -1707,13 +1713,13 @@ fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
                 steered,
             )
         }),
-        (None, compaction) => block_on(entry.compact(oap_adapter::CompactRequest {
+        (None, compaction) => block_on(entry.compact(oxap_adapter::CompactRequest {
             request: compaction.unwrap_or_default(),
             envelope_id: envelope.id.clone(),
         }))
         .map(|admission| {
             let (session, run) = (admission.session_id.clone(), admission.run_id.clone());
-            let steered = admission.admission == oap_protocol::Admission::STEERED;
+            let steered = admission.admission == oxap_protocol::Admission::STEERED;
             (
                 EnvelopeType::SESSION_COMPACT_RESPONSE,
                 serde_json::to_value(&admission),
@@ -1725,7 +1731,7 @@ fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
     };
     let (kind, admission, session_id, run_id, steered) = admitted.map_err(submit_refusal)?;
     let admission = admission.map_err(|err| wire("internal", err))?;
-    let mut response = oap_protocol::Envelope::new(kind, next_id(ids, "response"), &admission)
+    let mut response = oxap_protocol::Envelope::new(kind, next_id(ids, "response"), &admission)
         .map_err(|err| wire("internal", err))?;
     response.in_reply_to = Some(envelope.id.clone());
     response.session_id = Some(session_id);
@@ -1745,9 +1751,9 @@ fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
             Ok(None) => "the run's cancellation did not settle within the rollback window and may still be live".to_owned(),
             Err(
                 HubError::Adapter(
-                    oap_adapter::Error::RunAlreadyTerminal { .. }
-                    | oap_adapter::Error::RunNotFound
-                    | oap_adapter::Error::SessionClosed,
+                    oxap_adapter::Error::RunAlreadyTerminal { .. }
+                    | oxap_adapter::Error::RunNotFound
+                    | oxap_adapter::Error::SessionClosed,
                 )
                 | HubError::SessionClosed(_),
             ) => "the run settled before the rollback".to_owned(),
@@ -1764,9 +1770,9 @@ fn submit(hub: &Hub, request: &Request, ids: &Ids, limit: usize) -> Answer {
 fn rollback_run(
     hub: &Hub,
     entry: &HubSession,
-    run: &oap_protocol::RunId,
-) -> Result<Option<oap_protocol::EnvelopeType>, HubError> {
-    use oap_protocol::EnvelopeType;
+    run: &oxap_protocol::RunId,
+) -> Result<Option<oxap_protocol::EnvelopeType>, HubError> {
+    use oxap_protocol::EnvelopeType;
     let mut subscription = hub.subscribe(entry.id())?;
     let canceller = subscription.canceller();
     let (done, waiting) = std::sync::mpsc::channel::<()>();
@@ -1802,9 +1808,9 @@ fn rollback_run(
 fn cancel(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     let envelope = gate_request(
         request.request.as_deref(),
-        &[oap_protocol::EnvelopeType::RUN_CANCEL_REQUEST],
+        &[oxap_protocol::EnvelopeType::RUN_CANCEL_REQUEST],
     )?;
-    let asked: oap_protocol::RunCancelRequest = payload(&envelope)?;
+    let asked: oxap_protocol::RunCancelRequest = payload(&envelope)?;
     let entry = session(hub, &request.session_id)?;
     if &asked.session_id != entry.id() {
         return Err(wire(
@@ -1818,7 +1824,7 @@ fn cancel(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     }
     let ack = block_on(entry.cancel(asked.run_id)).map_err(|err| wire(adapter_code(&err), err))?;
     reply(
-        oap_protocol::EnvelopeType::RUN_CANCEL_RESPONSE,
+        oxap_protocol::EnvelopeType::RUN_CANCEL_RESPONSE,
         &envelope,
         ack.session_id.clone(),
         ack.run_id.clone(),
@@ -1827,10 +1833,10 @@ fn cancel(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
     )
 }
 
-fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &Ids) -> Answer {
-    let asked: oap_protocol::ActionCallResolveRequest = payload(envelope)?;
+fn resolve_call(entry: &HubSession, envelope: &oxap_protocol::Envelope, ids: &Ids) -> Answer {
+    let asked: oxap_protocol::ActionCallResolveRequest = payload(envelope)?;
     let run = asked.run_id.clone();
-    let answer = block_on(entry.resolve_call(oap_adapter::CallResolution {
+    let answer = block_on(entry.resolve_call(oxap_adapter::CallResolution {
         request_id: envelope.id.clone(),
         request: asked,
     }))
@@ -1839,19 +1845,19 @@ fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &Ids
             wire(
                 match &err {
                     HubError::ScopeMismatch { .. } => "scope_mismatch",
-                    HubError::Adapter(oap_adapter::Error::UnsupportedInput) => {
+                    HubError::Adapter(oxap_adapter::Error::UnsupportedInput) => {
                         "unsupported_feature"
                     }
                     HubError::SessionClosed(_)
-                    | HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    | HubError::Adapter(oxap_adapter::Error::SessionClosed) => "session_closed",
                     _ => "internal",
                 },
                 err,
             )
         })
     })?;
-    let mut response = oap_protocol::Envelope::new(
-        oap_protocol::EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
+    let mut response = oxap_protocol::Envelope::new(
+        oxap_protocol::EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
         next_id(ids, "response"),
         &answer,
     )
@@ -1864,7 +1870,7 @@ fn resolve_call(entry: &HubSession, envelope: &oap_protocol::Envelope, ids: &Ids
 }
 
 fn resolve(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
-    use oap_protocol::EnvelopeType;
+    use oxap_protocol::EnvelopeType;
     let envelope = gate_request(
         request.request.as_deref(),
         &[
@@ -1874,10 +1880,10 @@ fn resolve(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
         ],
     )?;
     let entry = session(hub, &request.session_id)?;
-    let mut resolution = oap_adapter::InteractionResolution::default();
+    let mut resolution = oxap_adapter::InteractionResolution::default();
     let (kind, interaction, session_id, _) =
         if envelope.envelope_type == EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST {
-            let asked: oap_protocol::PermissionResolveRequest = payload(&envelope)?;
+            let asked: oxap_protocol::PermissionResolveRequest = payload(&envelope)?;
             let named = (
                 EnvelopeType::ACTION_PERMISSION_RESOLVE_RESPONSE,
                 asked.interaction_id.clone(),
@@ -1889,7 +1895,7 @@ fn resolve(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
             resolution.permission = Some(asked);
             named
         } else if envelope.envelope_type == EnvelopeType::USER_INPUT_RESOLVE_REQUEST {
-            let asked: oap_protocol::UserInputResolveRequest = payload(&envelope)?;
+            let asked: oxap_protocol::UserInputResolveRequest = payload(&envelope)?;
             let named = (
                 EnvelopeType::USER_INPUT_RESOLVE_RESPONSE,
                 asked.interaction_id.clone(),
@@ -1905,7 +1911,7 @@ fn resolve(hub: &Hub, request: &Request, ids: &Ids) -> Answer {
         };
     let run = resolution.run_id.clone();
     block_on(entry.resolve(resolution)).map_err(|err| wire(adapter_code(&err), err))?;
-    let body = oap_protocol::UserInputResolveResponse {
+    let body = oxap_protocol::UserInputResolveResponse {
         interaction_id: interaction,
         session_id,
         run_id: run.clone(),
@@ -1950,8 +1956,8 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
                 HubError::UnknownAdapter(_) => wire("unknown_adapter", err),
                 _ => wire("probe_failed", err),
             })?;
-            let mut response = oap_protocol::Envelope::new(
-                oap_protocol::EnvelopeType::CAPABILITIES_RESPONSE,
+            let mut response = oxap_protocol::Envelope::new(
+                oxap_protocol::EnvelopeType::CAPABILITIES_RESPONSE,
                 next_id(ids, "response"),
                 &descriptor.capabilities,
             )
@@ -1963,14 +1969,14 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
         "models" => {
             request.only(&["session_id", "allow_degraded_features"])?;
             let entry = session(hub, &request.session_id)?;
-            let catalog = block_on(entry.models(oap_protocol::ModelsRequest {
+            let catalog = block_on(entry.models(oxap_protocol::ModelsRequest {
                 session_id: entry.id().clone(),
                 allow_degraded_features: request.allow_degraded_features.clone(),
             }))
             .map_err(|err| catalog_refusal(err, "internal"))?;
             listing(
                 ids,
-                oap_protocol::EnvelopeType::MODELS_RESPONSE,
+                oxap_protocol::EnvelopeType::MODELS_RESPONSE,
                 &catalog.models,
                 entry.id(),
                 catalog.revision,
@@ -1979,14 +1985,14 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
         "tools" => {
             request.only(&["session_id", "allow_degraded_features"])?;
             let entry = session(hub, &request.session_id)?;
-            let catalog = block_on(entry.tools(oap_protocol::ToolsListRequest {
+            let catalog = block_on(entry.tools(oxap_protocol::ToolsListRequest {
                 session_id: Some(entry.id().clone()),
                 allow_degraded_features: request.allow_degraded_features.clone(),
             }))
             .map_err(|err| catalog_refusal(err, "tools_failed"))?;
             listing(
                 ids,
-                oap_protocol::EnvelopeType::ACTION_TOOLS_LIST_RESPONSE,
+                oxap_protocol::EnvelopeType::ACTION_TOOLS_LIST_RESPONSE,
                 &catalog.tools,
                 entry.id(),
                 catalog.revision,
@@ -2014,7 +2020,7 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
             crate::workwire::capabilities(hub)
         }
         "work.status" | "work.stop" | "work.read" => {
-            let id = oap_protocol::SessionId::from(request.session_id.as_str());
+            let id = oxap_protocol::SessionId::from(request.session_id.as_str());
             let answered = match request.op.as_str() {
                 "work.status" => {
                     request.only(&["session_id"])?;
@@ -2046,9 +2052,9 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
             request.only(&["cursor", "limit"])?;
             if request
                 .limit
-                .is_some_and(|limit| !(1..=oap_binding::MAX_LIMIT as i64).contains(&limit))
+                .is_some_and(|limit| !(1..=oxap_binding::MAX_LIMIT as i64).contains(&limit))
             {
-                return Err(wire("invalid_request", oap_binding::Error::InvalidLimit));
+                return Err(wire("invalid_request", oxap_binding::Error::InvalidLimit));
             }
             let page = hub
                 .session_history(&request.cursor, request.limit.unwrap_or(0))
@@ -2057,15 +2063,15 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
                         "unsupported_feature",
                         &err,
                         serde_json::json!({
-                            "feature": oap_protocol::FEATURE_SESSION_LIST,
-                            "reason": oap_adapter::CONTROL_UNADVERTISED,
+                            "feature": oxap_protocol::FEATURE_SESSION_LIST,
+                            "reason": oxap_adapter::CONTROL_UNADVERTISED,
                         }),
                     ),
-                    HubError::Binding(oap_binding::Error::InvalidCursor) => {
-                        wire("invalid_cursor", oap_binding::Error::InvalidCursor)
+                    HubError::Binding(oxap_binding::Error::InvalidCursor) => {
+                        wire("invalid_cursor", oxap_binding::Error::InvalidCursor)
                     }
-                    HubError::Binding(oap_binding::Error::InvalidLimit) => {
-                        wire("invalid_request", oap_binding::Error::InvalidLimit)
+                    HubError::Binding(oxap_binding::Error::InvalidLimit) => {
+                        wire("invalid_request", oxap_binding::Error::InvalidLimit)
                     }
                     _ => wire("history_failed", "the session history could not be read"),
                 })?;
@@ -2102,11 +2108,11 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
             let entry = session(hub, &request.session_id)?;
             let state = match block_on(entry.state()) {
                 Ok(state) => state,
-                Err(crate::HubError::Adapter(oap_adapter::Error::SessionClosed)) => {
-                    oap_protocol::SessionState {
+                Err(crate::HubError::Adapter(oxap_adapter::Error::SessionClosed)) => {
+                    oxap_protocol::SessionState {
                         session_id: entry.id().clone(),
-                        status: oap_protocol::SessionStatus::CLOSED,
-                        ..oap_protocol::SessionState::default()
+                        status: oxap_protocol::SessionStatus::CLOSED,
+                        ..oxap_protocol::SessionState::default()
                     }
                 }
                 Err(err) => {
@@ -2117,8 +2123,8 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
                     })
                 }
             };
-            let mut envelope = oap_protocol::Envelope::new(
-                oap_protocol::EnvelopeType::SESSION_STATE_RESPONSE,
+            let mut envelope = oxap_protocol::Envelope::new(
+                oxap_protocol::EnvelopeType::SESSION_STATE_RESPONSE,
                 next_id(ids, "response"),
                 &state,
             )
@@ -2148,8 +2154,10 @@ pub(crate) fn dispatch(hub: &Hub, request: &Request, ids: &Ids, limit: usize) ->
             let entry = session(hub, &request.session_id)?;
             block_on(entry.close()).map_err(|err| WireError {
                 code: match &err {
-                    crate::HubError::Adapter(oap_adapter::Error::RunActive) => "run_active",
-                    crate::HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                    crate::HubError::Adapter(oxap_adapter::Error::RunActive) => "run_active",
+                    crate::HubError::Adapter(oxap_adapter::Error::SessionClosed) => {
+                        "session_closed"
+                    }
                     _ => "internal",
                 },
                 message: trim(&err.to_string()),
@@ -2175,7 +2183,7 @@ struct AdapterInfo {
     #[serde(skip_serializing_if = "String::is_empty")]
     capability_revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    capabilities: Option<oap_protocol::CapabilityDescriptor>,
+    capabilities: Option<oxap_protocol::CapabilityDescriptor>,
     #[serde(skip_serializing_if = "String::is_empty")]
     error: String,
 }

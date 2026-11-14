@@ -4,7 +4,7 @@ From the repository root, run:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-deferred-captures.py --output-dir /tmp/oap-deferred-captures-<unique>
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test snapshot_claims
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test snapshot_claims
 ```
 
 The helper rebuilds and invokes Go, Rust and Zig's public validator CLIs on 45

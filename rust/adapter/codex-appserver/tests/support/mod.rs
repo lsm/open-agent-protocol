@@ -6,16 +6,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use oap_adapter::runtime::Runtime;
-use oap_adapter::OpenRequest;
-use oap_adapter_codex_appserver::adapter::{Adapter, Config};
-use oap_adapter_codex_appserver::client::{Client, ClientFactory};
-use oap_adapter_codex_appserver::process::ProcessConfig;
-use oap_adapter_codex_appserver::rpc::{
+use oxap_adapter::runtime::Runtime;
+use oxap_adapter::OpenRequest;
+use oxap_adapter_codex_appserver::adapter::{Adapter, Config};
+use oxap_adapter_codex_appserver::client::{Client, ClientFactory};
+use oxap_adapter_codex_appserver::process::ProcessConfig;
+use oxap_adapter_codex_appserver::rpc::{
     self, error, ErrorObject, Fault, Inbound, IncomingRequest, Message, NotificationMessage,
     RequestId, Responder, DIALECT,
 };
-use oap_protocol::Participant;
+use oxap_protocol::Participant;
 use serde_json::value::RawValue;
 
 pub type Reply = Result<&'static str, &'static str>;

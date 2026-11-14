@@ -1,6 +1,6 @@
-use oap_adapter_deepseek::content::{chunk_part, final_content, stream_parts};
-use oap_adapter_deepseek::native::{AssistantStreamRecord, ContentBlock};
-use oap_protocol::ToolCallId;
+use oxap_adapter_deepseek::content::{chunk_part, final_content, stream_parts};
+use oxap_adapter_deepseek::native::{AssistantStreamRecord, ContentBlock};
+use oxap_protocol::ToolCallId;
 use serde_json::value::RawValue;
 
 fn raw(text: &str) -> Box<RawValue> {

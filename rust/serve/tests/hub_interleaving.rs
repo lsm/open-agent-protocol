@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use futures::executor::block_on;
 use futures::StreamExt;
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{Error, OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{Error, OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Admission, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     RequestedDeliveryMode, RunId, SessionId,
 };
-use oap_serve::{Hub, HubError, HubSession, Registry, Subscription};
+use oxap_serve::{Hub, HubError, HubSession, Registry, Subscription};
 
 const SETTLE: Duration = Duration::from_secs(10);
 

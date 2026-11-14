@@ -1,4 +1,4 @@
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::super::{os, packed, payload, s, State};
 use super::{affirmative, describe_refusal, Expectation, PendingQuery, RUNG_DEGRADATION};
