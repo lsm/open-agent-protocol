@@ -252,6 +252,36 @@ test("resolveMakaiBinary falls back to the oapx bundled binary", async (t) => {
   assert.deepEqual(specifiers, [`${bundled}/bin/${binaryName("oxap")}`, `${bundled}/bin/${binaryName("oapx")}`]);
 });
 
+test("resolveMakaiBinary resolves the binary from the @oxap/cli platform package", async (t) => {
+  t.after(clearResolverEnv());
+  process.env.PATH = await emptyPath(t);
+  const oxapPackage = `@oxap/cli-${process.platform}-${process.arch}`;
+  const resolveModule = (specifier: string): string => {
+    if (!specifier.startsWith(`${oxapPackage}/`)) throw new Error(`Cannot find module '${specifier}'`);
+    return path.join(path.sep, "oxap-cli", "bin", path.basename(specifier));
+  };
+
+  assert.equal(
+    await resolveMakaiBinary({ cwd: await tempDir(t, "makai-empty-cwd-"), resolveModule }),
+    path.join(path.sep, "oxap-cli", "bin", binaryName("oxap")),
+  );
+});
+
+test("resolveMakaiBinary still resolves the legacy @oap-sdk/cli platform package", async (t) => {
+  t.after(clearResolverEnv());
+  process.env.PATH = await emptyPath(t);
+  const legacyPackage = `@oap-sdk/cli-${process.platform}-${process.arch}`;
+  const resolveModule = (specifier: string): string => {
+    if (!specifier.startsWith(`${legacyPackage}/`)) throw new Error(`Cannot find module '${specifier}'`);
+    return path.join(path.sep, "legacy-cli", "bin", path.basename(specifier));
+  };
+
+  assert.equal(
+    await resolveMakaiBinary({ cwd: await tempDir(t, "makai-empty-cwd-"), resolveModule }),
+    path.join(path.sep, "legacy-cli", "bin", binaryName("oxap")),
+  );
+});
+
 function urlServer(payloads: Map<string, Buffer>): Promise<{ url: string; requests: string[]; close: () => Promise<void> }> {
   const requests: string[] = [];
   const server = http.createServer((req, res) => {
