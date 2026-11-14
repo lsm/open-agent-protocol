@@ -9,6 +9,8 @@ repository root.
 (cd rust && cargo test -p oxap-adapter-claude --test native_lifecycle)
 (cd rust && cargo test -p oxap-adapter-claude --test native_system)
 (cd rust && cargo test -p oxap-adapter-claude --test native_tasks)
+(cd rust && cargo test -p oxap-adapter-claude --test native_control)
+(cd rust && cargo test -p oxap-adapter-claude --test native_turns)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -49,3 +51,32 @@ Go reads it: a present null `output_file` counts as present. To see it bite,
 drop the `output_file` presence check: the output-file test must fail. Read
 no patch as terminal: the task-updated test must fail. Print the status
 unquoted: the notification test must fail.
+
+`tests/native_control.rs` ports Go's `TestCanUseToolRequestDecode` for the
+reverse requests Claude Code sends the host: `can_use_tool`, `hook_callback`
+and `mcp_message`. It pins what Go settles without a test: a present null
+`input` counts as present, a null `request` or hook `input` reads as its zero
+value, an MCP message keeps its bytes as written, whitespace included, and any
+other subtype is unknown without its body being read. To see it bite, drop
+the `input` presence check: the can-use-tool refusal test must fail. Drop the
+`callback_id` check: the hook test must fail. Decode an unknown subtype's
+body: the unknown test must fail.
+A raw member keeps a lone surrogate escape (`\ud800`) as Go's
+`json.RawMessage` does, while a string member reads it as U+FFFD. Write such a
+case from a script, since an editor may turn the escape into the character, and
+grep the file for the literal escape. A control request is decoded from the
+normalised text, so a key holding such an escape is skipped as Go skips it,
+and `source::raw` copies each raw member from the same span of the original
+text; the replacement keeps every escape six bytes long, so the spans line
+up. To see it bite, keep the normalised span in `source::raw`: the raw-member
+test must fail. Decode the original text instead: the ignored-key test must
+fail.
+
+`tests/native_turns.rs` compares the user turn the host writes byte for byte
+with Go's `NewUserTurn`, which marshals a map: members sorted, `<`, `>`, `&`
+and the line separators escaped. It ports the uuid cases of Go's
+`TestHostWriteShapes` and pins both length bounds, counted in bytes, so 65
+two-byte characters are too long. To see it bite, write `client_composed:
+false` on a turn the CLI may expand: the expand test must fail. Skip
+`go_marshal`: the escaping test must fail. Count characters instead of
+bytes: the uuid test must fail.

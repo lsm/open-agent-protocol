@@ -1,10 +1,15 @@
 mod decode;
+mod source;
+mod write;
 
 use oxap_adapter::gojson::{raw, slice, strings, structure, structures, zero};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-pub use decode::{decode_observation, Invalid, Observation};
+pub use decode::{
+    decode_control_request, decode_observation, ControlRequest, Invalid, Observation,
+};
+pub use write::{new_user_turn, validate_turn_uuid};
 
 pub type Raw = Option<Box<RawValue>>;
 
@@ -542,4 +547,56 @@ impl TaskUpdatedFrame {
     pub fn terminal(&self) -> bool {
         terminal_task_status(&self.patch.status)
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CanUseToolRequest {
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_name: String,
+    #[serde(default, deserialize_with = "source::raw")]
+    pub input: Raw,
+    #[serde(default, deserialize_with = "source::raw")]
+    pub permission_suggestions: Raw,
+    #[serde(default, deserialize_with = "zero")]
+    pub blocked_path: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub decision_reason: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub title: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub display_name: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub description: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub agent_id: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct HookInput {
+    #[serde(default, deserialize_with = "zero")]
+    pub hook_event_name: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_name: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct HookCallbackRequest {
+    #[serde(default, deserialize_with = "zero")]
+    pub callback_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+    #[serde(default, deserialize_with = "source::structure")]
+    pub input: HookInput,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct McpMessageRequest {
+    #[serde(default, deserialize_with = "zero")]
+    pub server_name: String,
+    #[serde(default, deserialize_with = "source::raw")]
+    pub message: Raw,
 }
