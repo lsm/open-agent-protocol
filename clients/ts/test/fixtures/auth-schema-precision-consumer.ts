@@ -1,8 +1,8 @@
 const imports = `
-import { EnvelopeType, PROTOCOL, PROFILE, VERSION, parseEnvelope, serializeEnvelope } from 'oap-client';
+import { EnvelopeType, PROTOCOL, PROFILE, VERSION, parseEnvelope, serializeEnvelope } from '@oxap/client';
 import type { Envelope, AuthProvider, AuthStatus, AuthProvidersRequest, AuthProvidersResponse,
   AuthLoginStartRequest, AuthLoginStartResponse, AuthLoginEvent, AuthLoginCancelRequest,
-  AuthLoginCancelResponse, AuthLoginCompleted } from 'oap-client';
+  AuthLoginCancelResponse, AuthLoginCompleted } from '@oxap/client';
 `;
 
 function source(kinds: string, urlFields: string, progressFields: string, optional = true): string {

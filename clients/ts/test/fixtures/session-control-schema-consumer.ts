@@ -13,9 +13,9 @@ const response: SessionModelSwitchResponse = { session_id: 'switch-session'${mis
     : `const provider: ProviderAttachment = { id: 'provider-two'${missing === 'request' ? '' : ", provider_id: 'upstream-two'"}${optional ? ", service_id: 'example-service'" : ''} };
 const request: SessionProviderAttachRequest = { session_id: 'attach-session', provider${optional ? ", allow_degraded_features: ['action.providers.attach']" : ''} };
 const response: SessionProviderAttachResponse = { session_id: 'attach-session'${missing === 'response' ? '' : ", provider_id: 'provider-two'"} };`;
-  return `import { EnvelopeType, parseEnvelope, serializeEnvelope } from 'oap-client';
+  return `import { EnvelopeType, parseEnvelope, serializeEnvelope } from '@oxap/client';
 import type { Envelope, SessionModelSwitchRequest, SessionModelSwitchResponse,
-  ProviderAttachment, SessionProviderAttachRequest, SessionProviderAttachResponse } from 'oap-client';
+  ProviderAttachment, SessionProviderAttachRequest, SessionProviderAttachResponse } from '@oxap/client';
 ${fields}
 const trace: Envelope[] = ${JSON.stringify(trace)}.map(value => parseEnvelope(JSON.stringify(value)));
 trace[6]!.type = EnvelopeType.${kind === 'switch' ? 'SessionModelSwitchRequest' : 'SessionProviderAttachRequest'};

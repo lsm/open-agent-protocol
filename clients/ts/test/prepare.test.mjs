@@ -9,7 +9,7 @@ import { test } from 'node:test';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function fixture(t, compiler) {
-  const temporary = mkdtempSync(join(tmpdir(), 'oap-client-prepare-'));
+  const temporary = mkdtempSync(join(tmpdir(), 'oxap-client-prepare-'));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
   const source = join(temporary, 'client checkout');
   const consumer = join(temporary, 'consumer');
@@ -47,13 +47,16 @@ function fixture(t, compiler) {
   writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   return {
     source,
+    temporary,
+    consumer,
+    run,
     install() {
       const result = run('npm', ['install', '--offline', '--foreground-scripts', '--package-lock=false', source], consumer);
       t.diagnostic(`npm install file dependency: exit ${result.status}`);
       return result;
     },
     observe() {
-      const result = run(process.execPath, ['--input-type=module', '-e', "import { prepareProbe } from 'oap-client'; process.stdout.write(prepareProbe);"], consumer);
+      const result = run(process.execPath, ['--input-type=module', '-e', "import { prepareProbe } from '@oxap/client'; process.stdout.write(prepareProbe);"], consumer);
       assert.equal(result.status, 0, result.stdout + result.stderr);
       t.diagnostic(`consumer import: ${result.stdout}`);
       return result.stdout;
@@ -75,7 +78,7 @@ for (const input of ['package-lock.json', 'tsconfig.json', 'src', 'test']) {
     rmSync(join(f.source, input), { recursive: true });
     const installed = f.install();
     assert.notEqual(installed.status, 0);
-    assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
+    assert.match(installed.stdout + installed.stderr, /@oxap\/client build is missing, stale or incomplete/);
     assert.match(installed.stdout + installed.stderr, /restore a complete checkout/);
   });
 }
@@ -86,7 +89,7 @@ test('a stale file dependency cannot install without a compiler', (t) => {
   writeFileSync(source, readFileSync(source, 'utf8').replace("'before'", "'after'"));
   const installed = f.install();
   if (installed.status === 0) assert.fail('stale install succeeded and exposed ' + f.observe());
-  assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
+  assert.match(installed.stdout + installed.stderr, /@oxap\/client build is missing, stale or incomplete/);
 });
 
 for (const output of ['session.js', 'session.d.ts']) {
@@ -95,7 +98,7 @@ for (const output of ['session.js', 'session.d.ts']) {
     rmSync(join(f.source, 'dist/src', output));
     const installed = f.install();
     assert.notEqual(installed.status, 0, 'partial install succeeded: ' + output);
-    assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
+    assert.match(installed.stdout + installed.stderr, /@oxap\/client build is missing, stale or incomplete/);
   });
 }
 
@@ -105,7 +108,7 @@ test('a file dependency with modified compiled output cannot install without a c
   writeFileSync(output, readFileSync(output, 'utf8').replace("'before'", "'tampered'"));
   const installed = f.install();
   assert.notEqual(installed.status, 0, 'modified output installed successfully');
-  assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
+  assert.match(installed.stdout + installed.stderr, /@oxap\/client build is missing, stale or incomplete/);
 });
 
 test('a stale file dependency rebuilds and exposes the current source with a compiler', (t) => {
@@ -124,4 +127,20 @@ test('a partial file dependency rebuilds missing JavaScript and declarations wit
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
   assert.equal(f.observe(), 'before');
   assert.equal(existsSync(join(f.source, 'dist/src/session.d.ts')), true);
+});
+
+test('the packed client installs from its tarball and imports as @oxap/client', (t) => {
+  const f = fixture(t, false);
+  const packed = f.run('npm', ['pack', '--json', '--pack-destination', f.temporary]);
+  assert.equal(packed.status, 0, packed.stdout + packed.stderr);
+  const [archive] = JSON.parse(packed.stdout);
+  assert.equal(archive.name, '@oxap/client');
+  assert.deepEqual(archive.files.map((file) => file.path).filter((path) => !path.startsWith('dist/src/')).sort(), ['README.md', 'package.json']);
+  const installed = f.run('npm', ['install', '--offline', '--package-lock=false', join(f.temporary, archive.filename)], f.consumer);
+  assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+  assert.equal(f.observe(), 'before');
+  const manifest = JSON.parse(readFileSync(join(f.consumer, 'node_modules/@oxap/client/package.json'), 'utf8'));
+  assert.equal(manifest.private, undefined);
+  assert.equal(manifest.publishConfig?.access, 'public');
+  assert.equal(manifest.repository?.directory, 'clients/ts');
 });
