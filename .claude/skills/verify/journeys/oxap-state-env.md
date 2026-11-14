@@ -31,6 +31,15 @@ what the home holds afterwards, and which payload dump was written:
   written.
 - `old env name`: only `OAPX_DEBUG_PROVIDER_PAYLOAD` is set, and its file is
   written.
+- `empty new env name`: `OXAP_DEBUG_PROVIDER_PAYLOAD` is set but empty, so the
+  `OAPX_` file is still written.
+- `empty new token`: an empty `OXAP_PROVIDER_SERVICE_TOKEN` is not "unset", so
+  `oxap serve agent` refuses it as invalid even though `OAPX_PROVIDER_SERVICE_TOKEN`
+  holds a valid one. An empty value falls through only for variables where
+  empty already meant unset.
+- `disagreeing metadata`: the open carries `oxap` and `oapx` settings that
+  differ, and the hub's open fails with `InvalidSubmission` before any model
+  request.
 
 It ends with `ok` and exits 0. The second script runs from an old-style home
 in a fresh workspace, so a background job's `output_path` must be under the

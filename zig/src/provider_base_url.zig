@@ -888,3 +888,14 @@ test "OXAP_BASE_URL wins over OAPX_BASE_URL, and the old name alone still applie
     defer allocator.free(new);
     try std.testing.expectEqualStrings("https://new.invalid", new);
 }
+
+test "an empty OXAP_BASE_URL leaves OAPX_BASE_URL in force rather than clearing it" {
+    const allocator = std.testing.allocator;
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(allocator, provider_catalog.baseUrlEnv("deepseek")[0], "");
+    try compat.setTestEnv(allocator, "OAPX_BASE_URL", "https://old.invalid");
+    try compat.setTestEnv(allocator, "OXAP_BASE_URL", "");
+    const resolved = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings("https://old.invalid", resolved);
+}

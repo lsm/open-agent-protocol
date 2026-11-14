@@ -317,3 +317,10 @@ func TestTheOXAPGlobalOverrideWinsOverItsOldNameWhichStillWorksAlone(t *testing.
 		t.Errorf("only the old name: global = %q, want its value", old.Global)
 	}
 }
+
+func TestAnEmptyOXAPGlobalOverrideLeavesTheOldNameInForce(t *testing.T) {
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf("OXAP_BASE_URL", "", "OAPX_BASE_URL", "http://old.test"))
+	if overrides.Global != "http://old.test" {
+		t.Errorf("global = %q, want the OAPX value when OXAP_BASE_URL is empty", overrides.Global)
+	}
+}

@@ -192,7 +192,7 @@ one it serves. They share the base envelope and vocabulary but not
 `ProtocolError` — the code sets are disjoint. A role is a noun, so `serve` takes
 an argument rather than a flag (decision 0019). State lives under `~/.oxap`, and a
 workspace's under `.oxap/`; while only the old `~/.oapx` or `.oapx/` exists, that
-one is still read and written, and nothing is moved. An `OXAP_*` variable wins
+one is still read and written, and nothing is moved. A non-empty `OXAP_*` variable wins
 over its `OAPX_*` spelling, which is still read. On macOS credentials are
 Keychain-first under `ai.hyperneo.oap`, falling back to `auth.json` in that state
 directory, so clearing that file alone leaves live credentials behind.

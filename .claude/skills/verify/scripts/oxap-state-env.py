@@ -56,7 +56,7 @@ def write_state(directory, server, work):
     (directory / "config.json").write_text(json.dumps({"model": "probe-model", "provider": "probe", "api": "openai-completions", "workspace": str(work)}))
 
 
-def one_turn(binary, root, home, work, extra):
+def one_turn(binary, root, home, work, extra, settings):
     (root / "hub.json").write_text(json.dumps({"adapters": {"loop": {"type": "oapx"}}}))
     environment = {"PATH": "/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(root),
                    "OXAP_KEYCHAIN_SERVICE": "oxap-probe-" + uuid.uuid4().hex, "OAPX_KEYCHAIN_SERVICE": "oapx-probe-" + uuid.uuid4().hex, **extra}
@@ -83,8 +83,11 @@ def one_turn(binary, root, home, work, extra):
 
     threading.Thread(target=read, daemon=True).start()
     try:
-        metadata = {"oapx": {"permission_mode": "bypass", "workspace_root": str(work)}}
-        call("open", adapter="loop", request=envelope("session.open.request", {"session_id": "probe", "metadata": metadata}))
+        metadata = {"oapx": {"permission_mode": "bypass", "workspace_root": str(work)}, **settings}
+        try:
+            call("open", adapter="loop", request=envelope("session.open.request", {"session_id": "probe", "metadata": metadata}))
+        except RuntimeError as refused:
+            return "open refused: " + ("InvalidSubmission" if "InvalidSubmission" in str(refused) else str(refused))
         call("events", session_id="probe")
         payload = {"session_id": "probe", "delivery": "auto", "messages": [{"role": "user", "content": "go"}]}
         call("submit", session_id="probe", request=envelope("session.message.submit.request", payload, session_id="probe"))
@@ -97,7 +100,7 @@ def one_turn(binary, root, home, work, extra):
         process.wait(timeout=10)
 
 
-def case(binary, name, layout, extra=lambda root: {}):
+def case(binary, name, layout, extra=lambda root: {}, settings={}):
     root = pathlib.Path(tempfile.mkdtemp(prefix="oxap-state-env-"))
     home, work = root / "home", root / "work"
     work.mkdir()
@@ -106,7 +109,7 @@ def case(binary, name, layout, extra=lambda root: {}):
         for directory in layout:
             servers[directory] = model_server()
             write_state(home / directory, servers[directory], work)
-        settled = one_turn(binary, root, home, work, extra(root))
+        settled = one_turn(binary, root, home, work, extra(root), settings)
         hits = {directory: server.hits for directory, server in servers.items()}
         present = sorted(p.name for p in home.iterdir())
         dumps = sorted(p.name for p in root.glob("*.payload"))
@@ -115,6 +118,23 @@ def case(binary, name, layout, extra=lambda root: {}):
     finally:
         for server in servers.values():
             server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def empty_token(binary):
+    root = pathlib.Path(tempfile.mkdtemp(prefix="oxap-state-env-"))
+    try:
+        (root / "home").mkdir()
+        environment = {"PATH": "/usr/bin:/bin", "HOME": str(root / "home"), "TMPDIR": str(root),
+                       "OXAP_KEYCHAIN_SERVICE": "oxap-probe-" + uuid.uuid4().hex,
+                       "OXAP_PROVIDER_SERVICE_URL": "http://127.0.0.1:9", "OXAP_PROVIDER_SERVICE_SECURITY": "loopback",
+                       "OXAP_PROVIDER_SERVICE_TOKEN": "", "OAPX_PROVIDER_SERVICE_TOKEN": "probe-token"}
+        done = subprocess.run([str(binary), "serve", "agent", "--stdio"], stdin=subprocess.DEVNULL, capture_output=True,
+                              env=environment, cwd=root, text=True, timeout=30)
+        refused = "InvalidProviderServiceToken" in done.stderr
+        print(f"empty new token: exit {done.returncode}, refused as invalid: {refused}")
+        return done.returncode != 0 and refused
+    finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -127,6 +147,11 @@ def main():
     assert case(binary, "both env names", [".oapx"], both)[3] == ["new.payload"]
     old = lambda root: {"OAPX_DEBUG_PROVIDER_PAYLOAD": str(root / "old.payload")}
     assert case(binary, "old env name", [".oapx"], old)[3] == ["old.payload"]
+    empty = lambda root: {"OXAP_DEBUG_PROVIDER_PAYLOAD": "", "OAPX_DEBUG_PROVIDER_PAYLOAD": str(root / "old.payload")}
+    assert case(binary, "empty new env name", [".oapx"], empty)[3] == ["old.payload"]
+    split = {"oxap": {"permission_mode": "ask", "workspace_root": "/"}}
+    assert case(binary, "disagreeing metadata", [".oxap"], settings=split)[:2] == ("open refused: InvalidSubmission", {".oxap": 0})
+    assert empty_token(binary)
     print("ok")
 
 

@@ -83,18 +83,20 @@ pub fn productEnvNames(comptime suffix: []const u8) [2][]const u8 {
 
 pub fn getProductEnvOwned(allocator: std.mem.Allocator, comptime suffix: []const u8) ![]u8 {
     const names = comptime productEnvNames(suffix);
-    return getEnvVarOwned(allocator, names[0]) catch |err| switch (err) {
-        error.EnvironmentVariableMissing => getEnvVarOwned(allocator, names[1]),
-        else => err,
-    };
+    if (getEnvVarOwned(allocator, names[0])) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    } else |err| if (err != error.EnvironmentVariableMissing) return err;
+    return getEnvVarOwned(allocator, names[1]);
 }
 
 pub fn getProductEnvOwnedFrom(environ: std.process.Environ, allocator: std.mem.Allocator, comptime suffix: []const u8) ![]u8 {
     const names = comptime productEnvNames(suffix);
-    return getEnvVarOwnedFrom(environ, allocator, names[0]) catch |err| switch (err) {
-        error.EnvironmentVariableMissing => getEnvVarOwnedFrom(environ, allocator, names[1]),
-        else => err,
-    };
+    if (getEnvVarOwnedFrom(environ, allocator, names[0])) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    } else |err| if (err != error.EnvironmentVariableMissing) return err;
+    return getEnvVarOwnedFrom(environ, allocator, names[1]);
 }
 
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
