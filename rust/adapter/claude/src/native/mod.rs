@@ -204,3 +204,122 @@ pub struct AssistantFrame {
     #[serde(default, deserialize_with = "zero")]
     pub session_id: String,
 }
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ResultFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub subtype: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub duration_ms: i64,
+    #[serde(default, deserialize_with = "zero")]
+    pub duration_api_ms: i64,
+    #[serde(default, deserialize_with = "zero")]
+    pub is_error: bool,
+    #[serde(default)]
+    pub num_turns: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub total_cost_usd: Option<f64>,
+    #[serde(default, deserialize_with = "raw")]
+    pub structured_output: Raw,
+    #[serde(default, deserialize_with = "structure")]
+    pub usage: Usage,
+    #[serde(default, rename = "modelUsage", deserialize_with = "raw")]
+    pub model_usage: Raw,
+    #[serde(default, deserialize_with = "raw")]
+    pub permission_denials: Raw,
+    #[serde(default)]
+    pub queued_turn_count: Option<i64>,
+    #[serde(default, deserialize_with = "strings")]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub api_error_status: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub user_message_uuid: String,
+    #[serde(default, deserialize_with = "strings")]
+    pub user_message_uuids: Vec<String>,
+    #[serde(default, deserialize_with = "zero")]
+    pub terminal_reason: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub result: String,
+    #[serde(default)]
+    pub origin: Option<Origin>,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+}
+
+impl ResultFrame {
+    pub fn cancelled(&self) -> bool {
+        matches!(
+            self.terminal_reason.as_str(),
+            TERMINAL_ABORTED_STREAMING | TERMINAL_ABORTED_TOOLS
+        )
+    }
+
+    pub fn max_turns(&self) -> bool {
+        self.subtype == RESULT_ERROR_MAX_TURNS || self.terminal_reason == TERMINAL_MAX_TURNS
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct StreamEventFrame {
+    #[serde(default, deserialize_with = "raw")]
+    pub event: Raw,
+    #[serde(default)]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(default, deserialize_with = "zero")]
+    pub user_message_uuid: String,
+    #[serde(default, deserialize_with = "strings")]
+    pub user_message_uuids: Vec<String>,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamDelta {
+    #[serde(default, rename = "type", deserialize_with = "zero")]
+    kind: String,
+    #[serde(default, deserialize_with = "zero")]
+    text: String,
+    #[serde(default, deserialize_with = "zero")]
+    thinking: String,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamEvent {
+    #[serde(default, rename = "type", deserialize_with = "zero")]
+    kind: String,
+    #[serde(default, deserialize_with = "structure")]
+    delta: StreamDelta,
+}
+
+impl StreamEventFrame {
+    pub fn stream_delta(&self) -> Option<(&'static str, String)> {
+        let event: StreamEvent = serde_json::from_str(self.event.as_deref()?.get()).ok()?;
+        if event.kind != "content_block_delta" {
+            return None;
+        }
+        match event.delta.kind.as_str() {
+            "text_delta" => Some(("text", event.delta.text)),
+            "thinking_delta" => Some(("thinking", event.delta.thinking)),
+            _ => None,
+        }
+    }
+}

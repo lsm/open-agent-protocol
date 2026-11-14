@@ -143,7 +143,10 @@ fn a_stream_event_projects_text_and_thinking_deltas() {
     let thinking = stream_event(&format!(
         r#"{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"thinking_delta","thinking":"hmm"}}}},"session_id":"{SESSION_ID}","uuid":"e2"}}"#
     ));
-    assert_eq!(thinking.stream_delta(), Some(("thinking", "hmm".to_owned())));
+    assert_eq!(
+        thinking.stream_delta(),
+        Some(("thinking", "hmm".to_owned()))
+    );
 
     for event in [
         r#"{"type":"message_stop"}"#,
