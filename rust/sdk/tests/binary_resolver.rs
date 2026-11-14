@@ -263,7 +263,10 @@ async fn a_local_oxap_build_outranks_a_local_oapx_build() {
     let _guard = EnvGuard::set(&[]);
     let temp = tempfile::tempdir().expect("tempdir");
     write_fake_binary(temp.path(), &["zig-out", "bin", &platform_name("oapx")]);
-    let preferred = write_fake_binary(temp.path(), &["zig", "zig-out", "bin", &platform_name("oxap")]);
+    let preferred = write_fake_binary(
+        temp.path(),
+        &["zig", "zig-out", "bin", &platform_name("oxap")],
+    );
 
     let resolved = BinaryResolver {
         base_dir: Some(temp.path().to_path_buf()),
@@ -272,7 +275,10 @@ async fn a_local_oxap_build_outranks_a_local_oapx_build() {
     .resolve()
     .await
     .expect("resolves");
-    assert_eq!(resolved, preferred, "a nested oxap build outranks a top-level oapx one");
+    assert_eq!(
+        resolved, preferred,
+        "a nested oxap build outranks a top-level oapx one"
+    );
 }
 
 #[tokio::test]
