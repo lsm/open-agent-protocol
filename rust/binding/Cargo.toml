@@ -3,7 +3,7 @@ name = "oap-binding"
 version = "0.1.0"
 edition = "2021"
 description = "Open Agent Protocol session binding and run stores"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
 publish = false
 

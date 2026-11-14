@@ -3,7 +3,7 @@ name = "oap-provider-catalog"
 version = "0.1.0"
 edition = "2021"
 description = "The curated model provider catalog: every supported vendor's endpoints, credentials and limits, as data"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
 publish = false
 

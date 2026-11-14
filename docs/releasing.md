@@ -40,11 +40,11 @@ of the last release tag**, which is where the notes start.
 **1. Collect the pull requests merged since the last tag.**
 
 ```sh
-gh api repos/lsm/open-agent-protocol/commits/v0.1.0-alpha.4 \
+gh api repos/lsm/oxap/commits/v0.1.0-alpha.4 \
   --jq .commit.committer.date
 # 2026-09-27T13:02:38Z
 
-gh pr list --repo lsm/open-agent-protocol --state merged \
+gh pr list --repo lsm/oxap --state merged \
   --search "merged:>2026-09-27T13:02:38Z" \
   --json number,title,body,mergedAt,url > prs.json
 ```

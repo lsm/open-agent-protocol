@@ -11,7 +11,7 @@ The crate lives in this repository at `rust/sdk/`. Until it is published, depend
 
 ```toml
 [dependencies]
-oap-sdk = { git = "https://github.com/lsm/open-agent-protocol" }
+oap-sdk = { git = "https://github.com/lsm/oxap" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
 ```
