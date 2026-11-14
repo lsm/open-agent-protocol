@@ -56,7 +56,7 @@ def main():
     assert build.returncode == 0, build.stderr
     documentation = run(["cargo", "doc", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--no-deps"], output, "docs-build")
     assert documentation.returncode == 0, documentation.stderr
-    page = (ROOT / "rust/target/doc/oap_validation/pack/struct.PackLoader.html").read_text()
+    page = (ROOT / "rust/target/doc/oxap_validation/pack/struct.PackLoader.html").read_text()
     (output / "pack-loader.html").write_text(page)
     words = html.unescape(re.sub(r"<[^>]+>", "", page))
     assert "Staged pack-loader construction" in words and "six loader slices" in words, words

@@ -59,7 +59,7 @@ def main():
     assert build.returncode == 0, build.stderr
     docs = run(["cargo", "doc", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--no-deps"], "docs-build")
     assert docs.returncode == 0, docs.stderr
-    page = (ROOT / "rust/target/doc/oap_validation/pack/struct.CompiledPacks.html").read_text()
+    page = (ROOT / "rust/target/doc/oxap_validation/pack/struct.CompiledPacks.html").read_text()
     (output / "compiled-packs.html").write_text(page)
     words = html.unescape(re.sub(r"<[^>]+>", "", page))
     assert "Agent mode and provenance validation" in words, words

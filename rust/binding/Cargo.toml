@@ -5,6 +5,7 @@ edition = "2021"
 description = "Open Agent Protocol session binding and run stores"
 repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
+publish = false
 
 [dependencies]
 base64 = "0.22"

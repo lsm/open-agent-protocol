@@ -5,6 +5,7 @@ edition = "2021"
 description = "Open Agent Protocol trace validator"
 repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
+publish = false
 
 [dependencies]
 fluent-uri = "=0.4.1"

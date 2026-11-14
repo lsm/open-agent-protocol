@@ -6,6 +6,7 @@ rust-version = "1.82"
 description = "Open Agent Protocol envelopes, identifiers and payloads"
 repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

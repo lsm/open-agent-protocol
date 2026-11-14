@@ -28,7 +28,7 @@ that ordinary validation still works through the public consumers, including the
 sandboxed PTY fixture reply and `/quit`. Keep stage coverage explicit as the
 remaining loader phases land.
 
-Inspect the generated `rust/target/doc/oap_validation/pack/struct.PackLoader.html`.
+Inspect the generated `rust/target/doc/oxap_validation/pack/struct.PackLoader.html`.
 Its staged API contract is included from `rust/validation/PACKS.md`, keeping prose
 in an external document while exposing coverage to Rust documentation consumers.
 

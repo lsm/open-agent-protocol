@@ -5,6 +5,7 @@ edition = "2021"
 description = "Open Agent Protocol endpoint conformance runner"
 repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
+publish = false
 
 [dependencies]
 crossbeam-channel = "0.5"

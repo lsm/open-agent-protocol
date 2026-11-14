@@ -5,6 +5,7 @@ edition = "2021"
 description = "The Open Agent Protocol harness catalog: every pinned upstream harness version"
 repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
+publish = false
 
 [dependencies]
 jsonschema = { version = "=0.59.0", default-features = false }
