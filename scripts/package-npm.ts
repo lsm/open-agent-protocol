@@ -33,9 +33,6 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
   const pkgName = `@oxap/cli-${target}`;
   const pkgDir = join(NPM_DIR, `cli-${target}`);
   const binDir = join(pkgDir, "bin");
-
-  mkdirSync(binDir, { recursive: true });
-
   const srcBinary = join(BIN_DIR, binary);
   const destBinary = join(binDir, os === "win32" ? "oxap.exe" : "oxap");
 
@@ -46,6 +43,7 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
     }
     throw new Error(`Binary not found: ${srcBinary} (required for ${pkgName})`);
   }
+  mkdirSync(binDir, { recursive: true });
   copyFileSync(srcBinary, destBinary);
   if (os !== "win32") {
     chmodSync(destBinary, 0o755);
