@@ -520,10 +520,10 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             continue;
         }
         if request.op == "shutdown" {
-            let mut stopping = serving
-                .stopping
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(mut stopping) = serving.write_stopping() else {
+                serving.inflight.release(size);
+                return Ok(false);
+            };
             let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
             serving.inflight.release(size);
             if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
@@ -606,11 +606,22 @@ impl Serving {
     }
 
     fn read_stopping(&self) -> Option<std::sync::RwLockReadGuard<'_, Stopping>> {
+        self.wait_stopping(std::sync::RwLock::try_read)
+    }
+
+    fn write_stopping(&self) -> Option<std::sync::RwLockWriteGuard<'_, Stopping>> {
+        self.wait_stopping(std::sync::RwLock::try_write)
+    }
+
+    fn wait_stopping<'a, G>(
+        &'a self,
+        take: impl Fn(&'a std::sync::RwLock<Stopping>) -> std::sync::TryLockResult<G>,
+    ) -> Option<G> {
         loop {
             if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
                 return None;
             }
-            match self.stopping.try_read() {
+            match take(&self.stopping) {
                 Ok(stopping) => return Some(stopping),
                 Err(std::sync::TryLockError::Poisoned(stopping)) => {
                     return Some(stopping.into_inner())
