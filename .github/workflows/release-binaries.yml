@@ -235,14 +235,14 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/dist-npm-upload"
           cp "$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin/${{ matrix.binary_name }}" \
-             "$GITHUB_WORKSPACE/dist-npm-upload/oapx-${{ matrix.npm_target }}"
+             "$GITHUB_WORKSPACE/dist-npm-upload/oxap-${{ matrix.npm_target }}"
 
       - name: Upload binary for npm packaging
         if: env.MACOS_WITHHELD != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: npm-binary-${{ matrix.npm_target }}
-          path: dist-npm-upload/oapx-${{ matrix.npm_target }}
+          path: dist-npm-upload/oxap-${{ matrix.npm_target }}
           if-no-files-found: error
 
   checksums:
@@ -367,7 +367,7 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*)
               for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64 win32-arm64; do
-                if [ ! -f "dist/bin/oapx-$target" ]; then
+                if [ ! -f "dist/bin/oxap-$target" ]; then
                   WITHHELD="${WITHHELD:+$WITHHELD,}$target"
                 fi
               done
@@ -412,11 +412,11 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       # npm's OIDC trusted publishing (no token) needs npm >= 11.5.1; Node 24 ships it.
-      - name: Publish platform packages
+      - name: Publish the platform packages, then @oxap/cli
         run: |
           set -euo pipefail
           FAILED=0
-          for pkg in dist/npm/cli-*; do
+          for pkg in dist/npm/cli-* dist/npm/cli; do
             PKG_NAME=$(basename "$pkg")
             echo "Publishing $PKG_NAME..."
             if OUTPUT=$(cd "$pkg" && npm publish --access public --provenance --tag "$NPM_DIST_TAG" 2>&1); then
@@ -433,7 +433,7 @@ jobs:
             fi
           done
           if [ "$FAILED" -eq 1 ]; then
-            echo "One or more platform packages failed to publish"
+            echo "One or more CLI packages failed to publish"
             exit 1
           fi
 

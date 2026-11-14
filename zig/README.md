@@ -23,7 +23,7 @@ If you are consuming a scoped release, install the scope published by your regis
 npm install @anthropic/makai
 ```
 
-You also need access to the Makai runtime binary. By default the SDK prefers the installed `@oap-sdk/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the Makai runtime binary. By default the SDK prefers the installed `@oxap/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -346,7 +346,7 @@ Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SH
 
 With no resolver options, Makai checks, in order:
 
-1. The `@oap-sdk/cli-<platform>-<arch>` optional dependency, when it is installed
+1. The `@oxap/cli-<platform>-<arch>` optional dependency, when it is installed
 2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 3. `oapx` on `PATH`
 

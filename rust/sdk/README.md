@@ -224,7 +224,7 @@ Mirroring the TypeScript resolver, in order:
 
 1. `OXAP_SDK_BINARY_PATH`, then the legacy `OAP_SDK_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
 2. `OXAP_SDK_BINARY_URL`, then the legacy `OAP_SDK_BINARY_URL`, then `binary_url`, with a **required** SHA-256 checksum (`OXAP_SDK_BINARY_SHA256` for the OXAP URL, `OAP_SDK_BINARY_SHA256` for the legacy one, then `checksum_sha256`), cached under `~/.cache/makai/bin`;
-3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
+3. *(TypeScript only)* the `@oxap/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
 4. `./zig-out/bin/oxap`, then `./zig/zig-out/bin/oxap`, then the same two paths with the legacy `oapx` name;
 5. `oxap` on `PATH`, then `oapx`, and `oxap` as the bare command when neither is found.
 
