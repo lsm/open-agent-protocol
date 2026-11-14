@@ -15,6 +15,7 @@ repository root.
 (cd rust && cargo test -p oap-adapter-codex-appserver --test items)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test approvals)
 (cd rust && cargo test -p oap-adapter-codex-appserver --test inputs)
+(cd rust && cargo test -p oap-adapter-codex-appserver --test cancels)
 (cd rust && cargo test -p oap-adapter-codex-appserver --all-features)
 ```
 
@@ -145,3 +146,16 @@ status and active run, and `tests/inputs.rs` replays it. To see it bite,
 accept a secret question, number options from zero, leave the session
 running while input is pending, or send Codex an option's id instead of
 its label: the replay test must fail.
+
+`tests/go_cancels.json` records nine cancel scenarios the same way, from a
+generator that wraps the Go fake so `turn/interrupt` can fail or wait at a
+gate, with every cancel's answer and the interrupt parameters Codex
+received, and `tests/cancels.rs` replays it. Go reports `cancelling`
+before `run.started` when a cancel beats `turn/started`, which the
+validator rejects, so only a trace whose run started is validated. To see
+it bite, let a concurrent cancel send its own interrupt, or report
+`cancelling` for a run that settled during the interrupt: the replay test
+must fail. A cancel sent while `turn/start` is held at a gate waits for
+the turn and interrupts it, as Go printed: let the cancel take the lock
+without waiting, and the cancel-during-start test in `tests/dispatch.rs`
+must fail.

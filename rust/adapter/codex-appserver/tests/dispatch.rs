@@ -163,3 +163,70 @@ fn a_client_that_panics_during_turn_start_leaves_close_free_to_return() {
         Err("adapter: session closed".to_owned())
     );
 }
+
+#[test]
+fn a_cancel_during_turn_start_waits_for_the_turn_as_go_does() {
+    let fake = Fake::new([
+        Ok(r#"{"thread":{"id":"t-1"}}"#),
+        Ok(r#"{"turn":{"id":"turn-1","status":"inProgress"}}"#),
+    ]);
+    fake.always_reply("turn/interrupt", Ok("{}"));
+    let next = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let session = Arc::new(
+        adapter(&fake, |config| {
+            config.runtime = oap_adapter::runtime::Runtime::new(
+                || 1,
+                move |kind| {
+                    format!(
+                        "{kind}-{}",
+                        next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+                    )
+                },
+            );
+        })
+        .open(request())
+        .unwrap(),
+    );
+    let (arrivals, release) = fake.hold_calls("turn/start");
+    let submitting = {
+        let session = session.clone();
+        std::thread::spawn(move || {
+            session
+                .submit(MessageSubmitRequest {
+                    session_id: "s".into(),
+                    messages: vec![Message {
+                        role: MessageRole::USER,
+                        content: MessageContent::from_text("hi"),
+                        ..Message::default()
+                    }],
+                    ..MessageSubmitRequest::default()
+                })
+                .map(|(response, _)| response.run_id)
+        })
+    };
+    arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+    let cancelling = {
+        let session = session.clone();
+        std::thread::spawn(move || session.cancel(&"run-2".into()))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    release.send(()).unwrap();
+    let run = submitting.join().unwrap().unwrap();
+    let answer = cancelling.join().unwrap();
+    assert_eq!(run.as_ref().map(|run| run.as_str()), Some("run-2"));
+    assert_eq!(
+        answer
+            .map(|answer| serde_json::to_value(&answer).unwrap())
+            .ok(),
+        Some(
+            serde_json::json!({"session_id": "s", "run_id": "run-2", "accepted": true, "status": "cancelling"})
+        )
+    );
+    let interrupts: Vec<_> = fake
+        .calls()
+        .into_iter()
+        .filter(|(method, _)| method == "turn/interrupt")
+        .map(|(_, params)| params)
+        .collect();
+    assert_eq!(interrupts, [r#"{"threadId":"t-1","turnId":"turn-1"}"#]);
+}

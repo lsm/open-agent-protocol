@@ -215,7 +215,7 @@ impl Shared {
         );
     }
 
-    fn status(
+    pub(crate) fn status(
         &self,
         inner: &mut Inner,
         id: &RunId,
