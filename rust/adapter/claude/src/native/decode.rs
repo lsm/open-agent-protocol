@@ -35,7 +35,39 @@ pub enum Observation {
     Assistant(Box<AssistantFrame>),
     Result(Box<ResultFrame>),
     StreamEvent(Box<StreamEventFrame>),
+    ToolProgress(Box<ToolProgressFrame>),
+    CommandLifecycle(Box<CommandLifecycleFrame>),
+    ConversationReset(Box<ConversationResetFrame>),
+    Init(Box<InitFrame>),
+    Status(Box<StatusFrame>),
+    SessionState(Box<SessionStateFrame>),
+    SystemNotice(Box<SystemNotice>),
     Unknown { kind: String, subtype: String },
+}
+
+fn decode_system(subtype: &str, raw: &[u8]) -> Result<Observation, Invalid> {
+    Ok(match subtype {
+        SYSTEM_INIT => {
+            let frame: InitFrame = unmarshal(raw)?;
+            if frame.session_id.is_empty() || frame.model.is_empty() || frame.tools.is_none() {
+                return Err(invalid("init frame requires session_id, model, and tools"));
+            }
+            Observation::Init(Box::new(frame))
+        }
+        SYSTEM_STATUS => Observation::Status(Box::new(unmarshal(raw)?)),
+        SYSTEM_SESSION_STATE => {
+            let frame: SessionStateFrame = unmarshal(raw)?;
+            if frame.state.is_empty() {
+                return Err(invalid("session_state_changed requires state"));
+            }
+            Observation::SessionState(Box::new(frame))
+        }
+        _ => {
+            let mut notice: SystemNotice = unmarshal(raw)?;
+            notice.raw = raw.to_vec();
+            Observation::SystemNotice(Box::new(notice))
+        }
+    })
 }
 
 pub fn decode_observation(kind: &str, subtype: &str, raw: &[u8]) -> Result<Observation, Invalid> {
@@ -75,6 +107,47 @@ pub fn decode_observation(kind: &str, subtype: &str, raw: &[u8]) -> Result<Obser
             }
             Observation::StreamEvent(Box::new(frame))
         }
+        TYPE_TOOL_PROGRESS => {
+            let frame: ToolProgressFrame = unmarshal(raw)?;
+            if frame.tool_use_id.is_empty()
+                || frame.tool_name.is_empty()
+                || frame.session_id.is_empty()
+            {
+                return Err(invalid(
+                    "tool_progress requires tool_use_id, tool_name, and session_id",
+                ));
+            }
+            Observation::ToolProgress(Box::new(frame))
+        }
+        TYPE_COMMAND_LIFECYCLE => {
+            let frame: CommandLifecycleFrame = unmarshal(raw)?;
+            if frame.command_uuid.is_empty()
+                || frame.state.is_empty()
+                || frame.session_id.is_empty()
+            {
+                return Err(invalid(
+                    "command_lifecycle requires command_uuid, state, and session_id",
+                ));
+            }
+            Observation::CommandLifecycle(Box::new(frame))
+        }
+        TYPE_KEEP_ALIVE => Observation::Unknown {
+            kind: TYPE_KEEP_ALIVE.into(),
+            subtype: String::new(),
+        },
+        TYPE_CONVERSATION => {
+            let frame: ConversationResetFrame = unmarshal(raw)?;
+            if frame.new_conversation_id.is_empty()
+                || frame.uuid.is_empty()
+                || frame.session_id.is_empty()
+            {
+                return Err(invalid(
+                    "conversation_reset requires new_conversation_id, uuid, and session_id",
+                ));
+            }
+            Observation::ConversationReset(Box::new(frame))
+        }
+        TYPE_SYSTEM => decode_system(subtype, raw)?,
         _ => Observation::Unknown {
             kind: kind.into(),
             subtype: subtype.into(),
