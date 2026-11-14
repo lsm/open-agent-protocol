@@ -5,8 +5,9 @@ stream-json control protocol on stdio, pinned by `harnesses/claude-code.json`
 and judged by the corpus in `fixtures/adapters/claude-code-2.1.322`.
 
 `native` holds the pinned frame types, decoded as Go's `encoding/json` decodes
-them. So far `decode_observation` reads user, assistant, result and
-stream_event frames; every other frame type reads as `Unknown` until its own
+them. So far `decode_observation` reads user, assistant, result,
+stream_event, tool_progress, command_lifecycle and conversation_reset frames;
+every other frame type, `system` included, reads as `Unknown` until its own
 types land.
 
 Three `encoding/json` behaviours are not followed, and nothing observes any of
