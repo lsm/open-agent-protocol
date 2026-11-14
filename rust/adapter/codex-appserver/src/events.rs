@@ -13,7 +13,8 @@ use serde_json::value::RawValue;
 use crate::native::{
     AgentMessageDeltaNotification, ItemNotification, TurnNotification, METHOD_AGENT_DELTA,
     METHOD_COMMAND_APPROVAL, METHOD_FILE_APPROVAL, METHOD_ITEM_COMPLETED, METHOD_ITEM_STARTED,
-    METHOD_TURN_COMPLETED, METHOD_TURN_STARTED, TURN_COMPLETED, TURN_FAILED, TURN_INTERRUPTED,
+    METHOD_TURN_COMPLETED, METHOD_TURN_STARTED, METHOD_USER_INPUT, TURN_COMPLETED, TURN_FAILED,
+    TURN_INTERRUPTED,
 };
 use crate::rpc::{Inbound, NotificationMessage};
 use crate::session::{hold, Inner, Shared};
@@ -102,6 +103,9 @@ impl Shared {
                     || request.method == METHOD_FILE_APPROVAL =>
             {
                 self.approval(&request)
+            }
+            Inbound::Request(request) if request.method == METHOD_USER_INPUT => {
+                self.user_input(&request)
             }
             Inbound::Request(request) => {
                 let data =
@@ -338,7 +342,7 @@ impl Shared {
         self.stamp(inner, id, kind, payload, false, Some(tool_call.clone()));
     }
 
-    fn emit(
+    pub(crate) fn emit(
         &self,
         inner: &mut Inner,
         id: &RunId,

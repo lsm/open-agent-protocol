@@ -10,9 +10,10 @@ use oap_adapter::{
     ResumeRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
 use oap_protocol::{
-    Admission, EffectiveDeliveryMode, InteractionId, MessageId, MessageRole, MessageSubmitRequest,
-    MessageSubmitResponse, ParticipantId, RequestedDeliveryMode, RunId, RunStatus, SessionState,
-    SessionStatus, SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
+    Admission, EffectiveDeliveryMode, InputQuestion, InteractionId, MessageId, MessageRole,
+    MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode, RunId,
+    RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId, FEATURE_MODEL_SELECTION,
+    FEATURE_STRUCTURED_OUTPUT,
 };
 use oap_validation::OutputSchema;
 use serde_json::value::RawValue;
@@ -50,6 +51,7 @@ pub(crate) struct Interaction {
     pub(crate) request: Arc<IncomingRequest>,
     pub(crate) resolved: bool,
     pub(crate) choices: Vec<String>,
+    pub(crate) questions: Option<Vec<InputQuestion>>,
     pub(crate) order: u64,
 }
 

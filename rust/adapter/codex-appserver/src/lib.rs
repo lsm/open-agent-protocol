@@ -6,6 +6,7 @@ mod approvals;
 pub mod client;
 mod events;
 pub mod filepath;
+mod inputs;
 pub mod native;
 pub mod permissions;
 pub mod process;
