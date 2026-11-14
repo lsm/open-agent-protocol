@@ -24,9 +24,7 @@ fn invalid(detail: impl Into<String>) -> Invalid {
 }
 
 fn unmarshal<T: DeserializeOwned>(raw: &[u8]) -> Result<T, Invalid> {
-    let text = String::from_utf8_lossy(raw);
-    serde_json::from_str(&oxap_adapter::gojson::replace_lone_surrogates(&text))
-        .map_err(|error| invalid(error.to_string()))
+    super::source::decode(&String::from_utf8_lossy(raw)).map_err(|error| invalid(error.to_string()))
 }
 
 #[derive(Clone, Debug)]
@@ -244,9 +242,7 @@ struct Envelope<T> {
 }
 
 fn request<T: DeserializeOwned + Default>(raw: &[u8]) -> Result<T, Invalid> {
-    super::source::decode::<Envelope<T>>(&String::from_utf8_lossy(raw))
-        .map(|envelope| envelope.request)
-        .map_err(|error| invalid(error.to_string()))
+    unmarshal::<Envelope<T>>(raw).map(|envelope| envelope.request)
 }
 
 pub fn decode_control_request(subtype: &str, raw: &[u8]) -> Result<ControlRequest, Invalid> {

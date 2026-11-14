@@ -21,11 +21,11 @@ not an object before it decodes a frame, so no such frame arrives. Go's `int`
 members (`queued_turn_count`, `api_error_status`) read as `i64`, which is Go's
 `int` on every platform the runtime ships for.
 
-Go's `json.RawMessage` keeps a member's bytes as they arrived. A control
-request's raw members (`input`, `permission_suggestions`, an MCP `message`)
-are copied from the frame's own bytes, so they keep a lone surrogate escape
-such as `\ud800` that its string members read as U+FFFD. The raw members of
-observation frames do not yet: they carry `\ufffd` in its place. A raw member
-is UTF-8 text, so invalid UTF-8 inside one reads as U+FFFD where Go keeps the
-byte. A key holding a lone surrogate escape is skipped like any unknown
-member, as Go skips it.
+Go's `json.RawMessage` keeps a member's bytes as they arrived, while its
+string decoding reads a lone surrogate escape such as `\ud800` as U+FFFD. Every
+frame is decoded from text with that replacement applied, keys included, so a
+key holding such an escape is skipped like any unknown member, as Go skips
+it. Each raw member is then copied from the same span of the frame's own
+bytes, so it keeps the escape; the replacement keeps every escape six bytes
+long, so the spans line up. A raw member is UTF-8 text, so invalid UTF-8
+inside one reads as U+FFFD where Go keeps the byte.

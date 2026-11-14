@@ -25,9 +25,12 @@ impl Drop for Restore {
     }
 }
 
-pub(super) fn decode<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
+fn with_source<R>(
+    text: &str,
+    read: impl FnOnce(&str) -> serde_json::Result<R>,
+) -> serde_json::Result<R> {
     let normalised = match replace_lone_surrogates(text) {
-        Cow::Borrowed(_) => return serde_json::from_str(text),
+        Cow::Borrowed(_) => return read(text),
         Cow::Owned(normalised) => normalised,
     };
     let previous = SOURCE.with(|source| {
@@ -38,7 +41,21 @@ pub(super) fn decode<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
         })
     });
     let _restore = Restore(previous);
-    serde_json::from_str(&normalised)
+    read(&normalised)
+}
+
+fn from_text<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
+    serde_json::from_str(text)
+}
+
+pub(super) fn decode<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
+    with_source(text, from_text)
+}
+
+pub(super) fn decode_slice<T: DeserializeOwned + Default>(
+    text: &str,
+) -> serde_json::Result<Vec<T>> {
+    with_source(text, |text| slice(serde_json::from_str(text)?))
 }
 
 fn original(value: &RawValue) -> Box<RawValue> {
@@ -63,18 +80,45 @@ pub(super) fn raw<'de, D: Deserializer<'de>>(
     <&'de RawValue>::deserialize(deserializer).map(|value| Some(original(value)))
 }
 
+fn object<'de, T: Deserialize<'de> + Default>(value: &'de RawValue) -> serde_json::Result<T> {
+    match value.get().as_bytes().first() {
+        Some(b'n') => Ok(T::default()),
+        Some(b'{') => serde_json::from_str(value.get()),
+        _ => Err(serde_json::Error::custom(format!(
+            "cannot unmarshal {} into a Go struct",
+            value.get()
+        ))),
+    }
+}
+
+pub(super) fn slice<'de, T: Deserialize<'de> + Default>(
+    value: &'de RawValue,
+) -> serde_json::Result<Vec<T>> {
+    match value.get().as_bytes().first() {
+        Some(b'n') => Ok(Vec::new()),
+        Some(b'[') => serde_json::from_str::<Vec<&'de RawValue>>(value.get())?
+            .into_iter()
+            .map(object)
+            .collect(),
+        _ => Err(serde_json::Error::custom(format!(
+            "cannot unmarshal {} into a Go slice",
+            value.get()
+        ))),
+    }
+}
+
 pub(super) fn structure<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    let value = <&'de RawValue>::deserialize(deserializer)?;
-    match value.get().as_bytes().first() {
-        Some(b'n') => Ok(T::default()),
-        Some(b'{') => serde_json::from_str(value.get()).map_err(D::Error::custom),
-        _ => Err(D::Error::custom(format!(
-            "cannot unmarshal {} into a Go struct",
-            value.get()
-        ))),
-    }
+    object(<&'de RawValue>::deserialize(deserializer)?).map_err(D::Error::custom)
+}
+
+pub(super) fn structures<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    slice(<&'de RawValue>::deserialize(deserializer)?).map_err(D::Error::custom)
 }

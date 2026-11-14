@@ -2,9 +2,10 @@ mod decode;
 mod source;
 mod write;
 
-use oxap_adapter::gojson::{raw, slice, strings, structure, structures, zero};
+use oxap_adapter::gojson::{strings, zero};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use source::{raw, slice, structure, structures};
 
 pub use decode::{
     decode_control_request, decode_observation, ControlRequest, Invalid, Observation,
@@ -78,11 +79,11 @@ fn optional_blocks<'de, D>(deserializer: D) -> Result<Option<Vec<ContentBlock>>,
 where
     D: serde::Deserializer<'de>,
 {
-    let raw = Box::<RawValue>::deserialize(deserializer)?;
-    if raw.get() == "null" {
+    let value = <&'de RawValue>::deserialize(deserializer)?;
+    if value.get() == "null" {
         return Ok(None);
     }
-    slice(&raw).map(Some)
+    slice(value).map(Some).map_err(serde::de::Error::custom)
 }
 
 fn optional_strings<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -173,12 +174,12 @@ pub struct UserFrame {
 
 impl UserFrame {
     pub fn blocks(&self) -> Option<Vec<ContentBlock>> {
-        slice::<ContentBlock, serde_json::Error>(self.message.content.as_deref()?).ok()
+        source::decode_slice(self.message.content.as_deref()?.get()).ok()
     }
 
     pub fn text_content(&self) -> Option<String> {
         let raw = self.message.content.as_deref()?;
-        serde_json::from_str::<Option<String>>(raw.get())
+        source::decode::<Option<String>>(raw.get())
             .ok()
             .map(Option::unwrap_or_default)
     }
@@ -325,7 +326,7 @@ struct StreamEvent {
 
 impl StreamEventFrame {
     pub fn stream_delta(&self) -> Option<(&'static str, String)> {
-        let event: StreamEvent = serde_json::from_str(self.event.as_deref()?.get()).ok()?;
+        let event: StreamEvent = source::decode(self.event.as_deref()?.get()).ok()?;
         if event.kind != "content_block_delta" {
             return None;
         }
@@ -553,9 +554,9 @@ impl TaskUpdatedFrame {
 pub struct CanUseToolRequest {
     #[serde(default, deserialize_with = "zero")]
     pub tool_name: String,
-    #[serde(default, deserialize_with = "source::raw")]
+    #[serde(default, deserialize_with = "raw")]
     pub input: Raw,
-    #[serde(default, deserialize_with = "source::raw")]
+    #[serde(default, deserialize_with = "raw")]
     pub permission_suggestions: Raw,
     #[serde(default, deserialize_with = "zero")]
     pub blocked_path: String,
@@ -589,7 +590,7 @@ pub struct HookCallbackRequest {
     pub callback_id: String,
     #[serde(default, deserialize_with = "zero")]
     pub tool_use_id: String,
-    #[serde(default, deserialize_with = "source::structure")]
+    #[serde(default, deserialize_with = "structure")]
     pub input: HookInput,
 }
 
@@ -597,6 +598,6 @@ pub struct HookCallbackRequest {
 pub struct McpMessageRequest {
     #[serde(default, deserialize_with = "zero")]
     pub server_name: String,
-    #[serde(default, deserialize_with = "source::raw")]
+    #[serde(default, deserialize_with = "raw")]
     pub message: Raw,
 }
