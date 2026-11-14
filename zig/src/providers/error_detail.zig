@@ -116,13 +116,13 @@ test "describe keeps the anthropic shape byte identical to the previous formatte
 test "a refused output limit names where to set the model's limit" {
     try expectDescribe(
         \\{"error":{"type":"invalid_request_error","message":"max_tokens is too large: 32768. This model supports at most 8192 completion tokens."}}
-    , " (invalid_request_error: max_tokens is too large: 32768. This model supports at most 8192 completion tokens.); set this model's max_tokens in ~/.oxap/providers.json");
+    , " (invalid_request_error: max_tokens is too large: 32768. This model supports at most 8192 completion tokens.); set this model's max_tokens in providers.json");
     try expectDescribe(
         \\{"detail":"'max_completion_tokens' is too large"}
-    , " ('max_completion_tokens' is too large); set this model's max_tokens in ~/.oxap/providers.json");
+    , " ('max_completion_tokens' is too large); set this model's max_tokens in providers.json");
     try expectDescribe(
         \\{"error":{"message":"max_output_tokens must be at most 4096"}}
-    , " (max_output_tokens must be at most 4096); set this model's max_tokens in ~/.oxap/providers.json");
+    , " (max_output_tokens must be at most 4096); set this model's max_tokens in providers.json");
 }
 
 test "the output limit hint propagates every allocation failure and leaks nothing" {

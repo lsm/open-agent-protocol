@@ -6855,7 +6855,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oxap, and HOME is not set\n", complained);
+    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME, and HOME is not set\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {

@@ -5669,3 +5669,21 @@ test "oxap and oapx settings that disagree are refused rather than one silently 
     , &refusal));
     try testing.expectEqualStrings("metadata carries oxap and oapx settings that disagree; send one of them", refusal.message);
 }
+
+test "an open whose oxap and oapx settings disagree on anything is refused before the session starts" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    for ([_][]const u8{
+        \\{"oxap":{"thinking_level":"low"},"oapx":{"thinking_level":"high"}}
+        ,
+        \\{"oxap":{"user_input":false},"oapx":{"user_input":true}}
+    }) |document| {
+        const metadata = try std.json.parseFromSliceLeaky(std.json.Value, a, document, .{});
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.InvalidSubmission, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "split", .metadata = metadata }, &refusal));
+        try testing.expectEqualStrings("metadata carries oxap and oapx settings that disagree; send one of them", refusal.message);
+    }
+}
