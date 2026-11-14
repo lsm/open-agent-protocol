@@ -61,6 +61,12 @@ other subtype is unknown without its body being read. To see it bite, drop
 the `input` presence check: the can-use-tool refusal test must fail. Drop the
 `callback_id` check: the hook test must fail. Decode an unknown subtype's
 body: the unknown test must fail.
+A raw member keeps a lone surrogate escape (`\ud800`) as Go's
+`json.RawMessage` does, while a string member reads it as U+FFFD. Write such a
+case from a script, since an editor may turn the escape into the character, and
+grep the file for the literal escape. To see it bite, take the raw members
+from the normalised decode instead of `verbatim`: the raw-member test must
+fail.
 
 `tests/native_turns.rs` compares the user turn the host writes byte for byte
 with Go's `NewUserTurn`, which marshals a map: members sorted, `<`, `>`, `&`

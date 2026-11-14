@@ -247,10 +247,33 @@ fn request<T: DeserializeOwned + Default>(raw: &[u8]) -> Result<T, Invalid> {
     unmarshal::<Envelope<T>>(raw).map(|envelope| envelope.request)
 }
 
+fn verbatim<T: DeserializeOwned + Default>(raw: &[u8]) -> Result<T, Invalid> {
+    serde_json::from_str::<Envelope<T>>(&String::from_utf8_lossy(raw))
+        .map(|envelope| envelope.request)
+        .map_err(|error| invalid(error.to_string()))
+}
+
+#[derive(Default, serde::Deserialize)]
+struct AskMembers {
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
+    input: Raw,
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
+    permission_suggestions: Raw,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct McpMembers {
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
+    message: Raw,
+}
+
 pub fn decode_control_request(subtype: &str, raw: &[u8]) -> Result<ControlRequest, Invalid> {
     Ok(match subtype {
         CONTROL_CAN_USE_TOOL => {
-            let ask: CanUseToolRequest = request(raw)?;
+            let mut ask: CanUseToolRequest = request(raw)?;
+            let members: AskMembers = verbatim(raw)?;
+            ask.input = members.input;
+            ask.permission_suggestions = members.permission_suggestions;
             if ask.tool_name.is_empty() || ask.tool_use_id.is_empty() || ask.input.is_none() {
                 return Err(invalid(
                     "can_use_tool requires tool_name, input, and tool_use_id",
@@ -265,7 +288,11 @@ pub fn decode_control_request(subtype: &str, raw: &[u8]) -> Result<ControlReques
             }
             ControlRequest::HookCallback(Box::new(hook))
         }
-        CONTROL_MCP_MESSAGE => ControlRequest::McpMessage(Box::new(request(raw)?)),
+        CONTROL_MCP_MESSAGE => {
+            let mut message: McpMessageRequest = request(raw)?;
+            message.message = verbatim::<McpMembers>(raw)?.message;
+            ControlRequest::McpMessage(Box::new(message))
+        }
         _ => ControlRequest::Unknown {
             subtype: subtype.into(),
         },

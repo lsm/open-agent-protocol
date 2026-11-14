@@ -20,3 +20,11 @@ rather than Go's, which name the Go type; Go's reader refuses a line that is
 not an object before it decodes a frame, so no such frame arrives. Go's `int`
 members (`queued_turn_count`, `api_error_status`) read as `i64`, which is Go's
 `int` on every platform the runtime ships for.
+
+Go's `json.RawMessage` keeps a member's bytes as they arrived. A control
+request's raw members (`input`, `permission_suggestions`, an MCP `message`)
+are read from the frame's own bytes, so they keep a lone surrogate escape
+such as `\ud800` that its string members read as U+FFFD. The raw members of
+observation frames do not yet: they carry `\ufffd` in its place. A raw member
+is UTF-8 text, so invalid UTF-8 inside one reads as U+FFFD where Go keeps the
+byte.
