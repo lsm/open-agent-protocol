@@ -222,15 +222,15 @@ let client = Client::builder()
 
 Mirroring the TypeScript resolver, in order:
 
-1. `OAP_SDK_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
-2. `OAP_SDK_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`OAP_SDK_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
+1. `OXAP_SDK_BINARY_PATH`, then the legacy `OAP_SDK_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
+2. `OXAP_SDK_BINARY_URL`, then the legacy `OAP_SDK_BINARY_URL`, then `binary_url`, with a **required** SHA-256 checksum (`OXAP_SDK_BINARY_SHA256` for the OXAP URL, `OAP_SDK_BINARY_SHA256` for the legacy one, then `checksum_sha256`), cached under `~/.cache/makai/bin`;
 3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
-4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
-5. `oapx` on `PATH`.
+4. `./zig-out/bin/oxap`, then `./zig/zig-out/bin/oxap`, then the same two paths with the legacy `oapx` name;
+5. `oxap` on `PATH`, then `oapx`, and `oxap` as the bare command when neither is found.
 
-On Windows the executable name is `oapx.exe`.
+On Windows each name carries an `.exe` suffix.
 
-The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted.
+The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted. The legacy names stay read-compatible everywhere the OXAP ones are, and a checksum is never borrowed across the two URL pairs.
 
 **The npm platform-package step is deliberately omitted.** It resolves through Node's module resolution against an optional npm dependency; Rust has no equivalent channel that ships a platform-specific executable alongside a library crate, and inventing one (a `build.rs` download, say) would put a network fetch in the build with none of the checksum guarantees step 2 insists on. Install the binary however you like and point `OAP_SDK_BINARY_PATH` at it, or let step 5 find it on `PATH`.
 

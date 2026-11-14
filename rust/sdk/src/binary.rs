@@ -4,8 +4,11 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 
+const ENV_BINARY_PATH_OXAP: &str = "OXAP_SDK_BINARY_PATH";
 const ENV_BINARY_PATH: &str = "OAP_SDK_BINARY_PATH";
+const ENV_BINARY_URL_OXAP: &str = "OXAP_SDK_BINARY_URL";
 const ENV_BINARY_URL: &str = "OAP_SDK_BINARY_URL";
+const ENV_BINARY_SHA256_OXAP: &str = "OXAP_SDK_BINARY_SHA256";
 const ENV_BINARY_SHA256: &str = "OAP_SDK_BINARY_SHA256";
 
 #[derive(Debug, Clone, Default)]
@@ -35,12 +38,38 @@ async fn is_executable_file(candidate: &std::path::Path) -> bool {
     }
 }
 
-fn binary_name() -> &'static str {
+fn binary_names() -> [&'static str; 2] {
     if cfg!(windows) {
-        "oapx.exe"
+        ["oxap.exe", "oapx.exe"]
     } else {
-        "oapx"
+        ["oxap", "oapx"]
     }
+}
+
+fn binary_name() -> &'static str {
+    binary_names()[0]
+}
+
+fn command_on_path(name: &str) -> Option<PathBuf> {
+    let path = env_var("PATH")?;
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    path.split(separator)
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| Path::new(dir).join(name))
+        .find(|candidate| candidate.is_file() && path_entry_is_executable(candidate))
+}
+
+#[cfg(unix)]
+fn path_entry_is_executable(candidate: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(candidate)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn path_entry_is_executable(_candidate: &Path) -> bool {
+    true
 }
 
 fn env_var(key: &str) -> Option<String> {
@@ -74,8 +103,26 @@ async fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
 }
 
 impl BinaryResolver {
+    fn url_and_checksum(&self) -> Option<(String, Option<String>)> {
+        let option_checksum = self.checksum_sha256.clone();
+        if let Some(url) = env_var(ENV_BINARY_URL_OXAP) {
+            let checksum = env_var(ENV_BINARY_SHA256_OXAP).or(option_checksum);
+            return Some((url, checksum));
+        }
+        if let Some(url) = env_var(ENV_BINARY_URL) {
+            let checksum = env_var(ENV_BINARY_SHA256).or(option_checksum);
+            return Some((url, checksum));
+        }
+        let url = self.binary_url.clone()?;
+        let checksum = env_var(ENV_BINARY_SHA256_OXAP)
+            .or_else(|| env_var(ENV_BINARY_SHA256))
+            .or(option_checksum);
+        Some((url, checksum))
+    }
+
     pub async fn resolve(&self) -> Result<PathBuf> {
-        if let Some(path) = env_var(ENV_BINARY_PATH)
+        if let Some(path) = env_var(ENV_BINARY_PATH_OXAP)
+            .or_else(|| env_var(ENV_BINARY_PATH))
             .map(PathBuf::from)
             .or_else(|| self.binary_path.clone())
         {
@@ -90,15 +137,12 @@ impl BinaryResolver {
             return Ok(resolved);
         }
 
-        let url = env_var(ENV_BINARY_URL).or_else(|| self.binary_url.clone());
-        if let Some(url) = url {
-            let checksum = env_var(ENV_BINARY_SHA256)
-                .or_else(|| self.checksum_sha256.clone())
-                .ok_or_else(|| {
-                    Error::transport(format!(
-                        "a SHA-256 checksum is required when downloading the oapx binary from {url}"
-                    ))
-                })?;
+        if let Some((url, checksum)) = self.url_and_checksum() {
+            let checksum = checksum.ok_or_else(|| {
+                Error::transport(format!(
+                    "a SHA-256 checksum is required when downloading the oapx binary from {url}"
+                ))
+            })?;
             return self.resolve_from_url(&url, &checksum).await;
         }
 
@@ -106,16 +150,22 @@ impl BinaryResolver {
             Some(base) => base.clone(),
             None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
-        for candidate in [
-            base.join("zig-out").join("bin").join(binary_name()),
-            base.join("zig")
-                .join("zig-out")
-                .join("bin")
-                .join(binary_name()),
-        ] {
-            if is_executable_file(&candidate).await {
-                tracing::debug!(path = %candidate.display(), "resolved binary from local build");
-                return Ok(candidate);
+        for name in binary_names() {
+            for candidate in [
+                base.join("zig-out").join("bin").join(name),
+                base.join("zig").join("zig-out").join("bin").join(name),
+            ] {
+                if is_executable_file(&candidate).await {
+                    tracing::debug!(path = %candidate.display(), "resolved binary from local build");
+                    return Ok(candidate);
+                }
+            }
+        }
+
+        for name in binary_names() {
+            if let Some(found) = command_on_path(name) {
+                tracing::debug!(path = %found.display(), "resolved binary from PATH");
+                return Ok(found);
             }
         }
 
@@ -297,14 +347,21 @@ mod tests {
             let lock = ENV_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let saved = [ENV_BINARY_PATH, ENV_BINARY_URL, ENV_BINARY_SHA256]
-                .into_iter()
-                .map(|key| {
-                    let previous = std::env::var(key).ok();
-                    std::env::remove_var(key);
-                    (key, previous)
-                })
-                .collect();
+            let saved = [
+                ENV_BINARY_PATH_OXAP,
+                ENV_BINARY_PATH,
+                ENV_BINARY_URL_OXAP,
+                ENV_BINARY_URL,
+                ENV_BINARY_SHA256_OXAP,
+                ENV_BINARY_SHA256,
+            ]
+            .into_iter()
+            .map(|key| {
+                let previous = std::env::var(key).ok();
+                std::env::remove_var(key);
+                (key, previous)
+            })
+            .collect();
             Self { saved, _lock: lock }
         }
     }
@@ -403,11 +460,13 @@ mod tests {
     }
 
     #[test]
-    fn the_binary_name_matches_the_platform() {
+    fn the_binary_names_put_oxap_first_and_match_the_platform() {
+        let names = binary_names();
         if cfg!(windows) {
-            assert_eq!(binary_name(), "oapx.exe");
+            assert_eq!(names, ["oxap.exe", "oapx.exe"]);
         } else {
-            assert_eq!(binary_name(), "oapx");
+            assert_eq!(names, ["oxap", "oapx"]);
         }
+        assert_eq!(binary_name(), names[0]);
     }
 }
