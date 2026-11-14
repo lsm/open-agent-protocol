@@ -1,7 +1,8 @@
+use std::io::Read;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{select, Receiver};
+use crossbeam_channel::{select, Receiver, Sender};
 use oxap_adapter::process::{wait_error, Child, ChildConfig};
 
 use crate::native::{decode_strict, Event, ReadyPayload, EVENT_GATEWAY_READY};
@@ -32,6 +33,56 @@ pub struct Process {
     child: Child,
     timeout: Duration,
     closed: Mutex<Option<Result<(), String>>>,
+}
+
+struct Stdout {
+    chunks: Receiver<Vec<u8>>,
+    shut: Receiver<()>,
+    held: Vec<u8>,
+    at: usize,
+}
+
+impl Stdout {
+    fn pump(mut pipe: impl Read + Send + 'static) -> (Self, Sender<()>) {
+        let (sender, chunks) = crossbeam_channel::bounded(0);
+        let (shutter, shut) = crossbeam_channel::bounded(0);
+        std::thread::spawn(move || {
+            let mut chunk = vec![0u8; 64 * 1024];
+            while let Ok(read) = pipe.read(&mut chunk) {
+                if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let stdout = Self {
+            chunks,
+            shut,
+            held: Vec::new(),
+            at: 0,
+        };
+        (stdout, shutter)
+    }
+}
+
+impl Read for Stdout {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.at == self.held.len() {
+            select! {
+                recv(self.chunks) -> chunk => match chunk {
+                    Ok(chunk) => {
+                        self.held = chunk;
+                        self.at = 0;
+                    }
+                    Err(_) => return Ok(0),
+                },
+                recv(self.shut) -> _ => return Ok(0),
+            }
+        }
+        let take = out.len().min(self.held.len() - self.at);
+        out[..take].copy_from_slice(&self.held[self.at..self.at + take]);
+        self.at += take;
+        Ok(take)
+    }
 }
 
 fn handshake(detail: impl std::fmt::Display) -> Error {
@@ -88,6 +139,7 @@ impl Process {
         })
         .map_err(|failure| error(Fault::Io(failure)))?;
         let releaser = child.clone();
+        let (stdout, shutter) = Stdout::pump(stdout);
         let client = RpcClient::new(
             DIALECT,
             stdout,
@@ -98,7 +150,10 @@ impl Process {
                 write_queue_capacity: config.write_queue_capacity,
                 strict_response_ids: true,
                 check_notification: Some(check_notification),
-                closer: Some(Box::new(move || releaser.release_stdin())),
+                closer: Some(Box::new(move || {
+                    releaser.release_stdin();
+                    drop(shutter);
+                })),
                 ..ClientOptions::default()
             },
         );
