@@ -121,6 +121,23 @@ def case(binary, name, layout, extra=lambda root: {}, settings={}):
         shutil.rmtree(root, ignore_errors=True)
 
 
+def empty_token(binary):
+    root = pathlib.Path(tempfile.mkdtemp(prefix="oxap-state-env-"))
+    try:
+        (root / "home").mkdir()
+        environment = {"PATH": "/usr/bin:/bin", "HOME": str(root / "home"), "TMPDIR": str(root),
+                       "OXAP_KEYCHAIN_SERVICE": "oxap-probe-" + uuid.uuid4().hex,
+                       "OXAP_PROVIDER_SERVICE_URL": "http://127.0.0.1:9", "OXAP_PROVIDER_SERVICE_SECURITY": "loopback",
+                       "OXAP_PROVIDER_SERVICE_TOKEN": "", "OAPX_PROVIDER_SERVICE_TOKEN": "probe-token"}
+        done = subprocess.run([str(binary), "serve", "agent", "--stdio"], stdin=subprocess.DEVNULL, capture_output=True,
+                              env=environment, cwd=root, text=True, timeout=30)
+        refused = "InvalidProviderServiceToken" in done.stderr
+        print(f"empty new token: exit {done.returncode}, refused as invalid: {refused}")
+        return done.returncode != 0 and refused
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main():
     binary = pathlib.Path(sys.argv[1]).resolve()
     assert case(binary, "new home", [".oxap"])[:3] == ("run.completed", {".oxap": 1}, [".oxap"])
@@ -134,6 +151,7 @@ def main():
     assert case(binary, "empty new env name", [".oapx"], empty)[3] == ["old.payload"]
     split = {"oxap": {"permission_mode": "ask", "workspace_root": "/"}}
     assert case(binary, "disagreeing metadata", [".oxap"], settings=split)[:2] == ("open refused: disagree", {".oxap": 0})
+    assert empty_token(binary)
     print("ok")
 
 

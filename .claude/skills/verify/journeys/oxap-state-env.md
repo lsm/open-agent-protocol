@@ -33,6 +33,10 @@ what the home holds afterwards, and which payload dump was written:
   written.
 - `empty new env name`: `OXAP_DEBUG_PROVIDER_PAYLOAD` is set but empty, so the
   `OAPX_` file is still written.
+- `empty new token`: an empty `OXAP_PROVIDER_SERVICE_TOKEN` is not "unset", so
+  `oxap serve agent` refuses it as invalid even though `OAPX_PROVIDER_SERVICE_TOKEN`
+  holds a valid one. An empty value falls through only for variables where
+  empty already meant unset.
 - `disagreeing metadata`: the open carries `oxap` and `oapx` settings that
   differ, and is refused before any model request.
 
