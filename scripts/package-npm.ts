@@ -83,6 +83,7 @@ mkdirSync(destSrcDir, { recursive: true });
 
 const mainPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
 mainPkg.version = VERSION;
+mainPkg.optionalDependencies = { ...mainPkg.optionalDependencies, "@oxap/cli": VERSION };
 mainPkg.files = ["dist/src/", "README.md"];
 
 writeFileSync(

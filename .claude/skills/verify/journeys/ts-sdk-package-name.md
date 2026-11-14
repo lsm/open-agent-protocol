@@ -52,6 +52,20 @@ grep -c '"@oxap/sdk"' dist/npm/cli-*/package.json 2>/dev/null || echo "no CLI pa
 
 While `@oxap/cli` is still packaged under its old name (the separate CLI PR),
 there is no `dist/npm/cli-*`; once it lands, none of those files may name
-`@oxap/sdk` in `dependencies` or `optionalDependencies`. The unit test
-`the CLI is the only runtime dependency, and it never depends back on the SDK`
-holds the same rule for the lockfile.
+`@oxap/sdk` in `dependencies` or `optionalDependencies`. This grep is the only
+check of that rule: the lockfile entry for `@oxap/cli` carries no dependency
+fields, so nothing there can show it.
+
+## A tagged release pins the CLI at the tag's version
+
+```sh
+repo=$(pwd); cked=$(mktemp -d); mkdir -p "$cked/dist/bin" "$cked/dist/src" "$cked/sdk/typescript"
+touch "$cked/dist/src/index.js" "$cked/sdk/typescript/README.md"; cp package.json "$cked/"
+(cd "$cked" && npx --yes tsx "$repo/scripts/package-npm.ts" --version 9.9.9-tag.1 \
+  --withhold darwin-arm64,darwin-x64,linux-arm64,linux-x64,win32-x64,win32-arm64 >/dev/null)
+node -p "const p=require('$cked/dist/npm/oxap-sdk/package.json'); p.version+' '+p.optionalDependencies['@oxap/cli']"
+```
+
+This is the release workflow's own `npx tsx` call with a tag version that
+differs from `package.json`. Require `9.9.9-tag.1 9.9.9-tag.1`: the published
+SDK pins `@oxap/cli` at the tag, not at the manifest's version.

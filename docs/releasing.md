@@ -24,7 +24,7 @@ earlier, with `ENEEDAUTH`. The job carries no npm token: it publishes through
 npm's OIDC trusted publishing (`id-token: write`, `npm publish --provenance`),
 so the registry must already know this workflow as a trusted publisher for each
 package. Only the repository owner can arrange that: create the `oap-sdk`
-organization on npm, then register `lsm/open-agent-protocol`'s
+organization on npm, then register `lsm/oxap`'s
 `release-binaries.yml` as the trusted publisher on each `@oap-sdk/cli-<platform>`
 package and on the main package, which is published scoped as `@oxap/sdk` and
 needs its own ownership and trusted-publisher setup. Until then a release
