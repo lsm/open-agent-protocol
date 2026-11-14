@@ -26,9 +26,10 @@ Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python 
 Check `python3 --version` before running the scripts. If it selects an older
 Xcode Python, put a temporary `python3` launcher for an installed Python 3.11 or
 newer first on PATH for the baseline and journeys, then remove the launcher.
-Run `npm ci --ignore-scripts` at the root and
-`npm --prefix clients/ts ci --ignore-scripts` for SDK/client consumer journeys
-and the comment checker.
+Run `npm ci --ignore-scripts --include=dev` at the root and
+`npm --prefix clients/ts ci --ignore-scripts --include=dev` for SDK/client
+consumer journeys and the comment checker. `--include=dev` keeps TypeScript,
+which the comment checker imports, when the shell sets `NODE_ENV=production`.
 Check `go version`, `zig version`, `rustc --version` and `cargo --version`.
 Use non-login shells: never source or read `~/.zshrc`, auth files, credential
 stores, or keys. Do not print the environment. macOS has no stock `timeout`;
