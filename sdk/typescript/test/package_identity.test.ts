@@ -30,12 +30,9 @@ test("the SDK publishes as @oxap/sdk under the OXAP line", () => {
   assert.equal(lock.packages[""].version, manifest.version);
 });
 
-test("the SDK depends on the same-version CLI for its default runtime", () => {
-  const cli = manifest.optionalDependencies?.["@oxap/cli"];
-  assert.equal(cli, manifest.version);
-  const locked = lock.packages["node_modules/@oxap/cli"];
-  assert.equal(locked?.version, manifest.version);
-  assert.equal(locked?.optional, true);
+test("the source manifest leaves the CLI pin to packaging, so a version bump keeps npm ci in sync", () => {
+  assert.equal(manifest.optionalDependencies?.["@oxap/cli"], undefined);
+  assert.equal(lock.packages["node_modules/@oxap/cli"], undefined);
 });
 
 test("the SDK keeps lossless-json, nanoid and ulid as its only required dependencies", () => {
@@ -57,10 +54,17 @@ test("a tagged release packs the SDK pinned to the CLI at the tag's version", (t
   writeFileSync(path.join(work, "package.json"), JSON.stringify(manifest));
   const tag = "9.9.9-tag.1";
   assert.notEqual(tag, manifest.version);
+  const transpileThenRun = [
+    `const ts = require(${JSON.stringify(require.resolve("typescript"))});`,
+    `require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(require("node:fs").readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);`,
+    `require(${JSON.stringify(path.join(ROOT, "scripts", "package-npm.ts"))});`,
+  ].join("\n");
   execFileSync(
     process.execPath,
     [
-      path.join(ROOT, "scripts", "package-npm.ts"),
+      "-e",
+      transpileThenRun,
+      "--",
       "--version",
       tag,
       "--withhold",
