@@ -5500,9 +5500,13 @@ fn runOapMode(
     defer if (remote_url) |value| allocator.free(value);
     const remote_security_text = try provider_base_url.productEnvOwnedOrNull(allocator, "PROVIDER_SERVICE_SECURITY");
     defer if (remote_security_text) |value| allocator.free(value);
-    const remote_token = compat.getProductEnvOwned(allocator, "PROVIDER_SERVICE_TOKEN") catch |err| switch (err) {
-        error.EnvironmentVariableMissing => null,
-        else => return err,
+    const token_names = comptime compat.productEnvNames("PROVIDER_SERVICE_TOKEN");
+    const remote_token = compat.getEnvVarOwned(allocator, token_names[0]) catch |first| switch (first) {
+        error.EnvironmentVariableMissing => compat.getEnvVarOwned(allocator, token_names[1]) catch |err| switch (err) {
+            error.EnvironmentVariableMissing => null,
+            else => return err,
+        },
+        else => return first,
     };
     if (comptime @hasField(std.process.Environ.Block, "slice")) {
         for (compat.runtimeEnviron().block.view().slice) |entry| {
