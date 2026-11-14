@@ -9,11 +9,12 @@ them. `decode_observation` reads every frame Go's `DecodeObservation` reads:
 an unrecognised type reads as `Unknown`, and an unrecognised system subtype as
 a `SystemNotice` that keeps its bytes. `decode_control_request` reads the
 reverse requests Go's `DecodeControlRequest` reads, and `new_user_turn` writes
-the user turn Go's `NewUserTurn` writes, byte for byte. The other writes are
-the bytes Go's `json.Marshal` gives the values its session sends: the hook
-answers, the initialize and interrupt requests, the permission answers and the
-MCP response, with a raw member compacted and escaped as Go marshals a
-`json.RawMessage`. `decode_interrupt_result` reads Claude Code's answer to an
+the user turn Go's `NewUserTurn` writes, byte for byte. The hook answers, the
+initialize and interrupt requests, the permission answers and the MCP response
+are written as Go's `json.Marshal` writes them, with a raw member compacted and
+escaped as Go marshals a `json.RawMessage`. Two writes are not ported yet: the
+`apply_flag_settings` request, whose settings Go writes from a free-form map,
+and the `get_settings` request the reopen path sends. `decode_interrupt_result` reads Claude Code's answer to an
 interrupt as Go reads it into `InterruptResult`.
 
 Three `encoding/json` behaviours are not followed, and nothing observes any of

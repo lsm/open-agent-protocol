@@ -96,8 +96,9 @@ bite, parse a nested member from a copy: the raw-member assertions must fail.
 Read a user frame's blocks without `source::decode_slice`: the ignored-key
 test must fail.
 
-`tests/native_host_writes.rs` pins the bytes of every other value Go's session
-writes to Claude Code, compared with what `json.Marshal` gives the Go types in
+`tests/native_host_writes.rs` pins the bytes of the hook answers, the
+initialize and interrupt requests, the permission answers and the MCP response
+Go's session writes to Claude Code, compared with what `json.Marshal` gives the Go types in
 `go/adapter/claude/internal/native/types.go`: members in declaration order,
 each `omitempty` member left out when empty, and a raw member compacted and
 escaped as Go marshals a `json.RawMessage`, a lone surrogate escape kept. It
