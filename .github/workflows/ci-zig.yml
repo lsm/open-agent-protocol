@@ -641,6 +641,9 @@ jobs:
       - name: Type check the README samples
         run: python scripts/check_readme_samples.py
 
+      - name: Build, install and import the wheel
+        run: python .claude/skills/verify/scripts/python-sdk-wheel.py
+
       - name: Build the oapx binary for Python SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-py
 
