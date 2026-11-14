@@ -1,4 +1,5 @@
 mod decode;
+mod write;
 
 use oxap_adapter::gojson::{raw, slice, strings, structure, structures, zero};
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,7 @@ use serde_json::value::RawValue;
 pub use decode::{
     decode_control_request, decode_observation, ControlRequest, Invalid, Observation,
 };
+pub use write::{new_user_turn, validate_turn_uuid};
 
 pub type Raw = Option<Box<RawValue>>;
 

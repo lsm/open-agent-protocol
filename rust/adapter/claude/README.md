@@ -8,7 +8,8 @@ and judged by the corpus in `fixtures/adapters/claude-code-2.1.322`.
 them. `decode_observation` reads every frame Go's `DecodeObservation` reads:
 an unrecognised type reads as `Unknown`, and an unrecognised system subtype as
 a `SystemNotice` that keeps its bytes. `decode_control_request` reads the
-reverse requests Go's `DecodeControlRequest` reads.
+reverse requests Go's `DecodeControlRequest` reads, and `new_user_turn` writes
+the user turn Go's `NewUserTurn` writes, byte for byte.
 
 Three `encoding/json` behaviours are not followed, and nothing observes any of
 them. Go falls back to a case-insensitive key match, so `{"MESSAGE":{...}}`

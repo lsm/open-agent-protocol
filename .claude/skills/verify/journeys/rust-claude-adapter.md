@@ -10,6 +10,7 @@ repository root.
 (cd rust && cargo test -p oxap-adapter-claude --test native_system)
 (cd rust && cargo test -p oxap-adapter-claude --test native_tasks)
 (cd rust && cargo test -p oxap-adapter-claude --test native_control)
+(cd rust && cargo test -p oxap-adapter-claude --test native_turns)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -60,3 +61,12 @@ other subtype is unknown without its body being read. To see it bite, drop
 the `input` presence check: the can-use-tool refusal test must fail. Drop the
 `callback_id` check: the hook test must fail. Decode an unknown subtype's
 body: the unknown test must fail.
+
+`tests/native_turns.rs` compares the user turn the host writes byte for byte
+with Go's `NewUserTurn`, which marshals a map: members sorted, `<`, `>`, `&`
+and the line separators escaped. It ports the uuid cases of Go's
+`TestHostWriteShapes` and pins both length bounds, counted in bytes, so 65
+two-byte characters are too long. To see it bite, write `client_composed:
+false` on a turn the CLI may expand: the expand test must fail. Skip
+`go_marshal`: the escaping test must fail. Count characters instead of
+bytes: the uuid test must fail.
