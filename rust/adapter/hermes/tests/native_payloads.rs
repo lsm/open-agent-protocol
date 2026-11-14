@@ -161,7 +161,7 @@ fn an_event_envelope_refuses_an_unknown_member() {
     let refused =
         decode_strict::<Event>(br#"{"type":"error","payload":{"message":"x"},"bogus":1}"#)
             .unwrap_err();
-    assert!(refused.contains("unknown field `bogus`"), "{refused}");
+    assert_eq!(refused, "json: unknown field \"bogus\"");
 }
 
 #[test]
