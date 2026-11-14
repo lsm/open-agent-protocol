@@ -38,7 +38,8 @@ what the home holds afterwards, and which payload dump was written:
   holds a valid one. An empty value falls through only for variables where
   empty already meant unset.
 - `disagreeing metadata`: the open carries `oxap` and `oapx` settings that
-  differ, and is refused before any model request.
+  differ, and the hub's open fails with `InvalidSubmission` before any model
+  request.
 
 It ends with `ok` and exits 0. The second script runs from an old-style home
 in a fresh workspace, so a background job's `output_path` must be under the

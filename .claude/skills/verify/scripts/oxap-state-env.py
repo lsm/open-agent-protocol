@@ -87,7 +87,7 @@ def one_turn(binary, root, home, work, extra, settings):
         try:
             call("open", adapter="loop", request=envelope("session.open.request", {"session_id": "probe", "metadata": metadata}))
         except RuntimeError as refused:
-            return "open refused: " + ("disagree" if "disagree" in str(refused) else str(refused))
+            return "open refused: " + ("InvalidSubmission" if "InvalidSubmission" in str(refused) else str(refused))
         call("events", session_id="probe")
         payload = {"session_id": "probe", "delivery": "auto", "messages": [{"role": "user", "content": "go"}]}
         call("submit", session_id="probe", request=envelope("session.message.submit.request", payload, session_id="probe"))
@@ -150,7 +150,7 @@ def main():
     empty = lambda root: {"OXAP_DEBUG_PROVIDER_PAYLOAD": "", "OAPX_DEBUG_PROVIDER_PAYLOAD": str(root / "old.payload")}
     assert case(binary, "empty new env name", [".oapx"], empty)[3] == ["old.payload"]
     split = {"oxap": {"permission_mode": "ask", "workspace_root": "/"}}
-    assert case(binary, "disagreeing metadata", [".oxap"], settings=split)[:2] == ("open refused: disagree", {".oxap": 0})
+    assert case(binary, "disagreeing metadata", [".oxap"], settings=split)[:2] == ("open refused: InvalidSubmission", {".oxap": 0})
     assert empty_token(binary)
     print("ok")
 
