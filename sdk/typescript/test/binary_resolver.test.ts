@@ -222,7 +222,7 @@ test("resolveMakaiBinary reports the oxap name when nothing is found", async (t)
 test("resolveMakaiBinary prefers the oxap bundled binary", async (t) => {
   t.after(clearResolverEnv());
   const specifiers: string[] = [];
-  const bundled = `@oap-sdk/cli-${process.platform}-${process.arch}`;
+  const bundled = `@oxap/cli-${process.platform}-${process.arch}`;
   const resolveModule = (specifier: string): string => {
     specifiers.push(specifier);
     return path.join(path.sep, "bundled", "bin", path.basename(specifier));
@@ -238,7 +238,7 @@ test("resolveMakaiBinary prefers the oxap bundled binary", async (t) => {
 test("resolveMakaiBinary falls back to the oapx bundled binary", async (t) => {
   t.after(clearResolverEnv());
   const specifiers: string[] = [];
-  const bundled = `@oap-sdk/cli-${process.platform}-${process.arch}`;
+  const bundled = `@oxap/cli-${process.platform}-${process.arch}`;
   const resolveModule = (specifier: string): string => {
     specifiers.push(specifier);
     if (specifier.endsWith(binaryName("oxap"))) throw new Error(`Cannot find module '${specifier}'`);

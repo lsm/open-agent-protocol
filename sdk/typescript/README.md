@@ -323,7 +323,7 @@ one first, then `checksumSha256`.
 
 With no resolver options, the SDK checks, in order:
 
-1. The platform package `@oxap/cli` installs, when it is present: `oxap`, then `oapx`
+1. The platform package `@oxap/cli` installs (`@oxap/cli-<platform>-<arch>`), then the legacy `@oap-sdk/cli-<platform>-<arch>`, when present: `oxap`, then `oapx` in each
 2. `./zig-out/bin/oxap`, `./zig/zig-out/bin/oxap`, `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 3. `oxap` on `PATH`, then `oapx`
 

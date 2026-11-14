@@ -69,3 +69,21 @@ node -p "const p=require('$cked/dist/npm/oxap-sdk/package.json'); p.version+' '+
 This is the release workflow's own `npx tsx` call with a tag version that
 differs from `package.json`. Require `9.9.9-tag.1 9.9.9-tag.1`: the published
 SDK pins `@oxap/cli` at the tag, not at the manifest's version.
+
+## An installed SDK finds the runtime in the @oxap/cli platform package
+
+```sh
+c=$(mktemp -d); npm pack --pack-destination "$c" >/dev/null
+cd "$c" && echo '{"name":"c","version":"1.0.0"}' > package.json
+npm install --no-audit --no-fund --omit=optional ./oxap-sdk-*.tgz >/dev/null; echo "install=$?"
+key=$(node -p 'process.platform+"-"+process.arch'); mkdir -p "node_modules/@oxap/cli-$key/bin"
+echo "{\"name\":\"@oxap/cli-$key\",\"version\":\"0.0.0\"}" > "node_modules/@oxap/cli-$key/package.json"
+printf '#!/bin/sh\n' > "node_modules/@oxap/cli-$key/bin/oxap"; chmod +x "node_modules/@oxap/cli-$key/bin/oxap"
+unset OXAP_SDK_BINARY_PATH OAP_SDK_BINARY_PATH
+node -e 'require("@oxap/sdk").resolveMakaiBinary({}).then(p=>console.log("resolved:",p))'
+```
+
+The stub stands in for the platform package `@oxap/cli` will install. Require
+`install=0` and a `resolved:` path ending in
+`node_modules/@oxap/cli-<platform>-<arch>/bin/oxap`; a resolver that knew only
+`@oap-sdk/cli-*` falls through to `oxap` on `PATH` here.
