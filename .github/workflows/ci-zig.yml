@@ -285,7 +285,7 @@ jobs:
         run: npm run check:declarations
 
       - name: The packed @oxap/cli installs and runs oxap
-        run: node scripts/check-npm-cli.mjs /tmp/makai-smoke/bin/oxap
+        run: node scripts/check-npm-cli.mjs /tmp/makai-smoke/bin/oxap && node --test scripts/npm-cli.test.mjs
 
       - name: Tests leave no credential store in the checkout
         if: always()
