@@ -203,7 +203,7 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
   }
 
   const platformKey = `${process.platform}-${process.arch}`;
-  const bundledPackage = `@oap-sdk/cli-${platformKey}`;
+  const bundledPackage = `@oxap/cli-${platformKey}`;
   const resolveModule = options.resolveModule ?? ((specifier: string) => require.resolve(specifier));
   for (const name of binaryNamesForPlatform()) {
     try {

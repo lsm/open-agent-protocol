@@ -18,7 +18,7 @@ Resolution order mirrors ``typescript/src/binary_resolver.ts``:
 On Windows each name carries an ``.exe`` suffix.
 
 The TypeScript SDK has one extra step between 2 and 3: an optional
-``@oap-sdk/cli-<platform>-<arch>`` npm package. **That step is deliberately
+``@oxap/cli-<platform>-<arch>`` npm package. **That step is deliberately
 omitted here.** npm's optional-dependency mechanism installs a per-platform
 package automatically; Python's closest equivalent would be publishing
 platform-specific wheels, and no such distribution exists for oapx today.

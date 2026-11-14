@@ -84,7 +84,7 @@ daemon client). The latter builds `./go/cmd/goap`; set `OAP_GO` if `go` is not o
 in `sdk/typescript/test/makai_binary_smoke.test.ts` and in
 `go/sdk/binary_smoke_test.go` skips when it is unset, so both SDKs pass green
 with zero end-to-end binary coverage. A binary found through `zig-out` or the
-`@oap-sdk/cli-*` platform package does not switch the TypeScript tests on, and
+`@oxap/cli-*` platform package does not switch the TypeScript tests on, and
 that package outranks both local build paths, so a fresh `zig build` alone is
 not what either SDK exercises. Export the variable when you mean to. CI's
 `go-sdk-smoke` job does exactly that: it builds `oapx` and runs

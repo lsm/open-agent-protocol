@@ -12,7 +12,7 @@ npm install oap-sdk
 
 No release has been published yet; until one is, install from a checkout of this repository.
 
-The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oxap` or `zig/zig-out/bin/oxap`, then `oxap` on `PATH`; the `oapx` names keep resolving in every step. See [Configuration](#configuration) for explicit binary resolver options.
+The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oxap/cli-<platform>-<arch>` package (`npm install @oxap/cli` brings the one for your platform), then a local build under `zig-out/bin/oxap` or `zig/zig-out/bin/oxap`, then `oxap` on `PATH`; the `oapx` names keep resolving in every step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -323,7 +323,7 @@ one first, then `checksumSha256`.
 
 With no resolver options, the SDK checks, in order:
 
-1. The `@oap-sdk/cli-<platform>-<arch>` package, when it is installed: `oxap`, then `oapx`
+1. The `@oxap/cli-<platform>-<arch>` package, when it is installed: `oxap`, then `oapx`
 2. `./zig-out/bin/oxap`, `./zig/zig-out/bin/oxap`, `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 3. `oxap` on `PATH`, then `oapx`
 
