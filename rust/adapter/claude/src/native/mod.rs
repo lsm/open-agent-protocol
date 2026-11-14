@@ -323,3 +323,43 @@ impl StreamEventFrame {
         }
     }
 }
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CommandLifecycleFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub command_uuid: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub state: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ToolProgressFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_name: String,
+    #[serde(default)]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(default, deserialize_with = "zero")]
+    pub elapsed_time_seconds: f64,
+    #[serde(default, deserialize_with = "zero")]
+    pub task_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ConversationResetFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub new_conversation_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+}

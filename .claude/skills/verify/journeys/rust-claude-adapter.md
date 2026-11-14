@@ -6,6 +6,7 @@ repository root.
 ```sh
 (cd rust && cargo test -p oxap-adapter-claude --test native_messages)
 (cd rust && cargo test -p oxap-adapter-claude --test native_results)
+(cd rust && cargo test -p oxap-adapter-claude --test native_lifecycle)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -20,3 +21,11 @@ expectation by printing `DecodeObservation`, `Cancelled`, `MaxTurns` and
 `aborted_tools` from `cancelled`: the settle test must fail. Drop the
 `session_id` check on a result: the refusal test must fail. Read a thinking
 delta's `text`: the delta test must fail.
+
+`tests/native_lifecycle.rs` ports Go's `TestCommandLifecycleStates` and pins
+the refusal Go prints for a `tool_progress` or `conversation_reset` frame
+missing a required member, a null member read as its zero value, and a
+`keep_alive` read as Go reads it: without its body and with no subtype. To see
+it bite, drop the `keep_alive` arm: the keep-alive test must fail. Drop the
+`tool_name` check: the tool-progress test must fail. Drop the `uuid` check on
+a reset: the reset test must fail.

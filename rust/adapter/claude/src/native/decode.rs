@@ -35,6 +35,9 @@ pub enum Observation {
     Assistant(Box<AssistantFrame>),
     Result(Box<ResultFrame>),
     StreamEvent(Box<StreamEventFrame>),
+    ToolProgress(Box<ToolProgressFrame>),
+    CommandLifecycle(Box<CommandLifecycleFrame>),
+    ConversationReset(Box<ConversationResetFrame>),
     Unknown { kind: String, subtype: String },
 }
 
@@ -74,6 +77,46 @@ pub fn decode_observation(kind: &str, subtype: &str, raw: &[u8]) -> Result<Obser
                 return Err(invalid("stream_event requires event, uuid, and session_id"));
             }
             Observation::StreamEvent(Box::new(frame))
+        }
+        TYPE_TOOL_PROGRESS => {
+            let frame: ToolProgressFrame = unmarshal(raw)?;
+            if frame.tool_use_id.is_empty()
+                || frame.tool_name.is_empty()
+                || frame.session_id.is_empty()
+            {
+                return Err(invalid(
+                    "tool_progress requires tool_use_id, tool_name, and session_id",
+                ));
+            }
+            Observation::ToolProgress(Box::new(frame))
+        }
+        TYPE_COMMAND_LIFECYCLE => {
+            let frame: CommandLifecycleFrame = unmarshal(raw)?;
+            if frame.command_uuid.is_empty()
+                || frame.state.is_empty()
+                || frame.session_id.is_empty()
+            {
+                return Err(invalid(
+                    "command_lifecycle requires command_uuid, state, and session_id",
+                ));
+            }
+            Observation::CommandLifecycle(Box::new(frame))
+        }
+        TYPE_KEEP_ALIVE => Observation::Unknown {
+            kind: TYPE_KEEP_ALIVE.into(),
+            subtype: String::new(),
+        },
+        TYPE_CONVERSATION => {
+            let frame: ConversationResetFrame = unmarshal(raw)?;
+            if frame.new_conversation_id.is_empty()
+                || frame.uuid.is_empty()
+                || frame.session_id.is_empty()
+            {
+                return Err(invalid(
+                    "conversation_reset requires new_conversation_id, uuid, and session_id",
+                ));
+            }
+            Observation::ConversationReset(Box::new(frame))
         }
         _ => Observation::Unknown {
             kind: kind.into(),
