@@ -1,10 +1,10 @@
 # Cutting a release
 
 `v0.1.0-alpha.33` is the first release under the OXAP names: `oxap-*` archives
-carrying `oxap` and its `oapx` alias, the npm packages `@oxap/cli`, its six
-`@oxap/cli-<platform>` packages, `@oxap/sdk` and `@oxap/client`, the PyPI
-package `oxap-sdk`, and the `oxap-*` crates. Every channel's names are listed in
-[the install and migration guide](install.md).
+carrying `oxap` and its `oapx` alias, and the npm packages. No release job
+publishes the hub client, the Python SDK or the Rust crates yet; they are used
+from the repository. [The install and migration guide](install.md) lists every
+name.
 
 A release is cut by pushing a `v*` tag: `.github/workflows/release-binaries.yml`
 builds every release target, signs and notarizes the macOS ones, publishes a

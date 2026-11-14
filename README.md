@@ -1025,8 +1025,8 @@ for await (const envelope of events) {
 }
 ```
 
-Install it with `npm install @oxap/client`. See `clients/ts/README.md` for the
-full surface.
+The package is `@oxap/client`. It is not on npm yet, so use it from a checkout
+as `clients/ts/README.md` describes; that README also covers the full surface.
 
 Harness pins:
 

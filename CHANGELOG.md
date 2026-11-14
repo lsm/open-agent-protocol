@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The first release under the OXAP names. The command is `oxap`, and `oapx`
 still works as an alias with the same arguments, exit codes and stdout. The
-repository is `lsm/oxap`, the Go module `github.com/lsm/oxap`, and the
-packages are `@oxap/cli`, `@oxap/sdk`, `@oxap/client`, `oxap-sdk` on PyPI and
-the `oxap-*` crates. New state goes to `~/.oxap`, an existing `~/.oapx` keeps
-working, and `OXAP_*` variables are read before `OAPX_*`. The v0.1 wire is
+repository is `lsm/oxap` and the Go module `github.com/lsm/oxap`. npm carries
+`@oxap/cli` and `@oxap/sdk`; the hub client `@oxap/client`, the Python SDK
+`oxap-sdk` and the `oxap-*` Rust crates are renamed but still used from the
+repository. New state goes to `~/.oxap`, an existing `~/.oapx` keeps working,
+and the runtime reads `OXAP_*` variables before `OAPX_*`. The v0.1 wire is
 unchanged. [docs/install.md](docs/install.md) says how to move from the old
 names.
 

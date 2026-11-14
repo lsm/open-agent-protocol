@@ -1,7 +1,7 @@
 # Decision 0067: The Project Is Named OXAP
 
-Status: accepted 2026-11-03; implemented in `v0.1.0-alpha.33`, the first release
-under the OXAP names ([install and migration guide](../docs/install.md))
+Status: accepted 2026-11-03; implemented for `v0.1.0-alpha.33` except where
+Implementation below says otherwise
 Date: 2026-11-03
 Protocol: `open-agent-protocol` version `0.1`
 Profile: all existing profiles
@@ -117,3 +117,16 @@ SDKs, harness catalogs, binaries, release assets and package manifests keep
 their current behavior and names. CLI aliases, configuration fallback and
 publication changes follow as separate, small changes with compatibility
 evidence. The documentation site is also a separate implementation task.
+
+## Implementation
+
+The follow-up changes landed for `v0.1.0-alpha.33`: the `oxap` binary with its
+`oapx` alias and `oxap-*` release archives, the `~/.oxap` state paths and
+`OXAP_*` variables, the four SDK binary resolvers, the Go module
+`github.com/lsm/oxap`, the `oxap-*` Rust crate names, and the `@oxap/cli`,
+`@oxap/sdk`, `@oxap/client` and `oxap-sdk` package names.
+[docs/install.md](../docs/install.md) lists them and how to move.
+
+Still open after that release: the Zig package is still named `.makai`, and no
+release job publishes the hub client to npm, the Python SDK to PyPI or the
+Rust crates to crates.io.

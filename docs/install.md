@@ -14,10 +14,15 @@ records the names and the compatibility rules.
 | The binary through npm | `npm install -g @oxap/cli`, or `npx @oxap/cli --version`. |
 | The binary from source | Zig 0.17.0, then `make install` in a checkout. |
 | TypeScript SDK | `npm install @oxap/sdk` |
-| TypeScript hub client | `npm install @oxap/client` |
-| Python SDK | `pip install oxap-sdk`, then `import oxap_sdk` |
-| Rust SDK | `cargo add oxap-sdk` |
 | Go library and Go SDK | `go get github.com/lsm/oxap@v0.1.0-alpha.33` |
+| TypeScript hub client | From a checkout, as a `file:` dependency on `clients/ts` ([its README](../clients/ts/README.md)). |
+| Python SDK | From a checkout: `pip install ./sdk/python`, then `import oxap_sdk`. |
+| Rust SDK | From the repository: `oxap-sdk = { git = "https://github.com/lsm/oxap" }`. |
+
+A release publishes the GitHub archives and the npm packages `@oxap/cli` and
+`@oxap/sdk`. The hub client, the Python SDK and the Rust crates already carry
+their OXAP names, but no release publishes them to npm, PyPI or crates.io yet,
+so they are used from the repository.
 
 Release archives cover macOS, Linux and Windows on arm64 and x64. The npm
 package `@oxap/cli` picks the matching `@oxap/cli-<os>-<arch>` package through
@@ -35,9 +40,9 @@ SDK finds a runtime without a separate download.
 | Go module `github.com/lsm/open-agent-protocol` | `github.com/lsm/oxap` |
 | npm `oap-sdk` | `@oxap/sdk` |
 | npm `@oap-sdk/cli-<os>-<arch>` | `@oxap/cli`, over `@oxap/cli-<os>-<arch>` |
-| `oap-client` (checkout only) | `@oxap/client` on npm |
-| Python `oap-sdk` / `oap_sdk` (checkout only) | `oxap-sdk` / `oxap_sdk` on PyPI |
-| Rust crates `oap-*` (path only) | `oxap-*` on crates.io, for example `oxap-sdk` and `oxap-protocol` |
+| `oap-client` | `@oxap/client` |
+| Python `oap-sdk` / `oap_sdk` | `oxap-sdk` / `oxap_sdk` |
+| Rust crates `oap-*` | `oxap-*`, for example `oxap-sdk` and `oxap-protocol` |
 
 None of the old npm, PyPI or crates.io names was ever published by this
 project, so there is no old registry package to replace. The `oap-sdk` already
@@ -59,10 +64,10 @@ old repository URL and old tags are never rewritten. Each new version needs the
 new path.
 
 **TypeScript.** Import from `@oxap/sdk` instead of `oap-sdk`, and from
-`@oxap/client` instead of a `file:` dependency on `clients/ts`. Exported names
-such as `MakaiClient` and the `Oap*` types do not change.
+`@oxap/client` instead of `oap-client`. Exported names such as `MakaiClient`
+and the `Oap*` types do not change.
 
-**Python.** Install `oxap-sdk` and change `import oap_sdk` to
+**Python.** Reinstall from `sdk/python` and change `import oap_sdk` to
 `import oxap_sdk`. There is no `oap_sdk` compatibility module, because that
 name would collide with the unrelated PyPI package. Class names such as
 `MakaiClient` do not change.
@@ -73,12 +78,17 @@ name would collide with the unrelated PyPI package. Class names such as
 
 ## Environment variables
 
-Every `OAPX_*` variable has an `OXAP_*` spelling, for example
-`OXAP_PROVIDER_SERVICE_URL` and `OXAP_KEYCHAIN_SERVICE`. When both are set, the
-`OXAP_*` value is used. The SDKs read `OXAP_SDK_BINARY_PATH`,
-`OXAP_SDK_BINARY_URL` and `OXAP_SDK_BINARY_SHA256` first, and fall back to the
-old `OAP_SDK_BINARY_*` names. The old names are still read, so nothing breaks
-today; move to the new ones when convenient.
+The runtime's own settings read an `OXAP_*` name first and fall back to the
+old `OAPX_*` name when the new one is unset: for example `OXAP_BASE_URL`,
+`OXAP_PROVIDER_SERVICE_URL`, `OXAP_PROVIDER_SERVICE_SECURITY`,
+`OXAP_PROVIDER_SERVICE_TOKEN` and `OXAP_KEYCHAIN_SERVICE`. The SDKs read
+`OXAP_SDK_BINARY_PATH`, `OXAP_SDK_BINARY_URL` and `OXAP_SDK_BINARY_SHA256`
+first, and fall back to the old `OAP_SDK_BINARY_*` names. The old names are
+still read, so nothing breaks today; move to the new ones when convenient.
+
+Two old names have no new spelling yet. `OAPX_PROVIDER_API_KEY` is not a
+setting: `oxap` sets it in the environment of a Codex child it starts. And the
+Rust provider catalog library reads only `OAPX_BASE_URL`.
 
 When an SDK looks for the binary on its own, it tries the name `oxap` before
 `oapx`. The TypeScript SDK also finds it in the installed
