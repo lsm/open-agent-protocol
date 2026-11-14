@@ -33,6 +33,8 @@ fn unmarshal<T: DeserializeOwned>(raw: &[u8]) -> Result<T, Invalid> {
 pub enum Observation {
     User(Box<UserFrame>),
     Assistant(Box<AssistantFrame>),
+    Result(Box<ResultFrame>),
+    StreamEvent(Box<StreamEventFrame>),
     Unknown { kind: String, subtype: String },
 }
 
@@ -55,6 +57,23 @@ pub fn decode_observation(kind: &str, subtype: &str, raw: &[u8]) -> Result<Obser
                 ));
             }
             Observation::Assistant(Box::new(frame))
+        }
+        TYPE_RESULT => {
+            let frame: ResultFrame = unmarshal(raw)?;
+            if frame.subtype.is_empty() {
+                return Err(invalid("result frame requires subtype"));
+            }
+            if frame.session_id.is_empty() {
+                return Err(invalid("result frame requires session_id"));
+            }
+            Observation::Result(Box::new(frame))
+        }
+        TYPE_STREAM_EVENT => {
+            let frame: StreamEventFrame = unmarshal(raw)?;
+            if frame.event.is_none() || frame.uuid.is_empty() || frame.session_id.is_empty() {
+                return Err(invalid("stream_event requires event, uuid, and session_id"));
+            }
+            Observation::StreamEvent(Box::new(frame))
         }
         _ => Observation::Unknown {
             kind: kind.into(),
