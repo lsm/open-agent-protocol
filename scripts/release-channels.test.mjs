@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { bundledNpmPackages, npmTarball, pep440, publishOrder } from "./release-channels.mjs";
+
+test("run from a checkout path holding a space, the script still runs and refuses an unknown action", () => {
+  const spaced = join(mkdtempSync(join(tmpdir(), "release-channels-")), "a dir with a space");
+  mkdirSync(spaced);
+  const script = join(spaced, "release-channels.mjs");
+  copyFileSync(fileURLToPath(new URL("./release-channels.mjs", import.meta.url)), script);
+  const result = spawnSync(process.execPath, [script, "no-such-action"], { encoding: "utf8" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /usage: release-channels\.mjs/);
+});
 
 test("a platform package the build withheld is not selected for npm, and the rest keep their order", () => {
   const bundle = mkdtempSync(join(tmpdir(), "release-channels-"));
