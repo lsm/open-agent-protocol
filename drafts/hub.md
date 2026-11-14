@@ -159,9 +159,11 @@ Both trees serve it: Go builds the template in `LoadRegistry` and places one ada
 
 An entry of type **`oapx`** serves oapx's own agent loop, built the way
 `oapx serve agent --backend oapx` builds it: the providers, credentials and
-model catalog are the ones `~/.oapx` holds, shared by every `oapx` entry in the
-document, and each session gets its own runtime. A session's settings come from
-its open's `metadata.oapx`, the keys `oapx tui` sends — `thinking_level`,
+model catalog are the ones `~/.oxap` (or, while only it exists, `~/.oapx`)
+holds, shared by every `oapx` entry in the document, and each session gets its
+own runtime. A session's settings come from its open's `metadata.oxap`, or
+`metadata.oapx` when that is absent; an open carrying both that disagree is
+refused rather than one being chosen. The keys are the ones `oapx tui` sends — `thinking_level`,
 `context_window`, `output`, `permission_mode`, `workspace_root` and
 `user_input` — plus `model`, a `provider/api@id` reference as the session's
 model catalog prints it, so two sessions on one hub can run different providers
