@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const REPOSITORY = "lsm/oxap";
 const WORKFLOW = "release-binaries.yml";
@@ -177,7 +178,7 @@ function commands() {
 
 const actions = { versions, crates, registry, commands };
 const action = actions[process.argv[2]];
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   if (!action) fail(`usage: release-channels.mjs ${Object.keys(actions).join("|")} [options]`);
   await action();
 }

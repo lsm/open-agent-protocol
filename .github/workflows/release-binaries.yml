@@ -453,7 +453,7 @@ jobs:
           path: bundle/python
       - uses: actions/download-artifact@v4
         with:
-          pattern: oxap-*
+          pattern: oxap-*-*
           path: bundle/binaries
           merge-multiple: true
 
