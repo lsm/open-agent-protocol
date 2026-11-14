@@ -5,11 +5,9 @@ stream-json control protocol on stdio, pinned by `harnesses/claude-code.json`
 and judged by the corpus in `fixtures/adapters/claude-code-2.1.322`.
 
 `native` holds the pinned frame types, decoded as Go's `encoding/json` decodes
-them. So far `decode_observation` reads every top-level frame type Go's
-`DecodeObservation` reads, an unrecognised one as `Unknown`. Of the `system`
-subtypes it reads init, status and session_state_changed; any other, the task
-subtypes included until their types land, is a `SystemNotice` that keeps its
-bytes.
+them. `decode_observation` reads every frame Go's `DecodeObservation` reads:
+an unrecognised type reads as `Unknown`, and an unrecognised system subtype as
+a `SystemNotice` that keeps its bytes. Control requests are not ported yet.
 
 Three `encoding/json` behaviours are not followed, and nothing observes any of
 them. Go falls back to a case-insensitive key match, so `{"MESSAGE":{...}}`

@@ -41,8 +41,22 @@ pub enum Observation {
     Init(Box<InitFrame>),
     Status(Box<StatusFrame>),
     SessionState(Box<SessionStateFrame>),
+    TaskStarted(Box<TaskStartedFrame>),
+    TaskProgress(Box<TaskProgressFrame>),
+    TaskNotification(Box<TaskNotificationFrame>),
+    TaskUpdated(Box<TaskUpdatedFrame>),
     SystemNotice(Box<SystemNotice>),
     Unknown { kind: String, subtype: String },
+}
+
+#[derive(Default, serde::Deserialize)]
+struct OutputFileMember {
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::raw")]
+    output_file: Raw,
+}
+
+fn any_empty(members: &[&str]) -> bool {
+    members.iter().any(|member| member.is_empty())
 }
 
 fn decode_system(subtype: &str, raw: &[u8]) -> Result<Observation, Invalid> {
@@ -61,6 +75,65 @@ fn decode_system(subtype: &str, raw: &[u8]) -> Result<Observation, Invalid> {
                 return Err(invalid("session_state_changed requires state"));
             }
             Observation::SessionState(Box::new(frame))
+        }
+        SYSTEM_TASK_STARTED => {
+            let frame: TaskStartedFrame = unmarshal(raw)?;
+            if any_empty(&[
+                &frame.task_id,
+                &frame.description,
+                &frame.uuid,
+                &frame.session_id,
+            ]) {
+                return Err(invalid(
+                    "task_started requires task_id, description, uuid, and session_id",
+                ));
+            }
+            Observation::TaskStarted(Box::new(frame))
+        }
+        SYSTEM_TASK_PROGRESS => {
+            let frame: TaskProgressFrame = unmarshal(raw)?;
+            if any_empty(&[
+                &frame.task_id,
+                &frame.description,
+                &frame.uuid,
+                &frame.session_id,
+            ]) {
+                return Err(invalid(
+                    "task_progress requires task_id, description, uuid, and session_id",
+                ));
+            }
+            Observation::TaskProgress(Box::new(frame))
+        }
+        SYSTEM_TASK_NOTIFICATION => {
+            let frame: TaskNotificationFrame = unmarshal(raw)?;
+            let members: OutputFileMember = unmarshal(raw)?;
+            if members.output_file.is_none()
+                || any_empty(&[
+                    &frame.task_id,
+                    &frame.status,
+                    &frame.summary,
+                    &frame.uuid,
+                    &frame.session_id,
+                ])
+            {
+                return Err(invalid(
+                    "task_notification requires task_id, status, output_file, summary, uuid, and session_id",
+                ));
+            }
+            if !terminal_task_status(&frame.status) {
+                return Err(invalid(format!(
+                    "task_notification status {} is not completed, failed, or stopped",
+                    oxap_adapter::gojson::go_quote(&frame.status)
+                )));
+            }
+            Observation::TaskNotification(Box::new(frame))
+        }
+        SYSTEM_TASK_UPDATED => {
+            let frame: TaskUpdatedFrame = unmarshal(raw)?;
+            if frame.task_id.is_empty() {
+                return Err(invalid("task_updated requires task_id"));
+            }
+            Observation::TaskUpdated(Box::new(frame))
         }
         _ => {
             let mut notice: SystemNotice = unmarshal(raw)?;

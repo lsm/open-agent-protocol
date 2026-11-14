@@ -8,6 +8,7 @@ repository root.
 (cd rust && cargo test -p oxap-adapter-claude --test native_results)
 (cd rust && cargo test -p oxap-adapter-claude --test native_lifecycle)
 (cd rust && cargo test -p oxap-adapter-claude --test native_system)
+(cd rust && cargo test -p oxap-adapter-claude --test native_tasks)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -39,3 +40,12 @@ its status says so, and a notice carries the frame's own subtype and bytes.
 To see it bite, drop the `tools` check on init: the init refusal test must
 fail. Leave a notice's bytes empty: the notice test must fail. Read any status
 as compacting: the status test must fail.
+
+`tests/native_tasks.rs` ports the task cases of Go's `TestSystemVocabulary`
+and `TestTaskNotificationRequiresOutputFilePresentButAcceptsItEmpty`. It pins
+each refusal Go prints, including a non-terminal notification status quoted
+as Go's `%q` quotes it, and a null `usage`, `patch` or `output_file` read as
+Go reads it: a present null `output_file` counts as present. To see it bite,
+drop the `output_file` presence check: the output-file test must fail. Read
+no patch as terminal: the task-updated test must fail. Print the status
+unquoted: the notification test must fail.
