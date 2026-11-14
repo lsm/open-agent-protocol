@@ -3,9 +3,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, FutureExt, StreamExt};
-use oap_adapter::{Adapter as _, Error, OpenRequest, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{Message, MessageContent, MessageSubmitRequest, Participant, RunCancelResponse};
+use oxap_adapter::{Adapter as _, Error, OpenRequest, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
+    Message, MessageContent, MessageSubmitRequest, Participant, RunCancelResponse,
+};
 use serde_json::{json, Value};
 
 fn wait(path: &Path) {
@@ -86,7 +88,7 @@ fn main() {
         let event = block_on(stream.next()).unwrap().unwrap();
         let after = event.envelope_type.as_str() == "content.delta"
             && event
-                .decode_payload::<oap_protocol::ContentDeltaPayload>()
+                .decode_payload::<oxap_protocol::ContentDeltaPayload>()
                 .unwrap()
                 .part
                 .text

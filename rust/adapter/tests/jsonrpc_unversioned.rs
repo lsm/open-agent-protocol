@@ -1,4 +1,4 @@
-use oap_adapter::jsonrpc::{Dialect, Error, ErrorObject, Kind, Message, RequestId};
+use oxap_adapter::jsonrpc::{Dialect, Error, ErrorObject, Kind, Message, RequestId};
 use serde_json::value::RawValue;
 
 const CODEX: Dialect = Dialect::unversioned("codex app-server");
@@ -124,17 +124,17 @@ fn a_reverse_request_from_an_unversioned_peer_keeps_its_trace() {
     use std::io::Write;
     let (from_server, mut to_client) = std::io::pipe().unwrap();
     let (_from_client, to_server) = std::io::pipe().unwrap();
-    let client = oap_adapter::jsonrpc::RpcClient::new(
+    let client = oxap_adapter::jsonrpc::RpcClient::new(
         CODEX,
         from_server,
         to_server,
-        oap_adapter::jsonrpc::ClientOptions::default(),
+        oxap_adapter::jsonrpc::ClientOptions::default(),
     );
     let inbound = client.inbound();
     to_client
         .write_all(b"{\"id\":3,\"method\":\"item/tool/requestUserInput\",\"params\":{},\"trace\":{\"span\":\"s\"}}\n")
         .unwrap();
-    let oap_adapter::jsonrpc::Inbound::Request(request) = inbound
+    let oxap_adapter::jsonrpc::Inbound::Request(request) = inbound
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap()
     else {

@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde_json::Value;
 
 use super::model_catalog::HeldModel;

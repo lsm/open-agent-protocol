@@ -1,5 +1,5 @@
-use oap_adapter::Error;
-use oap_protocol::{RunCancelResponse, RunId, RunStatus};
+use oxap_adapter::Error;
+use oxap_protocol::{RunCancelResponse, RunId, RunStatus};
 
 use crate::adapter::call;
 use crate::native::{TurnInterruptParams, TurnInterruptResponse, METHOD_TURN_INTERRUPT};

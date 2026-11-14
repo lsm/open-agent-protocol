@@ -1,6 +1,6 @@
 # Rust tool-source calls and snapshots
 
-Run `cargo test --manifest-path rust/Cargo.toml -p oap-validation --test tool_source_state`
+Run `cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test tool_source_state`
 and the shared `rust-go-parity.py` journey from the repository root.
 Calls must match the current session catalog or descriptor attribution. An
 advertised, published attribution makes an omitted source `unattributed_call`.

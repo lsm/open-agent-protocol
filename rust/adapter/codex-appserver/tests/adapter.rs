@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use oap_adapter::{Error, OpenRequest, CONTROL_UNSATISFIABLE};
-use oap_adapter_codex_appserver::adapter::{reasoning_level, thread_config, Adapter, Config};
-use oap_adapter_codex_appserver::client::{Client, ClientFactory};
-use oap_adapter_codex_appserver::process::ProcessConfig;
-use oap_adapter_codex_appserver::rpc::{error, Fault};
-use oap_protocol::{
+use oxap_adapter::{Error, OpenRequest, CONTROL_UNSATISFIABLE};
+use oxap_adapter_codex_appserver::adapter::{reasoning_level, thread_config, Adapter, Config};
+use oxap_adapter_codex_appserver::client::{Client, ClientFactory};
+use oxap_adapter_codex_appserver::process::ProcessConfig;
+use oxap_adapter_codex_appserver::rpc::{error, Fault};
+use oxap_protocol::{
     CompactionKind, CompactionPolicy, ReasoningLevel, SupportLevel, FEATURE_COMPACTION_POLICY,
 };
 use serde_json::json;
@@ -22,7 +22,7 @@ fn config() -> Config {
 
 fn refused(
     _: Option<std::time::Instant>,
-) -> Result<Arc<dyn Client>, oap_adapter_codex_appserver::rpc::Error> {
+) -> Result<Arc<dyn Client>, oxap_adapter_codex_appserver::rpc::Error> {
     Err(error(Fault::Transport("unused".into())))
 }
 
@@ -60,7 +60,7 @@ fn the_descriptor_equals_go_for_the_catalog_revision() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        oap_harness::current("codex-app-server")
+        oxap_harness::current("codex-app-server")
             .unwrap()
             .capability_revision
     );

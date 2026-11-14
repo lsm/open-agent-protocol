@@ -1,8 +1,8 @@
 use std::process::Command;
 use std::time::Duration;
 
-use oap_protocol::{Envelope, SessionId};
-use oap_validation::{Diagnostic, Validator};
+use oxap_protocol::{Envelope, SessionId};
+use oxap_validation::{Diagnostic, Validator};
 use serde::Serialize;
 
 use crate::{framing_contract, Check, Client, ClientError, Runner};

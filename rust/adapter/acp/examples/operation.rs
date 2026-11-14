@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker};
-use oap_adapter_acp::process::{Process, ProcessConfig};
+use oxap_adapter_acp::process::{Process, ProcessConfig};
 
 fn cancel<T>(operation: impl Future<Output = T>) {
     let mut operation = Box::pin(operation);
@@ -61,7 +61,7 @@ fn main() {
             let operation = process.call_async(
                 "session/new".into(),
                 Some(
-                    serde_json::value::to_raw_value(&oap_adapter_acp::native::SessionNewParams {
+                    serde_json::value::to_raw_value(&oxap_adapter_acp::native::SessionNewParams {
                         cwd: "/".into(),
                         mcp_servers: Vec::new(),
                     })

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use oap_adapter_acp::process::{Implementation, Process, ProcessConfig};
+use oxap_adapter_acp::process::{Implementation, Process, ProcessConfig};
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);

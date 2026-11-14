@@ -1,7 +1,7 @@
 use futures::executor::block_on;
-use oap_adapter::memory::{history_tokens, Config, Memory, CAPABILITY_REVISION, MODEL_SECONDARY};
-use oap_adapter::{Admitter, Error, OpenRequest, CONTROL_UNSATISFIABLE};
-use oap_protocol::*;
+use oxap_adapter::memory::{history_tokens, Config, Memory, CAPABILITY_REVISION, MODEL_SECONDARY};
+use oxap_adapter::{Admitter, Error, OpenRequest, CONTROL_UNSATISFIABLE};
+use oxap_protocol::*;
 
 fn opener(session: &str) -> OpenRequest {
     OpenRequest {

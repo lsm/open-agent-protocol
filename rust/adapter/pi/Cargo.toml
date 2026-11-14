@@ -1,5 +1,5 @@
 [package]
-name = "oap-adapter-pi"
+name = "oxap-adapter-pi"
 version = "0.1.0"
 edition = "2021"
 description = "The Open Agent Protocol adapter over Pi's RPC mode on stdio"
@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 crossbeam-channel = "0.5"
-oap-adapter = { path = ".." }
+oxap-adapter = { path = "..", version = "=0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 

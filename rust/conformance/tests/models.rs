@@ -2,8 +2,8 @@
 
 mod support;
 
-use oap_conformance::Runner;
-use oap_protocol::CapabilityDescriptor;
+use oxap_conformance::Runner;
+use oxap_protocol::CapabilityDescriptor;
 use support::client;
 
 #[test]

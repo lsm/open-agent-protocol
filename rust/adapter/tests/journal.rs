@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use futures::executor::block_on;
 use futures::StreamExt;
-use oap_adapter::journal::{Journal, FOLLOWER_BUFFER};
-use oap_adapter::{Error, EventStream, ReplayGap};
-use oap_protocol::*;
+use oxap_adapter::journal::{Journal, FOLLOWER_BUFFER};
+use oxap_adapter::{Error, EventStream, ReplayGap};
+use oxap_protocol::*;
 
 fn envelope(run: &str, sequence: u64) -> Envelope {
     Envelope {

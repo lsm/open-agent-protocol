@@ -1,17 +1,17 @@
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode, RunStatus,
     ShutdownMode, ShutdownRun,
 };
-use oap_serve::{asked_shutdown, Hub, Registry};
+use oxap_serve::{asked_shutdown, Hub, Registry};
 use serde_json::value::RawValue;
 
 fn raw(text: &str) -> Box<RawValue> {
     RawValue::from_string(text.to_owned()).unwrap()
 }
 
-fn running(hub: &Hub, id: &str) -> oap_protocol::RunId {
+fn running(hub: &Hub, id: &str) -> oxap_protocol::RunId {
     block_on(hub.open(
         "memory",
         OpenRequest {
@@ -23,7 +23,7 @@ fn running(hub: &Hub, id: &str) -> oap_protocol::RunId {
     submitted(hub, id)
 }
 
-fn submitted(hub: &Hub, id: &str) -> oap_protocol::RunId {
+fn submitted(hub: &Hub, id: &str) -> oxap_protocol::RunId {
     block_on(hub.session(&id.into()).unwrap().submit(SubmitRequest {
         request: MessageSubmitRequest {
             session_id: id.into(),

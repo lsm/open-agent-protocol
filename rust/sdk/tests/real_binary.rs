@@ -10,7 +10,7 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use oap_sdk::{Error, ExecutionRequest, ListModelsRequest};
+use oxap_sdk::{Error, ExecutionRequest, ListModelsRequest};
 
 #[tokio::test]
 async fn connects_to_the_real_runtime() {

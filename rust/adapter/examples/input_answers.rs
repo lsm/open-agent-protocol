@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
-use oap_adapter::{index_input_answers, validate_input_answer};
-use oap_protocol::{InputAnswer, InputQuestion};
+use oxap_adapter::{index_input_answers, validate_input_answer};
+use oxap_protocol::{InputAnswer, InputQuestion};
 use serde::Deserialize;
 use serde_json::json;
 

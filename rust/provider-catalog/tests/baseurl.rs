@@ -1,4 +1,4 @@
-use oap_provider_catalog::{
+use oxap_provider_catalog::{
     base_url_with_overrides, normalize_kimi_region, normalize_versioned_base_url, Catalog,
     Endpoint, EnvironmentValue, Provider, GLOBAL_BASE_URL_ENV,
 };

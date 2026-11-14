@@ -5,13 +5,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use oap_adapter::{testkit, Error, EventStream, OpenRequest, ResumeRequest, SubmitRequest};
-use oap_adapter_deepseek::adapter::{pin, Adapter, Config};
-use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
-use oap_adapter_deepseek::process::ProcessConfig;
-use oap_adapter_deepseek::runtime::Runtime;
-use oap_adapter_deepseek::session::Session;
-use oap_protocol::{
+use oxap_adapter::{testkit, Error, EventStream, OpenRequest, ResumeRequest, SubmitRequest};
+use oxap_adapter_deepseek::adapter::{pin, Adapter, Config};
+use oxap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
+use oxap_adapter_deepseek::process::ProcessConfig;
+use oxap_adapter_deepseek::runtime::Runtime;
+use oxap_adapter_deepseek::session::Session;
+use oxap_protocol::{
     ActionCallPayload, Admission, ContentDeltaPayload, EffectiveDeliveryMode, EnvelopeType,
     Message, MessageContent, MessageRole, MessageSubmitRequest, MessageSubmitResponse, Participant,
     RequestedDeliveryMode, RunCompletedPayload, RunFailedPayload, RunStartedPayload, RunStatus,
@@ -873,7 +873,7 @@ fn run_after_admission(
     fixture: &Fixture,
     tail: &str,
     count: usize,
-) -> (Arc<Session>, Vec<oap_protocol::Envelope>) {
+) -> (Arc<Session>, Vec<oxap_protocol::Envelope>) {
     let session = fixture.open(&(receipt() + &proof() + &fixture.until_released() + tail));
     let (_, mut stream) = submit(&session, hello("s")).unwrap();
     fixture.release();
@@ -1023,7 +1023,7 @@ fn settled_turn() -> String {
     reply(5, 1) + &turn_end(6, 1, "completed") + &idle()
 }
 
-fn still_running(session: &Session, envelopes: &[oap_protocol::Envelope]) {
+fn still_running(session: &Session, envelopes: &[oxap_protocol::Envelope]) {
     assert_eq!(envelopes.len(), 3);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(session.state().unwrap().status, SessionStatus::RUNNING);
@@ -1111,7 +1111,7 @@ fn a_subagent_finish_buffered_for_no_started_child_fails_the_replayed_run() {
 fn contract_submit(
     session: &Arc<Session>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Submitted> + Send + '_>> {
-    oap_adapter::Session::submit(
+    oxap_adapter::Session::submit(
         &**session,
         SubmitRequest {
             request: hello("s"),

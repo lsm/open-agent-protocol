@@ -6,11 +6,11 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{task::noop_waker, StreamExt};
-use oap_adapter::{
+use oxap_adapter::{
     Adapter as _, InteractionResolution, OpenRequest, ResumeRequest, Session, SubmitRequest,
 };
-use oap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config, Runtime};
-use oap_protocol::{
+use oxap_adapter_acp::{pin, process::ProcessConfig, Adapter, Config, Runtime};
+use oxap_protocol::{
     Envelope, Message, MessageContent, MessageRole, MessageSubmitRequest, Participant,
     PermissionResolveRequest, RequestedDeliveryMode,
 };
@@ -225,7 +225,7 @@ impl Case {
     fn assert_attachment(
         &self,
         session: &dyn Session,
-        sources: &[oap_protocol::ToolSourceAttachment],
+        sources: &[oxap_protocol::ToolSourceAttachment],
     ) {
         let host = std::fs::read_to_string(self.directory.join("host.jsonl")).unwrap();
         let opened: Value = host
@@ -261,7 +261,7 @@ impl Case {
     fn assert_replay(
         &self,
         session: &dyn Session,
-        run_id: &oap_protocol::RunId,
+        run_id: &oxap_protocol::RunId,
         after: u64,
         events: &[Envelope],
     ) {
@@ -297,8 +297,8 @@ impl Case {
         &self,
         session: &dyn Session,
         event: &Envelope,
-        session_id: &oap_protocol::SessionId,
-        run_id: &oap_protocol::RunId,
+        session_id: &oxap_protocol::SessionId,
+        run_id: &oxap_protocol::RunId,
     ) {
         let frame = self
             .frames
@@ -347,7 +347,7 @@ fn every_prompted_case_replays_its_recorded_trace_byte_for_byte() {
         }
         let case = Case::new(id, entry["path"].as_str().unwrap());
         let events = case.replay();
-        let mut actual = oap_adapter::gojson::go_marshal(&serde_json::to_string(&events).unwrap());
+        let mut actual = oxap_adapter::gojson::go_marshal(&serde_json::to_string(&events).unwrap());
         if case.has("process-exit") {
             actual = actual.replace(
                 r#""message":"EOF""#,

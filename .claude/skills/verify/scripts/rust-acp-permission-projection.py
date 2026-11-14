@@ -92,12 +92,12 @@ def main():
     normalizer=importlib.util.module_from_spec(normalization)
     normalization.loader.exec_module(normalizer)
     output.mkdir(parents=True,exist_ok=False)
-    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--example',options.consumer],output/'rust-build.log')
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--example',options.consumer],output/'rust-build.log')
     (output/'reference.go').write_text(GO)
     peer.run(['gofmt','-w',str(output/'reference.go')],output/'gofmt.log')
     peer.run(['go','build','-o',str(output/'reference'),str(output/'reference.go')],output/'go-build.log')
     peer.run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'],output/'goap-build.log')
-    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate'],output/'validator-build.log')
+    peer.run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-validation','--example','validate'],output/'validator-build.log')
     allow=dict(optionId='pick',name='Allow',kind='allow_once')
     deny=dict(optionId='pick',name='Reject',kind='reject_once')
     def permission(identifier='tool',options=None):
@@ -153,7 +153,7 @@ def main():
                 peer.run(command+[str(path)],case/f'validate-{language}.log')
             comparison='wall-clock/revision-normalized public events' if options.consumer=='session_permissions' else 'exact projected event JSON'
             print(f'PASS {name}: Go/Rust {comparison} and parsed host frames; three validators accept actual Rust events; native children reaped',flush=True)
-        observed=peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oap-adapter-acp','--test','permission_projection','native_usage_in_the_pending_window','--','--nocapture'],output/'pending-usage.log')
+        observed=peer.run(['cargo','test','--manifest-path','rust/Cargo.toml','-p','oxap-adapter-acp','--test','permission_projection','native_usage_in_the_pending_window','--','--nocapture'],output/'pending-usage.log')
         proof=json.loads(next(line.split('pending-usage-proof ',1)[1] for line in observed.splitlines() if 'pending-usage-proof ' in line))
         (output/'pending-usage.json').write_text(json.dumps(proof,ensure_ascii=False,indent=2))
         assert peer.absent(proof['native_pid']),proof['native_pid']

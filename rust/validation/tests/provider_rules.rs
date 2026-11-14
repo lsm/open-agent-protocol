@@ -1,4 +1,4 @@
-use oap_validation::ProviderValidator;
+use oxap_validation::ProviderValidator;
 use serde_json::{json, Value};
 
 fn fixture(path: &str) -> Vec<Value> {

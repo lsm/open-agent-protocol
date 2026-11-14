@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, PipeReader, PipeWriter, Write};
 use std::time::{Duration, Instant};
 
-use oap_adapter::jsonrpc::{
+use oxap_adapter::jsonrpc::{
     ClientOptions, Dialect, Error, Fault, Inbound, Kind, Message, RequestId, RpcClient,
 };
 use serde_json::value::RawValue;

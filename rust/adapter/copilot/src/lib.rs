@@ -5,8 +5,8 @@ pub mod rpc;
 
 use std::sync::LazyLock;
 
-fn pin() -> &'static oap_harness::Version {
-    oap_harness::current("copilot-cli").expect("the harness catalog pins copilot-cli")
+fn pin() -> &'static oxap_harness::Version {
+    oxap_harness::current("copilot-cli").expect("the harness catalog pins copilot-cli")
 }
 
 pub static PINNED_VERSION: LazyLock<String> = LazyLock::new(|| pin().endpoint_version.clone());

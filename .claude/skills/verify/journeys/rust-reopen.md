@@ -17,7 +17,7 @@ with no concurrent Rust builds:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-reopen.py --mutation-check --output-dir /tmp/oap-rust-reopen-mutations-<unique-name>
-(cd rust && cargo test -p oap-validation --test reopen)
+(cd rust && cargo test -p oxap-validation --test reopen)
 ```
 
 The optional mutation mode temporarily weakens six conditions in

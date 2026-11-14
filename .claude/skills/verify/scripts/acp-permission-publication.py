@@ -154,7 +154,7 @@ def main():
     missing.write_text(json.dumps(broken, indent=2) + "\n")
     for name, command in [
         ("go", ["go", "run", "./go/cmd/goap", "validate", "--format=json"]),
-        ("rust", ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate", "--"]),
+        ("rust", ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate", "--"]),
         ("zig", [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format=json"]),
     ]:
         for label, path, expected in [("complete", complete, []), ("missing-resolution", missing, ["pending_interaction_at_terminal"])]:

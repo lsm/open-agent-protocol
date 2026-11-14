@@ -35,7 +35,7 @@ fn main() {
     println!("closed snapshot: listing cleared and ID reused");
 }
 ''')
-    dependencies = "\n".join(name + " = { path = " + json.dumps(str(ROOT / path)) + " }" for name, path in [("oap-adapter", "rust/adapter"), ("oap-protocol", "rust/protocol"), ("oap-serve", "rust/serve")])
+    dependencies = "\n".join(name + " = { path = " + json.dumps(str(ROOT / path)) + " }" for name, path in [("oxap-adapter", "rust/adapter"), ("oxap-protocol", "rust/protocol"), ("oxap-serve", "rust/serve")])
     manifest = source.parent / "Cargo.toml"
     manifest.write_text('[package]\nname = "oap-hub-closed-proof"\nversion = "0.0.0"\nedition = "2021"\n[dependencies]\nfutures = "0.3"\n' + dependencies + "\n")
     built = subprocess.run(["cargo", "build", "--offline", "--manifest-path", str(manifest), "--target-dir", str(out / "target")], capture_output=True, text=True, timeout=300)

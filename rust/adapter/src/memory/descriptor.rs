@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::{
     attach_support, declared_sources, provide_support, raw, scripted_catalog, support, Memory,

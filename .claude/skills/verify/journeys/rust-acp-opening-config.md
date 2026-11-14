@@ -6,7 +6,7 @@ root after the baseline builds ReleaseSafe `oapx`:
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-opening-config.py --output-dir "$EVIDENCE/opening-config"
 python3 .claude/skills/verify/scripts/rust-acp-opening-config-ownership.py --output-dir "$EVIDENCE/opening-config-ownership"
-(cd rust && cargo test -p oap-adapter-acp --test opening_config)
+(cd rust && cargo test -p oxap-adapter-acp --test opening_config)
 ```
 
 The normal public Adapter/Session consumer opens a synthetic native ACP process

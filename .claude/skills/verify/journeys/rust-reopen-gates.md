@@ -4,7 +4,7 @@ Use the shared setup and machine-wide mutex in `SKILL.md`, then run from the
 repository root:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test reopen_gates --test reopen
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test reopen_gates --test reopen
 python3 .claude/skills/verify/scripts/rust-reopen-gates.py --output-dir /tmp/oap-reopen-gates-<unique>
 ```
 

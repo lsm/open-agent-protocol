@@ -1,6 +1,6 @@
-use oap_adapter::Error;
-use oap_adapter::*;
-use oap_protocol::*;
+use oxap_adapter::Error;
+use oxap_adapter::*;
+use oxap_protocol::*;
 
 fn question(id: &str, kind: InputQuestionKind, options: &[&str]) -> InputQuestion {
     InputQuestion {

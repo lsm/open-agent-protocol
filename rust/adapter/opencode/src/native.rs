@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use oap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, zero};
+use oxap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, zero};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -118,7 +118,7 @@ pub struct TokenAccounting {
     pub output: f64,
     #[serde(default, deserialize_with = "zero")]
     pub reasoning: f64,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::structure")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::structure")]
     pub cache: CacheAccounting,
 }
 
@@ -151,7 +151,7 @@ pub struct Admitted {
     pub id: String,
     #[serde(default, rename = "sessionID", deserialize_with = "zero")]
     pub session_id: String,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::structure")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::structure")]
     pub time: AdmittedTime,
     #[serde(default, rename = "type", deserialize_with = "zero")]
     pub kind: String,
@@ -211,9 +211,9 @@ pub struct SessionInfo {
     pub model: Option<ModelRef>,
     #[serde(default, deserialize_with = "zero")]
     pub cost: f64,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::structure")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::structure")]
     pub tokens: TokenAccounting,
-    #[serde(default, deserialize_with = "oap_adapter::gojson::structure")]
+    #[serde(default, deserialize_with = "oxap_adapter::gojson::structure")]
     pub time: SessionTime,
     #[serde(default, deserialize_with = "zero")]
     pub title: String,

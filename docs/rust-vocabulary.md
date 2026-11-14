@@ -6,7 +6,7 @@ An empty default value is unknown. `EnvelopeType` uses protocol declarations;
 loaded-pack validation checks extension ownership separately.
 
 ```rust
-use oap_protocol::EnvelopeType;
+use oxap_protocol::EnvelopeType;
 
 assert!(EnvelopeType::RUN_STARTED.is_known());
 let future = EnvelopeType::from("com.example.future.event");

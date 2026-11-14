@@ -1,4 +1,4 @@
-use oap_adapter_deepseek::native::{
+use oxap_adapter_deepseek::native::{
     decode_strict, stream_record, AssistantAttempt, AssistantMessageEvent,
 };
 

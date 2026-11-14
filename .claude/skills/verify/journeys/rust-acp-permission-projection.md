@@ -5,7 +5,7 @@ the repository root with the ReleaseSafe validator built.
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-permission-projection.py --output-dir /tmp/oap-permission-projection-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test permission_projection)
+(cd rust && cargo test -p oxap-adapter-acp --test permission_projection)
 ```
 
 The standalone public consumer combines TextRun, typed permission requests and

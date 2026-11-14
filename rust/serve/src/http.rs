@@ -217,7 +217,7 @@ pub(crate) struct Answer {
 
 pub(crate) enum Events {
     Live(crate::Subscription),
-    Gap(oap_adapter::ReplayGap),
+    Gap(oxap_adapter::ReplayGap),
 }
 
 fn decode(text: &str, plus_is_space: bool) -> String {
@@ -733,7 +733,7 @@ impl Served {
                 Err(_) => {
                     return self.refused(
                         400,
-                        stdio::wire("invalid_request", oap_binding::Error::InvalidLimit),
+                        stdio::wire("invalid_request", oxap_binding::Error::InvalidLimit),
                         session,
                         None,
                     )
@@ -805,7 +805,7 @@ impl Served {
         session: &str,
         adapter: &str,
     ) -> Answer {
-        let id = oap_protocol::SessionId::from(session);
+        let id = oxap_protocol::SessionId::from(session);
         let mut raw = None;
         if matches!(op, "work.start" | "work.send") {
             let body = match self.body(asked, stream, consumed) {
@@ -999,16 +999,16 @@ impl Served {
         };
         let events = match subscribed {
             Ok(subscription) => Events::Live(subscription),
-            Err(crate::HubError::Adapter(oap_adapter::Error::ReplayGap(gap))) => Events::Gap(gap),
+            Err(crate::HubError::Adapter(oxap_adapter::Error::ReplayGap(gap))) => Events::Gap(gap),
             Err(err) => {
                 let code = match &err {
-                    crate::HubError::Adapter(oap_adapter::Error::SessionClosed)
+                    crate::HubError::Adapter(oxap_adapter::Error::SessionClosed)
                     | crate::HubError::SessionClosed(_) => "session_closed",
                     crate::HubError::NoRunToResume => "no_run_to_resume",
-                    crate::HubError::Adapter(oap_adapter::Error::ReplayCursorFuture) => {
+                    crate::HubError::Adapter(oxap_adapter::Error::ReplayCursorFuture) => {
                         "replay_cursor_future"
                     }
-                    crate::HubError::Adapter(oap_adapter::Error::RunNotFound) => "run_not_found",
+                    crate::HubError::Adapter(oxap_adapter::Error::RunNotFound) => "run_not_found",
                     crate::HubError::UnknownSession(_) => "unknown_session",
                     _ => "internal",
                 };
@@ -1088,8 +1088,8 @@ impl Served {
         if let Some(details) = error.details {
             payload["error"]["details"] = details;
         }
-        let mut envelope = match oap_protocol::Envelope::new(
-            oap_protocol::EnvelopeType::ERROR_RESPONSE,
+        let mut envelope = match oxap_protocol::Envelope::new(
+            oxap_protocol::EnvelopeType::ERROR_RESPONSE,
             next("error"),
             &payload,
         ) {
@@ -1201,8 +1201,8 @@ fn signal(mut stream: &TcpStream, event: &str, data: &Value) -> std::io::Result<
     stream.flush()
 }
 
-fn event_id(run: Option<&oap_protocol::RunId>, sequence: u64) -> Option<String> {
-    match run.map(oap_protocol::RunId::as_str) {
+fn event_id(run: Option<&oxap_protocol::RunId>, sequence: u64) -> Option<String> {
+    match run.map(oxap_protocol::RunId::as_str) {
         Some(run) if run.contains(['\r', '\n', '\0']) => None,
         Some(run) if !run.is_empty() => Some(format!("{run}:{sequence}")),
         _ => Some(sequence.to_string()),

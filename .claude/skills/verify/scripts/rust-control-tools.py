@@ -19,7 +19,7 @@ def main():
     output = Path(parser.parse_args().output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     cargo = ["cargo", "--manifest-path", "rust/Cargo.toml"]
-    build = command([cargo[0], "build", *cargo[1:], "-p", "oap-validation", "--example", "validate"])
+    build = command([cargo[0], "build", *cargo[1:], "-p", "oxap-validation", "--example", "validate"])
     (output / "build.log").write_text(build.stdout + build.stderr)
     assert build.returncode == 0, build.stderr
     metadata = command([cargo[0], "metadata", *cargo[1:], "--no-deps", "--format-version", "1"])

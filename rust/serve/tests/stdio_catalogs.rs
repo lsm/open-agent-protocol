@@ -3,13 +3,13 @@ mod support;
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, InteractionResolution, OpenRequest, Recovery, ResumeRequest,
     Session, SubmitRequest,
 };
-use oap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, Registry};
+use oxap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 struct Bare(Box<dyn Session>);
@@ -18,7 +18,7 @@ impl Session for Bare {
     fn submit(
         &self,
         request: SubmitRequest,
-    ) -> BoxFuture<'_, (MessageSubmitResponse, oap_adapter::EventStream)> {
+    ) -> BoxFuture<'_, (MessageSubmitResponse, oxap_adapter::EventStream)> {
         self.0.submit(request)
     }
     fn state(&self) -> BoxFuture<'_, SessionState> {
@@ -33,7 +33,7 @@ impl Session for Bare {
     fn resume(
         &self,
         request: ResumeRequest,
-    ) -> BoxFuture<'_, (Recovery, oap_adapter::EventStream)> {
+    ) -> BoxFuture<'_, (Recovery, oxap_adapter::EventStream)> {
         self.0.resume(request)
     }
     fn close(&self) -> BoxFuture<'_, ()> {
@@ -92,7 +92,7 @@ fn models_answers_the_sessions_catalog_under_its_revision() {
     assert!(response["payload"]["models"].is_array());
     assert_eq!(
         response["capability_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
 }
 
@@ -111,7 +111,7 @@ fn tools_answers_the_sessions_catalog_under_its_revision() {
     assert!(response["payload"]["tools"].is_array());
     assert_eq!(
         response["capability_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
 }
 

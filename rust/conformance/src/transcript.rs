@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use oap_protocol::{Envelope, EnvelopeId, MessageSubmitResponse, RunId, SessionState};
+use oxap_protocol::{Envelope, EnvelopeId, MessageSubmitResponse, RunId, SessionState};
 
 #[derive(Default)]
 pub struct Transcript {

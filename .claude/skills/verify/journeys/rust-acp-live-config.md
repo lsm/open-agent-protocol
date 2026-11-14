@@ -5,7 +5,7 @@ ReleaseSafe `oapx`, run from the repository root:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-live-config.py --output-dir "$EVIDENCE/live-config"
-(cd rust && cargo test -p oap-adapter-acp --test live_config)
+(cd rust && cargo test -p oxap-adapter-acp --test live_config)
 ```
 
 The standalone public Session consumer and a Go reference run against the same

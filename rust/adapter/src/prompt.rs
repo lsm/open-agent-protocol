@@ -1,6 +1,6 @@
 use std::future::poll_fn;
 
-use oap_protocol::{
+use oxap_protocol::{
     ActionCallPayload, ContentPart, Message, MessageSubmitRequest, PermissionRequestedPayload,
     ProtocolError, RunCancelledPayload, RunCompletedPayload, RunFailedPayload, RunId, Usage,
     UserInputRequestedPayload,
@@ -38,7 +38,7 @@ pub enum RunErrorKind {
     #[error(transparent)]
     Adapter(#[from] Error),
     #[error(transparent)]
-    Decode(#[from] oap_protocol::Error),
+    Decode(#[from] oxap_protocol::Error),
     #[error("adapter: message content is neither text nor parts: {0}")]
     Content(#[source] serde_json::Error),
 }

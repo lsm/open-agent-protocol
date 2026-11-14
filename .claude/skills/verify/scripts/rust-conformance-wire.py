@@ -11,8 +11,8 @@ SOURCE = r'''
 use std::io::Cursor;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use oap_conformance::{framing_contract, read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Runner, Transcript};
-use oap_protocol::{Envelope, EnvelopeType};
+use oxap_conformance::{framing_contract, read_frame, Client, ClientError, ControlFrame, Frame, Process, ProcessError, Runner, Transcript};
+use oxap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 fn main() {
@@ -192,9 +192,9 @@ for line in sys.stdin:
         let framing = framing_contract(&mut endpoint, Duration::from_secs(2));
         assert!(framing.iter().all(|check| check.passed));
         println!("real endpoint fatal framing checks {}", serde_json::to_string(&framing).unwrap());
-        let report = oap_conformance::run(&mut endpoint, oap_conformance::Options {
+        let report = oxap_conformance::run(&mut endpoint, oxap_conformance::Options {
             line_deadline: Duration::from_secs(2),
-            ..oap_conformance::Options::default()
+            ..oxap_conformance::Options::default()
         }).unwrap();
         assert!(report.passed, "checks {:?}. Diagnostics {:?}", report.checks, report.diagnostics);
         assert_eq!(report.checks.len(), 27);
@@ -229,14 +229,14 @@ def main():
     manifest.write_text(
         '[package]\nname="oap-conformance-wire-proof"\nversion="0.0.0"\nedition="2021"\n'
         '[dependencies]\nserde_json="1"\n'
-        f'oap-conformance={{path="{ROOT / "rust/conformance"}"}}\n'
-        f'oap-protocol={{path="{ROOT / "rust/protocol"}"}}\n'
+        f'oxap-conformance={{path="{ROOT / "rust/conformance"}"}}\n'
+        f'oxap-protocol={{path="{ROOT / "rust/protocol"}"}}\n'
     )
     target = ROOT / "rust/target"
     for name, command in [
-        ("endpoint", ["cargo", "build", "--manifest-path", str(ROOT / "rust/Cargo.toml"), "-p", "oap-serve", "--bin", "oap-rust-hub"]),
+        ("endpoint", ["cargo", "build", "--manifest-path", str(ROOT / "rust/Cargo.toml"), "-p", "oxap-serve", "--bin", "oap-rust-hub"]),
         ("consumer", ["cargo", "build", "--offline", "--manifest-path", str(manifest), "--target-dir", str(target)]),
-        ("runner", ["cargo", "build", "--manifest-path", str(ROOT / "rust/Cargo.toml"), "-p", "oap-conformance", "--example", "endpoint_conformance"]),
+        ("runner", ["cargo", "build", "--manifest-path", str(ROOT / "rust/Cargo.toml"), "-p", "oxap-conformance", "--example", "endpoint_conformance"]),
         ("go", ["go", "build", "-o", str(out / "goap"), "./go/cmd/goap"]),
     ]:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=300)

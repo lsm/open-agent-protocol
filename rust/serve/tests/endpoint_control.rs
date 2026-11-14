@@ -3,13 +3,13 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, EventStream, InteractionResolution, OpenRequest, Recovery,
     ResumeRequest, Session, SubmitRequest,
 };
-use oap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
-use oap_serve::endpoint::{Endpoint, EndpointOptions};
-use oap_serve::{Hub, Registry};
+use oxap_protocol::{MessageSubmitResponse, RunCancelResponse, RunId, SessionState};
+use oxap_serve::endpoint::{Endpoint, EndpointOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::{json, Value};
 
 struct SlowAck(Box<dyn Session>);

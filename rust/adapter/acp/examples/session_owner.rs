@@ -4,9 +4,9 @@ use std::task::Context;
 use std::time::Duration;
 
 use futures::{executor::block_on, task::noop_waker};
-use oap_adapter::{Adapter as _, OpenRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{Participant, SessionModelSwitchRequest, FEATURE_SESSION_MODEL_SWITCH};
+use oxap_adapter::{Adapter as _, OpenRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{Participant, SessionModelSwitchRequest, FEATURE_SESSION_MODEL_SWITCH};
 
 fn phase(value: serde_json::Value) {
     println!("{value}");

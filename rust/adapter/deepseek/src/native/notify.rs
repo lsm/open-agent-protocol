@@ -1,4 +1,4 @@
-use oap_adapter::gojson::go_quote;
+use oxap_adapter::gojson::go_quote;
 
 use super::stream::{strict_object, valid_block, INVALID};
 use super::validate::valid_blocks_raw;

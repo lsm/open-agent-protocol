@@ -22,7 +22,7 @@ def mutations(output):
     originals = {p: p.read_text() for p in [schema, go, rust]}
     go_command = ["go", "test", "./go/validation", "-run", "^TestManifest$", "-count=1"]
     go_types = ["go", "test", "./go/protocol", "-run", "^TestRecoveryRedeliveriesSurviveTypedRoundTrip$", "-count=1"]
-    rust_types = ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oap-protocol", "--test", "payloads"]
+    rust_types = ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-protocol", "--test", "payloads"]
     assert run(["npm", "--prefix", "clients/ts", "run", "build"], output, "baseline-ts-build").returncode == 0
     ts_mirror = ["node", "--test", "clients/ts/dist/test/schema.test.js"]
     assert run(ts_mirror, output, "baseline-ts-mirror").returncode == 0
@@ -81,7 +81,7 @@ def main():
         return
     commands = {
         "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
-        "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate", "--"],
+        "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate", "--"],
         "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"],
     }
     manifest = json.loads((ROOT / "fixtures/manifest.json").read_text())

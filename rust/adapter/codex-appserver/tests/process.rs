@@ -1,7 +1,7 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use oap_adapter_codex_appserver::process::{
+use oxap_adapter_codex_appserver::process::{
     ClientInfo, InitializeCapabilities, Process, ProcessConfig,
 };
 

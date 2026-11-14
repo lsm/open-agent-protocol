@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::executor::block_on;
-use oap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     ModelsRequest, Participant, SessionModelSwitchRequest, SessionStatus, FEATURE_MODELS_LIST,
     FEATURE_SESSION_MODEL_SWITCH,
 };
@@ -209,7 +209,7 @@ fn fixture_paths_are_unique_for_equal_clock_readings() {
     assert_ne!(first.0, second.0);
 }
 
-fn switch_request(session: &dyn oap_adapter::Session, model: &str) -> SessionModelSwitchRequest {
+fn switch_request(session: &dyn oxap_adapter::Session, model: &str) -> SessionModelSwitchRequest {
     SessionModelSwitchRequest {
         session_id: block_on(session.state()).unwrap().session_id,
         model_id: model.into(),

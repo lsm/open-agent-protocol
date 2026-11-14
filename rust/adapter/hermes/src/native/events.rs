@@ -1,4 +1,4 @@
-use oap_adapter::gojson::{go_quote, zero};
+use oxap_adapter::gojson::{go_quote, zero};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 

@@ -5,7 +5,7 @@ repository root.
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-outbound.py --output-dir /tmp/oap-outbound-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test outbound)
+(cd rust && cargo test -p oxap-adapter-acp --test outbound)
 ```
 
 The public PromptBridge consumer uses owned notify, result-response and

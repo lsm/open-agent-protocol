@@ -4,14 +4,14 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::{Inbound, IncomingRequest, Message, Responder};
-use oap_adapter::InteractionResolution;
-use oap_adapter_acp::{
+use oxap_adapter::jsonrpc::{Inbound, IncomingRequest, Message, Responder};
+use oxap_adapter::InteractionResolution;
+use oxap_adapter_acp::{
     native::PromptParams,
     process::{Process, ProcessConfig},
     Permissions, PromptBridge, TextRun, TextRunContext,
 };
-use oap_protocol::{PermissionRequestedPayload, PermissionResolveRequest};
+use oxap_protocol::{PermissionRequestedPayload, PermissionResolveRequest};
 use serde_json::json;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -93,12 +93,12 @@ fn permission_case(mode: &str) {
     if mode == "foreign" {
         struct RefusedSource;
         impl Responder for RefusedSource {
-            fn send(&self, _: Message) -> Result<(), oap_adapter::jsonrpc::Error> {
+            fn send(&self, _: Message) -> Result<(), oxap_adapter::jsonrpc::Error> {
                 panic!("foreign source received a reply")
             }
         }
         let foreign = Arc::new(IncomingRequest::new(
-            oap_adapter_acp::process::DIALECT,
+            oxap_adapter_acp::process::DIALECT,
             request.id.clone(),
             request.method.clone(),
             request.params.clone(),
@@ -106,13 +106,13 @@ fn permission_case(mode: &str) {
         ));
         assert_eq!(
             block_on(scope.clone().request(run.clone(), foreign)).unwrap_err(),
-            oap_adapter::Error::InvalidResolution
+            oxap_adapter::Error::InvalidResolution
         );
     }
     block_on(scope.clone().request(run.clone(), request.clone())).unwrap();
     assert_eq!(
         block_on(scope.clone().request(run.clone(), request)).unwrap_err(),
-        oap_adapter::Error::InvalidResolution
+        oxap_adapter::Error::InvalidResolution
     );
     let mut events = Vec::new();
     for _ in 0..3 {
@@ -146,7 +146,7 @@ fn permission_case(mode: &str) {
             assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
             assert_eq!(
                 first.err().or(second.err()),
-                Some(oap_adapter::Error::InteractionResolved)
+                Some(oxap_adapter::Error::InteractionResolved)
             );
         } else {
             block_on(scope.clone().resolve(run.clone(), resolution.clone())).unwrap();
@@ -155,7 +155,7 @@ fn permission_case(mode: &str) {
     block_on(scope.clone().complete(run.clone(), block_on(call).unwrap())).unwrap();
     assert_eq!(
         block_on(scope.clone().resolve(run.clone(), resolution)).unwrap_err(),
-        oap_adapter::Error::InteractionResolved
+        oxap_adapter::Error::InteractionResolved
     );
     events.extend(
         block_on(stream.collect::<Vec<_>>())
@@ -496,7 +496,7 @@ sys.stdin.read()
     let accepted: serde_json::Value =
         serde_json::from_slice(&std::fs::read(fixture.0.join("accepted.json")).unwrap()).unwrap();
     let events = block_on(stream.collect::<Vec<_>>());
-    assert_eq!(outcome, Err(oap_adapter::Error::SessionClosed));
+    assert_eq!(outcome, Err(oxap_adapter::Error::SessionClosed));
     assert_eq!(accepted["id_length"], 3 * 1024 * 1024);
     assert_eq!(accepted["outcome"]["outcome"], "selected");
     assert_eq!(events.len(), 3);

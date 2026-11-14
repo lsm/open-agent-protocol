@@ -3,19 +3,19 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use oap_adapter::journal::Journal;
-use oap_adapter::runtime::Runtime;
-use oap_adapter::{
+use oxap_adapter::journal::Journal;
+use oxap_adapter::runtime::Runtime;
+use oxap_adapter::{
     refuse_unadvertised_controls, Error, EventStream, InteractionResolution, Recovery,
     ResumeRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
-use oap_protocol::{
+use oxap_protocol::{
     Admission, EffectiveDeliveryMode, InputQuestion, InteractionId, MessageId, MessageRole,
     MessageSubmitRequest, MessageSubmitResponse, ParticipantId, RequestedDeliveryMode,
     RunCancelResponse, RunId, RunStatus, SessionState, SessionStatus, SubmissionId, ToolCallId,
     Usage, FEATURE_MODEL_SELECTION, FEATURE_STRUCTURED_OUTPUT,
 };
-use oap_validation::OutputSchema;
+use oxap_validation::OutputSchema;
 use serde_json::value::RawValue;
 
 use crate::adapter::{call, native_protocol};

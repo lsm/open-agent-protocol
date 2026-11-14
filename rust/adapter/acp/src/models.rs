@@ -1,5 +1,5 @@
-use oap_adapter::{BoxFuture, Error, ModelSwitcher, UnsupportedControl, CONTROL_UNSATISFIABLE};
-use oap_protocol::{
+use oxap_adapter::{BoxFuture, Error, ModelSwitcher, UnsupportedControl, CONTROL_UNSATISFIABLE};
+use oxap_protocol::{
     ReasoningLevel, SessionModelSwitchRequest, SessionModelSwitchResponse, SessionState,
     FEATURE_SESSION_MODEL_SWITCH,
 };
@@ -66,7 +66,7 @@ fn reasoning(options: &[ConfigOption]) -> ReasoningLevel {
 impl Inner {
     pub(crate) fn observe_config(
         &mut self,
-        notification: &oap_adapter::jsonrpc::NotificationMessage,
+        notification: &oxap_adapter::jsonrpc::NotificationMessage,
         native_id: &str,
     ) -> bool {
         if self.process.is_none() || notification.method != METHOD_SESSION_UPDATE {
@@ -160,7 +160,7 @@ impl ModelSwitcher for Session {
                 .call(METHOD_SESSION_SET_CONFIG_OPTION.into(), Some(params), None)
                 .await
                 .map_err(|error| match error.fault {
-                    oap_adapter::jsonrpc::Fault::Remote { object, .. } => refusal(format!(
+                    oxap_adapter::jsonrpc::Fault::Remote { object, .. } => refusal(format!(
                         "the agent refused its model option: {}",
                         object.message
                     )),

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_protocol::{ActionCallPayload, EnvelopeType, ProtocolError, RunId, ToolCallId};
+use oxap_protocol::{ActionCallPayload, EnvelopeType, ProtocolError, RunId, ToolCallId};
 use serde::Serialize;
 use serde_json::value::{to_raw_value, RawValue};
 

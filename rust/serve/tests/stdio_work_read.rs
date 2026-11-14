@@ -4,13 +4,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_binding::MemoryStore;
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_binding::MemoryStore;
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode, RunId,
 };
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, HubOptions, Registry};
 use serde_json::Value;
 
 fn recorded() -> Hub {

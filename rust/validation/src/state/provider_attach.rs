@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::controls::{affirmative, describe_refusal, detail};
 use super::{os, payload, s, State};

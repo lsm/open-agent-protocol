@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
-use oap_conformance::{read_frame, write_frame, Frame, Transcript};
-use oap_protocol::{Envelope, EnvelopeType};
+use oxap_conformance::{read_frame, write_frame, Frame, Transcript};
+use oxap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 fn envelope(kind: &str, id: &str, payload: serde_json::Value) -> Envelope {

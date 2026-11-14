@@ -7,7 +7,7 @@ use std::task::Context;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::{executor::block_on, task::noop_waker};
-use oap_adapter_acp::process::{Process, ProcessConfig};
+use oxap_adapter_acp::process::{Process, ProcessConfig};
 
 struct Fixture(PathBuf);
 
@@ -113,7 +113,7 @@ fn dropping_a_quiet_call_future_reaps_the_native_child() {
         process.call_async(
             "session/new".into(),
             Some(
-                serde_json::value::to_raw_value(&oap_adapter_acp::native::SessionNewParams {
+                serde_json::value::to_raw_value(&oxap_adapter_acp::native::SessionNewParams {
                     cwd: "/".into(),
                     mcp_servers: Vec::new(),
                 })

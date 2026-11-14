@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
-use oap_adapter_pi::native::{Command, ExtensionUiResponse};
-use oap_adapter_pi::rpc::{decode_frame, encode, read_frame, Error, Frame, Outbound};
+use oxap_adapter_pi::native::{Command, ExtensionUiResponse};
+use oxap_adapter_pi::rpc::{decode_frame, encode, read_frame, Error, Frame, Outbound};
 
 fn decode(wire: &[u8], limit: usize) -> Result<Frame, Error> {
     let frame = read_frame(&mut Cursor::new(wire.to_vec()), limit)?;

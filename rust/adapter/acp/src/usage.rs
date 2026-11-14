@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use oap_adapter::gojson::{remarshal_any, replace_lone_surrogates};
-use oap_adapter::jsonrpc::NotificationMessage;
-use oap_protocol::Usage;
+use oxap_adapter::gojson::{remarshal_any, replace_lone_surrogates};
+use oxap_adapter::jsonrpc::NotificationMessage;
+use oxap_protocol::Usage;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 

@@ -4,8 +4,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use oap_conformance::{Client, ClientError, ControlFrame};
-use oap_protocol::{Envelope, EnvelopeType};
+use oxap_conformance::{Client, ClientError, ControlFrame};
+use oxap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);

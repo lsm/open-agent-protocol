@@ -1,4 +1,4 @@
-use oap_adapter::gojson::{go_quote, members};
+use oxap_adapter::gojson::{go_quote, members};
 
 use crate::filepath::clean;
 use crate::native::{ThreadResumeParams, ThreadResumeResponse};

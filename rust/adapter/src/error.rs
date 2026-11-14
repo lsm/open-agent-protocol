@@ -1,4 +1,4 @@
-use oap_protocol::{RunId, RunStatus, SessionId};
+use oxap_protocol::{RunId, RunStatus, SessionId};
 
 pub const CONTROL_UNADVERTISED: &str = "unadvertised";
 pub const CONTROL_UNSATISFIABLE: &str = "unsatisfiable";

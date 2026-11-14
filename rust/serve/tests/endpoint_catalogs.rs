@@ -3,9 +3,9 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use oap_binding::MemoryStore;
-use oap_serve::endpoint::{Endpoint, EndpointOptions};
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_binding::MemoryStore;
+use oxap_serve::endpoint::{Endpoint, EndpointOptions};
+use oxap_serve::{Hub, HubOptions, Registry};
 use serde_json::{json, Value};
 
 fn run(hub: &Hub, lines: &[Value]) -> Vec<Value> {
@@ -69,7 +69,7 @@ fn the_model_and_tool_catalogs_answer_under_the_revision_they_bind_to() {
         assert_eq!(answered["session_id"], "s");
         assert_eq!(
             answered["capability_revision"],
-            oap_adapter::memory::CAPABILITY_REVISION
+            oxap_adapter::memory::CAPABILITY_REVISION
         );
     }
 }

@@ -1,5 +1,5 @@
-use oap_protocol::*;
-use oap_validation::OutputSchema;
+use oxap_protocol::*;
+use oxap_validation::OutputSchema;
 
 use super::{scripted_catalog, FIXED_RESULT, MODEL_PRIMARY, MODEL_SECONDARY};
 use crate::{Error, UnsupportedControl, CONTROL_UNSATISFIABLE};
@@ -125,7 +125,7 @@ pub(super) fn admit(
 
 #[cfg(test)]
 mod tests {
-    use oap_protocol::*;
+    use oxap_protocol::*;
     use serde_json::value::RawValue;
 
     use super::admit;

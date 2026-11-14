@@ -583,7 +583,7 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          cargo build --quiet --manifest-path rust/Cargo.toml -p oap-serve --bin oap-rust-hub
+          cargo build --quiet --manifest-path rust/Cargo.toml -p oxap-serve --bin oap-rust-hub
           OAP_RUST_HUB_BIN="$PWD/rust/target/debug/oap-rust-hub" go test ./go/cmd/goap/ -run 'TestHubStdioAnswersGoapAndRustTheSame|TestHubStdioHoldsASubscriptionAcrossRunsUntilItsHostEndsIt|TestBackendsMatchRustHub|TestHubHTTPAnswersGoapAndRustTheSame' -v
 
       - name: Require the Rust serve agent endpoint to pass goap conformance

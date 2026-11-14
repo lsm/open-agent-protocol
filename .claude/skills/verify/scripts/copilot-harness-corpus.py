@@ -45,7 +45,7 @@ def main():
             assert checked.returncode == 0, checked.stdout + checked.stderr
             print(label, case["id"], "exit", checked.returncode, flush=True)
     rust = subprocess.run(["cargo", "test", "--manifest-path", "rust/Cargo.toml",
-                           "-p", "oap-adapter-copilot", "--all-features"],
+                           "-p", "oxap-adapter-copilot", "--all-features"],
                           cwd=ROOT, capture_output=True, text=True, timeout=300)
     (output / "rust-native.txt").write_text(rust.stdout + rust.stderr)
     assert rust.returncode == 0, rust.stdout + rust.stderr

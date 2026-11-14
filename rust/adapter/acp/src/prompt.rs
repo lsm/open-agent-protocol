@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use futures_channel::oneshot;
-use oap_adapter::jsonrpc::{Error, Fault, Inbound, IncomingRequest};
+use oxap_adapter::jsonrpc::{Error, Fault, Inbound, IncomingRequest};
 use serde_json::value::RawValue;
 
 use crate::native::{decode, PromptParams, PromptResult, METHOD_SESSION_PROMPT};

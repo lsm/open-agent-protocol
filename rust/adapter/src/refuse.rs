@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, CompactionPolicy, FeatureSupport, MessageSubmitRequest, ReasoningLevel,
     RequestedDeliveryMode, SessionSettingsUpdateRequest, SupportLevel, FEATURE_COMPACTION_POLICY,
     FEATURE_DELIVERY_BTW, FEATURE_DELIVERY_QUEUE, FEATURE_DELIVERY_STEER, FEATURE_INSTRUCTIONS,

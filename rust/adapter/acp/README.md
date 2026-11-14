@@ -1,4 +1,4 @@
-# oap-adapter-acp
+# oxap-adapter-acp
 
 The Rust port of `go/adapter/acp`: an OAP adapter over an Agent Client Protocol
 v1 agent on stdio, pinned by `harnesses/acp.json` and judged by the corpus in
@@ -17,16 +17,16 @@ Three Go behaviours are not reproduced here:
   key in its exact case, so nothing observes the difference yet.
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029. Serializing a
   type here does not, so the process layer writes
-  every frame through `oap_adapter::gojson::go_marshal` (#1445).
+  every frame through `oxap_adapter::gojson::go_marshal` (#1445).
 - Go decodes an unpaired surrogate escape such as `\ud800` as U+FFFD; serde_json
   refuses the document. The shared rpc layer passes each frame through
-  `oap_adapter::gojson::replace_lone_surrogates` before decoding it.
+  `oxap_adapter::gojson::replace_lone_surrogates` before decoding it.
   Invalid UTF-8 never reaches these types: the frame reader refuses it, as Go's
   does.
 
 A member written twice never reaches these types. Go's encoding/json would keep
 the last copy, but the rpc layer refuses the whole frame first with
-`oap_adapter::gojson::reject_duplicate_keys`, as Go's `ParseMessage` refuses it
+`oxap_adapter::gojson::reject_duplicate_keys`, as Go's `ParseMessage` refuses it
 with `jsonwalk`, so serde's refusal of a repeated field is never the one that
 decides.
 

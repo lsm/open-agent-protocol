@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use oap_adapter::{Error, InteractionResolution, OpenRequest, ResumeRequest};
-use oap_adapter_deepseek::adapter::{Adapter, Config};
-use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
-use oap_adapter_deepseek::process::ProcessConfig;
-use oap_adapter_deepseek::runtime::Runtime;
-use oap_protocol::{
+use oxap_adapter::{Error, InteractionResolution, OpenRequest, ResumeRequest};
+use oxap_adapter_deepseek::adapter::{Adapter, Config};
+use oxap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
+use oxap_adapter_deepseek::process::ProcessConfig;
+use oxap_adapter_deepseek::runtime::Runtime;
+use oxap_protocol::{
     CompactionKind, CompactionPolicy, Participant, ReasoningLevel, SessionStatus, ToolDefinition,
     FEATURE_OPEN_REOPEN,
 };
@@ -338,7 +338,7 @@ fn a_start_timeout_past_the_clock_fails_open_before_any_spawn() {
     assert!(!fixture.dir.join("pid").exists());
 }
 
-fn settles_closed(session: &oap_adapter_deepseek::session::Session) -> bool {
+fn settles_closed(session: &oxap_adapter_deepseek::session::Session) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if session.state().err() == Some(Error::SessionClosed) {
@@ -351,7 +351,7 @@ fn settles_closed(session: &oap_adapter_deepseek::session::Session) -> bool {
 
 fn unsolicited(method: &str, params: &str) -> String {
     assert!(
-        oap_adapter_deepseek::native::decode_notification(method, params.as_bytes()).is_ok(),
+        oxap_adapter_deepseek::native::decode_notification(method, params.as_bytes()).is_ok(),
         "{method} {params} is not a valid notification"
     );
     format!(

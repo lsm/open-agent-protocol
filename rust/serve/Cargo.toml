@@ -1,5 +1,5 @@
 [package]
-name = "oap-serve"
+name = "oxap-serve"
 version = "0.1.0"
 edition = "2021"
 description = "The Open Agent Protocol hub: its adapter registry and the sessions it opens"
@@ -8,11 +8,11 @@ license = "CC0-1.0"
 publish = false
 
 [dependencies]
-oap-adapter = { path = "../adapter" }
-oap-adapter-acp = { path = "../adapter/acp" }
-oap-binding = { path = "../binding" }
-oap-protocol = { path = "../protocol" }
-oap-validation = { path = "../validation" }
+oxap-adapter = { path = "../adapter", version = "=0.1.0" }
+oxap-adapter-acp = { path = "../adapter/acp", version = "=0.1.0" }
+oxap-binding = { path = "../binding", version = "=0.1.0" }
+oxap-protocol = { path = "../protocol", version = "=0.1.0" }
+oxap-validation = { path = "../validation", version = "=0.1.0" }
 base64 = "0.22"
 ctrlc = { version = "=3.5.2", features = ["termination"] }
 httparse = "1"

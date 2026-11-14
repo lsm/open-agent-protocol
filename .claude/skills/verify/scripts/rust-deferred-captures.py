@@ -57,7 +57,7 @@ def main():
 
     for name, command in [
         ("go", ["go", "build", "-o", str(output / "goap"), "./go/cmd/goap"]),
-        ("rust", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"]),
+        ("rust", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"]),
         ("zig", ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"]),
     ]:
         result = run(command, f"{name}-build")
@@ -142,7 +142,7 @@ def main():
             assert original.count(old) == 1, (source, old)
             try:
                 source.write_text(original.replace(old, new))
-                build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], f"mutation-{index}-build")
+                build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"], f"mutation-{index}-build")
                 assert build.returncode == 0, build.stderr
                 result = run([*commands["rust"], str(output / f"{target}.json")], f"mutation-{index}-result")
                 report = json.loads(result.stdout)
@@ -153,7 +153,7 @@ def main():
                 print(f"PASS: mutation {index} caught by {target}", flush=True)
             finally:
                 source.write_text(original)
-        build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], "restored-build")
+        build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"], "restored-build")
         assert build.returncode == 0, build.stderr
         for label, _, expected in cases:
             result = run([*commands["rust"], str(output / f"{label}.json")], f"restored-{label}")

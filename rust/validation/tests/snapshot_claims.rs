@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::{codes, Phase, Validator};
+use oxap_validation::{codes, Phase, Validator};
 
 #[test]
 fn snapshots_must_reconcile_their_claims_with_the_events_that_follow() {

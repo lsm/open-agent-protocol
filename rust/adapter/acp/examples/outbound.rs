@@ -5,9 +5,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker};
-use oap_adapter::jsonrpc::{Inbound, IncomingRequest};
-use oap_adapter_acp::process::{Process, ProcessConfig};
-use oap_adapter_acp::{Operation, PromptBridge};
+use oxap_adapter::jsonrpc::{Inbound, IncomingRequest};
+use oxap_adapter_acp::process::{Process, ProcessConfig};
+use oxap_adapter_acp::{Operation, PromptBridge};
 use serde_json::json;
 
 fn command() {

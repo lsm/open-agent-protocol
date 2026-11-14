@@ -1,4 +1,4 @@
-use oap_protocol::{
+use oxap_protocol::{
     Envelope, EnvelopeType, InputAnswer, Message, MessageContent, MessageRole,
     MessageSubmitRequest, MessageSubmitResponse, PermissionRequestedPayload,
     PermissionResolveRequest, RequestedDeliveryMode, RunId, UserInputRequestedPayload,

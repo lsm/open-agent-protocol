@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use futures::executor::block_on;
 use futures::StreamExt;
-use oap_adapter::subscriber::Subscriber;
-use oap_adapter::{Error, EventStream};
-use oap_protocol::{Envelope, RunId};
+use oxap_adapter::subscriber::Subscriber;
+use oxap_adapter::{Error, EventStream};
+use oxap_protocol::{Envelope, RunId};
 
 fn envelope(sequence: u64) -> Envelope {
     Envelope {

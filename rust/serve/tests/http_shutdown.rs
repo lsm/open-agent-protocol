@@ -4,12 +4,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn started() -> (Hub, SocketAddr, Receiver<()>) {
@@ -25,7 +25,7 @@ fn started() -> (Hub, SocketAddr, Receiver<()>) {
     (hub, addr, returns)
 }
 
-fn running(hub: &Hub) -> oap_protocol::RunId {
+fn running(hub: &Hub) -> oxap_protocol::RunId {
     block_on(hub.open(
         "memory",
         OpenRequest {

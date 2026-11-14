@@ -1,4 +1,4 @@
-use oap_adapter_hermes::native::{decode_notification, is_run_scoped, OBSERVED_EVENTS};
+use oxap_adapter_hermes::native::{decode_notification, is_run_scoped, OBSERVED_EVENTS};
 
 const GO_DECODED: &[(&str, Option<&str>)] = &[
     (

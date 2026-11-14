@@ -1,6 +1,6 @@
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::NotificationMessage;
-use oap_adapter_acp::{native::PromptResult, TextRun, TextRunContext};
+use oxap_adapter::jsonrpc::NotificationMessage;
+use oxap_adapter_acp::{native::PromptResult, TextRun, TextRunContext};
 use serde_json::{json, Value};
 
 fn observe(run: &mut TextRun, value: Value) {

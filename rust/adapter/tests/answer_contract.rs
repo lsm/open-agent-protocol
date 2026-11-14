@@ -1,5 +1,5 @@
-use oap_adapter::{index_input_answers, validate_input_answer, Error};
-use oap_protocol::{InputAnswer, InputOption, InputQuestion, InputQuestionKind};
+use oxap_adapter::{index_input_answers, validate_input_answer, Error};
+use oxap_protocol::{InputAnswer, InputOption, InputQuestion, InputQuestionKind};
 
 fn question(kind: InputQuestionKind, required: bool) -> InputQuestion {
     InputQuestion {

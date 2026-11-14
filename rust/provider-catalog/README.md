@@ -1,4 +1,4 @@
-# oap-provider-catalog
+# oxap-provider-catalog
 
 The Rust port of `go/providercatalog`: the curated model provider catalog in
 `providers/catalog.json`, validated against `providers/catalog.schema.json` and

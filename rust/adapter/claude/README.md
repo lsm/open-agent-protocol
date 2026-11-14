@@ -1,4 +1,4 @@
-# oap-adapter-claude
+# oxap-adapter-claude
 
 The Rust port of `go/adapter/claude`: an OAP adapter over Claude Code's
 stream-json control protocol on stdio, pinned by `harnesses/claude-code.json`

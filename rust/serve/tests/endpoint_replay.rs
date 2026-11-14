@@ -2,8 +2,8 @@ mod support;
 
 use std::time::Duration;
 
-use oap_serve::endpoint::{Endpoint, EndpointError, EndpointOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::endpoint::{Endpoint, EndpointError, EndpointOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::{json, Value};
 
 fn run(hub: &Hub, lines: &[Value]) -> (Vec<Value>, Result<(), EndpointError>) {

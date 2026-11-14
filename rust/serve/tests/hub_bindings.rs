@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
     Recovery, ResumeRequest, Session, SubmitRequest,
 };
-use oap_binding::{state, Action, MemoryStore, Store};
-use oap_protocol::{
+use oxap_binding::{state, Action, MemoryStore, Store};
+use oxap_protocol::{
     CompactionKind, CompactionPolicy, MessageSubmitResponse, RunCancelResponse, RunId,
     SessionState, SessionStatus, ToolSourceAttachment,
 };
-use oap_serve::{Hub, HubError, HubOptions, Registry};
+use oxap_serve::{Hub, HubError, HubOptions, Registry};
 
 fn hub(store: &Arc<MemoryStore>, home: &str) -> Hub {
     hub_in(store, home, "")
@@ -220,15 +220,15 @@ fn a_session_closed_after_its_hub_is_gone_is_still_recorded_as_closed() {
 struct Refusing;
 
 impl Store for Refusing {
-    fn append(&self, _: oap_binding::Entry) -> Result<(), oap_binding::Error> {
-        Err(oap_binding::Error::Torn("disk full".into()))
+    fn append(&self, _: oxap_binding::Entry) -> Result<(), oxap_binding::Error> {
+        Err(oxap_binding::Error::Torn("disk full".into()))
     }
 
-    fn history(&self, _: &str) -> Result<Vec<oap_binding::Entry>, oap_binding::Error> {
+    fn history(&self, _: &str) -> Result<Vec<oxap_binding::Entry>, oxap_binding::Error> {
         Ok(Vec::new())
     }
 
-    fn sessions(&self) -> Result<Vec<oap_binding::Entry>, oap_binding::Error> {
+    fn sessions(&self) -> Result<Vec<oxap_binding::Entry>, oxap_binding::Error> {
         Ok(Vec::new())
     }
 }

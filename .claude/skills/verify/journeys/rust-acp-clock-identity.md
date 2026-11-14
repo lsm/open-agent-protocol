@@ -4,7 +4,7 @@ On the designated test host, run the public synthetic session regression:
 
 ```sh
 cd rust
-cargo test -p oap-adapter-acp --test clock_identity -- --nocapture
+cargo test -p oxap-adapter-acp --test clock_identity -- --nocapture
 ```
 
 Require exit 0 and three passing tests. The first compares the complete recorded

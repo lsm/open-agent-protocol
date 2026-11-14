@@ -7,8 +7,8 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 use futures_core::Stream;
-use oap_adapter::{Error, EventStream};
-use oap_protocol::{Envelope, EnvelopeType, RunId};
+use oxap_adapter::{Error, EventStream};
+use oxap_protocol::{Envelope, EnvelopeType, RunId};
 
 use crate::{HubError, HubSession};
 

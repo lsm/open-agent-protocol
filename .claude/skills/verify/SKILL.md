@@ -65,7 +65,7 @@ relative to the repository root:
 
 ```sh
 go test ./go/validation
-(cd rust && cargo test -p oap-validation --test manifest)
+(cd rust && cargo test -p oxap-validation --test manifest)
 (cd rust && cargo fmt --check)
 (cd rust && cargo clippy --all-targets --all-features -- -D warnings)
 (cd rust && cargo run -p nocomment -- --check)

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::{codes, Phase, Validator};
+use oxap_validation::{codes, Phase, Validator};
 
 #[test]
 fn a_snapshot_listing_cannot_contradict_its_runs_or_session() {

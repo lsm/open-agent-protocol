@@ -33,7 +33,7 @@ def main():
     goap = output / "goap"
     for label, command in [
         ("go-build", ["go", "build", "-o", str(goap), "./go/cmd/goap"]),
-        ("rust-build", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"]),
+        ("rust-build", ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation", "--example", "validate"]),
         ("zig-build", ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"]),
     ]:
         status, stdout = run(command, output, label)

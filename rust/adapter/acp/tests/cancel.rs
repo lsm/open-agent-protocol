@@ -5,9 +5,9 @@ use std::task::Context;
 use std::time::Duration;
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, Error, OpenRequest, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{Message, MessageContent, MessageSubmitRequest, Participant};
+use oxap_adapter::{Adapter as _, Error, OpenRequest, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{Message, MessageContent, MessageSubmitRequest, Participant};
 use serde_json::{json, Value};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -21,7 +21,7 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    fn open(mode: &str) -> (Self, Box<dyn oap_adapter::Session>) {
+    fn open(mode: &str) -> (Self, Box<dyn oxap_adapter::Session>) {
         let fixture = Self(std::env::temp_dir().join(format!(
             "oap-acp-cancel-{}-{}",
             std::process::id(),
@@ -101,10 +101,10 @@ impl Fixture {
 }
 
 fn submit(
-    session: &dyn oap_adapter::Session,
+    session: &dyn oxap_adapter::Session,
 ) -> (
-    oap_protocol::MessageSubmitResponse,
-    oap_adapter::EventStream,
+    oxap_protocol::MessageSubmitResponse,
+    oxap_adapter::EventStream,
 ) {
     block_on(session.submit(SubmitRequest {
         request: MessageSubmitRequest {

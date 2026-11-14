@@ -2,7 +2,7 @@
 
 mod support;
 
-use oap_conformance::Runner;
+use oxap_conformance::Runner;
 use support::client;
 
 #[test]

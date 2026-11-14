@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use oap_adapter::runtime::Runtime;
-use oap_adapter::testkit::{drain, RunTrace};
-use oap_adapter_codex_appserver::adapter::Adapter;
-use oap_protocol::{
+use oxap_adapter::runtime::Runtime;
+use oxap_adapter::testkit::{drain, RunTrace};
+use oxap_adapter_codex_appserver::adapter::Adapter;
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     MessageSubmitResponse, RequestedDeliveryMode, RunCompletedPayload,
 };

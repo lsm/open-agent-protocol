@@ -1,6 +1,6 @@
-use oap_adapter::gojson::replace_lone_surrogates;
-use oap_adapter::{refuse_unadvertised_controls, Error};
-use oap_protocol::{
+use oxap_adapter::gojson::replace_lone_surrogates;
+use oxap_adapter::{refuse_unadvertised_controls, Error};
+use oxap_protocol::{
     ContentPart, ContentPartType, MessageId, MessageRole, MessageSubmitRequest,
     RequestedDeliveryMode,
 };

@@ -15,7 +15,7 @@ def main():
     output = Path(parser.parse_args().output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     command = ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
-               "-p", "oap-validation", "--example", "validate", "--"]
+               "-p", "oxap-validation", "--example", "validate", "--"]
     for name, feature in [("permission", "permissions"), ("user-input", "user_input")]:
         path = ROOT / "fixtures/valid" / f"{name}-resolved-in-the-refresh-window.json"
         for variant in ["valid", "wrong-echo", "after-refresh-withdrawn"]:

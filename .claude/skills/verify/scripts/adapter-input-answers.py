@@ -88,7 +88,7 @@ def trace(questions, answers):
 
 
 def consumers(output):
-    run(CARGO + ["-p", "oap-adapter", "--example", "input_answers"], output, "build-rust")
+    run(CARGO + ["-p", "oxap-adapter", "--example", "input_answers"], output, "build-rust")
     go = output / "go-answers"
     run(["go", "build", "-o", str(go), "./rust/adapter/tests/testdata/input_answers_reference.go"], output, "build-go")
     return {"rust": [str(ROOT / "rust/target/debug/examples/input_answers")], "go": [str(go)]}
@@ -96,7 +96,7 @@ def consumers(output):
 
 def verify(output):
     helpers = consumers(output)
-    run(CARGO + ["-p", "oap-validation", "--example", "validate"], output, "build-rust-validator")
+    run(CARGO + ["-p", "oxap-validation", "--example", "validate"], output, "build-rust-validator")
     goap = output / "goap"
     run(["go", "build", "-o", str(goap), "./go/cmd/goap"], output, "build-go-validator")
     run(["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"], output, "build-zig")
@@ -159,8 +159,8 @@ def mutations(output):
         ("go-wire", "go/protocol/interaction.go", 'len(a.SelectedOptionIDs) == 0 || a.Text != ""', 'a.Text != ""', "go"),
     ]
     commands = {
-        "rust-helpers": ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oap-adapter", "--test", "answer_contract"],
-        "rust-wire": ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oap-protocol", "--test", "input_answer"],
+        "rust-helpers": ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-adapter", "--test", "answer_contract"],
+        "rust-wire": ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-protocol", "--test", "input_answer"],
         "go": ["go", "test", "./go/adapter", "./go/protocol", "-count=1"],
     }
     for name, relative, before, after, suite in variants:

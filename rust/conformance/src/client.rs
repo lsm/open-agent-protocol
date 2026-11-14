@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-use oap_protocol::{Envelope, EnvelopeId, RunId};
+use oxap_protocol::{Envelope, EnvelopeId, RunId};
 
 use crate::{ControlFrame, Frame, Process, ProcessError, Transcript};
 

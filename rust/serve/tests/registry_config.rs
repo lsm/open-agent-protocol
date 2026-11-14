@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_serve::Registry;
+use oxap_serve::Registry;
 
 fn written(name: &str, body: &str) -> PathBuf {
     let dir =

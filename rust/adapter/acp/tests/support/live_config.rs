@@ -4,9 +4,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::{task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, Error, OpenRequest, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter::{Adapter as _, Error, OpenRequest, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     Message, MessageContent, MessageSubmitRequest, ModelsRequest, Participant,
     SessionModelSwitchRequest,
 };

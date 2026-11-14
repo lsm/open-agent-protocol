@@ -1,5 +1,5 @@
-use oap_adapter::{NativeReadRequest, NativeTurn, TranscriptRequest};
-use oap_protocol::{SessionId, TranscriptLoadResponse};
+use oxap_adapter::{NativeReadRequest, NativeTurn, TranscriptRequest};
+use oxap_protocol::{SessionId, TranscriptLoadResponse};
 
 use crate::{Hub, HubError};
 
@@ -25,7 +25,7 @@ impl Hub {
         let Some(bindings) = self.bindings() else {
             return Ok(None);
         };
-        let latest = oap_binding::sessions(&bindings.sessions()?);
+        let latest = oxap_binding::sessions(&bindings.sessions()?);
         Ok(latest
             .into_iter()
             .find(|entry| entry.record.session_id == id.as_str())

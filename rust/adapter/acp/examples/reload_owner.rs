@@ -6,13 +6,13 @@ use std::task::Context;
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker};
-use oap_adapter::{Adapter as _, OpenRequest};
-use oap_adapter_acp::{
+use oxap_adapter::{Adapter as _, OpenRequest};
+use oxap_adapter_acp::{
     native::SessionReopenParams,
     process::{Process, ProcessConfig},
     Adapter, Config,
 };
-use oap_protocol::Participant;
+use oxap_protocol::Participant;
 use serde_json::json;
 
 fn phase(value: serde_json::Value) {

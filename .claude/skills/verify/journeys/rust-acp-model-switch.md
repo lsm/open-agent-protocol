@@ -7,7 +7,7 @@ Python selected as specified in shared setup:
 python3 .claude/skills/verify/scripts/rust-acp-model-switch.py --output-dir /tmp/oap-acp-model-switch-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-session.py --output-dir /tmp/oap-acp-session-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-foundation.py --output-dir /tmp/oap-acp-foundation-<unique>
-(cd rust && cargo test -p oap-adapter-acp)
+(cd rust && cargo test -p oxap-adapter-acp)
 ```
 
 The first script runs standalone public Go and Rust consumers against identical

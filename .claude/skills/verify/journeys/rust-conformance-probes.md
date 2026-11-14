@@ -3,7 +3,7 @@
 Use shared setup from `SKILL.md`, then run
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-conformance --test probes
+cargo test --manifest-path rust/Cargo.toml -p oxap-conformance --test probes
 python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp/oap-conformance-probes-<unique-name>
 ```
 

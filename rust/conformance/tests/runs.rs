@@ -3,8 +3,8 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use oap_conformance::{Client, ClientError, Runner};
-use oap_protocol::EnvelopeType;
+use oxap_conformance::{Client, ClientError, Runner};
+use oxap_protocol::EnvelopeType;
 
 const ENDPOINT: &str = r#"
 import json,sys

@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{Error, InteractionResolution, OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{Error, InteractionResolution, OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     PermissionResolveRequest, RequestedDeliveryMode, RunId, UserInputResolveRequest,
 };
-use oap_serve::{Hub, HubError, HubSession, Registry, Subscription};
+use oxap_serve::{Hub, HubError, HubSession, Registry, Subscription};
 
 fn hub(capacity: usize) -> Hub {
     let mut registry = Registry::new();

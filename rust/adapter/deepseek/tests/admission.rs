@@ -1,5 +1,5 @@
-use oap_adapter_deepseek::admission::{Admission, Candidate};
-use oap_adapter_deepseek::native::{decode_notification, Event, Notification};
+use oxap_adapter_deepseek::admission::{Admission, Candidate};
+use oxap_adapter_deepseek::native::{decode_notification, Event, Notification};
 
 fn event(seq: i64, kind: &str, data: &str) -> Event {
     let params = format!(

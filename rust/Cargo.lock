@@ -980,216 +980,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oap-adapter"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "futures",
- "futures-core",
- "oap-protocol",
- "oap-validation",
- "regex",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-adapter-acp"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "futures",
- "futures-channel",
- "futures-util",
- "oap-adapter",
- "oap-harness",
- "oap-protocol",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-claude"
-version = "0.1.0"
-dependencies = [
- "oap-adapter",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-codex-appserver"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "oap-adapter",
- "oap-harness",
- "oap-protocol",
- "oap-validation",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-copilot"
-version = "0.1.0"
-dependencies = [
- "oap-adapter",
- "oap-harness",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-deepseek"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "futures",
- "futures-channel",
- "oap-adapter",
- "oap-harness",
- "oap-protocol",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-hermes"
-version = "0.1.0"
-dependencies = [
- "oap-adapter",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-opencode"
-version = "0.1.0"
-dependencies = [
- "oap-adapter",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-adapter-pi"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "oap-adapter",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oap-binding"
-version = "0.1.0"
-dependencies = [
- "base64",
- "oap-protocol",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-conformance"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "oap-adapter",
- "oap-protocol",
- "oap-validation",
- "rustix",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-harness"
-version = "0.1.0"
-dependencies = [
- "jsonschema",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-provider-catalog"
-version = "0.1.0"
-dependencies = [
- "jsonschema",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-sdk"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "futures",
- "futures-core",
- "rand 0.9.5",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "oap-serve"
-version = "0.1.0"
-dependencies = [
- "base64",
- "ctrlc",
- "futures",
- "futures-core",
- "httparse",
- "jsonschema",
- "oap-adapter",
- "oap-adapter-acp",
- "oap-binding",
- "oap-protocol",
- "oap-validation",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "oap-validation"
-version = "0.1.0"
-dependencies = [
- "fluent-uri",
- "jsonschema",
- "oap-protocol",
- "regex",
- "regex-syntax",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "objc2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1215,6 +1005,216 @@ name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
+
+[[package]]
+name = "oxap-adapter"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "futures",
+ "futures-core",
+ "oxap-protocol",
+ "oxap-validation",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-adapter-acp"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "futures",
+ "futures-channel",
+ "futures-util",
+ "oxap-adapter",
+ "oxap-harness",
+ "oxap-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-claude"
+version = "0.1.0"
+dependencies = [
+ "oxap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-codex-appserver"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "oxap-adapter",
+ "oxap-harness",
+ "oxap-protocol",
+ "oxap-validation",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-copilot"
+version = "0.1.0"
+dependencies = [
+ "oxap-adapter",
+ "oxap-harness",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-deepseek"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "futures",
+ "futures-channel",
+ "oxap-adapter",
+ "oxap-harness",
+ "oxap-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-hermes"
+version = "0.1.0"
+dependencies = [
+ "oxap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-opencode"
+version = "0.1.0"
+dependencies = [
+ "oxap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-adapter-pi"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "oxap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxap-binding"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "oxap-protocol",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-conformance"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "oxap-adapter",
+ "oxap-protocol",
+ "oxap-validation",
+ "rustix",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-harness"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-provider-catalog"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures",
+ "futures-core",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "oxap-serve"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ctrlc",
+ "futures",
+ "futures-core",
+ "httparse",
+ "jsonschema",
+ "oxap-adapter",
+ "oxap-adapter-acp",
+ "oxap-binding",
+ "oxap-protocol",
+ "oxap-validation",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxap-validation"
+version = "0.1.0"
+dependencies = [
+ "fluent-uri",
+ "jsonschema",
+ "oxap-protocol",
+ "regex",
+ "regex-syntax",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "parking_lot"

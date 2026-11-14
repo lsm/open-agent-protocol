@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[4]
 COMMANDS = {
     "go": ["go", "run", "./go/cmd/goap", "validate", "--format", "json"],
     "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
-             "-p", "oap-validation", "--example", "validate", "--"],
+             "-p", "oxap-validation", "--example", "validate", "--"],
     "zig": [str(ROOT / "zig/zig-out/bin/oxap"), "validate", "--format", "json"],
 }
 

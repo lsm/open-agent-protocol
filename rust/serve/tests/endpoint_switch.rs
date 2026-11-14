@@ -1,7 +1,7 @@
 mod support;
 
-use oap_serve::endpoint::{Endpoint, EndpointOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::endpoint::{Endpoint, EndpointOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::{json, Value};
 
 fn run(hub: &Hub, lines: &[Value]) -> Vec<Value> {

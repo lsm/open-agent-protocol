@@ -2,10 +2,10 @@ mod support;
 
 use std::time::Duration;
 
-use oap_adapter::{Error, OpenRequest, CONTROL_UNSATISFIABLE};
-use oap_adapter_codex_appserver::adapter::{Adapter, Config};
-use oap_adapter_codex_appserver::process::ProcessConfig;
-use oap_protocol::{
+use oxap_adapter::{Error, OpenRequest, CONTROL_UNSATISFIABLE};
+use oxap_adapter_codex_appserver::adapter::{Adapter, Config};
+use oxap_adapter_codex_appserver::process::ProcessConfig;
+use oxap_protocol::{
     CompactionKind, CompactionPolicy, Participant, ReasoningLevel, RecoveryMetadata, SessionStatus,
     FEATURE_OPEN_REOPEN,
 };

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use oap_protocol::*;
+use oxap_protocol::*;
 use serde::Serialize;
 
 use super::admit::history_tokens;

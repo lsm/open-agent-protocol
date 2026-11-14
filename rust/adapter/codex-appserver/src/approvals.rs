@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use oap_adapter::gojson::decode;
-use oap_adapter::{Error, InteractionResolution};
-use oap_protocol::{
+use oxap_adapter::gojson::decode;
+use oxap_adapter::{Error, InteractionResolution};
+use oxap_protocol::{
     EnvelopeType, InteractionId, InteractionOutcome, PermissionChoice, PermissionRequestedPayload,
     PermissionResolvedPayload, ProtocolError, RunId,
 };

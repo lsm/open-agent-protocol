@@ -4,7 +4,7 @@ From the repository root, run:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-admission-anchors.py --output-dir /tmp/oap-admission-anchors-<unique>
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test admission_anchors
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test admission_anchors
 ```
 
 The helper rebuilds and invokes the Go, Rust and Zig public validator CLIs on

@@ -1,12 +1,12 @@
 use crossbeam_channel::select;
-use oap_adapter::gojson::{decode, Decode};
-use oap_protocol::{
+use oxap_adapter::gojson::{decode, Decode};
+use oxap_protocol::{
     ActionCallPayload, ContentDeltaPayload, ContentPart, ContentPartType, Envelope, EnvelopeType,
     Message, MessageContent, MessageRole, ProtocolError, RunCancelledPayload, RunCompletedPayload,
     RunFailedPayload, RunId, RunStartedPayload, RunStatus, SessionStatus, ToolCallId, Usage,
     SETTLED_BY_INFERRED,
 };
-use oap_validation::OutputSchema;
+use oxap_validation::OutputSchema;
 use serde::Serialize;
 use serde_json::value::RawValue;
 

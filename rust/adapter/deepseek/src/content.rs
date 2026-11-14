@@ -1,5 +1,5 @@
-use oap_adapter::gojson::{go_quote, zero};
-use oap_protocol::{ContentPart, ContentPartType, MessageContent, ToolCallId};
+use oxap_adapter::gojson::{go_quote, zero};
+use oxap_protocol::{ContentPart, ContentPartType, MessageContent, ToolCallId};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 

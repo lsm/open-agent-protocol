@@ -1,18 +1,18 @@
 mod support;
 
 use futures::executor::block_on;
-use oap_protocol::{ActionCallResolveRequest, Envelope, EnvelopeType};
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, Registry};
+use oxap_protocol::{ActionCallResolveRequest, Envelope, EnvelopeType};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn opened() -> Hub {
     let hub = Hub::new(Registry::default_registry());
     block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "s".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();
@@ -80,72 +80,72 @@ fn a_call_resolution_for_another_session_is_a_scope_mismatch() {
     );
 }
 
-struct Closing(Box<dyn oap_adapter::Session>);
+struct Closing(Box<dyn oxap_adapter::Session>);
 
-impl oap_adapter::CallResolver for Closing {
+impl oxap_adapter::CallResolver for Closing {
     fn resolve_call(
         &self,
-        _: oap_adapter::CallResolution,
-    ) -> oap_adapter::BoxFuture<'_, oap_protocol::ActionCallResolveResponse> {
-        Box::pin(async { Err(oap_adapter::Error::SessionClosed) })
+        _: oxap_adapter::CallResolution,
+    ) -> oxap_adapter::BoxFuture<'_, oxap_protocol::ActionCallResolveResponse> {
+        Box::pin(async { Err(oxap_adapter::Error::SessionClosed) })
     }
 }
 
-impl oap_adapter::Session for Closing {
+impl oxap_adapter::Session for Closing {
     fn submit(
         &self,
-        request: oap_adapter::SubmitRequest,
-    ) -> oap_adapter::BoxFuture<
+        request: oxap_adapter::SubmitRequest,
+    ) -> oxap_adapter::BoxFuture<
         '_,
         (
-            oap_protocol::MessageSubmitResponse,
-            oap_adapter::EventStream,
+            oxap_protocol::MessageSubmitResponse,
+            oxap_adapter::EventStream,
         ),
     > {
         self.0.submit(request)
     }
-    fn state(&self) -> oap_adapter::BoxFuture<'_, oap_protocol::SessionState> {
+    fn state(&self) -> oxap_adapter::BoxFuture<'_, oxap_protocol::SessionState> {
         self.0.state()
     }
     fn resolve(
         &self,
-        resolution: oap_adapter::InteractionResolution,
-    ) -> oap_adapter::BoxFuture<'_, ()> {
+        resolution: oxap_adapter::InteractionResolution,
+    ) -> oxap_adapter::BoxFuture<'_, ()> {
         self.0.resolve(resolution)
     }
     fn cancel(
         &self,
-        run_id: oap_protocol::RunId,
-    ) -> oap_adapter::BoxFuture<'_, oap_protocol::RunCancelResponse> {
+        run_id: oxap_protocol::RunId,
+    ) -> oxap_adapter::BoxFuture<'_, oxap_protocol::RunCancelResponse> {
         self.0.cancel(run_id)
     }
     fn resume(
         &self,
-        request: oap_adapter::ResumeRequest,
-    ) -> oap_adapter::BoxFuture<'_, (oap_adapter::Recovery, oap_adapter::EventStream)> {
+        request: oxap_adapter::ResumeRequest,
+    ) -> oxap_adapter::BoxFuture<'_, (oxap_adapter::Recovery, oxap_adapter::EventStream)> {
         self.0.resume(request)
     }
-    fn close(&self) -> oap_adapter::BoxFuture<'_, ()> {
+    fn close(&self) -> oxap_adapter::BoxFuture<'_, ()> {
         self.0.close()
     }
-    fn call_resolver(&self) -> Option<&dyn oap_adapter::CallResolver> {
+    fn call_resolver(&self) -> Option<&dyn oxap_adapter::CallResolver> {
         Some(self)
     }
 }
 
-struct ClosingAdapter(std::sync::Arc<dyn oap_adapter::Adapter>);
+struct ClosingAdapter(std::sync::Arc<dyn oxap_adapter::Adapter>);
 
-impl oap_adapter::Adapter for ClosingAdapter {
-    fn probe(&self) -> oap_adapter::BoxFuture<'_, oap_adapter::Descriptor> {
+impl oxap_adapter::Adapter for ClosingAdapter {
+    fn probe(&self) -> oxap_adapter::BoxFuture<'_, oxap_adapter::Descriptor> {
         self.0.probe()
     }
     fn open(
         &self,
-        request: oap_adapter::OpenRequest,
-    ) -> oap_adapter::BoxFuture<'_, Box<dyn oap_adapter::Session>> {
+        request: oxap_adapter::OpenRequest,
+    ) -> oxap_adapter::BoxFuture<'_, Box<dyn oxap_adapter::Session>> {
         Box::pin(async move {
             let inner = self.0.open(request).await?;
-            Ok(Box::new(Closing(inner)) as Box<dyn oap_adapter::Session>)
+            Ok(Box::new(Closing(inner)) as Box<dyn oxap_adapter::Session>)
         })
     }
 }
@@ -160,9 +160,9 @@ fn a_call_resolution_finding_its_session_closed_closes_the_hub_session() {
     let hub = Hub::new(registry);
     let opened = block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "s".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();

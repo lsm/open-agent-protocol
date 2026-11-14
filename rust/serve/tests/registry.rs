@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use oap_adapter::memory::{Config, Memory};
-use oap_protocol::{ToolSourceAttachment, TOOL_SOURCE_PROCESS, TOOL_SOURCE_REMOTE};
-use oap_serve::{Registry, RegistryError};
+use oxap_adapter::memory::{Config, Memory};
+use oxap_protocol::{ToolSourceAttachment, TOOL_SOURCE_PROCESS, TOOL_SOURCE_REMOTE};
+use oxap_serve::{Registry, RegistryError};
 
 fn memory() -> Arc<Memory> {
     Arc::new(Memory::new(Config::default()))

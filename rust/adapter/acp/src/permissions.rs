@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use oap_adapter::{Error, InteractionResolution};
-use oap_protocol::{
+use oxap_adapter::{Error, InteractionResolution};
+use oxap_protocol::{
     EnvelopeId, EnvelopeType, InteractionId, ParticipantId, PermissionChoice,
     PermissionRequestedPayload, PermissionResolvedPayload, ProtocolError, RunStatus,
 };

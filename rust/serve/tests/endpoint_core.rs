@@ -2,9 +2,9 @@ mod support;
 
 use std::sync::Arc;
 
-use oap_binding::MemoryStore;
-use oap_serve::endpoint::{Endpoint, EndpointError, EndpointOptions};
-use oap_serve::{Hub, HubOptions, Registry};
+use oxap_binding::MemoryStore;
+use oxap_serve::endpoint::{Endpoint, EndpointError, EndpointOptions};
+use oxap_serve::{Hub, HubOptions, Registry};
 use serde_json::Value;
 
 fn endpoint(hub: &Hub, frame_limit: usize) -> Endpoint {
@@ -87,7 +87,7 @@ fn initialize_answers_the_version_profile_and_revision_it_serves() {
     );
     assert_eq!(
         answer["capability_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
 }
 
@@ -137,7 +137,7 @@ fn a_stale_revision_is_refused_on_every_request_but_discovery() {
     assert_eq!(error["details"]["expected_revision"], "old");
     assert_eq!(
         error["details"]["current_revision"],
-        oap_adapter::memory::CAPABILITY_REVISION
+        oxap_adapter::memory::CAPABILITY_REVISION
     );
 }
 

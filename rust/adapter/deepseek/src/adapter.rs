@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use futures_channel::oneshot;
-use oap_adapter::{
+use oxap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
     Adapter as AdapterContract, BoxFuture, Descriptor, Error, JournalDescriptor, OpenRequest,
     Session as SessionContract, UnsupportedControl, CONTROL_UNADVERTISED, CONTROL_UNSATISFIABLE,
 };
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, CompactionKind, CompactionPolicy, EndpointDescriptor, FeatureSupport,
     ReasoningLevel, SessionState, SessionStatus, SupportLevel, FEATURE_COMPACTION_POLICY,
     FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING, MODE_SESSION_OPEN, PROFILE, VERSION,
@@ -51,8 +51,8 @@ pub struct Adapter {
     config: Config,
 }
 
-pub fn pin() -> &'static oap_harness::Version {
-    oap_harness::current("deepseek-harness").expect("embedded catalog pins deepseek-harness")
+pub fn pin() -> &'static oxap_harness::Version {
+    oxap_harness::current("deepseek-harness").expect("embedded catalog pins deepseek-harness")
 }
 
 fn harness(text: &str) -> Error {

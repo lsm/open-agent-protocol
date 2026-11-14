@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use oap_sdk::BinaryResolver;
+use oxap_sdk::BinaryResolver;
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -460,7 +460,7 @@ async fn a_cached_download_is_used_when_its_checksum_matches() {
 async fn the_builder_command_bypasses_the_environment_override() {
     let _guard = EnvGuard::set(&[("OAP_SDK_BINARY_PATH", Some("/definitely/not/here/makai"))]);
 
-    let client = oap_sdk::ClientBuilder::new()
+    let client = oxap_sdk::ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args(Vec::<String>::new())
         .env_clear()

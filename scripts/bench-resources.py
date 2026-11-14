@@ -918,7 +918,7 @@ def build(targets, scratch):
         binaries["go"] = Path(scratch) / "goap"
         subprocess.run(["go", "build", "-o", str(binaries["go"]), "./go/cmd/goap"], cwd=ROOT, check=True)
     if "rust" in targets:
-        subprocess.run(["cargo", "build", "--release", "-p", "oap-serve", "--bin", "oap-rust-hub"], cwd=ROOT / "rust", check=True)
+        subprocess.run(["cargo", "build", "--release", "-p", "oxap-serve", "--bin", "oap-rust-hub"], cwd=ROOT / "rust", check=True)
     if {"zig", "zig-loop"} & set(targets):
         subprocess.run(["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"], cwd=ROOT, check=True)
     return binaries

@@ -4,14 +4,14 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::Inbound;
-use oap_adapter::InteractionResolution;
-use oap_adapter_acp::{
+use oxap_adapter::jsonrpc::Inbound;
+use oxap_adapter::InteractionResolution;
+use oxap_adapter_acp::{
     native::PromptParams,
     process::{Process, ProcessConfig},
     PromptBridge, TextRun, TextRunContext,
 };
-use oap_protocol::{PermissionRequestedPayload, PermissionResolveRequest};
+use oxap_protocol::{PermissionRequestedPayload, PermissionResolveRequest};
 use serde_json::json;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -90,7 +90,8 @@ fn permission_case(mode: &str) {
     let mut stream = run.lock().unwrap().start(10).unwrap();
     let request = receive.recv_timeout(Duration::from_secs(3)).unwrap();
     let params =
-        oap_adapter_acp::native::decode(request.params.as_ref().unwrap().get().as_bytes()).unwrap();
+        oxap_adapter_acp::native::decode(request.params.as_ref().unwrap().get().as_bytes())
+            .unwrap();
     run.lock()
         .unwrap()
         .permission_request(params, "user".into(), 20)
@@ -200,7 +201,7 @@ fn parent_completion_settles_permission_before_tool_and_run() {
     permission_case("parent");
 }
 
-fn projector(session: &str) -> (TextRun, oap_adapter::EventStream, InteractionResolution) {
+fn projector(session: &str) -> (TextRun, oxap_adapter::EventStream, InteractionResolution) {
     let mut next = 0;
     let mut run = TextRun::new(
         TextRunContext {
@@ -216,7 +217,7 @@ fn projector(session: &str) -> (TextRun, oap_adapter::EventStream, InteractionRe
         },
     );
     let mut stream = run.start(10).unwrap();
-    let params=oap_adapter_acp::native::decode(br#"{"sessionId":"native","toolCall":{"toolCallId":"tool","title":"Read"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}"#).unwrap();
+    let params=oxap_adapter_acp::native::decode(br#"{"sessionId":"native","toolCall":{"toolCallId":"tool","title":"Read"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}"#).unwrap();
     run.permission_request(params, "user".into(), 20).unwrap();
     let mut events = Vec::new();
     for _ in 0..3 {
@@ -252,7 +253,7 @@ fn a_reply_from_another_projection_is_refused_even_when_generated_ids_match() {
     let reply = first.permission_reply(&resolution).unwrap();
     let result = second.commit_permission(reply, 30);
     assert!(
-        matches!(result, Err(oap_adapter::Error::InvalidResolution)),
+        matches!(result, Err(oxap_adapter::Error::InvalidResolution)),
         "{result:?}"
     );
 }
@@ -262,7 +263,7 @@ fn repeated_completion_preserves_the_pending_terminal_usage_snapshot() {
     let (mut run, stream, _) = projector("session");
     for count in [10, 20] {
         run.complete(
-            oap_adapter_acp::native::PromptResult {
+            oxap_adapter_acp::native::PromptResult {
                 stop_reason: "end_turn".into(),
                 usage: Some(
                     serde_json::value::to_raw_value(
@@ -328,15 +329,15 @@ fn control_answers_validate_scope_responder_choice_and_grant_before_preparation(
         let error = run.permission_reply(&candidate).err().expect(case);
         match case {
             "outer-responder" | "inner-responder" => assert!(
-                matches!(error, oap_adapter::Error::WrongResponder),
+                matches!(error, oxap_adapter::Error::WrongResponder),
                 "{case}"
             ),
             "unknown" => assert!(
-                matches!(error, oap_adapter::Error::InteractionNotFound),
+                matches!(error, oxap_adapter::Error::InteractionNotFound),
                 "{case}"
             ),
             _ => assert!(
-                matches!(error, oap_adapter::Error::InvalidResolution),
+                matches!(error, oxap_adapter::Error::InvalidResolution),
                 "{case}"
             ),
         }
@@ -346,7 +347,7 @@ fn control_answers_validate_scope_responder_choice_and_grant_before_preparation(
     run.commit_permission(reply, 30).unwrap();
     assert!(matches!(
         run.permission_reply(&resolution),
-        Err(oap_adapter::Error::InteractionResolved)
+        Err(oxap_adapter::Error::InteractionResolved)
     ));
 }
 
@@ -355,7 +356,7 @@ fn pending_failure_settles_the_gate_before_children_and_keeps_its_metadata() {
     let (mut run, stream, _) = projector("session");
     run.fail("observed_failure", "first", false, 30).unwrap();
     run.complete(
-        oap_adapter_acp::native::PromptResult {
+        oxap_adapter_acp::native::PromptResult {
             stop_reason: "end_turn".into(),
             usage: Some(
                 serde_json::value::to_raw_value(
@@ -403,7 +404,7 @@ fn closing_a_projection_refuses_a_prepared_commit_without_reviving_its_stream() 
     run.close();
     assert!(matches!(
         run.commit_permission(reply, 30),
-        Err(oap_adapter::Error::SessionClosed)
+        Err(oxap_adapter::Error::SessionClosed)
     ));
     assert!(block_on(stream.collect::<Vec<_>>()).is_empty());
     assert!(run.state().closed);
@@ -451,7 +452,7 @@ fn native_usage_in_the_pending_window_reaches_the_next_run() {
                 native_id: "native".into(),
                 run_id: id.into(),
                 message_id: format!("message-{id}").into(),
-                capability_revision: Some(oap_adapter_acp::pin().capability_revision.clone()),
+                capability_revision: Some(oxap_adapter_acp::pin().capability_revision.clone()),
             },
             move |kind| format!("{kind}-{}", ids.fetch_add(1, Ordering::Relaxed) + 1),
             Arc::clone(&scope),
@@ -482,7 +483,7 @@ fn native_usage_in_the_pending_window_reaches_the_next_run() {
     let mut call = bridge.prompt(
         PromptParams {
             session_id: "native".into(),
-            prompt: vec![oap_adapter_acp::native::ContentBlock {
+            prompt: vec![oxap_adapter_acp::native::ContentBlock {
                 kind: "text".into(),
                 text: "synthetic".into(),
                 ..Default::default()
@@ -493,7 +494,8 @@ fn native_usage_in_the_pending_window_reaches_the_next_run() {
     block_on(call.admitted()).unwrap();
     let request = receive.recv_timeout(Duration::from_secs(3)).unwrap();
     let params =
-        oap_adapter_acp::native::decode(request.params.as_ref().unwrap().get().as_bytes()).unwrap();
+        oxap_adapter_acp::native::decode(request.params.as_ref().unwrap().get().as_bytes())
+            .unwrap();
     first
         .lock()
         .unwrap()
@@ -522,7 +524,7 @@ fn native_usage_in_the_pending_window_reaches_the_next_run() {
     let mut call = bridge.prompt(
         PromptParams {
             session_id: "native".into(),
-            prompt: vec![oap_adapter_acp::native::ContentBlock {
+            prompt: vec![oxap_adapter_acp::native::ContentBlock {
                 kind: "text".into(),
                 text: "synthetic".into(),
                 ..Default::default()

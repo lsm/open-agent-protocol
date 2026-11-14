@@ -23,7 +23,7 @@ def main():
         return result
 
     built = command(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p",
-                     "oap-validation", "--example", "validate"], "rust-build")
+                     "oxap-validation", "--example", "validate"], "rust-build")
     assert built.returncode == 0, built.stderr
     metadata = command(["cargo", "metadata", "--manifest-path", "rust/Cargo.toml",
                         "--no-deps", "--format-version", "1"], "cargo-metadata")

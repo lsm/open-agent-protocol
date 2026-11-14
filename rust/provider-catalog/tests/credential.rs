@@ -1,4 +1,4 @@
-use oap_provider_catalog::{
+use oxap_provider_catalog::{
     api_key_from_names, Catalog, EnvironmentValue, Source, StoredCredential,
 };
 

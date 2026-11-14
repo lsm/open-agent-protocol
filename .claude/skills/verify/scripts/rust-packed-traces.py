@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[4]
 SOURCE = '''use std::error::Error;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use oap_validation::{ProviderValidator, ValidationResult, Validator};
+use oxap_validation::{ProviderValidator, ValidationResult, Validator};
 type Judge = Box<dyn Fn(&[u8], &str) -> ValidationResult>;
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut arguments = std::env::args_os().skip(1);
@@ -61,7 +61,7 @@ def build_native(output):
     (project / "src").mkdir(parents=True)
     (project / "Cargo.toml").write_text(
         '[package]\nname="native-packed-consumer"\nversion="0.0.0"\nedition="2021"\n'
-        f'[dependencies]\noap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
+        f'[dependencies]\noxap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
     (project / "src/main.rs").write_text(SOURCE)
     result = subprocess.run(["cargo", "build", "--offline", "--manifest-path", str(project / "Cargo.toml"),
                              "--target-dir", str(ROOT / "rust/target")], cwd=ROOT, capture_output=True,

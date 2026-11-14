@@ -1,4 +1,4 @@
-# oap-adapter
+# oxap-adapter
 
 The adapter/session contracts and an in-memory reference adapter for OAP.
 
@@ -12,8 +12,8 @@ again. `message_text(&Message)` also works independently on text or content-part
 messages, appending each part's text in order.
 
 ```rust
-use oap_adapter::{run_to_terminal, RunErrorKind, Session};
-use oap_protocol::MessageSubmitRequest;
+use oxap_adapter::{run_to_terminal, RunErrorKind, Session};
+use oxap_protocol::MessageSubmitRequest;
 
 async fn reply(session: &dyn Session, request: MessageSubmitRequest) -> String {
     match run_to_terminal(session, request).await {
@@ -49,7 +49,7 @@ its future releases the stream; it does not prove that the admitted run ended.
 The host must cancel or reconcile any unfinished run and close its session when
 finished. The `prompt` example demonstrates this explicitly with memory.
 
-Run `cargo run -p oap-adapter --example prompt -- --memory` from `rust/` for a
+Run `cargo run -p oxap-adapter --example prompt -- --memory` from `rust/` for a
 credential-free memory example. It reaches a gate, obtains the run id, cancels
 the run and closes the session. The verifier compares public Rust and Go
 consumers; its journey is `.claude/skills/verify/journeys/rust-adapter-prompt.md`.

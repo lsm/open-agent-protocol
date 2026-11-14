@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::process::ExitCode;
 
-use oap_validation::{ProviderValidator, ValidationResult, Validator};
+use oxap_validation::{ProviderValidator, ValidationResult, Validator};
 
 type Judge = Box<dyn Fn(&[u8], &str) -> ValidationResult>;
 

@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use oap_adapter::gojson::go_marshal;
-use oap_adapter::runtime::Runtime;
-use oap_adapter::testkit::{drain, next, RunTrace};
-use oap_adapter::{Error, EventStream, InteractionResolution, OpenRequest};
-use oap_protocol::{
+use oxap_adapter::gojson::go_marshal;
+use oxap_adapter::runtime::Runtime;
+use oxap_adapter::testkit::{drain, next, RunTrace};
+use oxap_adapter::{Error, EventStream, InteractionResolution, OpenRequest};
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     Participant, PermissionResolveRequest, RequestedDeliveryMode, UserInputResolveRequest,
 };

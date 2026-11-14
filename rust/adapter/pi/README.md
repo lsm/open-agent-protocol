@@ -1,4 +1,4 @@
-# oap-adapter-pi
+# oxap-adapter-pi
 
 The Rust port of `go/adapter/pi`: an OAP adapter over Pi's RPC mode on stdio,
 pinned by `harnesses/pi.json` and judged by the corpus in
@@ -16,7 +16,7 @@ differ:
   key in its exact case, so nothing observes the difference.
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029, and serializing
   a command here does not. The rpc client, which lands separately, writes every
-  frame through `oap_adapter::gojson::go_marshal`.
+  frame through `oxap_adapter::gojson::go_marshal`.
 
 `rpc_client::RpcClient` is Go's `rpc.Client`: one reader routes responses,
 events and extension requests in wire order, and a response waits behind a

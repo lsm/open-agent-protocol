@@ -4,7 +4,7 @@ Use shared setup from `SKILL.md`, then run
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp/oap-conformance-models-<unique-name>
-cargo test --manifest-path rust/Cargo.toml -p oap-conformance --test models --test runner
+cargo test --manifest-path rust/Cargo.toml -p oxap-conformance --test models --test runner
 ```
 
 Inspect `consumer.txt` for a real model change on the rebuilt Rust memory

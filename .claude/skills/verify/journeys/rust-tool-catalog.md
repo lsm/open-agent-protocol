@@ -3,7 +3,7 @@
 Run the public-library tests and the shared public-CLI replay from the root:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test tool_catalog
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test tool_catalog
 python3 .claude/skills/verify/scripts/rust-tool-catalog.py --mutation-check --output-dir /tmp/oap-tool-catalog-<unique-name>
 ```
 
@@ -25,7 +25,7 @@ Run the shared baseline in `SKILL.md` as well, including the isolated terminal
 reply and quit journey. No credentials, providers or real authentication are used.
 
 For strict session-catalog lifetime and refresh rules, also run
-`cargo test --manifest-path rust/Cargo.toml -p oap-validation --test session_tool_catalog`
+`cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test session_tool_catalog`
 and the shared `rust-go-parity.py` journey. Attaching opens and plain reopens adopt source metadata only when their
 responses agree with the already stated attachment members. Catalogs retain
 that description and the latest provided-tool definitions, including equivalent

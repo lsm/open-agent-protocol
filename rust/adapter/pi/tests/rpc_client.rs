@@ -2,10 +2,10 @@ use std::io::{BufRead, BufReader, PipeReader, PipeWriter, Write};
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
-use oap_adapter_pi::client::Client;
-use oap_adapter_pi::native::{Command, ExtensionUiResponse};
-use oap_adapter_pi::rpc::{Error, Inbound};
-use oap_adapter_pi::rpc_client::{ClientOptions, RpcClient};
+use oxap_adapter_pi::client::Client;
+use oxap_adapter_pi::native::{Command, ExtensionUiResponse};
+use oxap_adapter_pi::rpc::{Error, Inbound};
+use oxap_adapter_pi::rpc_client::{ClientOptions, RpcClient};
 use std::sync::Arc;
 
 const WAIT: Duration = Duration::from_secs(5);

@@ -4,11 +4,11 @@ Use the shared setup, Python and verification mutex in `SKILL.md`. Run the
 complete baseline and broader Rust suite under that mutex, with this journey:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-serve --test acp_registry -- --nocapture
-cargo build --manifest-path rust/Cargo.toml -p oap-serve
+cargo test --manifest-path rust/Cargo.toml -p oxap-serve --test acp_registry -- --nocapture
+cargo build --manifest-path rust/Cargo.toml -p oxap-serve
 python3 .claude/skills/verify/scripts/rust-acp-registry.py --binary rust/target/debug/oap-rust-hub --output-dir "$EVIDENCE/acp-registry"
 go run ./go/cmd/goap validate "$EVIDENCE/acp-registry/accepted.trace.json"
-cargo run --manifest-path rust/Cargo.toml -p oap-validation --example validate -- "$EVIDENCE/acp-registry/accepted.trace.json"
+cargo run --manifest-path rust/Cargo.toml -p oxap-validation --example validate -- "$EVIDENCE/acp-registry/accepted.trace.json"
 zig/zig-out/bin/oxap validate "$EVIDENCE/acp-registry/accepted.trace.json"
 ```
 

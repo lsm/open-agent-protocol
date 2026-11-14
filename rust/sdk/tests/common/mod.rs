@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use oap_sdk::{Client, ClientBuilder};
+use oxap_sdk::{Client, ClientBuilder};
 
 pub fn fake_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_oap-protocol-fake"))

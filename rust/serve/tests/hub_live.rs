@@ -6,15 +6,15 @@ use std::time::Duration;
 use futures::channel::mpsc::{unbounded, UnboundedSender};
 use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
     Recovery, ResumeRequest, Session, SubmitRequest,
 };
-use oap_protocol::{
+use oxap_protocol::{
     Admission, Envelope, EnvelopeType, MessageSubmitRequest, MessageSubmitResponse,
     RunCancelResponse, RunId, SessionState, SessionStatus,
 };
-use oap_serve::{Hub, HubError, HubOptions, HubSession, Registry, Subscription};
+use oxap_serve::{Hub, HubError, HubOptions, HubSession, Registry, Subscription};
 
 type Sender = UnboundedSender<Result<Envelope, Error>>;
 

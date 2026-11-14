@@ -5,7 +5,7 @@ from the repository root.
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-submit.py --output-dir /tmp/oap-submit-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test submit)
+(cd rust && cargo test -p oxap-adapter-acp --test submit)
 ```
 
 The standalone `submit_owner` consumer uses normal `Adapter.open` and

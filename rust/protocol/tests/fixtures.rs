@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_protocol::{decode, Envelope};
+use oxap_protocol::{decode, Envelope};
 use serde_json::Value;
 
 fn fixtures() -> PathBuf {

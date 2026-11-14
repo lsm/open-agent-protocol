@@ -4,7 +4,7 @@ From the repository root, run the public consumer over real synthetic stdio:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-acp-operation.py --output-dir /tmp/oap-acp-operation-<unique>
-(cd rust && cargo test -p oap-adapter-acp --test operation)
+(cd rust && cargo test -p oxap-adapter-acp --test operation)
 ```
 
 The consumer starts an empty-environment synthetic Python agent through

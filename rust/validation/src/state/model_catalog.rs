@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use oap_protocol::*;
+use oxap_protocol::*;
 
 use super::controls::describe_refusal;
 use super::{payload, s, State};

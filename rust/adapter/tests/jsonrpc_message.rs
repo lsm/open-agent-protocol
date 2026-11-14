@@ -1,4 +1,4 @@
-use oap_adapter::jsonrpc::{Dialect, Error, ErrorObject, Fault, Kind, Message, RequestId};
+use oxap_adapter::jsonrpc::{Dialect, Error, ErrorObject, Fault, Kind, Message, RequestId};
 use serde_json::value::RawValue;
 
 const D: Dialect = Dialect::lenient("acp");

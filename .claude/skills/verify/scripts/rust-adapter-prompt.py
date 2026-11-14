@@ -33,14 +33,14 @@ def mutation_check(output):
         for name, old, new, test in mutations:
             assert original.count(old) == 1, name
             SOURCE.write_text(original.replace(old, new))
-            result = subprocess.run(["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oap-adapter", "--test", "prompt", test], cwd=ROOT, text=True, capture_output=True, timeout=300)
+            result = subprocess.run(["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-adapter", "--test", "prompt", test], cwd=ROOT, text=True, capture_output=True, timeout=300)
             log = result.stdout + result.stderr
             (output / f"mutation-{name}.log").write_text(log)
             assert result.returncode != 0 and "test result: FAILED" in log, (name, log[-3000:])
             print(f"KILLED: {name} by public outcome assertion", flush=True)
     finally:
         SOURCE.write_text(original)
-    run(["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oap-adapter", "--test", "prompt"], output, "restored-tests")
+    run(["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-adapter", "--test", "prompt"], output, "restored-tests")
 
 
 def main():
@@ -53,7 +53,7 @@ def main():
     if args.mutation_check:
         mutation_check(output)
         return
-    run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-adapter", "--example", "prompt"], output, "rust-build")
+    run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-adapter", "--example", "prompt"], output, "rust-build")
     metadata = json.loads(run(["cargo", "metadata", "--manifest-path", "rust/Cargo.toml", "--no-deps", "--format-version=1"], output, "metadata"))
     rust = [str(Path(metadata["target_directory"]) / "debug/examples/prompt")]
     go = [str(output / "go-reference")]

@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use oap_adapter_copilot::native::{decode_event, parse, Kind};
-use oap_adapter_copilot::CORPUS_DIRECTORY;
+use oxap_adapter_copilot::native::{decode_event, parse, Kind};
+use oxap_adapter_copilot::CORPUS_DIRECTORY;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 

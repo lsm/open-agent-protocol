@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::jsonrpc::Inbound;
-use oap_adapter_acp::{native::*, pin, process::*, TextRun, TextRunContext};
+use oxap_adapter::jsonrpc::Inbound;
+use oxap_adapter_acp::{native::*, pin, process::*, TextRun, TextRunContext};
 use serde_json::{json, Value};
 
 fn wait(path: &std::path::Path) {
@@ -42,7 +42,7 @@ fn main() {
             shutdown_timeout: Some(Duration::from_millis(300)),
             client_info: Some(Implementation {
                 name: "open-agent-protocol".into(),
-                version: oap_protocol::VERSION.into(),
+                version: oxap_protocol::VERSION.into(),
                 ..Implementation::default()
             }),
             ..ProcessConfig::default()
@@ -54,7 +54,7 @@ fn main() {
     let (admit, admitted) = crossbeam_channel::bounded::<()>(0);
     let slot: Arc<Mutex<Option<Arc<Mutex<TextRun>>>>> = Arc::new(Mutex::new(None));
     let receiving = slot.clone();
-    let bridge = Arc::new(oap_adapter_acp::PromptBridge::new(
+    let bridge = Arc::new(oxap_adapter_acp::PromptBridge::new(
         process,
         move |message| match message {
             Inbound::Notification(notification) => {
@@ -346,7 +346,7 @@ def main():
     (consumer/'src').mkdir(parents=True)
     (consumer/'src/main.rs').write_text(RUST)
     dependencies = '\n'.join(f'{name}={{path={json.dumps(str(ROOT/path))}}}' for name,path in [
-        ('oap-adapter-acp','rust/adapter/acp'),('oap-adapter','rust/adapter'),('oap-protocol','rust/protocol')])
+        ('oxap-adapter-acp','rust/adapter/acp'),('oxap-adapter','rust/adapter'),('oxap-protocol','rust/protocol')])
     (consumer/'Cargo.toml').write_text('[package]\nname="text-engine-consumer"\nversion="0.0.0"\nedition="2021"\n[dependencies]\nfutures="0.3"\nserde_json="1"\ncrossbeam-channel="0.5"\n'+dependencies+'\n')
     run(['cargo','build','--offline','--manifest-path',str(consumer/'Cargo.toml'),'--target-dir',str(ROOT/'rust/target')], output/'rust-build.log')
     (output/'reference.go').write_text(GO)
@@ -392,7 +392,7 @@ def main():
             path.write_text(json.dumps(assembled,indent=2))
             commands={
                 'go':[str(output/'goap'),'validate','--format','json',str(path)],
-                'rust':['cargo','run','--quiet','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate','--',str(path)],
+                'rust':['cargo','run','--quiet','--manifest-path','rust/Cargo.toml','-p','oxap-validation','--example','validate','--',str(path)],
                 'zig':[str(ROOT/'zig/zig-out/bin/oxap'),'validate',str(path)],
             }
             for name, command in commands.items():

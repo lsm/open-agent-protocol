@@ -8,7 +8,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[4]
 CARGO = ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml"]
 VALIDATORS = {
-    "rust": CARGO + ["-p", "oap-validation", "--example", "validate", "--"],
+    "rust": CARGO + ["-p", "oxap-validation", "--example", "validate", "--"],
     "go": ["go", "run", "./go/cmd/goap", "validate"],
     "zig": ["./zig/zig-out/bin/oxap", "validate"],
 }
@@ -36,7 +36,7 @@ def main():
     output = Path(parser.parse_args().output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     for mode, adjacent, rejecting, code in JOURNEYS:
-        produced = run(CARGO + ["-p", "oap-adapter", "--example", "memory_trace", mode],
+        produced = run(CARGO + ["-p", "oxap-adapter", "--example", "memory_trace", mode],
                        output, mode)
         assert produced.returncode == 0, produced.stderr
         trace = json.loads(produced.stdout)

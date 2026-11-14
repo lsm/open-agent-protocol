@@ -1,4 +1,4 @@
-use oap_binding::{
+use oxap_binding::{
     list, sessions, state, Action, Entry, Error, MemoryStore, Record, Store, DEFAULT_LIMIT,
     MAX_LIMIT,
 };

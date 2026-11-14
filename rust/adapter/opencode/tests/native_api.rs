@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_adapter_opencode::native::{
+use oxap_adapter_opencode::native::{
     decode_api_error, valid_delivery, valid_event_id, valid_message_id, valid_session_id, Admitted,
     ApiError, Error, PromptRequest, SessionInfo,
 };

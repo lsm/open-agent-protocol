@@ -7,7 +7,7 @@ from the repository root
 python3 .claude/skills/verify/scripts/rust-conformance-wire.py --output-dir /tmp/oap-conformance-wire-<unique-name>
 ```
 
-The script builds the Rust endpoint and a standalone public `oap-conformance`
+The script builds the Rust endpoint and a standalone public `oxap-conformance`
 consumer. The consumer sends initialize and capabilities frames to the real
 endpoint, parses its answers, and assembles the observed transcript. It also
 checks a synthetic early-event admission, duplicate removal, probe exclusion,

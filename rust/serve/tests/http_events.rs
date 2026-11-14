@@ -3,12 +3,12 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 use futures::executor::block_on;
-use oap_adapter::{OpenRequest, SubmitRequest};
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, SubmitRequest};
+use oxap_protocol::{
     Message, MessageContent, MessageRole, MessageSubmitRequest, RequestedDeliveryMode,
 };
-use oap_serve::http::{serve_http, HttpOptions, DEFAULT_KEEPALIVE};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions, DEFAULT_KEEPALIVE};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn started() -> (Hub, SocketAddr) {

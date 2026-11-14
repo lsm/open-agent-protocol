@@ -3,8 +3,8 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use oap_conformance::{Frame, Process, ProcessError};
-use oap_protocol::{Envelope, EnvelopeType};
+use oxap_conformance::{Frame, Process, ProcessError};
+use oxap_protocol::{Envelope, EnvelopeType};
 use serde_json::json;
 
 fn python(script: &str) -> Command {

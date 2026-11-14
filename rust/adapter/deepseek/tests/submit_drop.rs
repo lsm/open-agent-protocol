@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::task::{Context, Wake, Waker};
 use std::time::{Duration, Instant};
 
-use oap_adapter::{OpenRequest, ResumeRequest, SubmitRequest};
-use oap_adapter_deepseek::adapter::{Adapter, Config};
-use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
-use oap_adapter_deepseek::process::ProcessConfig;
-use oap_adapter_deepseek::runtime::Runtime;
-use oap_adapter_deepseek::session::Session;
-use oap_protocol::{
+use oxap_adapter::{OpenRequest, ResumeRequest, SubmitRequest};
+use oxap_adapter_deepseek::adapter::{Adapter, Config};
+use oxap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
+use oxap_adapter_deepseek::process::ProcessConfig;
+use oxap_adapter_deepseek::runtime::Runtime;
+use oxap_adapter_deepseek::session::Session;
+use oxap_protocol::{
     EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest, Participant,
     SessionStatus,
 };
@@ -126,7 +126,7 @@ fn dropping_submit_while_admission_is_pending_leaves_no_waiter_and_the_run_still
     let baseline = threads();
     let flag = Arc::new(Flag::default());
     let waker = Waker::from(flag.clone());
-    let mut submitted = oap_adapter::Session::submit(
+    let mut submitted = oxap_adapter::Session::submit(
         &session,
         SubmitRequest {
             request: MessageSubmitRequest {
@@ -174,7 +174,7 @@ fn dropping_submit_while_admission_is_pending_leaves_no_waiter_and_the_run_still
             after_sequence: 0,
         })
         .unwrap();
-    let kinds: Vec<_> = oap_adapter::testkit::drain(&mut replay, Duration::from_secs(5))
+    let kinds: Vec<_> = oxap_adapter::testkit::drain(&mut replay, Duration::from_secs(5))
         .into_iter()
         .map(|envelope| envelope.envelope_type)
         .collect();

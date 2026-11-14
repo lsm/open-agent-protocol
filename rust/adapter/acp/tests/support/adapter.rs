@@ -1,8 +1,8 @@
 use std::task::{Context, Poll};
 
 use futures::task::noop_waker;
-use oap_adapter::{Adapter as _, OpenRequest};
-use oap_protocol::Participant;
+use oxap_adapter::{Adapter as _, OpenRequest};
+use oxap_protocol::Participant;
 
 use super::{Adapter, Config, DESCRIPTORS};
 use crate::process::ProcessConfig;

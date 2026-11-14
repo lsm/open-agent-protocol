@@ -3,7 +3,7 @@
 From the repository root, run:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test open_settings
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test open_settings
 python3 .claude/skills/verify/scripts/rust-open-settings.py --output-dir /tmp/oap-open-settings-<unique>
 ```
 
@@ -52,7 +52,7 @@ disagreements. Run the complete Verify baseline and observe its isolated PTY
 fixture reply and `/quit` exit 0, temporary state removal and child cleanup.
 
 The shared settings gate also covers `session_live`. Run
-`cargo test --manifest-path rust/Cargo.toml -p oap-validation --test compaction_live_settings`
+`cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test compaction_live_settings`
 and the shared Rust/Go parity journey. Live replies must retain requested values;
 accepted updates require a matching state update before the next run or trace end.
 Compaction requests retain ranked refusal expectations, and their runs must open

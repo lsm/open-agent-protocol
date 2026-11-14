@@ -1,4 +1,4 @@
-use oap_adapter_acp::native::{
+use oxap_adapter_acp::native::{
     decode, AgentMessageChunk, ContentBlock, PermissionRequest, PermissionResponse,
     SessionUpdateParams, ToolCall, ToolCallUpdate, UpdateHeader,
 };

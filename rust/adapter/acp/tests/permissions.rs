@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{executor::block_on, StreamExt};
-use oap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter::{Adapter as _, InteractionResolution, OpenRequest, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     Message, MessageContent, MessageSubmitRequest, Participant, PermissionRequestedPayload,
     PermissionResolveRequest,
 };
@@ -124,7 +124,7 @@ fn public_permission_can_be_resolved_immediately_after_publication() {
     assert_eq!(events.last().unwrap()["type"], "run.completed");
 }
 
-fn open_permission_peer(mode: &str) -> (Fixture, Box<dyn oap_adapter::Session>) {
+fn open_permission_peer(mode: &str) -> (Fixture, Box<dyn oxap_adapter::Session>) {
     let fixture = Fixture(std::env::temp_dir().join(format!(
         "oap-session-permission-peer-{}-{}",
         std::process::id(),
@@ -254,12 +254,12 @@ fn settled_permission_stays_known_after_the_next_run_is_admitted() {
                 assert!(state.transcript_cursor.parse::<u64>().unwrap() >= event.sequence.unwrap());
                 assert_eq!(
                     block_on(session.close()),
-                    Err(oap_adapter::Error::RunActive)
+                    Err(oxap_adapter::Error::RunActive)
                 );
                 if let Some(old) = &previous {
                     assert_eq!(
                         block_on(session.resolve(old.clone())),
-                        Err(oap_adapter::Error::InteractionResolved)
+                        Err(oxap_adapter::Error::InteractionResolved)
                     );
                 }
                 let answer = permission_answer(
@@ -271,12 +271,12 @@ fn settled_permission_stays_known_after_the_next_run_is_admitted() {
                 wrong.responded_by = "intruder".into();
                 assert_eq!(
                     block_on(session.resolve(wrong)),
-                    Err(oap_adapter::Error::WrongResponder)
+                    Err(oxap_adapter::Error::WrongResponder)
                 );
                 block_on(session.resolve(answer.clone())).unwrap();
                 assert_eq!(
                     block_on(session.resolve(answer.clone())),
-                    Err(oap_adapter::Error::InteractionResolved)
+                    Err(oxap_adapter::Error::InteractionResolved)
                 );
                 previous = Some(answer);
             }
@@ -296,7 +296,7 @@ fn settled_permission_stays_known_after_the_next_run_is_admitted() {
     let before = block_on(session.state()).unwrap();
     std::thread::sleep(Duration::from_millis(20));
     let (_, switched) = block_on(session.model_switcher().unwrap().switch_model(
-        oap_protocol::SessionModelSwitchRequest {
+        oxap_protocol::SessionModelSwitchRequest {
             session_id: "session".into(),
             model_id: "luna".into(),
             allow_degraded_features: vec!["session.model.switch".into()],

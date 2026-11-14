@@ -22,7 +22,7 @@ def main():
     (project / "src").mkdir(parents=True)
     (project / "Cargo.toml").write_text(
         '[package]\nname="pack-uri-consumer"\nversion="0.0.0"\nedition="2021"\n'
-        f'[dependencies]\noap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
+        f'[dependencies]\noxap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
     (project / "src/main.rs").write_text(RESOURCES["CONSUMER"])
     build = run(["cargo", "build", "--offline", "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(ROOT / "rust/target")], "consumer-build")
     assert build.returncode == 0, build.stderr

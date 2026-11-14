@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use oap_adapter::gojson::{decode, go_quote, Decode};
-use oap_adapter::runtime::Runtime;
-use oap_adapter::{
+use oxap_adapter::gojson::{decode, go_quote, Decode};
+use oxap_adapter::runtime::Runtime;
+use oxap_adapter::{
     refuse_unadvertised_settings, refuse_unadvertised_tool_sources, refuse_unadvertised_tools,
     Descriptor, Error, JournalDescriptor, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE,
 };
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, CompactionKind, EndpointDescriptor, FeatureSupport, ReasoningLevel,
     RecoveryMetadata, SessionState, SessionStatus, SupportLevel, FEATURE_COMPACTION_POLICY,
     FEATURE_INSTRUCTIONS, FEATURE_MODEL_SELECTION, FEATURE_OPEN_REOPEN, FEATURE_SESSION_REASONING,
@@ -48,8 +48,8 @@ pub struct Adapter {
     factory: Arc<dyn ClientFactory>,
 }
 
-pub fn pin() -> &'static oap_harness::Version {
-    oap_harness::current("codex-app-server").expect("embedded catalog pins codex-app-server")
+pub fn pin() -> &'static oxap_harness::Version {
+    oxap_harness::current("codex-app-server").expect("embedded catalog pins codex-app-server")
 }
 
 impl Adapter {

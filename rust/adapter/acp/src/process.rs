@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use oap_adapter::gojson::{decode, zero, Decode};
-use oap_adapter::jsonrpc::{ClientOptions, Dialect, Error, Fault, RpcClient};
-use oap_adapter::process::{wait_error, Child, ChildConfig};
+use oxap_adapter::gojson::{decode, zero, Decode};
+use oxap_adapter::jsonrpc::{ClientOptions, Dialect, Error, Fault, RpcClient};
+use oxap_adapter::process::{wait_error, Child, ChildConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 

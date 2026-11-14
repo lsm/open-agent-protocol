@@ -3,13 +3,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use oap_adapter::process::{wait_error, Child, ChildConfig};
+use oxap_adapter::process::{wait_error, Child, ChildConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::client::{Client, ClientFactory};
 use crate::rpc::{error, Error, Fault, Inbound, DIALECT};
-use oap_adapter::jsonrpc::{ClientOptions, RpcClient};
+use oxap_adapter::jsonrpc::{ClientOptions, RpcClient};
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const ABORT_STDERR_GRACE: Duration = Duration::from_millis(250);

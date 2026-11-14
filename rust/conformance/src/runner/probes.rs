@@ -1,4 +1,4 @@
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, Envelope, EnvelopeType, ErrorResponse, ProtocolError, RunCancelRequest,
     RunId, SessionId, SessionOpenRequest, SessionStateRequest, SupportLevel, FEATURE_OPEN_REOPEN,
 };

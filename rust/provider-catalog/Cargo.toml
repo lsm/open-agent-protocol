@@ -1,5 +1,5 @@
 [package]
-name = "oap-provider-catalog"
+name = "oxap-provider-catalog"
 version = "0.1.0"
 edition = "2021"
 description = "The curated model provider catalog: every supported vendor's endpoints, credentials and limits, as data"

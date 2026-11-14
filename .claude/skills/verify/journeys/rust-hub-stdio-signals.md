@@ -3,7 +3,7 @@
 Use shared setup from `SKILL.md`, then run
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-serve --test stdio_signal --test endpoint_signal
+cargo test --manifest-path rust/Cargo.toml -p oxap-serve --test stdio_signal --test endpoint_signal
 ```
 
 `stdio_signal` drives the real `oap-rust-hub serve --stdio` binary with stdin

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use oap_adapter::gojson::{reject_duplicate_keys, replace_lone_surrogates};
+use oxap_adapter::gojson::{reject_duplicate_keys, replace_lone_surrogates};
 use serde_json::value::RawValue;
 
 pub type Object = BTreeMap<String, Box<RawValue>>;

@@ -1,9 +1,9 @@
-use oap_adapter::{Error, OpenRequest};
-use oap_adapter_deepseek::{
+use oxap_adapter::{Error, OpenRequest};
+use oxap_adapter_deepseek::{
     adapter::{compaction_patch, Adapter, Config},
     process::ProcessConfig,
 };
-use oap_protocol::{CompactionKind, CompactionPolicy, ReasoningLevel, SupportLevel};
+use oxap_protocol::{CompactionKind, CompactionPolicy, ReasoningLevel, SupportLevel};
 
 fn config() -> Config {
     Config {
@@ -43,7 +43,7 @@ fn the_descriptor_equals_go_for_the_catalog_revision() {
     );
     assert_eq!(
         descriptor.capability_revision,
-        oap_harness::current("deepseek-harness")
+        oxap_harness::current("deepseek-harness")
             .unwrap()
             .capability_revision
     );
@@ -214,7 +214,7 @@ fn dropping_open_before_the_handshake_reaps_the_runtime() {
         ..config()
     })
     .unwrap();
-    let mut opened = oap_adapter::Adapter::open(
+    let mut opened = oxap_adapter::Adapter::open(
         &adapter,
         OpenRequest {
             session_id: "s".into(),

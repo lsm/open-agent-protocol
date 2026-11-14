@@ -158,7 +158,7 @@ pub fn encode(value: &Outbound, limit: usize) -> Result<Vec<u8>, Error> {
             serde_json::to_string(response)
         }
     };
-    let mut data = oap_adapter::gojson::go_marshal(
+    let mut data = oxap_adapter::gojson::go_marshal(
         &encoded.map_err(|failure| Error::Other(failure.to_string()))?,
     )
     .into_bytes();

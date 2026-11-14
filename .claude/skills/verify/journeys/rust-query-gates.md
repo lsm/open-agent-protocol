@@ -4,7 +4,7 @@ Use the shared setup and machine verification mutex in `SKILL.md`, then run
 from the repository root:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p oap-validation --test query_gates
+cargo test --manifest-path rust/Cargo.toml -p oxap-validation --test query_gates
 python3 .claude/skills/verify/scripts/rust-query-gates.py --output-dir /tmp/oap-query-gates-<unique>
 ```
 

@@ -1,7 +1,7 @@
 use futures::executor::block_on;
-use oap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
-use oap_adapter_acp::{native::McpServer, pin, process::ProcessConfig, Adapter, Config};
-use oap_protocol::{
+use oxap_adapter::{Adapter as AdapterContract, Error, OpenRequest};
+use oxap_adapter_acp::{native::McpServer, pin, process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{
     CompactionPolicy, Participant, SupportLevel, ToolDefinition, ToolSourceAttachment,
 };
 

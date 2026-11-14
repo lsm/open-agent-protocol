@@ -62,9 +62,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='oap-submit-python-path-') as directory:
         Path(directory, 'python3').symlink_to(sys.executable)
         environment = dict(os.environ, PATH=directory + os.pathsep + os.environ.get('PATH', ''))
-        run(['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--test', 'submit',
+        run(['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp', '--test', 'submit',
              'fixture_uses_the_python_interpreter_selected_from_path', '--', '--exact'], output/'path-python.log', env=environment)
-    run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oap-adapter-acp', '--example', 'submit_owner'], output/'build.log')
+    run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml', '-p', 'oxap-adapter-acp', '--example', 'submit_owner'], output/'build.log')
     with tempfile.TemporaryDirectory(prefix='oap-submit-') as temporary:
         agent = Path(temporary)/'agent.py'
         agent.write_text(AGENT)
@@ -156,7 +156,7 @@ def main():
                     os.killpg(child.pid, signal.SIGKILL)
             print(f'PASS {mode}: public submit, native wire, reaped child and joined threads {counts}', flush=True)
     run(['go','build','-o',str(output/'goap'),'./go/cmd/goap'], output/'goap-build.log')
-    run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oap-validation','--example','validate'], output/'validator-build.log')
+    run(['cargo','build','--manifest-path','rust/Cargo.toml','-p','oxap-validation','--example','validate'], output/'validator-build.log')
     trace = str(output/'complete/trace.json')
     for name, command in [('go',[str(output/'goap'),'validate']), ('rust',[str(ROOT/'rust/target/debug/examples/validate')]), ('zig',[str(ROOT/'zig/zig-out/bin/oxap'),'validate'])]:
         run(command+[trace], output/f'validate-{name}.log')

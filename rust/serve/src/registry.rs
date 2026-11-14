@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{duplicate_environment_name, Adapter};
-use oap_protocol::{is_tool_source_kind, ToolSourceAttachment, TOOL_SOURCE_PROCESS};
+use oxap_adapter::memory::{Config, Memory};
+use oxap_adapter::{duplicate_environment_name, Adapter};
+use oxap_protocol::{is_tool_source_kind, ToolSourceAttachment, TOOL_SOURCE_PROCESS};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RegistryError {

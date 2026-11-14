@@ -3,15 +3,15 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, EventStream, InteractionResolution, OpenRequest, Recovery,
     ResumeRequest, Session, SubmitRequest, TranscriptLoader, TranscriptRequest,
 };
-use oap_protocol::{
+use oxap_protocol::{
     MessageSubmitResponse, RunCancelResponse, RunId, SessionState, TranscriptLoadResponse,
 };
-use oap_serve::http::{serve_http, HttpOptions};
-use oap_serve::{Hub, Registry};
+use oxap_serve::http::{serve_http, HttpOptions};
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 struct Native(Box<dyn Session>);

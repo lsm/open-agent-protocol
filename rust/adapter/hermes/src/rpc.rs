@@ -1,4 +1,4 @@
-pub use oap_adapter::jsonrpc::{Dialect, Error, Fault};
+pub use oxap_adapter::jsonrpc::{Dialect, Error, Fault};
 
 pub const DIALECT: Dialect = Dialect {
     params_object_or_null: true,

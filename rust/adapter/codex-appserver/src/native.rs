@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_adapter::gojson::{raw, slice, structure, structures, zero};
+use oxap_adapter::gojson::{raw, slice, structure, structures, zero};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_json::Value;
@@ -347,24 +347,24 @@ pub struct UserInputAnswer {
     pub answers: Vec<String>,
 }
 
-impl oap_adapter::gojson::Decode for ThreadStartResponse {}
+impl oxap_adapter::gojson::Decode for ThreadStartResponse {}
 
-impl oap_adapter::gojson::Decode for ThreadResumeResponse {}
+impl oxap_adapter::gojson::Decode for ThreadResumeResponse {}
 
-impl oap_adapter::gojson::Decode for TurnStartResponse {}
+impl oxap_adapter::gojson::Decode for TurnStartResponse {}
 
-impl oap_adapter::gojson::Decode for TurnNotification {}
+impl oxap_adapter::gojson::Decode for TurnNotification {}
 
-impl oap_adapter::gojson::Decode for AgentMessageDeltaNotification {}
+impl oxap_adapter::gojson::Decode for AgentMessageDeltaNotification {}
 
-impl oap_adapter::gojson::Decode for ItemNotification {}
+impl oxap_adapter::gojson::Decode for ItemNotification {}
 
-impl oap_adapter::gojson::Decode for CommandApprovalParams {}
+impl oxap_adapter::gojson::Decode for CommandApprovalParams {}
 
-impl oap_adapter::gojson::Decode for FileApprovalParams {}
+impl oxap_adapter::gojson::Decode for FileApprovalParams {}
 
-impl oap_adapter::gojson::Decode for UserInputRequestParams {}
+impl oxap_adapter::gojson::Decode for UserInputRequestParams {}
 
-impl oap_adapter::gojson::Decode for TurnInterruptResponse {}
+impl oxap_adapter::gojson::Decode for TurnInterruptResponse {}
 
-impl oap_adapter::gojson::Decode for ThreadTokenUsageUpdatedNotification {}
+impl oxap_adapter::gojson::Decode for ThreadTokenUsageUpdatedNotification {}

@@ -10,15 +10,15 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use futures::task::noop_waker;
-use oap_adapter::{
+use oxap_adapter::{
     testkit, Adapter as _, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
     ResumeRequest, Session, SubmitRequest,
 };
-use oap_adapter_deepseek::adapter::{pin, Adapter, Config};
-use oap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
-use oap_adapter_deepseek::process::ProcessConfig;
-use oap_adapter_deepseek::runtime::Runtime;
-use oap_protocol::{
+use oxap_adapter_deepseek::adapter::{pin, Adapter, Config};
+use oxap_adapter_deepseek::native::{SERVER_NAME, SERVER_VERSION};
+use oxap_adapter_deepseek::process::ProcessConfig;
+use oxap_adapter_deepseek::runtime::Runtime;
+use oxap_protocol::{
     Envelope, Message, MessageContent, MessageRole, MessageSubmitRequest, MessageSubmitResponse,
     Participant, RequestedDeliveryMode, SessionStatus,
 };
@@ -310,7 +310,7 @@ impl Case {
         for (index, frame) in self.frames.iter().enumerate() {
             match frame["action"].as_str().unwrap() {
                 "open" => {
-                    let opened = wait(oap_adapter::Adapter::open(&adapter, opening()));
+                    let opened = wait(oxap_adapter::Adapter::open(&adapter, opening()));
                     if self.definition["open_error"] == true {
                         assert!(opened.is_err(), "{}: the handshake succeeded", self.id);
                         continue;
@@ -368,7 +368,7 @@ impl Case {
                 continue;
             }
             let adapter = self.adapter(&format!("framing:{index}"));
-            let session = wait(oap_adapter::Adapter::open(&adapter, opening())).unwrap();
+            let session = wait(oxap_adapter::Adapter::open(&adapter, opening())).unwrap();
             until(
                 &format!("{}: frame {} was accepted", self.id, index + 1),
                 || wait(session.state()).err() == Some(Error::SessionClosed),
@@ -390,7 +390,7 @@ impl Case {
         let descriptor = wait(adapter.probe()).unwrap();
         self.assert_capabilities(&descriptor);
         let session: Arc<dyn Session> =
-            Arc::from(wait(oap_adapter::Adapter::open(&adapter, opening())).unwrap());
+            Arc::from(wait(oxap_adapter::Adapter::open(&adapter, opening())).unwrap());
         let mut replay = Replay::new(descriptor, session);
         let mut submits = 0;
         for (index, frame) in self.frames.iter().enumerate() {
@@ -579,7 +579,7 @@ fn every_case_replays_its_recorded_trace() {
             case.id
         );
         let mut actual =
-            oap_adapter::gojson::go_marshal(&serde_json::to_string(&outcome.envelopes).unwrap());
+            oxap_adapter::gojson::go_marshal(&serde_json::to_string(&outcome.envelopes).unwrap());
         if let Some(reason) = case.exit_reason() {
             actual = actual.replace(
                 r#""message":"EOF""#,

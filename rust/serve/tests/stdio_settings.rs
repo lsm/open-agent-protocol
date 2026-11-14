@@ -1,20 +1,20 @@
 mod support;
 
 use futures::executor::block_on;
-use oap_protocol::{
+use oxap_protocol::{
     CompactionKind, CompactionPolicy, Envelope, EnvelopeType, SessionSettingsUpdateRequest,
 };
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, Registry};
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn opened() -> Hub {
     let hub = Hub::new(Registry::default_registry());
     block_on(hub.open(
         "memory",
-        oap_adapter::OpenRequest {
+        oxap_adapter::OpenRequest {
             session_id: "s".into(),
-            ..oap_adapter::OpenRequest::default()
+            ..oxap_adapter::OpenRequest::default()
         },
     ))
     .unwrap();
@@ -94,8 +94,8 @@ fn a_settings_update_naming_no_setting_or_another_session_is_refused() {
     };
     assert!(matches!(
         block_on(hub.session(&"s".into()).unwrap().update_settings(empty)),
-        Err(oap_serve::HubError::Adapter(
-            oap_adapter::Error::InvalidSubmission
+        Err(oxap_serve::HubError::Adapter(
+            oxap_adapter::Error::InvalidSubmission
         ))
     ));
     assert_eq!(

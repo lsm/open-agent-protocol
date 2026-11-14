@@ -14,7 +14,7 @@ CODES = PREVIOUS["CODES"] | {
 }
 CONSUMER = '''use std::path::PathBuf;
 use std::process::ExitCode;
-use oap_validation::pack::PackLoader;
+use oxap_validation::pack::PackLoader;
 fn main() -> ExitCode {
     let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     match PackLoader::read(&paths).and_then(PackLoader::read_resources) {
@@ -45,7 +45,7 @@ def main():
     (project / "src").mkdir(parents=True)
     (project / "Cargo.toml").write_text(
         '[package]\nname="pack-resource-consumer"\nversion="0.0.0"\nedition="2021"\n'
-        f'[dependencies]\noap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
+        f'[dependencies]\noxap-validation={{path={json.dumps(str(ROOT / "rust/validation"))}}}\nserde_json="1"\n')
     (project / "src/main.rs").write_text(CONSUMER)
     build = run(["cargo", "build", "--offline", "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(ROOT / "rust/target")], "consumer-build")
     assert build.returncode == 0, build.stderr

@@ -4,10 +4,10 @@ use std::task::Context;
 use std::time::{Duration, Instant};
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter::jsonrpc::Inbound;
-use oap_adapter::InteractionResolution;
-use oap_adapter_acp::{native::*, process::*, Permissions, PromptBridge, TextRun, TextRunContext};
-use oap_protocol::{InteractionId, PermissionResolveRequest};
+use oxap_adapter::jsonrpc::Inbound;
+use oxap_adapter::InteractionResolution;
+use oxap_adapter_acp::{native::*, process::*, Permissions, PromptBridge, TextRun, TextRunContext};
+use oxap_protocol::{InteractionId, PermissionResolveRequest};
 use serde_json::json;
 
 fn command() {
@@ -84,7 +84,7 @@ fn main() {
     let id = block_on(permissions.clone().request(run.clone(), native.clone())).unwrap();
     assert_eq!(
         block_on(permissions.clone().request(run.clone(), native)).unwrap_err(),
-        oap_adapter::Error::InvalidResolution
+        oxap_adapter::Error::InvalidResolution
     );
     report(json!({"open":true}));
     command();

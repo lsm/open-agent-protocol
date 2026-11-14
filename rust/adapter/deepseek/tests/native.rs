@@ -1,4 +1,4 @@
-use oap_adapter_deepseek::native::{
+use oxap_adapter_deepseek::native::{
     decode_strict, observed_only, ContentBlock, Event, InitializeParams, InitializeResult,
     SessionEventNotification, SessionPromptResult, SubagentFinishedNotification, SERVER_VERSION,
 };
@@ -101,7 +101,7 @@ fn initialize_params_omit_empty_optional_members() {
 fn the_server_version_comes_from_the_catalog_and_observed_events_are_pinned() {
     assert_eq!(
         *SERVER_VERSION,
-        oap_harness::current("deepseek-harness").unwrap().admits[0]
+        oxap_harness::current("deepseek-harness").unwrap().admits[0]
     );
     assert!(observed_only("compaction/start"));
     assert!(observed_only("team/mode"));

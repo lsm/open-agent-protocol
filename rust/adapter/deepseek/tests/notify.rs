@@ -1,4 +1,4 @@
-use oap_adapter_deepseek::native::{
+use oxap_adapter_deepseek::native::{
     decode_notification, decode_strict, validate_initialize_params, validate_initialize_result,
     validate_prompt, InitializeParams, InitializeResult, Notification, ServerInfo,
     SessionPromptParams, SERVER_NAME, SERVER_VERSION,

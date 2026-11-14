@@ -3,9 +3,9 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use oap_adapter::testkit::drain;
-use oap_adapter_codex_appserver::session::Session;
-use oap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest};
+use oxap_adapter::testkit::drain;
+use oxap_adapter_codex_appserver::session::Session;
+use oxap_protocol::{Message, MessageContent, MessageRole, MessageSubmitRequest};
 use support::{adapter, request, Fake};
 
 fn open() -> (Arc<Fake>, Session) {
@@ -174,7 +174,7 @@ fn a_cancel_during_turn_start_waits_for_the_turn_as_go_does() {
     let next = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let session = Arc::new(
         adapter(&fake, |config| {
-            config.runtime = oap_adapter::runtime::Runtime::new(
+            config.runtime = oxap_adapter::runtime::Runtime::new(
                 || 1,
                 move |kind| {
                     format!(

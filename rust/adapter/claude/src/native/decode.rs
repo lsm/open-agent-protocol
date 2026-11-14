@@ -25,7 +25,7 @@ fn invalid(detail: impl Into<String>) -> Invalid {
 
 fn unmarshal<T: DeserializeOwned>(raw: &[u8]) -> Result<T, Invalid> {
     let text = String::from_utf8_lossy(raw);
-    serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(&text))
+    serde_json::from_str(&oxap_adapter::gojson::replace_lone_surrogates(&text))
         .map_err(|error| invalid(error.to_string()))
 }
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use oap_harness::{check, AdapterPin, Catalog, Code, Finding, Harness, Status, Version};
+use oxap_harness::{check, AdapterPin, Catalog, Code, Finding, Harness, Status, Version};
 
 fn tree() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

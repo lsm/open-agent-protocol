@@ -3,9 +3,9 @@ use std::task::Context;
 use std::time::Duration;
 
 use futures::{executor::block_on, task::noop_waker, StreamExt};
-use oap_adapter::{Adapter as _, OpenRequest, SubmitRequest};
-use oap_adapter_acp::{process::ProcessConfig, Adapter, Config};
-use oap_protocol::{Message, MessageContent, MessageSubmitRequest, Participant};
+use oxap_adapter::{Adapter as _, OpenRequest, SubmitRequest};
+use oxap_adapter_acp::{process::ProcessConfig, Adapter, Config};
+use oxap_protocol::{Message, MessageContent, MessageSubmitRequest, Participant};
 use serde_json::json;
 
 fn phase(value: serde_json::Value) {
@@ -76,7 +76,7 @@ fn main() {
         phase(json!({"phase":"pending", "pending":pending}));
         if mode == "default-close-admission" {
             let error = block_on(session.close()).unwrap_err();
-            assert!(matches!(error, oap_adapter::Error::RunActive));
+            assert!(matches!(error, oxap_adapter::Error::RunActive));
             close_error = Some(error.to_string());
         }
         if mode == "close-admission" {
@@ -88,7 +88,7 @@ fn main() {
             let error = block_on(submit)
                 .err()
                 .expect("closed admission was accepted");
-            assert!(matches!(error, oap_adapter::Error::SessionClosed));
+            assert!(matches!(error, oxap_adapter::Error::SessionClosed));
             submit_error = Some(error.to_string());
         } else {
             drop(submit);

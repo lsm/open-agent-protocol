@@ -1,4 +1,4 @@
-use oap_protocol::Usage;
+use oxap_protocol::Usage;
 
 use crate::native::ThreadTokenUsageUpdatedNotification;
 use crate::session::{Inner, Shared};

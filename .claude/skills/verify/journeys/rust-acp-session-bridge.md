@@ -7,7 +7,7 @@ python3 .claude/skills/verify/scripts/rust-acp-session-bridge.py --output-dir /t
 python3 .claude/skills/verify/scripts/rust-acp-model-switch.py --output-dir /tmp/oap-session-bridge-models-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-session.py --output-dir /tmp/oap-session-bridge-open-<unique>
 python3 .claude/skills/verify/scripts/rust-acp-prompt.py --output-dir /tmp/oap-session-bridge-native-<unique>
-(cd rust && cargo test -p oap-adapter-acp)
+(cd rust && cargo test -p oxap-adapter-acp)
 ```
 
 The `session_owner` public consumer opens an OAP session through the normal

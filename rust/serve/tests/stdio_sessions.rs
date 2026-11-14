@@ -1,9 +1,9 @@
 mod support;
 
 use futures::executor::block_on;
-use oap_adapter::OpenRequest;
-use oap_serve::stdio::StdioOptions;
-use oap_serve::{Hub, Registry};
+use oxap_adapter::OpenRequest;
+use oxap_serve::stdio::StdioOptions;
+use oxap_serve::{Hub, Registry};
 use serde_json::Value;
 
 fn hub_with(ids: &[&str]) -> Hub {

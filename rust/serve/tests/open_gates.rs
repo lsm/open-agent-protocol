@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use oap_adapter::{
+use oxap_adapter::{
     Adapter, BoxFuture, Descriptor, Error, OpenRequest, Session, CONTROL_UNADVERTISED,
 };
-use oap_protocol::{
+use oxap_protocol::{
     CapabilityDescriptor, CompactionPolicy, FeatureSupport, SessionOpenRequest, SupportLevel,
     ToolSourceAttachment, FEATURE_COMPACTION_POLICY, FEATURE_OPEN_REOPEN, FEATURE_OPEN_SUBSCRIBE,
     FEATURE_TOOL_SOURCES_ATTACH, MODE_SESSION_OPEN, TOOL_SOURCE_PROCESS, TOOL_SOURCE_REMOTE,
 };
-use oap_serve::{attachment_gate, election_gate, resolve_attachments, Hub, HubError, Registry};
+use oxap_serve::{attachment_gate, election_gate, resolve_attachments, Hub, HubError, Registry};
 
 struct Advertising(BTreeMap<String, FeatureSupport>, &'static str);
 

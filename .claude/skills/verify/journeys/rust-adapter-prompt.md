@@ -7,7 +7,7 @@ in-memory adapter:
 python3 .claude/skills/verify/scripts/rust-adapter-prompt.py --output-dir /tmp/oap-adapter-prompt-<unique>
 ```
 
-The `oap-adapter` public exports `run_to_terminal` and `message_text` are the
+The `oxap-adapter` public exports `run_to_terminal` and `message_text` are the
 first slice of Go's `adapter.RunToTerminal`/`MessageText`. The `prompt` example
 uses those exports with a synthetic `Session`, and the Go testdata program uses
 the actual Go helper on the same inputs. The script retains input JSON and both

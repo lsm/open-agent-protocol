@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oap_validation::Validator;
+use oxap_validation::Validator;
 use serde_json::{json, Value};
 
 fn trace(state_model: &str, catalog_model: &str) -> Vec<u8> {

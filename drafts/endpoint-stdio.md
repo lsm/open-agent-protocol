@@ -349,8 +349,8 @@ session over this binding, assembles every envelope it sent and received into a
 trace, and runs that trace through the same validator `goap validate` uses. It
 then asserts the exit contract above.
 
-The Rust `oap_conformance::run` API drives the same process contract and uses
-`oap_validation::Validator` to judge its trace. The repository's
+The Rust `oxap_conformance::run` API drives the same process contract and uses
+`oxap_validation::Validator` to judge its trace. The repository's
 `endpoint_conformance` Cargo example prints the resulting report.
 
 The point of assembling a trace is that the verdict does not come from the

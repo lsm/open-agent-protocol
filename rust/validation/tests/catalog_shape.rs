@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use oap_validation::{codes, Phase, Validator};
+use oxap_validation::{codes, Phase, Validator};
 use serde_json::{json, Value};
 
 fn fixture(name: &str) -> Value {

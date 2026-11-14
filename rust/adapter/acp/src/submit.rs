@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use oap_adapter::gojson::replace_lone_surrogates;
-use oap_adapter::{refuse_unadvertised_controls, Error, EventStream, SubmitRequest};
-use oap_protocol::{MessageId, MessageRole, MessageSubmitResponse, RunId, SessionStatus};
+use oxap_adapter::gojson::replace_lone_surrogates;
+use oxap_adapter::{refuse_unadvertised_controls, Error, EventStream, SubmitRequest};
+use oxap_protocol::{MessageId, MessageRole, MessageSubmitResponse, RunId, SessionStatus};
 
 use crate::native::{ContentBlock, PromptParams};
 use crate::session::{Inner, Session};

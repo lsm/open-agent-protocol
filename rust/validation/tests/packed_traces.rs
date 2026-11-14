@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use oap_validation::Validator;
+use oxap_validation::Validator;
 use serde_json::Value;
 
 #[test]

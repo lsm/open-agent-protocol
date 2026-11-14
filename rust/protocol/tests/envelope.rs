@@ -1,4 +1,4 @@
-use oap_protocol::{decode, encode, Envelope, EnvelopeType, Error, Format};
+use oxap_protocol::{decode, encode, Envelope, EnvelopeType, Error, Format};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

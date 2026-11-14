@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
 
-use oap_adapter::gojson::zero;
-use oap_protocol::{Envelope, RunId, SessionId};
+use oxap_adapter::gojson::zero;
+use oxap_protocol::{Envelope, RunId, SessionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +48,7 @@ pub enum WireError {
     #[error("stdout carried a malformed control frame: {0}")]
     Control(serde_json::Error),
     #[error("stdout carried a line that is not an OAP envelope: {0}")]
-    Envelope(oap_protocol::Error),
+    Envelope(oxap_protocol::Error),
     #[error("conformance: could not encode a frame: {0}")]
     Encode(serde_json::Error),
 }

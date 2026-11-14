@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use oap_sdk::{AgentEvent, ClientBuilder, ExecutionRequest};
+use oxap_sdk::{AgentEvent, ClientBuilder, ExecutionRequest};
 use serde_json::json;
 
 #[tokio::main(flavor = "current_thread")]

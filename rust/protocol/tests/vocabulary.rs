@@ -1,4 +1,4 @@
-use oap_protocol::{Admission, EnvelopeType, RequestedDeliveryMode, RunStatus};
+use oxap_protocol::{Admission, EnvelopeType, RequestedDeliveryMode, RunStatus};
 use serde_json::json;
 
 #[test]

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
-use oap_protocol::FEATURE_SESSION_REASONING;
+use oxap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
+use oxap_protocol::FEATURE_SESSION_REASONING;
 
 use crate::native::{
     decode, ConfigOption, SessionNewResult, SetConfigOptionParams, SetConfigOptionResult,
@@ -19,7 +19,7 @@ fn option<'a>(options: &'a [ConfigOption], id: &str) -> Option<&'a ConfigOption>
 fn config_error(id: &str, detail: impl std::fmt::Display) -> Error {
     Error::Harness(format!(
         "ACP session config {}: {detail}",
-        oap_adapter::gojson::go_quote(id)
+        oxap_adapter::gojson::go_quote(id)
     ))
 }
 

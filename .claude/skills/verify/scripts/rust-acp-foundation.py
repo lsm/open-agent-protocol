@@ -22,7 +22,7 @@ def main():
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml',
-         '-p', 'oap-adapter-acp', '--example', 'foundation'], output / 'build.log')
+         '-p', 'oxap-adapter-acp', '--example', 'foundation'], output / 'build.log')
     binary = ROOT / 'rust/target/debug/examples/foundation'
     catalog = json.loads((ROOT / 'harnesses/acp.json').read_text())
     pin = next(version for version in catalog['versions'] if version['status'] == 'current')
@@ -97,7 +97,7 @@ def main():
     path = output / 'capabilities.trace.json'
     path.write_text(json.dumps(trace))
     run(['cargo', 'build', '--manifest-path', 'rust/Cargo.toml',
-         '-p', 'oap-validation', '--example', 'validate'], output / 'validator-build.log')
+         '-p', 'oxap-validation', '--example', 'validate'], output / 'validator-build.log')
     run(['go', 'build', '-o', str(output / 'goap'), './go/cmd/goap'], output / 'go-build.log')
     for name, command in [
         ('go', [str(output / 'goap'), 'validate']),

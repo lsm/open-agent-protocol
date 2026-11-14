@@ -45,7 +45,7 @@ def consumer(python, raw, output, label, site="completed"):
 
 def validators(output):
     run(["go", "build", "-o", str(output / "goap"), "./go/cmd/goap"], output, "go-build")
-    run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation",
+    run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oxap-validation",
          "--example", "validate"], output, "rust-build")
     commands = {"go": [str(output / "goap"), "validate", "--format", "json"],
                 "rust": [str(ROOT / "rust/target/debug/examples/validate")],

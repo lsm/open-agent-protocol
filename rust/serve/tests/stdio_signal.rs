@@ -3,7 +3,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-use oap_protocol::{
+use oxap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
     RequestedDeliveryMode, SessionOpenRequest,
 };

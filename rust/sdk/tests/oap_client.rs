@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
-use oap_sdk::{
+use oxap_sdk::{
     AuthEvent, AuthHandlers, AuthRetryPolicy, AuthStatus, ChatMessage, ClientBuilder, Content,
     ContentPart, Error, ExecutionRequest, ListModelsRequest, Role, Tool,
 };
@@ -42,7 +42,7 @@ async fn combined_oap_connection_runs_both_profiles() {
         .agent()
         .run_selected(
             "existing-session",
-            vec![oap_sdk::ChatMessage::user("hello again")],
+            vec![oxap_sdk::ChatMessage::user("hello again")],
         )
         .await
         .expect("run with selected model");
@@ -55,7 +55,7 @@ async fn combined_oap_connection_runs_both_profiles() {
     );
     let mut text = String::new();
     while let Some(event) = streamed.next().await {
-        if let oap_sdk::AgentEvent::Provider(oap_sdk::ProviderEvent::TextDelta { delta }) =
+        if let oxap_sdk::AgentEvent::Provider(oxap_sdk::ProviderEvent::TextDelta { delta }) =
             event.expect("selected stream event")
         {
             text.push_str(&delta);
@@ -167,8 +167,9 @@ async fn oap_auto_once_retries_streams_before_content() {
         if agent {
             let mut events = Box::pin(client.agent().stream(request));
             while let Some(event) = events.next().await {
-                if let oap_sdk::AgentEvent::Provider(oap_sdk::ProviderEvent::TextDelta { delta }) =
-                    event.expect("event")
+                if let oxap_sdk::AgentEvent::Provider(oxap_sdk::ProviderEvent::TextDelta {
+                    delta,
+                }) = event.expect("event")
                 {
                     text.push_str(&delta);
                 }
@@ -176,7 +177,7 @@ async fn oap_auto_once_retries_streams_before_content() {
         } else {
             let mut events = Box::pin(client.provider().stream(request));
             while let Some(event) = events.next().await {
-                if let oap_sdk::ProviderEvent::TextDelta { delta } = event.expect("event") {
+                if let oxap_sdk::ProviderEvent::TextDelta { delta } = event.expect("event") {
                     text.push_str(&delta);
                 }
             }
@@ -245,10 +246,10 @@ async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
     ));
     while let Some(event) = events.next().await {
         kinds.push(match event.expect("event") {
-            oap_sdk::AgentEvent::AgentStart { .. } => "agent_start",
-            oap_sdk::AgentEvent::ToolExecutionStart { .. } => "tool_execution_start",
-            oap_sdk::AgentEvent::ToolExecutionEnd { .. } => "tool_execution_end",
-            oap_sdk::AgentEvent::AgentEnd { .. } => "agent_end",
+            oxap_sdk::AgentEvent::AgentStart { .. } => "agent_start",
+            oxap_sdk::AgentEvent::ToolExecutionStart { .. } => "tool_execution_start",
+            oxap_sdk::AgentEvent::ToolExecutionEnd { .. } => "tool_execution_end",
+            oxap_sdk::AgentEvent::AgentEnd { .. } => "agent_end",
             _ => "other",
         });
     }
@@ -282,7 +283,7 @@ async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
     assert_eq!(*calls.lock().expect("lock"), 1);
     let mut configured =
         ExecutionRequest::prompt("fixture/openai-responses@settings", "hello").with_max_tokens(32);
-    configured.options.reasoning_effort = Some(oap_sdk::ReasoningEffort::High);
+    configured.options.reasoning_effort = Some(oxap_sdk::ReasoningEffort::High);
     let settings = client.agent().run(configured).await.expect("settings run");
     assert_eq!(
         settings.text(),
@@ -292,7 +293,7 @@ async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
         ExecutionRequest::prompt("fixture/openai-responses@settings", "hello").with_max_tokens(0);
     assert!(client.agent().run(zero).await.is_err());
     let mut minimal = ExecutionRequest::prompt("fixture/openai-responses@settings", "hello");
-    minimal.options.reasoning_effort = Some(oap_sdk::ReasoningEffort::Minimal);
+    minimal.options.reasoning_effort = Some(oxap_sdk::ReasoningEffort::Minimal);
     let error = client
         .agent()
         .run(minimal)
@@ -359,8 +360,8 @@ async fn direct_completion_preserves_structured_parts_and_stream_hides_partial_t
     let mut calls = Vec::new();
     while let Some(event) = stream.next().await {
         match event.expect("stream event") {
-            oap_sdk::ProviderEvent::TextDelta { delta } => text.push(delta),
-            oap_sdk::ProviderEvent::ToolCall { arguments_json, .. } => calls.push(arguments_json),
+            oxap_sdk::ProviderEvent::TextDelta { delta } => text.push(delta),
+            oxap_sdk::ProviderEvent::ToolCall { arguments_json, .. } => calls.push(arguments_json),
             _ => {}
         }
     }
