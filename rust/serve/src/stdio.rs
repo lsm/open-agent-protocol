@@ -110,6 +110,7 @@ pub struct Signals {
     stopping: Arc<std::sync::RwLock<Stopping>>,
     seen: Arc<std::sync::atomic::AtomicUsize>,
     ended: Arc<std::sync::atomic::AtomicBool>,
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Signals {
@@ -119,6 +120,7 @@ impl Signals {
             stopping: Arc::default(),
             seen: Arc::default(),
             ended: Arc::default(),
+            abandoned: Arc::default(),
         }
     }
 
@@ -126,7 +128,7 @@ impl Signals {
         use oxap_protocol::ShutdownMode;
         use std::sync::atomic::Ordering;
         if count > 2 {
-            self.ended.store(true, Ordering::SeqCst);
+            self.abandoned.store(true, Ordering::SeqCst);
             return None;
         }
         let mut stopping = self
@@ -222,6 +224,7 @@ pub fn serve_signalled(
         pumps: Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
         stopping: signals.stopping.clone(),
         ended: signals.ended.clone(),
+        abandoned: signals.abandoned.clone(),
         inflight: Arc::new(Inflight::new(options.max_ops)),
         broken: Arc::default(),
         pending: Arc::default(),
@@ -366,6 +369,7 @@ struct Serving {
     pumps: Arc<Pumps>,
     stopping: Arc<std::sync::RwLock<Stopping>>,
     ended: Arc<std::sync::atomic::AtomicBool>,
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
     inflight: Arc<Inflight>,
     broken: Arc<std::sync::Mutex<Option<StdioError>>>,
     pending: Arc<Held>,
@@ -501,10 +505,9 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             FrameError::Io(err) => StdioError::Io(err),
         })?
         else {
-            let stopping = serving
-                .stopping
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(stopping) = serving.read_stopping() else {
+                return Ok(false);
+            };
             return Ok(stopping.draining && stopping.graceful());
         };
         let request = decode_request(&frame).map_err(malformed)?;
@@ -517,10 +520,10 @@ fn serve_lines(serving: &Serving, frames: &Frames) -> Result<bool, StdioError> {
             continue;
         }
         if request.op == "shutdown" {
-            let mut stopping = serving
-                .stopping
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(mut stopping) = serving.write_stopping() else {
+                serving.inflight.release(size);
+                return Ok(false);
+            };
             let (answer, finished) = shutdown(&serving.hub, &request, &mut stopping);
             serving.inflight.release(size);
             if let Some(line) = fitted(request.id, answer, serving.frame_limit)? {
@@ -602,13 +605,53 @@ impl Serving {
         }
     }
 
+    fn read_stopping(&self) -> Option<std::sync::RwLockReadGuard<'_, Stopping>> {
+        self.wait_stopping(std::sync::RwLock::try_read)
+    }
+
+    fn write_stopping(&self) -> Option<std::sync::RwLockWriteGuard<'_, Stopping>> {
+        self.wait_stopping(|stopping| {
+            let taken = stopping.try_write();
+            #[cfg(test)]
+            if matches!(taken, Err(std::sync::TryLockError::WouldBlock)) {
+                if let Some(contended) = lock(&tests::CONTENDED).take() {
+                    let _ = contended.send(());
+                }
+            }
+            taken
+        })
+    }
+
+    fn wait_stopping<'a, G>(
+        &'a self,
+        take: impl Fn(&'a std::sync::RwLock<Stopping>) -> std::sync::TryLockResult<G>,
+    ) -> Option<G> {
+        loop {
+            if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            match take(&self.stopping) {
+                Ok(stopping) => return Some(stopping),
+                Err(std::sync::TryLockError::Poisoned(stopping)) => {
+                    return Some(stopping.into_inner())
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
     fn next_frame(&self, frames: &Frames) -> Option<Result<Option<Vec<u8>>, FrameError>> {
         loop {
-            let draining = self
-                .stopping
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .draining;
+            if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let draining = match self.stopping.try_read() {
+                Ok(stopping) => stopping.draining,
+                Err(std::sync::TryLockError::Poisoned(stopping)) => stopping.into_inner().draining,
+                Err(std::sync::TryLockError::WouldBlock) => false,
+            };
             if self.ended.load(std::sync::atomic::Ordering::SeqCst)
                 || (draining && Stopping::drained(&self.hub))
             {
@@ -690,11 +733,11 @@ impl Serving {
             "submit" | "open" | "work.start" | "work.send"
         );
         let _admitted = if admits {
-            let stopping = self
-                .stopping
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if stopping.mode.is_some() {
+            let stopping = self.read_stopping();
+            if stopping
+                .as_ref()
+                .is_none_or(|stopping| stopping.mode.is_some())
+            {
                 let refused = wire(
                     "shutting_down",
                     "the endpoint is shutting down and admits no new work",
@@ -704,7 +747,7 @@ impl Serving {
                 }
                 return Ok(());
             }
-            Some(stopping)
+            stopping
         } else {
             None
         };
@@ -2312,6 +2355,41 @@ fn response_line(id: i64, answer: Answer) -> Result<Vec<u8>, StdioError> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    pub(super) static CONTENDED: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> =
+        std::sync::Mutex::new(None);
+
+    #[test]
+    fn a_third_signal_ends_serving_while_a_shutdown_request_waits_on_a_parked_shutdown() {
+        let hub = crate::Hub::new(crate::Registry::default_registry());
+        let signals = super::Signals::new(&hub);
+        let (contended, contention) = std::sync::mpsc::channel();
+        *super::lock(&CONTENDED) = Some(contended);
+        let parked = signals.stopping.write().unwrap();
+        let (done, served) = std::sync::mpsc::channel();
+        let serving = signals.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(super::serve_signalled(
+                &serving,
+                std::io::Cursor::new(b"{\"id\":1,\"op\":\"shutdown\"}\n".to_vec()),
+                std::io::sink(),
+                &super::StdioOptions::default(),
+            ));
+        });
+        contention
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the shutdown request never waited on the parked shutdown");
+        assert!(signals.signal(3).is_none());
+        let ended = served.recv_timeout(Duration::from_secs(10));
+        drop(parked);
+        assert!(
+            ended.is_ok(),
+            "the third signal did not end serving while the shutdown request waited"
+        );
+        assert!(ended.unwrap().is_ok(), "third signal must return Ok");
+    }
+
     #[test]
     fn the_byte_budget_admits_one_oversize_request_and_refuses_what_overfills_it() {
         let inflight = super::Inflight::new(16);
