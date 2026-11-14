@@ -1,7 +1,7 @@
 package validation
 
 import (
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func (s *state) compoundOpenRequest(i, line int, e protocol.Envelope, p protocol.SessionOpenRequest) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func compoundOpenLine(t *testing.T, id int64, sessionID string, request protocol.SessionOpenRequest) string {

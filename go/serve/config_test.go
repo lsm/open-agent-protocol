@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp"
-	"github.com/lsm/open-agent-protocol/go/binding"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/acp"
+	"github.com/lsm/oxap/go/binding"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func writeConfig(t *testing.T, document string) string {

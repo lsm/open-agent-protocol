@@ -10,9 +10,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/conformance"
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/internal/conformance"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/go/validation"
 )
 
 func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer) error {

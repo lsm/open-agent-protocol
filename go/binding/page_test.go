@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/oxap/go/binding"
 )
 
 func entry(action binding.Action, timeMS int64, sessionID string) binding.Entry {

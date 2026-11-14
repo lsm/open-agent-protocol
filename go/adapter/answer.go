@@ -1,6 +1,6 @@
 package adapter
 
-import "github.com/lsm/open-agent-protocol/go/protocol"
+import "github.com/lsm/oxap/go/protocol"
 
 func ValidateInputAnswer(question protocol.InputQuestion, answer protocol.InputAnswer) error {
 	if answer.QuestionID != question.ID {

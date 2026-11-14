@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/sdk"
+	"github.com/lsm/oxap/go/sdk"
 )
 
 func main() {

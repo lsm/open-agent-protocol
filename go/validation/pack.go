@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	bundled "github.com/lsm/open-agent-protocol/schema"
+	bundled "github.com/lsm/oxap/schema"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 

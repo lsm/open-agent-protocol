@@ -6,7 +6,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
+	"github.com/lsm/oxap/go/adapter/acp/internal/native"
 )
 
 func configureSession(ctx context.Context, client Client, opened *native.SessionNewResult, wanted map[string]string) error {

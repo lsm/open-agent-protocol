@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
+	base "github.com/lsm/oxap/go/adapter"
 )
 
 const nativeReadLimit = 64 * 1024 * 1024

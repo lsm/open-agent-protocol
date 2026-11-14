@@ -1,4 +1,4 @@
-module github.com/lsm/open-agent-protocol
+module github.com/lsm/oxap
 
 go 1.26
 

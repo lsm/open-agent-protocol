@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/schema"
+	"github.com/lsm/oxap/go/protocol"
+	"github.com/lsm/oxap/schema"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 

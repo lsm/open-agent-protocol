@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/harnesses"
+	"github.com/lsm/oxap/harnesses"
 )
 
 func loadCatalog(t *testing.T) Catalog {

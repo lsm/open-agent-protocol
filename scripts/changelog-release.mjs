@@ -8,7 +8,7 @@
 // with the last tag's exact commit time as the boundary -- docs/releasing.md is
 // the procedure, and the timestamp matters:
 //
-//   gh pr list --repo lsm/open-agent-protocol --state merged \
+//   gh pr list --repo lsm/oxap --state merged \
 //     --search "merged:>2026-09-27T13:02:38Z" \
 //     --json number,title,body,mergedAt,url > prs.json
 //   node scripts/changelog-release.mjs --version 0.2.1 --input prs.json --write

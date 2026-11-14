@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func scopedSessionStub(t *testing.T, canned protocol.Envelope) *Session {

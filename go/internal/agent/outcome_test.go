@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/provider"
+	"github.com/lsm/oxap/go/internal/provider"
 )
 
 func reply(stopReason provider.StopReason, parts ...provider.ContentPart) provider.AssistantContent {

@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
+	base "github.com/lsm/oxap/go/adapter"
 )
 
 const (

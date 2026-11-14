@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/hermes/internal/native"
+	"github.com/lsm/oxap/go/adapter/hermes/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 const reopenSupportReason = "session.resume reloads the bound stored session; one Hermes would auto-continue after a crash is refused and its process ended, taking the scheduled turn with it"

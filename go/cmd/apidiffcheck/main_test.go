@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/publicset"
+	"github.com/lsm/oxap/go/internal/publicset"
 )
 
-const testModule = "github.com/lsm/open-agent-protocol"
+const testModule = "github.com/lsm/oxap"
 
 var allPublic = []string{"go/protocol", "go/providercatalog", "go/serve", "go/sdk", "go/binding", "go/client", "go/validation", "go/harness", "go/adapter", "harnesses", "providers", "schema"}
 

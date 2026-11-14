@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/rpc"
+	"github.com/lsm/oxap/go/adapter/hermes/internal/rpc"
 )
 
 type relaySource struct {

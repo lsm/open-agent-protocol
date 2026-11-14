@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/lsm/open-agent-protocol/go/internal/workwire"
+	"github.com/lsm/oxap/go/internal/workwire"
 )
 
 func (s *Server) workOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {

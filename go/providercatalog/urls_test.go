@@ -5,7 +5,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/lsm/open-agent-protocol/providers"
+	"github.com/lsm/oxap/providers"
 )
 
 func TestABaseTheCatalogDoesNotHoldReadsTheTrailingV1AClientSupplies(t *testing.T) {

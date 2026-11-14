@@ -23,9 +23,9 @@ import (
  "path/filepath"
  "sync/atomic"
  "time"
- base "github.com/lsm/open-agent-protocol/go/adapter"
- "github.com/lsm/open-agent-protocol/go/adapter/acp"
- "github.com/lsm/open-agent-protocol/go/protocol"
+ base "github.com/lsm/oxap/go/adapter"
+ "github.com/lsm/oxap/go/adapter/acp"
+ "github.com/lsm/oxap/go/protocol"
 )
 type input struct { Python string; Agent string; Case string; Active bool; Steps []map[string]any }
 type ids struct { n atomic.Uint64 }

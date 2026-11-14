@@ -3,7 +3,7 @@ name = "oap-adapter-pi"
 version = "0.1.0"
 edition = "2021"
 description = "The Open Agent Protocol adapter over Pi's RPC mode on stdio"
-repository = "https://github.com/lsm/open-agent-protocol"
+repository = "https://github.com/lsm/oxap"
 license = "CC0-1.0"
 publish = false
 

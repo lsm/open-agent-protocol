@@ -3,7 +3,7 @@ package opencode_test
 import (
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
+	"github.com/lsm/oxap/go/adapter/opencode"
 )
 
 func TestAHostOutsideThePackageCanNameAModelForTheConfig(t *testing.T) {

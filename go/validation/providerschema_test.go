@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/validation"
+	"github.com/lsm/oxap/go/validation"
 )
 
 func providerSchema(t *testing.T) func(string) error {

@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/adapter/internal/journal"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/copilot/internal/native"
+	"github.com/lsm/oxap/go/adapter/copilot/internal/rpc"
+	"github.com/lsm/oxap/go/adapter/internal/journal"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type session struct {

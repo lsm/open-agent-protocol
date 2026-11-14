@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver/internal/native"
+	"github.com/lsm/oxap/go/adapter/codex/appserver/internal/native"
 )
 
 var sandboxPolicyTypes = map[string]string{

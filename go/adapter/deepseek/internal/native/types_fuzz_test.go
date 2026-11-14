@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
+	"github.com/lsm/oxap/go/internal/fuzzseed"
 )
 
 func FuzzANotificationIsRefusedForAMethodItDoesNotServeWhateverTheDataSays(f *testing.F) {

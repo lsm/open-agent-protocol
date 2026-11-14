@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/provider"
+	"github.com/lsm/oxap/go/internal/provider"
 )
 
 const (

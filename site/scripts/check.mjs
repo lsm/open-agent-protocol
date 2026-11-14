@@ -6,7 +6,7 @@ import path from 'node:path'
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const root = path.dirname(site)
 const dist = path.join(site, '.vitepress/dist')
-const base = '/open-agent-protocol/'
+const base = '/oxap/'
 const read = name => readFile(path.join(dist, name), 'utf8')
 const staged = JSON.parse(await read('staging.json'))
 const audit = JSON.parse(await readFile(path.join(site, 'conflicts.json'), 'utf8'))

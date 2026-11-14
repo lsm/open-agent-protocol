@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver/internal/rpc"
+	"github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/codex/appserver/internal/rpc"
 )
 
 const (

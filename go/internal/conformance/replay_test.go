@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func runEventEnvelopes(run protocol.RunID, events ...[3]any) []protocol.Envelope {

@@ -12,11 +12,11 @@ One child process carries profiled `agent-control-core` and `model-provider-core
 ## Install and connect
 
 ```bash
-go get github.com/lsm/open-agent-protocol
+go get github.com/lsm/oxap@v0.1.0-alpha.33
 ```
 
 ```go
-import "github.com/lsm/open-agent-protocol/go/sdk"
+import "github.com/lsm/oxap/go/sdk"
 
 client, err := sdk.New(ctx, nil)
 if err != nil { return err }

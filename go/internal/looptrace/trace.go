@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/agent"
-	"github.com/lsm/open-agent-protocol/go/internal/provider"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/internal/agent"
+	"github.com/lsm/oxap/go/internal/provider"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 type Ids interface {

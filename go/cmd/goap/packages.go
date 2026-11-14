@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/publicset"
+	"github.com/lsm/oxap/go/internal/publicset"
 )
 
 func checkGoPackages(stdout io.Writer) error {

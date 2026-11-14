@@ -7,7 +7,7 @@ import { chromium } from 'playwright'
 
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dist = path.join(site, '.vitepress/dist')
-const base = '/open-agent-protocol/'
+const base = '/oxap/'
 const output = process.env.OAP_DOCS_ARTIFACTS
 if (output) await mkdir(output, { recursive: true })
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.md': 'text/plain', '.txt': 'text/plain' }

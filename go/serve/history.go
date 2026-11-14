@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lsm/open-agent-protocol/go/binding"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/oxap/go/binding"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 var ErrNoSessionHistory = errors.New("serve: this hub keeps no session history")

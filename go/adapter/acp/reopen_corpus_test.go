@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	base "github.com/lsm/open-agent-protocol/go/adapter"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
-	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/rpc"
-	"github.com/lsm/open-agent-protocol/go/protocol"
+	base "github.com/lsm/oxap/go/adapter"
+	"github.com/lsm/oxap/go/adapter/acp/internal/native"
+	"github.com/lsm/oxap/go/adapter/acp/internal/rpc"
+	"github.com/lsm/oxap/go/protocol"
 )
 
 func runACPReopenCorpus(t *testing.T, frames []acpCorpusFrame, messages []rpc.Message, definition acpCorpusCase, expectedPath string) {

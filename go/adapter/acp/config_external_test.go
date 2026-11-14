@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsm/open-agent-protocol/go/adapter/acp"
+	"github.com/lsm/oxap/go/adapter/acp"
 )
 
 func TestAHostOutsideThePackageConfiguresMCPServersThatTheAdapterChecks(t *testing.T) {

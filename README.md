@@ -59,7 +59,7 @@ SDKs internally.
 
 `oapx` is a single binary. Get one of these two ways:
 
-- Download it from the [latest release](https://github.com/lsm/open-agent-protocol/releases). Builds are published for macOS, Linux and Windows on arm64 and x64, with a `SHA256SUMS.txt`.
+- Download it from the [latest release](https://github.com/lsm/oxap/releases). Builds are published for macOS, Linux and Windows on arm64 and x64, with a `SHA256SUMS.txt`.
 - Or build it from this checkout with Zig 0.17.0. `make install` puts it in `~/.local/bin`.
 
 ```sh
@@ -925,8 +925,12 @@ A Go program depends on this repository as a module, and one tag carries both
 the library and the released `oapx` binary:
 
 ```
-go get github.com/lsm/open-agent-protocol@v0.1.0-alpha.4
+go get github.com/lsm/oxap@v0.1.0-alpha.33
 ```
+
+Versions before `v0.1.0-alpha.33` still declare the old module path
+`github.com/lsm/open-agent-protocol` and must be fetched at that path; Go
+refuses a version fetched at a path its `go.mod` does not declare.
 
 Tags are shared with `oapx` releases, so a consumer that installs the library
 and a host that installs the binary are on the same pin. `go get` without a
