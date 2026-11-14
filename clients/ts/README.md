@@ -1,6 +1,6 @@
-# oap-client (TypeScript)
+# @oxap/client (TypeScript)
 
-The TypeScript client for a local `oapx serve` or `goap serve` daemon: drives any OAP adapter
+The TypeScript client for a local `oxap serve` or `goap serve` daemon: drives any OAP adapter
 over the daemon's HTTP + SSE surface with schema/v0.1 envelopes and exact uint64 values. It
 is the counterpart of the Go `client` package — same wire surface, same
 semantics — so non-Go hosts (HyperNeo and friends) can consume the exact
@@ -14,20 +14,21 @@ envelope stream the Go client sees.
 
 ## Install
 
-The package is not published to npm — that is intentional (see below). Use it
-from a checkout as a `file:` dependency:
+The package is `@oxap/client` on npm, versioned with the OXAP release line. It
+is not published yet; until it is, use it from a checkout as a `file:`
+dependency:
 
 ```json
 {
   "dependencies": {
-    "oap-client": "file:../open-agent-protocol/clients/ts"
+    "@oxap/client": "file:../oxap/clients/ts"
   }
 }
 ```
 
 (A Git remote cannot select a package subdirectory — npm resolves it at the
-repository root, where this repo has no `package.json` — so advertise and use
-the `file:` form.)
+repository root, which is the TypeScript SDK — so advertise and use the `file:`
+form.)
 
 Prepare the checkout once before consumers install it: run `npm install` in
 `clients/ts`, which builds `dist/`. npm does not install a local-path
@@ -45,7 +46,7 @@ build is current; restore the complete checkout before preparing it.
 ## Canonical lifecycle
 
 ```ts
-import { dial, EnvelopeType, finalText, payload, type PermissionRequestedPayload } from 'oap-client';
+import { dial, EnvelopeType, finalText, payload, type PermissionRequestedPayload } from '@oxap/client';
 
 const client = dial('127.0.0.1:6270');          // or 'http://host:port'
 
@@ -169,7 +170,7 @@ at zero; use bigint literals and arithmetic consistently.
 Use `parseEnvelope` and `serializeEnvelope` together for wire envelopes:
 
 ```ts
-import { parseEnvelope, payload, serializeEnvelope, type RunCompletedPayload } from 'oap-client';
+import { parseEnvelope, payload, serializeEnvelope, type RunCompletedPayload } from '@oxap/client';
 
 const envelope = parseEnvelope(rawEnvelopeJSON);
 const usage = payload<RunCompletedPayload>(envelope).usage;
@@ -470,7 +471,7 @@ npm test
 
 ## Publishing
 
-npm publishing is intentionally out of scope. The packaging surface is
-prepared — `files`, `main`, and `types` entry points point at `dist/src` —
-but nothing is published, and no release automation exists. Consumers should
-pin a commit of this repository.
+The package is publishable as `@oxap/client`: public access, `files`, `main`
+and `types` point at `dist/src`, and `npm pack` builds it. Its version follows
+the OXAP release line. Nothing is published yet and no workflow releases it;
+until one does, consumers should pin a commit of this repository.

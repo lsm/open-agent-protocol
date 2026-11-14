@@ -9,7 +9,7 @@ python3 .claude/skills/verify/scripts/ts-schema-precision.py --output-dir /tmp/o
 
 The helper builds the client, packs its public declarations and installs that
 archive into a separate temporary consumer. The real TypeScript CLI compiles
-consumer imports from `oap-client`, retaining source, diagnostics and exit codes
+consumer imports from `@oxap/client`, retaining source, diagnostics and exit codes
 under the output directory. Temporary installs and compiler children are removed.
 
 Observe successful compilation for absent transports, one or several transports,
