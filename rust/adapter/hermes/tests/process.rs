@@ -331,3 +331,32 @@ fn a_pending_call_fails_at_close_while_a_descendant_still_holds_stdout() {
         .expect("the pending call still waits after close");
     assert!(outcome.is_err());
 }
+
+#[test]
+fn close_shuts_the_read_end_a_silent_descendant_still_writes_to() {
+    let _serial = serial();
+    let dir = scratch("read-end");
+    let alive = dir.join("alive");
+    let broken = dir.join("broken");
+    let _ = std::fs::remove_file(&alive);
+    let _ = std::fs::remove_file(&broken);
+    let process = Process::start(
+        &gateway(&ready_then(&format!(
+            "(trap '' PIPE; sleep 6; if printf x; then : > '{}'; else : > '{}'; fi) &\nwhile IFS= read -r line; do :; done\nexit 0\n",
+            alive.display(),
+            broken.display()
+        ))),
+        None,
+    )
+    .unwrap();
+    let _ = process.close();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !alive.exists() && !broken.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        broken.exists(),
+        "the descendant's write after close reached an open read end"
+    );
+    assert!(!alive.exists());
+}
