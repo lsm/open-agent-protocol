@@ -100,15 +100,20 @@ impl Read for Held {
 
 #[test]
 fn a_third_signal_ends_serving_while_an_earlier_one_is_parked() {
-    third_signal(false);
+    third_signal(Some(b"{\"id\":1,\"op\":\"open\",\"adapter\":\"memory\"}\n"));
 }
 
 #[test]
 fn a_third_signal_ends_serving_after_eof_while_shutdown_is_parked() {
-    third_signal(true);
+    third_signal(None);
 }
 
-fn third_signal(eof: bool) {
+#[test]
+fn a_third_signal_ends_serving_with_a_shutdown_request_queued_behind_the_parked_one() {
+    third_signal(Some(b"{\"id\":1,\"op\":\"shutdown\"}\n"));
+}
+
+fn third_signal(frame: Option<&[u8]>) {
     let (entered, parked) = mpsc::channel();
     let (released, release) = mpsc::channel();
     let gate = Arc::new(Gate {
@@ -155,13 +160,13 @@ fn third_signal(eof: bool) {
         .recv_timeout(Duration::from_secs(10))
         .expect("the first signal never reached the session");
     reads.recv_timeout(Duration::from_secs(10)).unwrap();
-    if eof {
-        drop(input);
-    } else {
-        input
-            .send(b"{\"id\":1,\"op\":\"open\",\"adapter\":\"memory\"}\n".to_vec())
-            .unwrap();
-        reads.recv_timeout(Duration::from_secs(10)).unwrap();
+    match frame {
+        None => drop(input),
+        Some(frame) => {
+            input.send(frame.to_vec()).unwrap();
+            reads.recv_timeout(Duration::from_secs(10)).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
     assert!(signals.signal(3).is_none());
     let ended = served.recv_timeout(Duration::from_secs(10));
