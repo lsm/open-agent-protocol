@@ -11,6 +11,7 @@ repository root.
 (cd rust && cargo test -p oxap-adapter-claude --test native_tasks)
 (cd rust && cargo test -p oxap-adapter-claude --test native_control)
 (cd rust && cargo test -p oxap-adapter-claude --test native_turns)
+(cd rust && cargo test -p oxap-adapter-claude --test native_raw_bytes)
 (cd rust && cargo test -p oxap-adapter-claude --all-features)
 ```
 
@@ -80,3 +81,16 @@ two-byte characters are too long. To see it bite, write `client_composed:
 false` on a turn the CLI may expand: the expand test must fail. Skip
 `go_marshal`: the escaping test must fail. Count characters instead of
 bytes: the uuid test must fail.
+
+`tests/native_raw_bytes.rs` pins the same rule for observation frames: an
+assistant block's `input` and `usage`, a user frame's tool result and block
+content, a result's structured output, model usage and denials, and a stream
+event keep a lone surrogate escape byte for byte, while the string members
+beside them, a user frame's text and a stream delta read it as U+FFFD. It
+also skips an ignored key holding the escape at every level, including in a
+user frame's blocks and a stream event, which are read again from their raw
+bytes. Nested members are parsed by `source::structure` and `source::slice`,
+which borrow from the decoded text so each raw span stays in it. To see it
+bite, parse a nested member from a copy: the raw-member assertions must fail.
+Read a user frame's blocks without `source::decode_slice`: the ignored-key
+test must fail.
