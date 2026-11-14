@@ -15,7 +15,7 @@ function fixture(t, compiler) {
   const consumer = join(temporary, 'consumer');
   mkdirSync(source);
   mkdirSync(consumer);
-  for (const name of ['src', 'test', 'scripts', 'package.json', 'package-lock.json', 'tsconfig.json', 'README.md']) {
+  for (const name of ['src', 'test', 'scripts', 'package.json', 'package-lock.json', 'tsconfig.json', 'README.md', 'LICENSE']) {
     if (existsSync(join(root, name))) cpSync(join(root, name), join(source, name), { recursive: true });
   }
   writeFileSync(join(source, 'src/index.ts'), readFileSync(join(source, 'src/index.ts'), 'utf8') + "\nexport const prepareProbe = 'before';\n");
@@ -135,7 +135,7 @@ test('the packed client installs from its tarball and imports as @oxap/client', 
   assert.equal(packed.status, 0, packed.stdout + packed.stderr);
   const [archive] = JSON.parse(packed.stdout);
   assert.equal(archive.name, '@oxap/client');
-  assert.deepEqual(archive.files.map((file) => file.path).filter((path) => !path.startsWith('dist/src/')).sort(), ['README.md', 'package.json']);
+  assert.deepEqual(archive.files.map((file) => file.path).filter((path) => !path.startsWith('dist/src/')).sort(), ['LICENSE', 'README.md', 'package.json']);
   const installed = f.run('npm', ['install', '--offline', '--package-lock=false', join(f.temporary, archive.filename)], f.consumer);
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
   assert.equal(f.observe(), 'before');
@@ -143,4 +143,5 @@ test('the packed client installs from its tarball and imports as @oxap/client', 
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.publishConfig?.access, 'public');
   assert.equal(manifest.repository?.directory, 'clients/ts');
+  assert.match(readFileSync(join(f.consumer, 'node_modules/@oxap/client/LICENSE'), 'utf8'), /^Creative Commons Legal Code\s+CC0 1\.0 Universal/);
 });
