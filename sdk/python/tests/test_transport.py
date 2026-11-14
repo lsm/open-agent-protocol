@@ -10,8 +10,8 @@ from typing import Any, List
 import pytest
 
 from conftest import FIXTURE_SERVER, FakeServerFactory, process_alive
-from oap_sdk.errors import TIMEOUT_CODE, MakaiStreamError
-from oap_sdk.transport import Frame, StdioTransport
+from oxap_sdk.errors import TIMEOUT_CODE, MakaiStreamError
+from oxap_sdk.transport import Frame, StdioTransport
 
 
 def probe_envelope(request_id: str) -> Frame:
@@ -54,7 +54,7 @@ async def test_malformed_stdout_does_not_log_sensitive_bytes(caplog: Any) -> Non
     transport = StdioTransport(
         command=sys.executable, args=["-u", "-c", program]
     )
-    with caplog.at_level("WARNING", logger="oap_sdk.transport"):
+    with caplog.at_level("WARNING", logger="oxap_sdk.transport"):
         with pytest.raises(MakaiStreamError) as failure:
             await transport.connect()
     assert sensitive not in str(failure.value)
@@ -294,7 +294,7 @@ async def test_an_oversized_frame_tears_the_transport_down(
     open reports ``connected`` while every later route waits for frames that
     can no longer arrive, with the child still running behind it.
     """
-    monkeypatch.setattr("oap_sdk.transport._MAX_LINE_BYTES", 4096)
+    monkeypatch.setattr("oxap_sdk.transport._MAX_LINE_BYTES", 4096)
     transport = await fake.transport(
         {"handlers": {"probe": [{"raw": "x" * 16384}]}}
     )

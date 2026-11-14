@@ -7,7 +7,7 @@ run from the repository root:
 python3 .claude/skills/verify/scripts/python-sdk-binary-resolver.py --output-dir /tmp/oap-python-resolver-<unique-name>
 ```
 
-The script runs a standalone consumer of the public `oap_sdk.binary` entry
+The script runs a standalone consumer of the public `oxap_sdk.binary` entry
 point against a fake runtime through every step: local `zig-out` builds, `PATH`,
 and a real checksum-verified download from a loopback HTTP server. `oxap` must
 win over `oapx` in each step, on `PATH`, and in the `OXAP_SDK_BINARY_*`

@@ -43,7 +43,7 @@ def _auth_kinds(value: object) -> Tuple[AuthKind, ...]:
         return ()
     return tuple(cast(AuthKind, kind) for kind in value if isinstance(kind, str) and kind in _VALID_AUTH_KINDS)
 
-logger = logging.getLogger("oap_sdk.auth")
+logger = logging.getLogger("oxap_sdk.auth")
 
 DEFAULT_FRAME_TIMEOUT_S = 30.0
 
