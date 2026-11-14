@@ -208,20 +208,20 @@ func TestAnAddedPackageIsSkippedRatherThanDiffedAgainstAStaleExport(t *testing.T
 	if len(added) != 1 {
 		t.Fatalf("added %v, want one package", added)
 	}
-	report, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/adapter/newharness"}, added)
+	report, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, testModule, []string{"go/adapter/newharness"}, added)
 	if err != nil {
 		t.Fatalf("the added package was asked about, so the skip did not happen: %v", err)
 	}
 	if report != "" {
 		t.Fatalf("report = %q, want empty", report)
 	}
-	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/adapter/newharness"}, nil); err == nil {
+	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, testModule, []string{"go/adapter/newharness"}, nil); err == nil {
 		t.Fatal("the same call without the added set was accepted, so the test proves nothing about the skip")
 	}
 }
 
 func TestABaseExportFailureIsAnErrorRatherThanASkippedPackage(t *testing.T) {
-	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/protocol"}, nil); err == nil {
+	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, testModule, []string{"go/protocol"}, nil); err == nil {
 		t.Fatal("a base checkout that cannot be loaded was accepted, which would skip the comparison and let a real break through")
 	}
 }
