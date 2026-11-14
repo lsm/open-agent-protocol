@@ -925,8 +925,12 @@ A Go program depends on this repository as a module, and one tag carries both
 the library and the released `oapx` binary:
 
 ```
-go get github.com/lsm/oxap@v0.1.0-alpha.4
+go get github.com/lsm/oxap@v0.1.0-alpha.33
 ```
+
+Versions before `v0.1.0-alpha.33` still declare the old module path
+`github.com/lsm/open-agent-protocol` and must be fetched at that path; Go
+refuses a version fetched at a path its `go.mod` does not declare.
 
 Tags are shared with `oapx` releases, so a consumer that installs the library
 and a host that installs the binary are on the same pin. `go get` without a
