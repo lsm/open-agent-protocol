@@ -163,7 +163,10 @@ fn a_task_updated_frame_is_terminal_when_its_patch_says_so() {
     );
     assert!(!running.terminal());
     assert_eq!(running.patch.description, "d");
-    assert!(!updated(r#"{"type":"system","subtype":"task_updated","task_id":"t","patch":null}"#).terminal());
+    assert!(
+        !updated(r#"{"type":"system","subtype":"task_updated","task_id":"t","patch":null}"#)
+            .terminal()
+    );
     assert_eq!(
         refusal(
             SYSTEM_TASK_UPDATED,

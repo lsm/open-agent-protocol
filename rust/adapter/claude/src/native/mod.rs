@@ -445,3 +445,101 @@ pub struct SystemNotice {
     #[serde(skip)]
     pub raw: Vec<u8>,
 }
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TaskUsage {
+    #[serde(default, deserialize_with = "zero")]
+    pub total_tokens: i64,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_uses: i64,
+    #[serde(default, deserialize_with = "zero")]
+    pub duration_ms: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TaskStartedFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub task_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub description: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub task_type: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub subagent_type: String,
+    #[serde(default)]
+    pub is_backgrounded: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TaskProgressFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub task_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub description: String,
+    #[serde(default, deserialize_with = "structure")]
+    pub usage: TaskUsage,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TaskNotificationFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub task_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub status: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub output_file: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub summary: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_use_id: String,
+    #[serde(default)]
+    pub usage: Option<TaskUsage>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TaskPatch {
+    #[serde(default, deserialize_with = "zero")]
+    pub status: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub description: String,
+    #[serde(default)]
+    pub end_time: Option<i64>,
+    #[serde(default, deserialize_with = "zero")]
+    pub error: String,
+    #[serde(default)]
+    pub is_backgrounded: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TaskUpdatedFrame {
+    #[serde(default, deserialize_with = "zero")]
+    pub task_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub uuid: String,
+    #[serde(default, deserialize_with = "structure")]
+    pub patch: TaskPatch,
+}
+
+impl TaskUpdatedFrame {
+    pub fn terminal(&self) -> bool {
+        terminal_task_status(&self.patch.status)
+    }
+}
