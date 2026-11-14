@@ -1318,7 +1318,7 @@ fn isKimiModel(model: ai_types.Model) bool {
 }
 
 fn maybeDumpProviderPayload(allocator: std.mem.Allocator, request_body: []const u8) void {
-    const path = compat_mod.getEnvVarOwned(allocator, "OAPX_DEBUG_PROVIDER_PAYLOAD") catch return;
+    const path = compat_mod.getPrefixedEnvOwned(allocator, "DEBUG_PROVIDER_PAYLOAD") catch return;
     defer allocator.free(path);
     if (path.len == 0) return;
     compat_mod.fs.writeFile(compat_mod.fs.getCwd(), path, request_body) catch {};

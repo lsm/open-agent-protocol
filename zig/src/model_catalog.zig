@@ -2525,15 +2525,13 @@ fn makaiCodexCatalogPath(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn makaiCatalogPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    const home = try compat.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return try std.fs.path.join(allocator, &.{ home, ".oapx", makai_catalog_dir_name, name });
+    const dir = try compat.paths.homeStateSubpath(allocator, makai_catalog_dir_name);
+    defer allocator.free(dir);
+    return try std.fs.path.join(allocator, &.{ dir, name });
 }
 
 fn makaiCatalogDirPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = try compat.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return try std.fs.path.join(allocator, &.{ home, ".oapx", makai_catalog_dir_name });
+    return compat.paths.homeStateSubpath(allocator, makai_catalog_dir_name);
 }
 
 fn saveMakaiCodexCatalog(allocator: std.mem.Allocator, data: []const u8) !void {

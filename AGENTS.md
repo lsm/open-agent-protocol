@@ -190,9 +190,9 @@ provider` serves `model-provider-core` over stdio or loopback HTTP+SSE
 (`--http`, decision 0030). Each refuses the other's profile at decode and names the
 one it serves. They share the base envelope and vocabulary but not
 `ProtocolError` — the code sets are disjoint. A role is a noun, so `serve` takes
-an argument rather than a flag (decision 0019). State lives under `~/.oapx`; on
+an argument rather than a flag (decision 0019). State lives under `~/.oxap`; on
 macOS credentials are Keychain-first under `ai.hyperneo.oap`, falling back to
-`~/.oapx/auth.json`, so clearing that file alone leaves live credentials behind.
+`~/.oxap/auth.json`, so clearing that file alone leaves live credentials behind.
 
 **Never move credentials to a plain file.** The Keychain is awkward on macOS —
 reads fail fast and fall back, writes still prompt, and an access list binds to
@@ -207,7 +207,7 @@ one item — so a local run can use a throwaway service. Use a genuinely unique
 name per run (`makai-test-$(uuidgen)`; `$(date +%s)-$$` collides between
 subshells). It is not isolation on its own, and the four gaps are why:
 
-1. It does not cover `~/.oapx/auth.json`. With no item under the overridden
+1. It does not cover `~/.oxap/auth.json`. With no item under the overridden
    service, `loadDefault` falls back to the file, so a supposedly isolated run
    can still consume real tokens. Redirect `HOME` too.
 2. It does not cover the Codex CLI import, which reads the fixed `Codex Auth`
@@ -306,7 +306,17 @@ Rules the source will not tell you:
 - Every TUI test binary runs with `HOME` set to its own
   `zig/.zig-cache/test-home/<step>/<binary>`, wiped before each run
   (`isolatedHomeRun` in `build.zig`). Before that, `App.init` and the settings
-  commands read and wrote the developer's real `~/.oapx`.
+  commands read and wrote the developer's real `~/.oxap`.
+- Every state path resolves through `compat.paths` (`stateDirIn`,
+  `homeStateDir`, `homeStateSubpath`, `workspaceStateDir`), never a literal
+  `~/.oapx`. It answers `~/.oxap` unless that directory is absent and `~/.oapx`
+  is present, so an existing install keeps its credentials and history while a
+  fresh one starts under the new name; a home holding both resolves to `.oxap`,
+  because a store that read one file and wrote the other would fork. Nothing
+  moves or deletes the old directory.
+- Environment overrides are read through `compat.getPrefixedEnvOwned`, which
+  tries `OXAP_*` before the legacy `OAPX_*` and falls back only when the new
+  name is absent.
 - Public constructors must not take `std.Io`
   (`docs/zig-0.16.0-io-architecture-decision.md`).
 

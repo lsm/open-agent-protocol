@@ -171,6 +171,7 @@ pub fn defaultRegion(id: []const u8) ?[]const u8 {
 }
 
 pub const global_base_url_env = "OAPX_BASE_URL";
+pub const global_base_url_suffix = "BASE_URL";
 
 pub fn blankEnvironment(allocator: std.mem.Allocator) !void {
     if (!builtin.is_test) return;

@@ -622,11 +622,12 @@ fn appendJsonString(buffer: *std.ArrayList(u8), allocator: std.mem.Allocator, va
 }
 
 fn defaultPersistencePath(allocator: std.mem.Allocator) ![]u8 {
-    if (compat.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".oapx", "permissions.json" });
+    if (compat.paths.homeStateSubpath(allocator, "permissions.json")) |path| {
+        return path;
     } else |_| {
-        return try allocator.dupe(u8, ".oapx/permissions.json");
+        const dir = try compat.paths.workspaceStateDir(allocator);
+        defer allocator.free(dir);
+        return std.fs.path.join(allocator, &.{ dir, "permissions.json" });
     }
 }
 

@@ -493,12 +493,10 @@ pub const Store = struct {
     }
 
     pub fn initDefault(allocator: std.mem.Allocator) !Store {
-        const home = compat.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        const base = compat.paths.homeStateSubpath(allocator, "sessions") catch |err| switch (err) {
             error.EnvironmentVariableMissing => return error.HomeNotFound,
             else => return err,
         };
-        defer allocator.free(home);
-        const base = try std.fs.path.join(allocator, &.{ home, ".oapx", "sessions" });
         defer allocator.free(base);
         return init(allocator, base);
     }

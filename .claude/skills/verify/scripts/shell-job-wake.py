@@ -16,7 +16,7 @@ import time
 import uuid
 
 NOTICE = "SYSTEM NOTIFICATION"
-OUTPUT = re.compile(r"\.oapx/jobs/job-[0-9a-z-]+\.log")
+OUTPUT = re.compile(r"\.oxap/jobs/job-[0-9a-z-]+\.log")
 requests = []
 plan = []
 

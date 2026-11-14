@@ -12,7 +12,7 @@ fn defaultIo() std.Io {
 const auth_file_name = "auth.json";
 const auth_temp_prefix = auth_file_name ++ ".tmp.";
 const keychain_service = "ai.hyperneo.oap";
-const keychain_service_env = "OAPX_KEYCHAIN_SERVICE";
+const keychain_service_suffix = "KEYCHAIN_SERVICE";
 const keychain_account = auth_file_name;
 const keychain_shared_account = "auth.shared.json";
 const keychain_item_label = "makai credentials";
@@ -666,7 +666,7 @@ const macos_keychain = if (builtin.os.tag == .macos) struct {
 };
 
 fn keychainServiceName(allocator: std.mem.Allocator) ![]u8 {
-    if (compat.getEnvVarOwned(allocator, keychain_service_env)) |override| {
+    if (compat.getPrefixedEnvOwned(allocator, keychain_service_suffix)) |override| {
         if (override.len > 0) return override;
         allocator.free(override);
     } else |_| {}
@@ -928,11 +928,9 @@ pub const AuthStorage = struct {
     const OpenFailure = enum { any_failure_is_empty, only_missing_is_empty };
 
     fn loadFromFileOpening(allocator: std.mem.Allocator, save_fn: ?SaveFn, open_failure: OpenFailure) !AuthStorage {
-        const home = compat.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;
-        defer allocator.free(home);
-        const dir_path = try std.fs.path.join(allocator, &.{ home, ".oapx" });
+        const dir_path = compat.paths.homeStateDir(allocator) catch return error.NoHomeDir;
         defer allocator.free(dir_path);
-        const path = try std.fs.path.join(allocator, &.{ home, ".oapx", auth_file_name });
+        const path = try std.fs.path.join(allocator, &.{ dir_path, auth_file_name });
         defer allocator.free(path);
 
         const cwd = compat.fs.getCwd();
@@ -989,12 +987,10 @@ pub const AuthStorage = struct {
     }
 
     pub fn saveToFile(self: *const AuthStorage) !void {
-        const home = compat.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
-        defer self.allocator.free(home);
-        const dir_path = try std.fs.path.join(self.allocator, &.{ home, ".oapx" });
+        const dir_path = compat.paths.homeStateDir(self.allocator) catch return error.NoHomeDir;
         defer self.allocator.free(dir_path);
 
-        const file_path = try std.fs.path.join(self.allocator, &.{ home, ".oapx", auth_file_name });
+        const file_path = try std.fs.path.join(self.allocator, &.{ dir_path, auth_file_name });
         defer self.allocator.free(file_path);
 
         const cwd = compat.fs.getCwd();

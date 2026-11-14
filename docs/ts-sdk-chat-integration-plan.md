@@ -10,7 +10,7 @@ Reference spec: `docs/v1-sdk-agent-provider-spec.md`
 
 - TS OAuth login/list APIs exist, but currently shell out to CLI auth commands.
 - Demo chat still manually:
-  - reads `~/.oapx/auth.json`,
+  - reads `~/.oxap/auth.json`,
   - builds provider-specific HTTP headers/requests,
   - parses provider-specific responses.
 - `MakaiStdioClient` currently provides transport primitives (`connect`, `send`, `nextFrame`) but no high-level chat API.

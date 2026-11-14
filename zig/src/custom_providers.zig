@@ -172,9 +172,9 @@ pub fn deinitProviders(allocator: std.mem.Allocator, providers: []CustomProvider
 }
 
 pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = try compat_mod.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".oapx", config_file_name });
+    const dir = try compat_mod.paths.homeStateDir(allocator);
+    defer allocator.free(dir);
+    return std.fs.path.join(allocator, &.{ dir, config_file_name });
 }
 
 pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {
@@ -967,6 +967,64 @@ test "auth none is an explicit opt-in and stays off otherwise" {
     defer silent.deinit(testing.allocator);
     try testing.expect(!silent.auth_none);
     try testing.expect(silent.env_key == null);
+}
+
+test "a home whose config is only under the legacy name is still read" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const previous = compat_mod.test_env;
+    defer compat_mod.test_env = previous;
+    compat_mod.test_env = .{ .arena = std.heap.ArenaAllocator.init(testing.allocator) };
+    defer if (compat_mod.test_env) |*held| held.arena.deinit();
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", testing.allocator);
+    defer testing.allocator.free(home);
+    try compat_mod.setTestEnv(testing.allocator, "HOME", home);
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    const legacy = try std.fs.path.join(testing.allocator, &.{ home, ".oapx", config_file_name });
+    defer testing.allocator.free(legacy);
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), legacy,
+        \\{"providers":[{"id":"legacy-gw","base_url":"https://gw.test"}]}
+    );
+
+    var config = try loadConfig(testing.allocator, max_config_bytes);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), config.providers.len);
+    try testing.expectEqualStrings("legacy-gw", config.providers[0].id);
+
+    const written = try configPath(testing.allocator);
+    defer testing.allocator.free(written);
+    const legacy_path = try std.fs.path.join(testing.allocator, &.{ home, ".oapx", config_file_name });
+    defer testing.allocator.free(legacy_path);
+    try testing.expectEqualStrings(legacy_path, written);
+}
+
+test "a home whose config is under both names reads the new one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const previous = compat_mod.test_env;
+    defer compat_mod.test_env = previous;
+    compat_mod.test_env = .{ .arena = std.heap.ArenaAllocator.init(testing.allocator) };
+    defer if (compat_mod.test_env) |*held| held.arena.deinit();
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", testing.allocator);
+    defer testing.allocator.free(home);
+    try compat_mod.setTestEnv(testing.allocator, "HOME", home);
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    try tmp.dir.createDirPath(std.testing.io, ".oxap");
+    const legacy = try std.fs.path.join(testing.allocator, &.{ home, ".oapx", config_file_name });
+    defer testing.allocator.free(legacy);
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), legacy,
+        \\{"providers":[{"id":"legacy-gw","base_url":"https://gw.test"}]}
+    );
+    const fresh_path = try std.fs.path.join(testing.allocator, &.{ home, ".oxap", config_file_name });
+    defer testing.allocator.free(fresh_path);
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), fresh_path,
+        \\{"providers":[{"id":"fresh-gw","base_url":"https://gw.test"}]}
+    );
+
+    var config = try loadConfig(testing.allocator, max_config_bytes);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), config.providers.len);
+    try testing.expectEqualStrings("fresh-gw", config.providers[0].id);
 }
 
 test "custom providers tolerate an absent or empty providers array" {

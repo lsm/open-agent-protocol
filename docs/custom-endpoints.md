@@ -1,6 +1,6 @@
 # Custom OpenAI- and Anthropic-compatible endpoints
 
-`~/.oapx/providers.json` declares endpoints the runtime does not ship knowledge
+`~/.oxap/providers.json` declares endpoints the runtime does not ship knowledge
 of: a self-hosted vLLM or llama.cpp server, an aggregator such as OpenRouter, a
 corporate gateway that speaks the Anthropic wire format, or any vendor with an
 OpenAI-compatible API.
@@ -232,7 +232,7 @@ fails with `DuplicateOverride` rather than depending on which line won.
 - **Keychain**, which is preferred. `/login <id>` prompts for the key and stores
   it under that provider id, the same path Kimi uses. The input is masked.
   `/logout <id>` removes that one provider's credential from the keychain and
-  from `~/.oapx/auth.json`, and leaves every other credential alone. A stored key
+  from `~/.oxap/auth.json`, and leaves every other credential alone. A stored key
   belongs to the row it was saved for: providers reading the same environment
   variable (`opencode-zen` and `opencode-go`, the Xiaomi regions) each log in on
   their own. Earlier builds saved a login's key under every such row; those
@@ -270,7 +270,7 @@ file. Listing them in the picker is not implemented yet.
 ## Model discovery
 
 Startup never touches the network. Loading the catalog reads
-`~/.oapx/model_catalog/custom-<id>.json`, preferring a copy younger than 24
+`~/.oxap/model_catalog/custom-<id>.json`, preferring a copy younger than 24
 hours and still using an older one rather than nothing, and falls through to the
 declared `models` list when there is no cache at all. Keeping the network off
 the startup path is worth doing on its own, and the discovery fetch is now
@@ -333,14 +333,14 @@ takes the refreshed limits at its next message, without a model switch.
 
 The 32768 default can be more than an endpoint accepts. When a refusal names an
 output-limit field (`max_tokens`, `max_completion_tokens`, `max_output_tokens`),
-the error ends with `set this model's max_tokens in ~/.oapx/providers.json`:
+the error ends with `set this model's max_tokens in ~/.oxap/providers.json`:
 give the model's `models` entry its real `max_tokens`, or the provider-wide one.
 
 ### Catalogued rows
 
 A row in `providers/catalog.json` is discovered the same way, from the models URL
 that row's `models_endpoint` and base URL compose into, and cached per row at
-`~/.oapx/model_catalog/catalog-<id>.json` — a name of its own, so a catalogued
+`~/.oxap/model_catalog/catalog-<id>.json` — a name of its own, so a catalogued
 row and a custom row sharing an id never share a cache entry. The row's
 credential comes from `provider_credential.lookup`, so an environment variable
 beats a stored key, and a row with no credential anywhere contributes nothing
@@ -365,7 +365,7 @@ a figure the listing or the row's `models` entry gives is never replaced, and a
 model models.dev does not list keeps the defaults. The full listing is fetched
 without credentials only when such a row has a credential and a model lacking a
 limit, and the providers the catalog names are kept at
-`~/.oapx/model_catalog/models-dev.json`, together with the keys that fetch
+`~/.oxap/model_catalog/models-dev.json`, together with the keys that fetch
 sought. An ordinary load reads that copy however old and fetches only when there
 is none, or when the catalog has gained a key the copy was not fetched for. That
 second fetch is tried once: if it fails, the copy is kept and marked as having

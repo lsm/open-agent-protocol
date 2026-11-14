@@ -92,7 +92,7 @@ wrote; any other write to the terminal shifts the cursor and every later paint l
 in the wrong place (and, since paints rewrite only changed rows, stale rows of an
 earlier frame stay on screen). One stray line printed from the end of a full-width
 status row costs two rows: the wrap plus the newline. `tui_app.run` therefore
-redirects fd 2 to `~/.oapx/tui-stderr.log` (append, mode 0600; `/dev/null` when the
+redirects fd 2 to `~/.oxap/tui-stderr.log` (append, mode 0600; `/dev/null` when the
 home directory is unavailable) for the whole session and restores it on exit, so
 `std.debug.print`/`std.log` output from libraries — the OAuth token exchange warns
 this way — is recorded instead of drawn. Never write to stdout or stderr from TUI
@@ -365,7 +365,7 @@ code paths; add a transcript row instead.
   `partition_id` entry it adds for non-Apple-signed apps enforces this even when the
   ACL lists no applications). Expect one login-password prompt per new dev binary;
   identical rebuilds do not re-prompt. `OAPX_KEYCHAIN_SERVICE` overrides the service
-  name so tests can use an isolated item; the 0600 `~/.oapx/auth.json` file remains
+  name so tests can use an isolated item; the 0600 `~/.oxap/auth.json` file remains
   the fallback only when the keychain is unavailable.
 - `/login` shows each provider's state: `✓ logged in` (OAuth), `✓ api key` (stored key),
   `✓ env key` (key in the environment), or `expired · login again`. The state is read
@@ -377,7 +377,7 @@ code paths; add a transcript row instead.
   kimi` or `KIMI_API_KEY`, the stored one first): it fetches `GET /v1/models` on the
   region's own host — `api.kimi.com/coding` or `api.moonshot.ai`, whichever the stored
   login or `KIMI_REGION` names — with that key, caches the body under
-  `~/.oapx/model_catalog/catalog-kimi.json` (`catalog-kimi-global.json` for the global
+  `~/.oxap/model_catalog/catalog-kimi.json` (`catalog-kimi-global.json` for the global
   region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
   static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
@@ -409,7 +409,7 @@ code paths; add a transcript row instead.
   Kimi model resolves its key the same way at request time.
 - The model catalog lists Anthropic models whenever Anthropic credentials exist
   (OAuth in storage or `ANTHROPIC_API_KEY`): it fetches `/v1/models` with the stored
-  token, caches the response under `~/.oapx/model_catalog/anthropic.json`, and falls
+  token, caches the response under `~/.oxap/model_catalog/anthropic.json`, and falls
   back to a static Claude list when the fetch fails. A cached response is reused at
   startup for 24 hours; after that startup fetches again and only falls back to the
   stale copy when the fetch fails, and `/model` always fetches. Prices come from a
@@ -511,7 +511,7 @@ new message is what overflowed, it is dropped from the history so it cannot fail
 turn, and the error says so. The transcript holds a new message back until the model answers, or
 the run fails some other way, or the app quits, so a dropped one is never saved.
 
-A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
+A window the user sets is kept in `~/.oxap/config.json` under `mode.context_window`, so
 it is still there next session, and `/context default` removes the member rather than
 writing the model's own number back — an absent member means the catalog's window, which is
 what a session that never set one uses. A value above a model's ceiling that is found in
@@ -543,7 +543,7 @@ reply cut off at the limit raise it to that maximum for the rest of the run: a c
 call is answered with the usual error and retried, and cut-off text is followed by one
 request to continue from where it stopped. `/output` reports this only when it applies. A
 count set with `/output`, `/output max`, a model that reports no maximum, and a reply cut
-off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
+off at the maximum all end the run as before. The setting is kept in `~/.oxap/config.json` under
 `mode.output`, as `"max"` or a count, and absent for the default.
 
 ## Status
@@ -582,7 +582,7 @@ each `quiet`, `normal` (the default) or `verbose`:
 `/verbose <level>` sets every part, `/verbose <part> <level>` sets one, so
 `/verbose quiet` then `/verbose status verbose` keeps the transcript terse and the
 status bar full. `/verbose` alone reports all five. The setting is saved in
-`~/.oapx/config.json` under `mode.verbosity`. It changes only what is drawn: the
+`~/.oxap/config.json` under `mode.verbosity`. It changes only what is drawn: the
 session file and what the model sees are the same at every level. `Ctrl+O` cycles
 every part through `quiet`, `normal` and `verbose` (a mixed setting goes to `normal`).
 
@@ -734,7 +734,7 @@ sectioned summary inside `<summary>` tags without tool calls; the optional focus
 appended to it. The history becomes that summary as a user turn plus a fixed assistant
 acknowledgement, so queued messages still run through the normal continue path.
 Before the request, the messages being replaced are written to
-`~/.oapx/sessions/<session>/compaction-<n>.jsonl`, one message per line, and the
+`~/.oxap/sessions/<session>/compaction-<n>.jsonl`, one message per line, and the
 summary lists every transcript written so far in the session. A later transcript
 starts with the summary before it, so the chain reaches the first message. When the
 history does not fit in one request, the oldest turns are left out and the summary
@@ -757,7 +757,7 @@ result as a `compaction_end` event; a resume replays it by resetting the history
 the summary. None of this crosses the protocol: the agent loop runs in-process, and
 the summary request is an ordinary model call.
 
-A session is `~/.oapx/sessions/<session>.jsonl`, the conversation records a resume
+A session is `~/.oxap/sessions/<session>.jsonl`, the conversation records a resume
 replays. Streamed chunks (text, thinking and tool-call deltas, raw provider events,
 tool progress) are not written to disk; a reply's thinking is written to the
 conversation when the reply ends, folded into records of up to about 700 KB. A

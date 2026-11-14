@@ -2021,6 +2021,56 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+pub const fresh_settings_key = "oxap";
+
+fn sameJson(a: std.json.Value, b: std.json.Value) bool {
+    if (@intFromEnum(a) != @intFromEnum(b)) return false;
+    return switch (a) {
+        .null, .bool, .integer, .float, .number_string => std.meta.eql(a, b),
+        .string => |text| std.mem.eql(u8, text, b.string),
+        .array => |items| blk: {
+            if (items.items.len != b.array.items.len) break :blk false;
+            for (items.items, b.array.items) |left, right| if (!sameJson(left, right)) break :blk false;
+            break :blk true;
+        },
+        .object => |fields| blk: {
+            if (fields.count() != b.object.count()) break :blk false;
+            var it = fields.iterator();
+            while (it.next()) |entry| {
+                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
+                if (!sameJson(entry.value_ptr.*, other)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+const SettingsChoice = union(enum) {
+    none,
+    refused,
+    settings: std.json.Value,
+};
+
+fn settingsNamespace(metadata: ?std.json.Value, refusal: ?*contract.Refusal) SettingsChoice {
+    const document = metadata orelse return .none;
+    if (document != .object) return .none;
+    const fresh = document.object.get(fresh_settings_key);
+    const legacy = document.object.get(settings_key);
+    if (fresh) |held| {
+        if (legacy) |old| {
+            if (!sameJson(held, old)) {
+                if (refusal) |reason| {
+                    reason.* = .{ .message = "metadata names oxap and oapx settings that disagree; send one of them" };
+                    return .refused;
+                }
+                return .none;
+            }
+        }
+        return .{ .settings = held };
+    }
+    if (legacy) |held| return .{ .settings = held };
+    return .none;
+}
 
 const CallEnd = struct {
     text: []const u8 = "",
@@ -2060,11 +2110,12 @@ fn thinkingLevel(text: []const u8, refusal: *contract.Refusal) contract.Failure!
 }
 
 fn offersUserInput(metadata: ?std.json.Value) bool {
-    const document = metadata orelse return true;
-    if (document != .object) return true;
-    const settings = document.object.get(settings_key) orelse return true;
-    if (settings != .object) return true;
-    const offered = settings.object.get("user_input") orelse return true;
+    const chosen = switch (settingsNamespace(metadata, null)) {
+        .settings => |held| held,
+        else => return true,
+    };
+    if (chosen != .object) return true;
+    const offered = chosen.object.get("user_input") orelse return true;
     return !(offered == .bool and !offered.bool);
 }
 
@@ -2083,8 +2134,11 @@ const LiveSettings = struct {
 fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contract.Refusal) contract.Failure!LiveSettings {
     var settings = LiveSettings{};
     const document = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return settings;
-    if (document != .object) return settings;
-    const named = document.object.get(settings_key) orelse return settings;
+    const named = switch (settingsNamespace(document, refusal)) {
+        .settings => |held| held,
+        .refused => return error.InvalidSubmission,
+        .none => return settings,
+    };
     if (named != .object) return settings;
     const fields = named.object;
     if (fields.get("context_window")) |value| {
@@ -2143,9 +2197,10 @@ fn applyLiveSettings(runtime: *session_runtime.SessionRuntime, settings: LiveSet
 
 pub fn sessionOptions(base: session_runtime.SessionRuntimeOptions, metadata: ?std.json.Value) session_runtime.SessionRuntimeOptions {
     var options = base;
-    const document = metadata orelse return options;
-    if (document != .object) return options;
-    const settings = document.object.get(settings_key) orelse return options;
+    const settings = switch (settingsNamespace(metadata, null)) {
+        .settings => |held| held,
+        else => return options,
+    };
     if (settings != .object) return options;
     const fields = settings.object;
     if (fields.get("thinking_level")) |value| {
@@ -2201,9 +2256,11 @@ pub fn requestedModel(
     metadata: ?std.json.Value,
     refusal: *contract.Refusal,
 ) contract.Failure!?session_runtime.InitialModelRef {
-    const document = metadata orelse return null;
-    if (document != .object) return null;
-    const settings = document.object.get(settings_key) orelse return null;
+    const settings = switch (settingsNamespace(metadata, refusal)) {
+        .settings => |held| held,
+        .refused => return error.InvalidSubmission,
+        .none => return null,
+    };
     if (settings != .object) return null;
     const named = settings.object.get("model") orelse return null;
     if (named != .string or named.string.len == 0) return null;
@@ -5604,4 +5661,38 @@ test "host reads task output using raw offsets and valid UTF-8" {
     try wire.send("session.task.output.request", wire_scope, try parseValue(a, interior));
     const refusal = wireLast(&wire, "error.response");
     try testing.expectEqualStrings("invalid_request", refusal.object.get("payload").?.object.get("error").?.object.get("code").?.string);
+}
+
+test "metadata naming only the new namespace is read as settings" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oxap\":{\"thinking_level\":\"high\",\"user_input\":false}}", .{});
+    defer parsed.deinit();
+    const base = session_runtime.SessionRuntimeOptions{ .thinking_level = .low };
+    try testing.expectEqual(ai_types.ThinkingLevel.high, sessionOptions(base, parsed.value).thinking_level);
+    try testing.expect(!offersUserInput(parsed.value));
+}
+
+test "metadata naming only the legacy namespace is still read" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"thinking_level\":\"high\"}}", .{});
+    defer parsed.deinit();
+    const base = session_runtime.SessionRuntimeOptions{ .thinking_level = .low };
+    try testing.expectEqual(ai_types.ThinkingLevel.high, sessionOptions(base, parsed.value).thinking_level);
+}
+
+test "metadata naming both namespaces with the same settings is read once" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oxap":{"thinking_level":"high"},"oapx":{"thinking_level":"high"}}
+    , .{});
+    defer parsed.deinit();
+    const base = session_runtime.SessionRuntimeOptions{ .thinking_level = .low };
+    try testing.expectEqual(ai_types.ThinkingLevel.high, sessionOptions(base, parsed.value).thinking_level);
+}
+
+test "metadata naming both namespaces with settings that disagree is refused rather than silently choosing one" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oxap":{"thinking_level":"high"},"oapx":{"thinking_level":"low"}}
+    , .{});
+    defer parsed.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, requestedModel(testing.allocator, &scripted_models, parsed.value, &refusal));
+    try testing.expectEqualStrings("metadata names oxap and oapx settings that disagree; send one of them", refusal.message);
 }

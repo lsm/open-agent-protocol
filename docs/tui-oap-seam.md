@@ -71,7 +71,7 @@ sends its setting as the session's `compaction_policy` before each turn, when th
 endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) sends
 the compaction to the hub's submit route and follows the run it starts, and the
 policy to its settings
-route. `/resume` reopens the saved session over OAP: the TUI halts its execution and opens again with `reopen: true` under the saved session's id, and the `oapx` adapter, which advertises `session.open.reopen`, loads that transcript from `~/.oapx/sessions` into a fresh loop and reports the session recovered; a successful reopen closes the in-process session it left, and a refused one keeps it running. Over `--attach` the hub's `oapx` entry keeps no saved sessions yet, so it does not advertise `session.open.reopen` and a resume there is refused `unsupported_feature`. Reopening the session already open keeps it, unless the saved session's workspace differs from the one it opened with, which is refused. `oapx tui --attach URL` runs the
+route. `/resume` reopens the saved session over OAP: the TUI halts its execution and opens again with `reopen: true` under the saved session's id, and the `oapx` adapter, which advertises `session.open.reopen`, loads that transcript from `~/.oxap/sessions` into a fresh loop and reports the session recovered; a successful reopen closes the in-process session it left, and a refused one keeps it running. Over `--attach` the hub's `oapx` entry keeps no saved sessions yet, so it does not advertise `session.open.reopen` and a resume there is refused `unsupported_feature`. Reopening the session already open keeps it, unless the saved session's workspace differs from the one it opened with, which is refused. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first
 event, read by polling the socket on the execution's pump thread. A model switch, which
@@ -180,7 +180,7 @@ recommendation is accepted.
 session, and `session.state` is `degraded` because sessions are not resumable
 and there is no transcript replay. Both are core TUI behaviour: `Esc` and
 `Ctrl+C` abort a turn and leave the session usable, and `/resume` restores a
-saved session from `~/.oapx/sessions`. The TUI's abort is run-scoped
+saved session from `~/.oxap/sessions`. The TUI's abort is run-scoped
 (`local_agent.abort()`); an endpoint whose cancel tears the session down cannot
 serve it without a semantic change the TUI would feel. Filed as #614.
 
@@ -332,7 +332,7 @@ the session runtime's unused MCP wiring is removed.
 - **The title request.** `SessionRuntime.protocol` is an `agent.ProtocolClient` —
   a *model-provider* seam, a different protocol from agent-control, and the TUI
   keeps it regardless of how the control layer moves.
-- **Transcript storage.** `~/.oapx/sessions` is the TUI's own; the endpoint
+- **Transcript storage.** `~/.oxap/sessions` is the TUI's own; the endpoint
   declines to replay it (G1), so this does not become `transcript.load` unless
   G1 is closed. Over the in-process endpoint the records in it come from the
   endpoint's own loop, handed to the TUI beside the wire through the adapter's

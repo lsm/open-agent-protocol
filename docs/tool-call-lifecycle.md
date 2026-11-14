@@ -168,7 +168,7 @@ Two boundaries are worth stating because they are not the helper's to decide:
   packs both streams into `text` before calling, so for shell the limit already covers
   both; the other callers pass no stderr at all. Changing that split is a caller decision.
 - **How the stored bytes are read back.** There is no retrieval tool. A file-backed
-  artifact is saved under `.oapx/tool-artifacts/` and the marker names its absolute path,
+  artifact is saved under `.oxap/tool-artifacts/` and the marker names its absolute path,
   so the agent reads the rest with `Shell` (`grep`, `sed -n`). A store-backed artifact is
   referenced by a `makai-artifact://` URI and is read through the artifact store instead.
 

@@ -23,7 +23,7 @@ pub fn defaultBaseUrlForRefWithFile(
     stored_kimi_region: ?[]const u8,
     file: []const u8,
 ) ![]const u8 {
-    const global = try envOwnedOrNull(allocator, provider_catalog.global_base_url_env);
+    const global = try prefixedEnvOwnedOrNull(allocator, "BASE_URL");
     defer if (global) |g| allocator.free(g);
 
     const row_env = try rowBaseUrlEnvOwned(allocator, provider_id);
@@ -136,6 +136,15 @@ pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u
     return try allocator.dupe(u8, "");
 }
 
+pub fn prefixedEnvOwnedOrNull(allocator: std.mem.Allocator, suffix: []const u8) !?[]const u8 {
+    const value = compat.getPrefixedEnvOwned(allocator, suffix) catch return null;
+    if (value.len == 0) {
+        allocator.free(value);
+        return null;
+    }
+    return value;
+}
+
 pub fn envOwnedOrNull(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
     const value = compat.getEnvVarOwned(allocator, key) catch return null;
     if (value.len == 0) {
@@ -219,7 +228,7 @@ pub fn knownOrigin(allocator: std.mem.Allocator, provider_id: []const u8, base_u
             if (originsMatch(requested, endpoint.base_url)) return true;
         }
     }
-    const global = envOwnedOrNull(allocator, provider_catalog.global_base_url_env) catch null;
+    const global = prefixedEnvOwnedOrNull(allocator, "BASE_URL") catch null;
     defer if (global) |value| allocator.free(value);
     if (global) |value| if (originsMatch(requested, value)) return true;
     const row_env = rowBaseUrlEnvOwned(allocator, provider_id) catch null;
@@ -306,7 +315,7 @@ pub fn oauthOriginAllowed(
     if (trimmed.len == 0) return true;
     if (storedCredentialIsApiKeyShaped(refresh) and oauthOriginPolicyFor(provider_id) == null) return true;
 
-    const global = envOwnedOrNull(allocator, "OAPX_BASE_URL") catch null;
+    const global = prefixedEnvOwnedOrNull(allocator, "BASE_URL") catch null;
     defer if (global) |value| allocator.free(value);
 
     const provider_override: ?[]const u8 = blk: {
@@ -340,12 +349,12 @@ pub const ProxyCompatFlags = struct {
 };
 
 pub fn proxyCompatFlagsFromEnv(allocator: std.mem.Allocator) !ProxyCompatFlags {
-    const global_base = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
+    const global_base = try prefixedEnvOwnedOrNull(allocator, "BASE_URL");
     defer if (global_base) |value| allocator.free(value);
 
     return .{
         .global_base_set = global_base != null,
-        .global_proxy = try envFlag(allocator, "OAPX_BASE_URL_IS_PROXY"),
+        .global_proxy = try prefixedEnvFlag(allocator, "BASE_URL_IS_PROXY"),
         .openai_proxy = try envFlag(allocator, "OPENAI_BASE_URL_IS_PROXY"),
         .deepseek_proxy = try envFlag(allocator, "DEEPSEEK_BASE_URL_IS_PROXY"),
         .anthropic_proxy = try envFlag(allocator, "ANTHROPIC_BASE_URL_IS_PROXY"),
@@ -379,6 +388,12 @@ pub fn transparentProxyCompatForFlags(provider_id: []const u8, flags: ProxyCompa
 
 fn envFlag(allocator: std.mem.Allocator, key: []const u8) !bool {
     const value = try envOwnedOrNull(allocator, key) orelse return false;
+    defer allocator.free(value);
+    return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
+}
+
+fn prefixedEnvFlag(allocator: std.mem.Allocator, suffix: []const u8) !bool {
+    const value = try prefixedEnvOwnedOrNull(allocator, suffix) orelse return false;
     defer allocator.free(value);
     return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
 }

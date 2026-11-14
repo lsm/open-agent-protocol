@@ -124,12 +124,10 @@ pub const Store = struct {
     }
 
     pub fn initDefault(allocator: std.mem.Allocator) !Store {
-        const home = compat.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        const base = compat.paths.homeStateDir(allocator) catch |err| switch (err) {
             error.EnvironmentVariableMissing => return error.HomeNotFound,
             else => return err,
         };
-        defer allocator.free(home);
-        const base = try std.fs.path.join(allocator, &.{ home, ".oapx" });
         defer allocator.free(base);
         return init(allocator, base);
     }

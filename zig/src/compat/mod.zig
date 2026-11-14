@@ -7,6 +7,7 @@ pub const fs = @import("fs.zig");
 pub const stdio = @import("stdio.zig");
 pub const http = @import("http.zig");
 pub const net = @import("net.zig");
+pub const paths = @import("paths.zig");
 
 pub fn runtimeEnviron() std.process.Environ {
     const builtin = @import("builtin");
@@ -76,6 +77,21 @@ pub fn getEnvVarOwnedFrom(environ: std.process.Environ, allocator: std.mem.Alloc
     return std.process.Environ.getAlloc(environ, allocator, name);
 }
 
+pub const var_prefix = "OXAP_";
+pub const legacy_var_prefix = "OAPX_";
+
+pub fn getPrefixedEnvOwned(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
+    const fresh = try std.mem.concat(allocator, u8, &.{ var_prefix, suffix });
+    defer allocator.free(fresh);
+    if (getEnvVarOwned(allocator, fresh)) |value| return value else |err| switch (err) {
+        error.EnvironmentVariableMissing => {},
+        else => return err,
+    }
+    const legacy = try std.mem.concat(allocator, u8, &.{ legacy_var_prefix, suffix });
+    defer allocator.free(legacy);
+    return getEnvVarOwned(allocator, legacy);
+}
+
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     const builtin = @import("builtin");
     if (builtin.is_test) {
@@ -123,6 +139,7 @@ fn getHomeDirFromEnviron(allocator: std.mem.Allocator, environ: std.process.Envi
 
 pub fn createEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
     var environment = try std.process.Environ.createMap(runtimeEnviron(), allocator);
+    _ = environment.swapRemove("OXAP_PROVIDER_SERVICE_TOKEN");
     _ = environment.swapRemove("OAPX_PROVIDER_SERVICE_TOKEN");
     return environment;
 }
@@ -134,6 +151,7 @@ test {
     _ = stdio;
     _ = http;
     _ = net;
+    _ = paths;
 }
 
 test "getEnvVarOwned HOME matches the environ lookup" {
@@ -198,4 +216,29 @@ test "windows home resolution fails without USERPROFILE and HOMEDRIVE/HOMEPATH" 
             getHomeDirFromEnviron(allocator, drive_env),
         );
     } else return error.SkipZigTest;
+}
+
+test "the OXAP name wins over the legacy one when both are set" {
+    const allocator = std.testing.allocator;
+    defer clearTestEnv();
+    try setTestEnv(allocator, "OXAP_PROBE_VALUE", "fresh");
+    try setTestEnv(allocator, "OAPX_PROBE_VALUE", "legacy");
+    const value = try getPrefixedEnvOwned(allocator, "PROBE_VALUE");
+    defer allocator.free(value);
+    try std.testing.expectEqualStrings("fresh", value);
+}
+
+test "the legacy name is still read when only it is set" {
+    const allocator = std.testing.allocator;
+    defer clearTestEnv();
+    try setTestEnv(allocator, "OAPX_PROBE_VALUE", "legacy");
+    const value = try getPrefixedEnvOwned(allocator, "PROBE_VALUE");
+    defer allocator.free(value);
+    try std.testing.expectEqualStrings("legacy", value);
+}
+
+test "neither name set is a missing variable, not an empty value" {
+    const allocator = std.testing.allocator;
+    defer clearTestEnv();
+    try std.testing.expectError(error.EnvironmentVariableMissing, getPrefixedEnvOwned(allocator, "PROBE_VALUE"));
 }

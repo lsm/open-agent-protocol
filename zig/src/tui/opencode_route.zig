@@ -52,7 +52,7 @@ pub const Route = struct {
         self.launch = .{
             .executable = executable,
             .environment = entry.environment,
-            .log_path = try std.fs.path.join(arena, &.{ home, ".oapx", "opencode", "tui.log" }),
+            .log_path = try std.fs.path.join(arena, &.{ try compat.paths.stateSubpathIn(arena, home, "opencode"), "tui.log" }),
             .cancel = &self.cancelled,
         };
         return self;

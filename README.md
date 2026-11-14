@@ -191,7 +191,7 @@ flowchart TB
     subgraph providerlayer["Provider layer"]
         mpc["model-provider-core"]
         catalog["Model catalog<br/>providers/catalog.json + models.dev"]
-        creds["Credentials<br/>macOS Keychain, else ~/.oapx/auth.json"]
+        creds["Credentials<br/>macOS Keychain, else ~/.oxap/auth.json"]
     end
 
     apis[("Provider APIs")]
@@ -218,7 +218,7 @@ flowchart TB
 Each provider's base URL and sign-in origin live in exactly one place,
 [`providers/catalog.json`](providers/catalog.json). The model list comes from
 that catalog plus models.dev, which supplies context limits and whether a model
-is deprecated. State lives under `~/.oapx`.
+is deprecated. State lives under `~/.oxap`.
 
 ### Harness backends
 
@@ -277,7 +277,7 @@ oapx tui --backend opencode
 
 `oapx opencode install` downloads the OpenCode build the catalog pins for this
 platform (`v2.2.7`), checks its sha256, and unpacks it under
-`~/.oapx/opencode/<version>`. `oapx tui --backend opencode` then starts that
+`~/.oxap/opencode/<version>`. `oapx tui --backend opencode` then starts that
 server, runs the terminal UI over it, and stops it on exit. With
 `--config <path>` it takes the registry entry named `opencode` instead, and an
 entry naming an `endpoint` attaches to a server that is already running.
@@ -328,13 +328,13 @@ registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
 `--backend opencode` with no `endpoint` starts its own `opencode serve` (the
 entry's `executable`, else the one `oapx opencode install` put under
-`~/.oapx/opencode/<version>`, else `opencode` from `PATH`) on a loopback port under a fresh password,
-logs it to `~/.oapx/opencode/<entry>.log`, refuses a server whose `/api/info`
+`~/.oxap/opencode/<version>`, else `opencode` from `PATH`) on a loopback port under a fresh password,
+logs it to `~/.oxap/opencode/<entry>.log`, refuses a server whose `/api/info`
 reports a version the catalog does not admit, and stops it on exit; an entry
 naming an `endpoint` attaches to a server already running instead. `oapx opencode
 install` downloads the OpenCode build the catalog pins for this platform from
 `https://opencode.ai/files/bin/<version>/`, refuses an archive or binary whose
-sha256 is not the pinned one, and unpacks it under `~/.oapx/opencode/<version>`.
+sha256 is not the pinned one, and unpacks it under `~/.oxap/opencode/<version>`.
 `--backend oapx` serves `oapx`'s own agent loop as the terminal UI builds it —
 the same model catalog, workspace tools and permission engine —
 through the adapter in `zig/src/adapter/oapx/`, so a session gets every
