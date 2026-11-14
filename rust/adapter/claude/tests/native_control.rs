@@ -170,3 +170,33 @@ fn a_raw_member_keeps_a_lone_surrogate_escape_as_go_s_raw_message_does() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn an_ignored_key_with_a_lone_surrogate_escape_is_skipped_as_go_skips_it() {
+    match decode(
+        CONTROL_CAN_USE_TOOL,
+        r#"{"type":"control_request","x\ud800":1,"request_id":"r","request":{"subtype":"can_use_tool","y\ud800":"z","tool_name":"Bash","input":{"k\ud800":"v\ud800"},"tool_use_id":"t"}}"#,
+    ) {
+        ControlRequest::CanUseTool(ask) => {
+            assert_eq!(ask.tool_name, "Bash");
+            assert_eq!(
+                ask.input.as_deref().map(|raw| raw.get()),
+                Some(r#"{"k\ud800":"v\ud800"}"#)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    match decode(
+        CONTROL_MCP_MESSAGE,
+        r#"{"type":"control_request","request":{"subtype":"mcp_message","w\ud800":[],"server_name":"oap","message":{"r":"\ud800"}}}"#,
+    ) {
+        ControlRequest::McpMessage(message) => {
+            assert_eq!(message.server_name, "oap");
+            assert_eq!(
+                message.message.as_deref().map(|raw| raw.get()),
+                Some(r#"{"r":"\ud800"}"#)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
