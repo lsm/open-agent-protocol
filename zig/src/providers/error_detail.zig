@@ -7,7 +7,7 @@ fn stringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 }
 
 const output_limit_fields = [_][]const u8{ "max_tokens", "max_completion_tokens", "max_output_tokens", "maxOutputTokens" };
-const output_limit_hint = "; set this model's max_tokens in ~/.oxap/providers.json";
+const output_limit_hint = "; set this model's max_tokens in providers.json";
 
 pub fn withOutputLimitHint(allocator: std.mem.Allocator, detail: ?[]u8) !?[]u8 {
     const text = detail orelse return null;

@@ -6183,7 +6183,7 @@ fn opencodeBackendConfig(
     }
     const home = environ.get("HOME") orelse "";
     if (home.len == 0) {
-        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME/.oxap, and HOME is not set", .{ surface.noun, entry.name });
+        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME, and HOME is not set", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     const wanted = if (entry.executable.len > 0) entry.executable else "opencode";

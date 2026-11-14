@@ -31,6 +31,10 @@ what the home holds afterwards, and which payload dump was written:
   written.
 - `old env name`: only `OAPX_DEBUG_PROVIDER_PAYLOAD` is set, and its file is
   written.
+- `empty new env name`: `OXAP_DEBUG_PROVIDER_PAYLOAD` is set but empty, so the
+  `OAPX_` file is still written.
+- `disagreeing metadata`: the open carries `oxap` and `oapx` settings that
+  differ, and is refused before any model request.
 
 It ends with `ok` and exits 0. The second script runs from an old-style home
 in a fresh workspace, so a background job's `output_path` must be under the
