@@ -23,8 +23,9 @@ members (`queued_turn_count`, `api_error_status`) read as `i64`, which is Go's
 
 Go's `json.RawMessage` keeps a member's bytes as they arrived. A control
 request's raw members (`input`, `permission_suggestions`, an MCP `message`)
-are read from the frame's own bytes, so they keep a lone surrogate escape
+are copied from the frame's own bytes, so they keep a lone surrogate escape
 such as `\ud800` that its string members read as U+FFFD. The raw members of
 observation frames do not yet: they carry `\ufffd` in its place. A raw member
 is UTF-8 text, so invalid UTF-8 inside one reads as U+FFFD where Go keeps the
-byte.
+byte. A key holding a lone surrogate escape is skipped like any unknown
+member, as Go skips it.

@@ -64,8 +64,12 @@ body: the unknown test must fail.
 A raw member keeps a lone surrogate escape (`\ud800`) as Go's
 `json.RawMessage` does, while a string member reads it as U+FFFD. Write such a
 case from a script, since an editor may turn the escape into the character, and
-grep the file for the literal escape. To see it bite, take the raw members
-from the normalised decode instead of `verbatim`: the raw-member test must
+grep the file for the literal escape. A control request is decoded from the
+normalised text, so a key holding such an escape is skipped as Go skips it,
+and `source::raw` copies each raw member from the same span of the original
+text; the replacement keeps every escape six bytes long, so the spans line
+up. To see it bite, keep the normalised span in `source::raw`: the raw-member
+test must fail. Decode the original text instead: the ignored-key test must
 fail.
 
 `tests/native_turns.rs` compares the user turn the host writes byte for byte

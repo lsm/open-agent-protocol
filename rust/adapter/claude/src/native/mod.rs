@@ -1,4 +1,5 @@
 mod decode;
+mod source;
 mod write;
 
 use oxap_adapter::gojson::{raw, slice, strings, structure, structures, zero};
@@ -552,9 +553,9 @@ impl TaskUpdatedFrame {
 pub struct CanUseToolRequest {
     #[serde(default, deserialize_with = "zero")]
     pub tool_name: String,
-    #[serde(default, deserialize_with = "raw")]
+    #[serde(default, deserialize_with = "source::raw")]
     pub input: Raw,
-    #[serde(default, deserialize_with = "raw")]
+    #[serde(default, deserialize_with = "source::raw")]
     pub permission_suggestions: Raw,
     #[serde(default, deserialize_with = "zero")]
     pub blocked_path: String,
@@ -588,7 +589,7 @@ pub struct HookCallbackRequest {
     pub callback_id: String,
     #[serde(default, deserialize_with = "zero")]
     pub tool_use_id: String,
-    #[serde(default, deserialize_with = "structure")]
+    #[serde(default, deserialize_with = "source::structure")]
     pub input: HookInput,
 }
 
@@ -596,6 +597,6 @@ pub struct HookCallbackRequest {
 pub struct McpMessageRequest {
     #[serde(default, deserialize_with = "zero")]
     pub server_name: String,
-    #[serde(default, deserialize_with = "raw")]
+    #[serde(default, deserialize_with = "source::raw")]
     pub message: Raw,
 }
