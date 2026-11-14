@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.33] - 2026-11-13
+
+### Renamed to OXAP
+
+The first release under the OXAP names. The command is `oxap`, and `oapx`
+still works as an alias with the same arguments, exit codes and stdout. The
+repository is `lsm/oxap`, the Go module `github.com/lsm/oxap`, and the
+packages are `@oxap/cli`, `@oxap/sdk`, `@oxap/client`, `oxap-sdk` on PyPI and
+the `oxap-*` crates. New state goes to `~/.oxap`, an existing `~/.oapx` keeps
+working, and `OXAP_*` variables are read before `OAPX_*`. The v0.1 wire is
+unchanged. [docs/install.md](docs/install.md) says how to move from the old
+names.
+
+### Merged pull requests
+
+- **hermes: Read Rust Hermes JSON-RPC frames by Go's rules** ([#1796](https://github.com/lsm/oxap/pull/1796)): First slice of the Rust Hermes adapter (C4 of #1439): the gateway's JSON-RPC dialect.
+- **zig: Keep state in .oxap and read OXAP_* first, still honouring the old names** ([#1795](https://github.com/lsm/oxap/pull/1795)): Feature, step 3 of the OXAP rename (Decision 0067).
+- **codex: Resolve a Rust Codex session's user input as Go does** ([#1794](https://github.com/lsm/oxap/pull/1794)): The Rust Codex adapter now resolves a pending user input request the way Go's session does.
+- **sdk/rust: prefer OXAP binary names over the legacy ones in the resolver** ([#1793](https://github.com/lsm/oxap/pull/1793)): The Rust SDK's binary resolver only knew the legacy names, so an install or environment set up for the OXAP rename was never found.
+- **codex: Scope and settle a Rust Codex session's user input requests as Go does** ([#1792](https://github.com/lsm/oxap/pull/1792)): The Rust Codex adapter now surfaces Codex's user input requests the way Go's session does.
+- **sdk/python: prefer OXAP binary names over the legacy ones in the resolver** ([#1791](https://github.com/lsm/oxap/pull/1791)): The Python SDK's binary resolver only knew the legacy names, so an install or environment set up for the OXAP rename was never found.
+- **zig: Install the product binary as oxap and keep oapx as its alias** ([#1790](https://github.com/lsm/oxap/pull/1790)): The product binary is now `oxap`; `oapx` stays as a compatibility alias.
+- **codex: Resolve a Rust Codex session's approval as Go does** ([#1789](https://github.com/lsm/oxap/pull/1789)): The Rust Codex adapter now resolves a pending approval the way Go's session does.
+- **sdk: prefer OXAP binary names over the legacy ones in the TypeScript resolver** ([#1788](https://github.com/lsm/oxap/pull/1788)): The TypeScript SDK's binary resolver only knew the legacy names, so an install or environment set up for the OXAP rename would not be found.
+- **sdk: prefer OXAP binary names over the legacy ones in the Go resolver** ([#1787](https://github.com/lsm/oxap/pull/1787)): The Go SDK's binary resolver is the first of the four SDK resolvers to learn the OXAP names.
+- **decisions: Record the approved OXAP repository and release targets** ([#1786](https://github.com/lsm/oxap/pull/1786)): Decision 0067 recorded intended targets (`oxap-dev/oxap`, `@oxap-dev/cli-*`, an `oxap.dev` vanity Go path) that the approved rename plan superseded.
+- **codex: Scope and settle a Rust Codex session's approval requests as Go does** ([#1785](https://github.com/lsm/oxap/pull/1785)): The Rust Codex adapter now surfaces a command or file-change approval as an OAP permission request, scoped to its action as Go's session does.
+- **codex: Map a Rust Codex turn's items to action events as Go does** ([#1784](https://github.com/lsm/oxap/pull/1784)): The Rust Codex adapter now turns a turn's command, file-change and MCP items into action events, as Go's session does.
+- **deepseek: Record the patch path before the fake runtime's pid** ([#1783](https://github.com/lsm/oxap/pull/1783)): The DeepSeek start-deadline test kills its fake runtime 300 ms in.
+- **codex: Read a Rust Codex run's structured result as Go does** ([#1782](https://github.com/lsm/oxap/pull/1782)): A Rust Codex run submitted with an `output_schema` now completes with a structured result, as Go's session does.
+- **codex: Stream a Rust Codex run's text and settle a lost transport** ([#1781](https://github.com/lsm/oxap/pull/1781)): A Rust Codex run now streams its text, settles when the transport closes, and resumes from its journal, as Go's session does.
+- **codex: Set aside what Codex sends while a Rust turn/start is in flight** ([#1780](https://github.com/lsm/oxap/pull/1780)): A notification Codex sends before its `turn/start` answer now lands after the turn is recorded, as in Go.
+- **codex: Start and settle a Rust Codex run from Codex's notifications** ([#1779](https://github.com/lsm/oxap/pull/1779)): A Rust Codex run now starts and settles from Codex's notifications, as Go's session does.
+- **codex: Dispatch what Codex sends on a Rust session's own thread** ([#1778](https://github.com/lsm/oxap/pull/1778)): The Rust Codex session now reads what Codex sends on its own thread, as Go's dispatch goroutine does.
+- **codex: Start a Codex turn for a Rust submit as Go does** ([#1777](https://github.com/lsm/oxap/pull/1777)): Ports `Session::submit` from Go's Codex app-server adapter to `rust/adapter/codex-appserver`, part of #1439.
+- **codex: Open, resume and close a Rust Codex session as Go does** ([#1776](https://github.com/lsm/oxap/pull/1776)): Third Codex app-server slice for #1439.
+- **codex: Confirm a Rust resume kept the host permissions Go confirms** ([#1775](https://github.com/lsm/oxap/pull/1775)): Second Codex app-server slice for #1439.
+- **codex: Describe the Rust adapter and build its thread config as Go does** ([#1774](https://github.com/lsm/oxap/pull/1774)): First slice of the Codex app-server port for #1439.
+- **deepseek: Compare the Rust corpus replay byte for byte** ([#1772](https://github.com/lsm/oxap/pull/1772)): Part of #1439, which asks each adapter to replay its corpus byte for byte.
+- **deepseek: Replay the pinned corpus through the Rust adapter** ([#1771](https://github.com/lsm/oxap/pull/1771)): Part of #1439 (the Rust DeepSeek adapter).
+- **deepseek: restore carried corpus provenance the rc.2 bump overwrote** ([#1770](https://github.com/lsm/oxap/pull/1770)): Post-merge fixes for the pin-bump review of #1769: the DeepSeek carried corpus provenance was silently rewritten, and the Hermes ledger claimed an isolation the adapter does not perform.
+- **adapters: bump every harness pin to its current release** ([#1769](https://github.com/lsm/oxap/pull/1769)): Moves all eight harness catalog pins to each upstream's latest release (pi 1.5.2, opencode 2.2.7, codex 0.167.2, Copilot CLI 1.0.109, Claude Code 2.1.322, ACP v1.17.0/schema-v1.31.0/cagent 1.160.0, DeepSeek dsh 0.2.2-rc.2, Hermes 0.23.1)…
+- **deepseek: Cancel a Rust submit or open when its future is dropped** ([#1768](https://github.com/lsm/oxap/pull/1768)): Part of #1439 (the Rust DeepSeek adapter).
+- **deepseek: Run a Rust submit's prompt on the shared session state** ([#1767](https://github.com/lsm/oxap/pull/1767)): Part of #1439 (the Rust DeepSeek adapter).
+- **deepseek: Hold a Rust run's settlement for its subagents** ([#1766](https://github.com/lsm/oxap/pull/1766)): A started Rust DeepSeek run now waits for its subagents, as Go's `children` and `trySettle` do.
+- **deepseek: Stream a Rust run's tool calls as actions** ([#1765](https://github.com/lsm/oxap/pull/1765)): A started Rust DeepSeek run now streams its tool calls as actions, as Go's `startTool`, `endTool` and `settleOpenTools` do.
+- **deepseek: Replay a Rust run's admission buffer once it starts** ([#1764](https://github.com/lsm/oxap/pull/1764)): A Rust DeepSeek turn that ends before submit handles the prompt's receipt now still streams and settles, as Go's admission replay does.
+- **deepseek: Reduce and settle a started Rust run** ([#1763](https://github.com/lsm/oxap/pull/1763)): A started Rust DeepSeek run now reduces its own events and settles, as Go's `applyOwnedEvent` and `trySettle` do.
+- **ci: render the harness feature matrix from recorded adapter test results** ([#1762](https://github.com/lsm/oxap/pull/1762)): Test-based feature-support matrix for the eight current Go harness pins, so a support claim always cites a test result instead of docs.
+- **deepseek: End a started Rust run with run.failed on a violation** ([#1761](https://github.com/lsm/oxap/pull/1761)): A started Rust DeepSeek run now ends with `run.failed` when the runtime breaks the protocol or exits, as Go's `failRun` does.
+- **deepseek: Admit a submitted run and emit run.started in Rust** ([#1760](https://github.com/lsm/oxap/pull/1760)): The Rust DeepSeek session now finishes submit the way Go's `Submit` does: once the runtime proves the turn is this prompt, the run starts and `run.started` is journaled before submit returns.
+- **deepseek: Port submit up to the prompt receipt to Rust** ([#1759](https://github.com/lsm/oxap/pull/1759)): The Rust DeepSeek session can now send a prompt the way Go's `Submit` does, as far as the runtime's receipt.
+- **deepseek: Port the submission ownership proof to Rust** ([#1758](https://github.com/lsm/oxap/pull/1758)): The Rust DeepSeek adapter can now decide, as Go's `evaluateAdmission` does, whether the runtime has proved that a turn is the prompt this session submitted.
+- **deepseek: Read the runtime's inbound messages in the Rust session** ([#1757](https://github.com/lsm/oxap/pull/1757)): The Rust DeepSeek session now reads the runtime's inbound messages from open onward, as Go's `dispatch` does, and stops reporting itself usable when the runtime does something no run asked for.
+- **deepseek: Port the session's open and controls to Rust** ([#1756](https://github.com/lsm/oxap/pull/1756)): The Rust DeepSeek adapter can now open a session the way Go's `Open` does and answer the controls that need no reducer.
+- **deepseek: Correct the ledger on non-JSON tool-call arguments** ([#1755](https://github.com/lsm/oxap/pull/1755)): The DeepSeek ledger and README now say what Go actually does with tool-call arguments that are not JSON.
+- **acp: Decode prompt text as Go does and keep a missing content distinct in Rust** ([#1754](https://github.com/lsm/oxap/pull/1754)): The Rust ACP adapter now reads a prompt's text as Go does: an unpaired surrogate escape becomes U+FFFD, a `null` content an empty text block, and a message with no `content` member is refused.
+- **deepseek: Port the prompt and content mapping to Rust** ([#1753](https://github.com/lsm/oxap/pull/1753)): The Rust DeepSeek adapter now has Go's pure translation layer for a session: an OAP submit becomes native prompt blocks, and native stream records and a completed turn become OAP deltas and the final response.
+- **deepseek: Port the adapter's descriptor, construction and launch to Rust** ([#1752](https://github.com/lsm/oxap/pull/1752)): The Rust DeepSeek adapter now decides what a session may be before one exists, as Go's adapter does: its descriptor, its construction refusals and what a launch carries.
+- **acp: Fail a late request in the Rust reopen replay** ([#1751](https://github.com/lsm/oxap/pull/1751)): The Rust session-reopen replay now fails when the host sends a request after the recording ends.
+- **acp: Replay the session-reopen corpus case in Rust** ([#1750](https://github.com/lsm/oxap/pull/1750)): The Rust ACP adapter now replays the last case of the pinned ACP corpus, session-reopen, which Go drives through its own reopen driver.
+- **acp: Replay the prompted corpus cases byte for byte in Rust** ([#1749](https://github.com/lsm/oxap/pull/1749)): The Rust ACP adapter now replays every prompted case of the pinned ACP corpus byte for byte, through a real child process that answers with each case's recorded native frames.
+- **release: 0.1.0-alpha.32** ([#1748](https://github.com/lsm/oxap/pull/1748)): Tag the merged main commit `v0.1.0-alpha.32` and push it, per docs/releasing.md.
+- **bench: capture a stalled hub before tearing it down** ([#1611](https://github.com/lsm/oxap/pull/1611)): Adds `--capture-stalls DIR` to preserve benchmark timeout evidence before hub teardown.
+
 ## [0.1.0-alpha.32] - 2026-11-10
 
 ### Merged pull requests
