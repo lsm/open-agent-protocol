@@ -1303,3 +1303,31 @@ fn dropProviderProbe(allocator: std.mem.Allocator) !void {
 test "dropProvider frees what it built on every allocation failure" {
     try testing.checkAllAllocationFailures(std.heap.smp_allocator, dropProviderProbe, .{});
 }
+
+fn expectConfigPathIn(layout: []const []const u8, want_dir: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for (layout) |dir| try tmp.dir.createDirPath(std.testing.io, dir);
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(home);
+    try compat_mod.setTestEnv(allocator, "HOME", home);
+    defer compat_mod.clearTestEnv();
+    const path = try configPath(allocator);
+    defer allocator.free(path);
+    const want = try std.fs.path.join(allocator, &.{ home, want_dir, config_file_name });
+    defer allocator.free(want);
+    try std.testing.expectEqualStrings(want, path);
+}
+
+test "a home with no state keeps its provider config under .oxap" {
+    try expectConfigPathIn(&.{}, ".oxap");
+}
+
+test "a home holding only .oapx keeps reading its provider config there" {
+    try expectConfigPathIn(&.{".oapx"}, ".oapx");
+}
+
+test "a home holding both state directories reads .oxap" {
+    try expectConfigPathIn(&.{ ".oapx", ".oxap" }, ".oxap");
+}

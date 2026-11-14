@@ -863,3 +863,17 @@ test "defaultMaxTokensForRef reads the row's own figure, and only for a wire the
     try std.testing.expect(!provider_catalog.declaresWire("kimi", "openai-responses"));
     try std.testing.expect(!provider_catalog.declaresWire("no-such-provider", "openai-completions"));
 }
+
+test "OXAP_BASE_URL wins over OAPX_BASE_URL, and the old name alone still applies" {
+    const allocator = std.testing.allocator;
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(allocator, provider_catalog.baseUrlEnv("deepseek")[0], "");
+    try compat.setTestEnv(allocator, "OAPX_BASE_URL", "https://old.invalid");
+    const old = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(old);
+    try std.testing.expectEqualStrings("https://old.invalid", old);
+    try compat.setTestEnv(allocator, "OXAP_BASE_URL", "https://new.invalid");
+    const new = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(new);
+    try std.testing.expectEqualStrings("https://new.invalid", new);
+}

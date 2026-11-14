@@ -2199,3 +2199,16 @@ test "refreshing a granted credential under allocation failure frees it exactly 
     };
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Case.run, .{});
 }
+
+test "OXAP_KEYCHAIN_SERVICE wins over OAPX_KEYCHAIN_SERVICE, and the old name alone still applies" {
+    const allocator = std.testing.allocator;
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(allocator, "OAPX_KEYCHAIN_SERVICE", "old-service");
+    const old = try keychainServiceName(allocator);
+    defer allocator.free(old);
+    try std.testing.expectEqualStrings("old-service", old);
+    try compat.setTestEnv(allocator, "OXAP_KEYCHAIN_SERVICE", "new-service");
+    const new = try keychainServiceName(allocator);
+    defer allocator.free(new);
+    try std.testing.expectEqualStrings("new-service", new);
+}

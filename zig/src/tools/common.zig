@@ -833,3 +833,26 @@ test "output limits classify the built-in names whatever their case" {
     try std.testing.expectEqual(@as(usize, 16), limits.forTool("Write"));
     try std.testing.expectEqual(@as(usize, 4), limits.forTool("Output"));
 }
+
+test "a workspace with no state stores tool artifacts under .oxap" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+    const reference = try storeArtifact(std.testing.allocator, "call", "body");
+    defer std.testing.allocator.free(reference);
+    try std.testing.expectEqualStrings(".oxap/tool-artifacts/call.txt", reference);
+    const read = try retrieveArtifact(std.testing.allocator, reference, 1024);
+    defer std.testing.allocator.free(read);
+    try std.testing.expectEqualStrings("body", read);
+}
+
+test "a workspace holding only .oapx keeps its tool artifacts there" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+    try artifactRoot().createDirPath(defaultIo(), ".oapx");
+    const reference = try storeArtifact(std.testing.allocator, "call", "body");
+    defer std.testing.allocator.free(reference);
+    try std.testing.expectEqualStrings(".oapx/tool-artifacts/call.txt", reference);
+    const read = try retrieveArtifact(std.testing.allocator, reference, 1024);
+    defer std.testing.allocator.free(read);
+    try std.testing.expectEqualStrings("body", read);
+}
