@@ -429,11 +429,12 @@ pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> R
         let text = error.to_string();
         let suffix = format!(" at line {} column {}", error.line(), error.column());
         let text = text.strip_suffix(&suffix).unwrap_or(&text);
-        match text
-            .strip_prefix("unknown field `")
-            .and_then(|rest| rest.split_once('`'))
-        {
-            Some((name, _)) => format!("json: unknown field {}", go_quote(name)),
+        let name = text.strip_prefix("unknown field `").and_then(|rest| {
+            rest.strip_suffix("`, there are no fields")
+                .or_else(|| rest.rfind("`, expected ").map(|end| &rest[..end]))
+        });
+        match name {
+            Some(name) => format!("json: unknown field {}", go_quote(name)),
             None => text.to_owned(),
         }
     })
