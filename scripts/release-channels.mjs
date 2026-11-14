@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const REPOSITORY = "lsm/oxap";
 const WORKFLOW = "release-binaries.yml";
@@ -26,6 +27,10 @@ export function pep440(version) {
 
 export function npmTarball(name, version) {
   return `${name.replace(/^@/, "").replace("/", "-")}-${version}.tgz`;
+}
+
+export function bundledNpmPackages(version, bundle) {
+  return NPM_PACKAGES.filter((name) => existsSync(join(bundle, "npm", npmTarball(name, version))));
 }
 
 function workspace() {
@@ -95,7 +100,8 @@ async function registry() {
   const channel = option("--channel");
   const rows = [];
   if (!channel || channel === "npm") {
-    for (const name of NPM_PACKAGES) rows.push(["npm", `${name}@${version}`, onNpm(name, version)]);
+    const bundle = option("--bundle");
+    for (const name of bundle ? bundledNpmPackages(version, bundle) : NPM_PACKAGES) rows.push(["npm", `${name}@${version}`, onNpm(name, version)]);
   }
   if (!channel || channel === "crates") {
     for (const crate of publishOrder(workspace())) {

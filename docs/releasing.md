@@ -29,7 +29,7 @@ gh workflow run release-binaries.yml --repo lsm/oxap --ref main
 ```
 
 It builds, signs, packs and smoke-tests exactly as a tag does and publishes
-nothing. Its `release-bundle` artifact holds the npm tarballs, the `.crate`
+nothing, whatever ref it is started on: only a tag push publishes. Its `release-bundle` artifact holds the npm tarballs, the `.crate`
 files, the wheel and sdist, the six archives, one `SHA256SUMS.txt` over all of
 them, and `PUBLISH-BY-HAND.md`, which the run's summary also shows.
 

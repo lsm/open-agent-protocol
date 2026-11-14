@@ -512,7 +512,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: [checksums, changelog, bundle-smoke]
     steps:
@@ -540,7 +540,7 @@ jobs:
   # re-run of a failed tag fills in the missing channels and rewrites nothing.
   publish-npm:
     name: Publish npm packages
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: [versions, changelog, bundle-smoke]
     environment: release
@@ -563,13 +563,13 @@ jobs:
 
       - name: In bootstrap, check npm holds every package
         if: vars.RELEASE_BOOTSTRAP == 'true'
-        run: node scripts/release-channels.mjs registry --version "$VERSION" --channel npm --require-present
+        run: node scripts/release-channels.mjs registry --version "$VERSION" --channel npm --bundle bundle --require-present
 
       - name: Publish what npm lacks, platform packages first
         if: vars.RELEASE_BOOTSTRAP != 'true'
         run: |
           set -euo pipefail
-          node scripts/release-channels.mjs registry --version "$VERSION" --channel npm | tee npm.txt
+          node scripts/release-channels.mjs registry --version "$VERSION" --channel npm --bundle bundle | tee npm.txt
           for spec in $(awk '$1 == "missing" { print $3 }' npm.txt); do
             name="${spec%@*}"
             npm publish "bundle/npm/$(printf '%s' "${name#@}" | tr / -)-$VERSION.tgz" --access public --provenance --tag "$NPM_DIST_TAG"
@@ -577,7 +577,7 @@ jobs:
 
   publish-crates:
     name: Publish crates
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: [versions, changelog, bundle-smoke]
     environment: release
@@ -614,7 +614,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: [versions, changelog, bundle-smoke]
     environment: release
