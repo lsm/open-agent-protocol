@@ -1,6 +1,6 @@
 
-import { mkdirSync, copyFileSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+const { mkdirSync, copyFileSync, writeFileSync, chmodSync, readFileSync } = require("node:fs");
+const { join } = require("node:path");
 
 const ROOT = process.cwd();
 const BIN_DIR = join(ROOT, "dist", "bin");

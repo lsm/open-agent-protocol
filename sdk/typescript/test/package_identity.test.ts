@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -36,13 +38,40 @@ test("the SDK depends on the same-version CLI for its default runtime", () => {
   assert.equal(locked?.optional, true);
 });
 
-test("the CLI is the only runtime dependency, and it never depends back on the SDK", () => {
-  const cli = lock.packages["node_modules/@oxap/cli"] as PackageJson | undefined;
-  assert.equal(cli?.dependencies?.["@oxap/sdk"], undefined);
-  assert.equal(cli?.optionalDependencies?.["@oxap/sdk"], undefined);
+test("the SDK keeps lossless-json, nanoid and ulid as its only required dependencies", () => {
   assert.deepEqual(Object.keys(manifest.dependencies ?? {}).sort(), [
     "lossless-json",
     "nanoid",
     "ulid",
   ]);
+});
+
+test("a tagged release packs the SDK pinned to the CLI at the tag's version", (t) => {
+  const work = mkdtempSync(path.join(tmpdir(), "oxap-package-npm-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  mkdirSync(path.join(work, "dist", "bin"), { recursive: true });
+  mkdirSync(path.join(work, "dist", "src"), { recursive: true });
+  writeFileSync(path.join(work, "dist", "src", "index.js"), "");
+  mkdirSync(path.join(work, "sdk", "typescript"), { recursive: true });
+  writeFileSync(path.join(work, "sdk", "typescript", "README.md"), "");
+  writeFileSync(path.join(work, "package.json"), JSON.stringify(manifest));
+  const tag = "9.9.9-tag.1";
+  assert.notEqual(tag, manifest.version);
+  execFileSync(
+    process.execPath,
+    [
+      path.join(ROOT, "scripts", "package-npm.ts"),
+      "--version",
+      tag,
+      "--withhold",
+      "darwin-arm64,darwin-x64,linux-arm64,linux-x64,win32-x64,win32-arm64",
+    ],
+    { cwd: work, stdio: "pipe" },
+  );
+  const packed = JSON.parse(
+    readFileSync(path.join(work, "dist", "npm", "oxap-sdk", "package.json"), "utf8"),
+  ) as PackageJson;
+  assert.equal(packed.name, "@oxap/sdk");
+  assert.equal(packed.version, tag);
+  assert.equal(packed.optionalDependencies?.["@oxap/cli"], tag);
 });
