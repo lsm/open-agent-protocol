@@ -1086,7 +1086,9 @@ dependencies = [
 name = "oxap-adapter-hermes"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "oxap-adapter",
+ "rustix",
  "serde",
  "serde_json",
 ]
