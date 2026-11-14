@@ -95,9 +95,9 @@ Guardrails, which CI runs before unit tests:
 `./scripts/check-zig-patterns.sh` and `node scripts/check-no-comments.mjs
 --check`. After the Zig, SDK and TUI tests it runs
 `./scripts/check-no-test-litter.sh`, which fails if a test left a credential
-store (an `auth.json` under `.oapx` or `.makai`) inside the checkout; both stay
-in `.gitignore`, so nothing else would notice one. A workspace's own `.oapx`
-(tool artifacts, permissions) is expected state, not litter.
+store (an `auth.json` under `.oxap`, `.oapx` or `.makai`) inside the checkout; all
+stay in `.gitignore`, so nothing else would notice one. A workspace's own `.oxap`
+(tool artifacts, background jobs) is expected state, not litter.
 
 Five workflows run on `pull_request`: `ci.yml`, `ci-zig.yml` (skipped when a
 pull request touches only `decisions/`, `drafts/`, `docs/`, `research/` or
@@ -190,9 +190,12 @@ provider` serves `model-provider-core` over stdio or loopback HTTP+SSE
 (`--http`, decision 0030). Each refuses the other's profile at decode and names the
 one it serves. They share the base envelope and vocabulary but not
 `ProtocolError` — the code sets are disjoint. A role is a noun, so `serve` takes
-an argument rather than a flag (decision 0019). State lives under `~/.oapx`; on
-macOS credentials are Keychain-first under `ai.hyperneo.oap`, falling back to
-`~/.oapx/auth.json`, so clearing that file alone leaves live credentials behind.
+an argument rather than a flag (decision 0019). State lives under `~/.oxap`, and a
+workspace's under `.oxap/`; while only the old `~/.oapx` or `.oapx/` exists, that
+one is still read and written, and nothing is moved. An `OXAP_*` variable wins
+over its `OAPX_*` spelling, which is still read. On macOS credentials are
+Keychain-first under `ai.hyperneo.oap`, falling back to `auth.json` in that state
+directory, so clearing that file alone leaves live credentials behind.
 
 **Never move credentials to a plain file.** The Keychain is awkward on macOS —
 reads fail fast and fall back, writes still prompt, and an access list binds to
@@ -202,12 +205,12 @@ a non-interactive shell never surfaces the prompt and the write **blocks**
 rather than failing: bound any invocation that may persist credentials with an
 external timeout, so a hang is visible instead of silent.
 
-`OAPX_KEYCHAIN_SERVICE` redirects the whole store — every read and write, not
+`OXAP_KEYCHAIN_SERVICE` (or `OAPX_KEYCHAIN_SERVICE`) redirects the whole store — every read and write, not
 one item — so a local run can use a throwaway service. Use a genuinely unique
 name per run (`makai-test-$(uuidgen)`; `$(date +%s)-$$` collides between
 subshells). It is not isolation on its own, and the four gaps are why:
 
-1. It does not cover `~/.oapx/auth.json`. With no item under the overridden
+1. It does not cover `~/.oxap/auth.json`. With no item under the overridden
    service, `loadDefault` falls back to the file, so a supposedly isolated run
    can still consume real tokens. Redirect `HOME` too.
 2. It does not cover the Codex CLI import, which reads the fixed `Codex Auth`

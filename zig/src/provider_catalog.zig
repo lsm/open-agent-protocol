@@ -170,11 +170,11 @@ pub fn defaultRegion(id: []const u8) ?[]const u8 {
     return row.default_region;
 }
 
-pub const global_base_url_env = "OAPX_BASE_URL";
+pub const global_base_url_env = compat.productEnvNames("BASE_URL");
 
 pub fn blankEnvironment(allocator: std.mem.Allocator) !void {
     if (!builtin.is_test) return;
-    try compat.setTestEnv(allocator, global_base_url_env, "");
+    for (global_base_url_env) |name| try compat.setTestEnv(allocator, name, "");
     for (all) |row| {
         for (row.credential_env) |name| try compat.setTestEnv(allocator, name, "");
         for (row.base_url_env) |name| try compat.setTestEnv(allocator, name, "");
@@ -1263,7 +1263,7 @@ test "blankEnvironment hides every variable the catalog reads, including ones a 
         for (row.base_url_env) |name| try compat.setTestEnv(allocator, name, "https://leaked.example");
         if (row.region_env) |name| try compat.setTestEnv(allocator, name, "leaked");
     }
-    try compat.setTestEnv(allocator, global_base_url_env, "https://leaked.example");
+    for (global_base_url_env) |name| try compat.setTestEnv(allocator, name, "https://leaked.example");
     defer compat.clearTestEnv();
 
     try blankEnvironment(allocator);
@@ -1282,7 +1282,7 @@ test "blankEnvironment hides every variable the catalog reads, including ones a 
             try expectBlanked(allocator, name);
         }
     }
-    try expectBlanked(allocator, global_base_url_env);
+    for (global_base_url_env) |name| try expectBlanked(allocator, name);
 }
 
 fn expectBlanked(allocator: std.mem.Allocator, name: []const u8) !void {

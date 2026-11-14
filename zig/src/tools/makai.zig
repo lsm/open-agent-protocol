@@ -787,7 +787,7 @@ fn runHub(
     }
     var bindings: ?hub.binding.Store = null;
     defer if (bindings) |*store| store.deinit();
-    const history = history_path orelse if (compat.getEnvVarOwned(arena, "HOME")) |home| try std.fs.path.join(arena, &.{ home, ".oapx", "sessions.jsonl" }) else |err| switch (err) {
+    const history = history_path orelse if (compat.getEnvVarOwned(arena, "HOME")) |home| try std.fs.path.join(arena, &.{ home, try compat.state.nameUnder(arena, home), "sessions.jsonl" }) else |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => "",
     };
@@ -1416,7 +1416,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oxap tui [--context-window <tokens>]           The terminal UI, over OAP through the in-process endpoint; what oxap alone starts
         \\                                                   --context-window takes a whole number, optionally with k or m
         \\  oxap tui --attach <url> [--adapter <name>]     The terminal UI over a running oxap serve's HTTP wire; adapter defaults to oapx
-        \\  oxap opencode install                            Download the OpenCode oxap is tested with into ~/.oapx/opencode
+        \\  oxap opencode install                            Download the OpenCode oxap is tested with into ~/.oxap/opencode
         \\  oxap tui --backend opencode [--config <path>]  The terminal UI over an OpenCode server oxap starts, or the entry's endpoint
         \\  oxap run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oxap serve agent [--stdio] [--model <model-ref>]
@@ -1451,9 +1451,9 @@ fn printUsage(file: std.Io.File) !void {
         \\                   model (default kimi-k2.7-code), and any other id
         \\                   is refused.
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
-        \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
-        \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
-        \\                   Optional OAPX_PROVIDER_SERVICE_TOKEN sends a bearer header
+        \\                   Remote provider: set OXAP_PROVIDER_SERVICE_URL and
+        \\                   OXAP_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
+        \\                   Optional OXAP_PROVIDER_SERVICE_TOKEN sends a bearer header
         \\                   Token requires URL and an RFC 6750 b64token value
         \\                   Use --backend claude, codex or pi to serve a Claude Code,
         \\                   Codex app-server or Pi child instead of the built-in
@@ -4036,7 +4036,7 @@ const oap_test_served_models = [_]ai_types.Model{
 const OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS: i64 = 600_000;
 
 fn oapProviderStreamIdleTtlMs(allocator: std.mem.Allocator) i64 {
-    const raw = provider_base_url.envOwnedOrNull(allocator, "OAPX_OAP_PROVIDER_STREAM_IDLE_TTL_MS") catch
+    const raw = provider_base_url.productEnvOwnedOrNull(allocator, "OAP_PROVIDER_STREAM_IDLE_TTL_MS") catch
         return OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS;
     const value = raw orelse return OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS;
     defer allocator.free(value);
@@ -5492,24 +5492,26 @@ fn runOapMode(
         return runBackendMode(allocator, name, parsed.config_path, stdin, stdout, stderr);
     }
 
-    const env_model = try provider_base_url.envOwnedOrNull(allocator, "OAPX_OAP_MODEL");
+    const env_model = try provider_base_url.productEnvOwnedOrNull(allocator, "OAP_MODEL");
     defer if (env_model) |value| allocator.free(value);
     const default_model_id: ?[]const u8 = parsed.default_model_id orelse env_model;
 
-    const remote_url = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_URL");
+    const remote_url = try provider_base_url.productEnvOwnedOrNull(allocator, "PROVIDER_SERVICE_URL");
     defer if (remote_url) |value| allocator.free(value);
-    const remote_security_text = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_SECURITY");
+    const remote_security_text = try provider_base_url.productEnvOwnedOrNull(allocator, "PROVIDER_SERVICE_SECURITY");
     defer if (remote_security_text) |value| allocator.free(value);
-    const remote_token = compat.getEnvVarOwned(allocator, "OAPX_PROVIDER_SERVICE_TOKEN") catch |err| switch (err) {
+    const remote_token = compat.getProductEnvOwned(allocator, "PROVIDER_SERVICE_TOKEN") catch |err| switch (err) {
         error.EnvironmentVariableMissing => null,
         else => return err,
     };
     if (comptime @hasField(std.process.Environ.Block, "slice")) {
         for (compat.runtimeEnviron().block.view().slice) |entry| {
             const text = std.mem.span(entry);
-            const prefix = "OAPX_PROVIDER_SERVICE_TOKEN=";
-            if (std.mem.startsWith(u8, text, prefix)) {
-                std.crypto.secureZero(u8, @constCast(text[prefix.len..]));
+            inline for (comptime compat.productEnvNames("PROVIDER_SERVICE_TOKEN")) |name| {
+                const prefix = name ++ "=";
+                if (std.mem.startsWith(u8, text, prefix)) {
+                    std.crypto.secureZero(u8, @constCast(text[prefix.len..]));
+                }
             }
         }
     }
@@ -6181,7 +6183,7 @@ fn opencodeBackendConfig(
     }
     const home = environ.get("HOME") orelse "";
     if (home.len == 0) {
-        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set", .{ surface.noun, entry.name });
+        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME/.oxap, and HOME is not set", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     const wanted = if (entry.executable.len > 0) entry.executable else "opencode";
@@ -6195,7 +6197,7 @@ fn opencodeBackendConfig(
         .executable = executable,
         .environment = entry.environment,
         .working_directory = entry.working_directory,
-        .log_path = try std.fs.path.join(arena, &.{ home, ".oapx", "opencode", try std.fmt.allocPrint(arena, "{s}.log", .{entry.name}) }),
+        .log_path = try std.fs.path.join(arena, &.{ home, try compat.state.nameUnder(arena, home), "opencode", try std.fmt.allocPrint(arena, "{s}.log", .{entry.name}) }),
     }, &why) catch |err| {
         if (err != error.ServerRefused) return err;
         try surface.refuse("{s} \"{s}\": {s}", .{ surface.noun, entry.name, why });
@@ -6853,7 +6855,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set\n", complained);
+    try std.testing.expectEqualStrings("oxap serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oxap, and HOME is not set\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {

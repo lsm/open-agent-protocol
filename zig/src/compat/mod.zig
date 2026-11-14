@@ -7,6 +7,7 @@ pub const fs = @import("fs.zig");
 pub const stdio = @import("stdio.zig");
 pub const http = @import("http.zig");
 pub const net = @import("net.zig");
+pub const state = @import("state.zig");
 
 pub fn runtimeEnviron() std.process.Environ {
     const builtin = @import("builtin");
@@ -76,6 +77,26 @@ pub fn getEnvVarOwnedFrom(environ: std.process.Environ, allocator: std.mem.Alloc
     return std.process.Environ.getAlloc(environ, allocator, name);
 }
 
+pub fn productEnvNames(comptime suffix: []const u8) [2][]const u8 {
+    return .{ "OXAP_" ++ suffix, "OAPX_" ++ suffix };
+}
+
+pub fn getProductEnvOwned(allocator: std.mem.Allocator, comptime suffix: []const u8) ![]u8 {
+    const names = comptime productEnvNames(suffix);
+    return getEnvVarOwned(allocator, names[0]) catch |err| switch (err) {
+        error.EnvironmentVariableMissing => getEnvVarOwned(allocator, names[1]),
+        else => err,
+    };
+}
+
+pub fn getProductEnvOwnedFrom(environ: std.process.Environ, allocator: std.mem.Allocator, comptime suffix: []const u8) ![]u8 {
+    const names = comptime productEnvNames(suffix);
+    return getEnvVarOwnedFrom(environ, allocator, names[0]) catch |err| switch (err) {
+        error.EnvironmentVariableMissing => getEnvVarOwnedFrom(environ, allocator, names[1]),
+        else => err,
+    };
+}
+
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     const builtin = @import("builtin");
     if (builtin.is_test) {
@@ -123,7 +144,7 @@ fn getHomeDirFromEnviron(allocator: std.mem.Allocator, environ: std.process.Envi
 
 pub fn createEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
     var environment = try std.process.Environ.createMap(runtimeEnviron(), allocator);
-    _ = environment.swapRemove("OAPX_PROVIDER_SERVICE_TOKEN");
+    for (productEnvNames("PROVIDER_SERVICE_TOKEN")) |name| _ = environment.swapRemove(name);
     return environment;
 }
 
@@ -134,6 +155,7 @@ test {
     _ = stdio;
     _ = http;
     _ = net;
+    _ = state;
 }
 
 test "getEnvVarOwned HOME matches the environ lookup" {

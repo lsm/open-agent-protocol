@@ -5,7 +5,7 @@ Status: accepted 2026-10-18 (owner). No protocol change.
 OAP's durable state is written by two hard-wired file stores today:
 
 - **Bindings.** `zig/src/hub/binding.zig` `Store`: one JSONL file
-  (`~/.oapx/sessions.jsonl` by default), a CRC-32 per line, an exclusive
+  (`~/.oxap/sessions.jsonl` by default), a CRC-32 per line, an exclusive
   `<path>.lock`, and a durable in-place append. Go already has the
   interface, `go/binding.Store` (`Append`, `Latest`, `History`, `Sessions`),
   with a file and a memory implementation.

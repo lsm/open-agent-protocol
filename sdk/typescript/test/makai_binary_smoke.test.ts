@@ -38,6 +38,7 @@ test("e2e: a manual login fails closed and persists no credentials", async (t) =
       () => client.auth.login("test-fixture"),
       (error: unknown) => error instanceof MakaiAuthError && error.code === "auth_input_unavailable",
     );
+    await assert.rejects(() => fs.access(path.join(tempHome, ".oxap", "auth.json")));
     await assert.rejects(() => fs.access(path.join(tempHome, ".oapx", "auth.json")));
   } finally {
     await client.close();

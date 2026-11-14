@@ -300,15 +300,19 @@ pub const TestArtifactRoot = struct {
     }
 };
 
+const artifact_dir_names = [_][]const u8{ compat.state.dir_name ++ "/tool-artifacts", compat.state.legacy_dir_name ++ "/tool-artifacts" };
+
 pub fn storeArtifact(allocator: std.mem.Allocator, key: []const u8, data: []const u8) ![]u8 {
     const root = artifactRoot();
-    root.createDirPath(defaultIo(), ".oapx/tool-artifacts") catch |err| switch (err) {
+    const dir = try std.fs.path.join(allocator, &.{ compat.state.nameIn(root), "tool-artifacts" });
+    defer allocator.free(dir);
+    root.createDirPath(defaultIo(), dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
     const safe = try sanitizeKey(allocator, key);
     defer allocator.free(safe);
-    const path = try std.fmt.allocPrint(allocator, ".oapx/tool-artifacts/{s}.txt", .{safe});
+    const path = try std.fmt.allocPrint(allocator, "{s}/{s}.txt", .{ dir, safe });
     errdefer allocator.free(path);
     try root.writeFile(defaultIo(), .{ .sub_path = path, .data = data });
     return path;
@@ -316,13 +320,17 @@ pub fn storeArtifact(allocator: std.mem.Allocator, key: []const u8, data: []cons
 
 pub fn cleanupArtifacts() !void {
     const root = artifactRoot();
-    if (root.access(defaultIo(), ".oapx/tool-artifacts", .{})) {
-        try root.deleteTree(defaultIo(), ".oapx/tool-artifacts");
-    } else |_| {}
+    for (artifact_dir_names) |dir| {
+        if (root.access(defaultIo(), dir, .{})) {
+            try root.deleteTree(defaultIo(), dir);
+        } else |_| {}
+    }
 }
 
 pub fn retrieveArtifact(allocator: std.mem.Allocator, reference: []const u8, max_bytes: usize) ![]u8 {
-    if (!std.mem.startsWith(u8, reference, ".oapx/tool-artifacts/")) return error.InvalidArtifactReference;
+    for (artifact_dir_names) |dir| {
+        if (std.mem.startsWith(u8, reference, dir) and std.mem.startsWith(u8, reference[dir.len..], "/")) break;
+    } else return error.InvalidArtifactReference;
     if (hasParentTraversal(reference) or std.Io.Dir.path.isAbsolute(reference)) return error.InvalidArtifactReference;
     const root = artifactRoot();
     const st = try root.statFile(defaultIo(), reference, .{ .follow_symlinks = false });

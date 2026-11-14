@@ -897,7 +897,7 @@ const SavedModelRef = struct {
     }
 };
 
-pub const fixture_env_var = "OAPX_TUI_FIXTURE";
+pub const fixture_env_var = compat.productEnvNames("TUI_FIXTURE");
 
 const fixture_step_separator = '|';
 const fixture_step_escape = '\\';
@@ -918,7 +918,7 @@ pub const FixtureRuntime = struct {
     provider: fixture_provider.MockProvider,
 
     pub fn fromEnv(allocator: std.mem.Allocator, env: *const std.process.Environ.Map) !?*FixtureRuntime {
-        return fromValue(allocator, env.get(fixture_env_var));
+        return fromValue(allocator, env.get(fixture_env_var[0]) orelse env.get(fixture_env_var[1]));
     }
 
     fn fromValue(allocator: std.mem.Allocator, value: ?[]const u8) !?*FixtureRuntime {
@@ -3544,7 +3544,7 @@ pub const App = struct {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
             defer if (home) |value| self.allocator.free(value);
             if (home) |h| {
-                const base = try std.fs.path.join(self.allocator, &.{ h, ".oapx", "worktrees" });
+                const base = try std.fs.path.join(self.allocator, &.{ h, try compat.state.nameUnder(self.allocator, h), "worktrees" });
                 defer self.allocator.free(base);
                 if (tui_worktree.isUnderBase(self.working_dir, base)) {
                     self.worktree_attempted = true;
@@ -5862,7 +5862,7 @@ const StderrRedirect = struct {
 };
 
 pub fn stderrLogPath(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
-    return std.fs.path.join(allocator, &.{ home, ".oapx", "tui-stderr.log" });
+    return std.fs.path.join(allocator, &.{ home, try compat.state.nameUnder(allocator, home), "tui-stderr.log" });
 }
 
 fn redirectStderrToLog(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) StderrRedirect {
@@ -5887,7 +5887,7 @@ fn redirectStderrToLog(allocator: std.mem.Allocator, environ_map: *const std.pro
 fn openStderrLog(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !std.posix.fd_t {
     const home = environ_map.get("HOME") orelse return error.HomeNotFound;
     if (home.len == 0) return error.HomeNotFound;
-    const dir = try std.fs.path.join(allocator, &.{ home, ".oapx" });
+    const dir = try std.fs.path.join(allocator, &.{ home, try compat.state.nameUnder(allocator, home) });
     defer allocator.free(dir);
     try compat.fs.createDir(compat.fs.getCwd(), dir);
     const path = try stderrLogPath(allocator, home);
@@ -5902,7 +5902,7 @@ fn openDevNull() !std.posix.fd_t {
 test "stderr log path lives under the makai home directory" {
     const path = try stderrLogPath(std.testing.allocator, "/tmp/home");
     defer std.testing.allocator.free(path);
-    try std.testing.expectEqualStrings("/tmp/home/.oapx/tui-stderr.log", path);
+    try std.testing.expectEqualStrings("/tmp/home/.oxap/tui-stderr.log", path);
 }
 
 fn tuiProgramOptions() zz.Options {
@@ -6306,7 +6306,7 @@ test "App logout removes only that provider's saved credential" {
         defer creds.deinit(std.testing.allocator);
         try app.saveLoginCredentials(id, creds, true);
     }
-    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, compat.state.dir_name, "providers.json" });
     defer std.testing.allocator.free(config_path);
     try compat.fs.writeFile(compat.fs.getCwd(), config_path,
         \\{"providers":[{"id":"gateway","base_url":"https://gw.test","auth":{"env":"HOME"}}]}
@@ -6470,7 +6470,7 @@ test "App /provider list names what is declared and says so when nothing is" {
     try app.submit("/provider list extra");
     try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
 
-    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, compat.state.dir_name, "providers.json" });
     defer std.testing.allocator.free(config_path);
     try compat.fs.writeFile(compat.fs.getCwd(), config_path, "{\"overrides\":[{\"id\":\"openai\",\"base_url\":\"https://proxy.test\"}]}");
 
@@ -6487,7 +6487,7 @@ test "App /provider list reports a config it cannot read instead of calling it e
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
 
-    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, compat.state.dir_name, "providers.json" });
     defer std.testing.allocator.free(config_path);
     try app.submit("/provider add gateway https://gw.test/v1");
     const oversized = try std.testing.allocator.alloc(u8, custom_providers.max_config_bytes + 1);
@@ -6509,7 +6509,7 @@ test "App only offers an api-key login for a declared custom provider" {
     defer app.deinit();
     try std.testing.expect(!app.isDeclaredCustomProvider("gateway"));
 
-    const makai_dir = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx" });
+    const makai_dir = try std.fs.path.join(std.testing.allocator, &.{ env.home, compat.state.dir_name });
     defer std.testing.allocator.free(makai_dir);
     try compat.fs.createDir(compat.fs.getCwd(), makai_dir);
     const config_path = try std.fs.path.join(std.testing.allocator, &.{ makai_dir, "providers.json" });
@@ -7121,7 +7121,7 @@ test "fixture runtime stays inactive without a non-empty env value" {
 test "fixture runtime streams the env-provided text" {
     var env = try compat.createEnvMap(std.testing.allocator);
     defer env.deinit();
-    try env.put(fixture_env_var, "pty fixture reply");
+    try env.put(fixture_env_var[1], "pty fixture reply");
     const fixture = (try FixtureRuntime.fromEnv(std.testing.allocator, &env)).?;
     defer fixture.deinit();
 
@@ -8466,7 +8466,7 @@ const kimi_model = ai_types.Model{
 };
 
 fn oapxConfigDir(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
-    return std.fs.path.join(allocator, &.{ home, ".oapx" });
+    return std.fs.path.join(allocator, &.{ home, compat.state.dir_name });
 }
 
 fn expectConfiguredContextWindow(allocator: std.mem.Allocator, home: []const u8, expected: ?u32) !void {
