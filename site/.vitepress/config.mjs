@@ -33,7 +33,7 @@ export default withMermaid(defineConfig({
       ] }
     ],
     search: { provider: 'local' },
-    socialLinks: [{ icon: 'github', link: 'https://github.com/lsm/open-agent-protocol' }],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/lsm/oxap' }],
     footer: { message: 'OXAP · existing v0.1 wire identities and package names remain unchanged.' }
   }
 }))

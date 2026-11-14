@@ -8,7 +8,7 @@ const root = path.dirname(site)
 const out = path.join(site, '.content')
 const base = '/open-agent-protocol/'
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-const blob = `https://github.com/lsm/open-agent-protocol/blob/${revision}/`
+const blob = `https://github.com/lsm/oxap/blob/${revision}/`
 const audit = JSON.parse(await readFile(path.join(site, 'conflicts.json'), 'utf8'))
 const selectedDocs = ['choosing-a-backend.md', 'go-library.md', 'storage.md', 'sdk-command-results.md', 'conformance-matrix.md', 'validation-coverage.md', 'releasing.md', 'zig-stream-memory-ownership.md', 'zig-0.17.0-downstream-migration.md']
 const sources = ['README.md', ...selectedDocs.map(name => `docs/${name}`), 'sdk/typescript/README.md', 'sdk/python/README.md', 'rust/sdk/README.md', 'clients/ts/README.md']
