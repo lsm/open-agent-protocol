@@ -33,7 +33,7 @@ test('public client declarations enforce transport and shutdown cardinality and 
   for (const sample of [...schemaPrecisionCases, ...authSchemaPrecisionCases, ...sessionControlSchemaCases]) {
     await t.test(sample.name, () => {
       const source = join(consumer, 'consumer.ts');
-      writeFileSync(source, `import type { FeatureSupport, EndpointShutdownResponse, ShutdownRun, ShutdownQueuedRun } from 'oap-client';\n${sample.source}`);
+      writeFileSync(source, `import type { FeatureSupport, EndpointShutdownResponse, ShutdownRun, ShutdownQueuedRun } from '@oxap/client';\n${sample.source}`);
       const emitted = 'wire' in sample && sample.wire;
       const compiledDirectory = join(consumer, 'compiled');
       rmSync(compiledDirectory, { recursive: true, force: true });

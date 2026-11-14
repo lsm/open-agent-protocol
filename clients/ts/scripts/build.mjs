@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const record = join(root, 'dist/.build-hash');
-const preparationError = 'oap-client build is missing, stale or incomplete; restore a complete checkout and run npm install in clients/ts before installing it as a file dependency.';
+const preparationError = '@oxap/client build is missing, stale or incomplete; restore a complete checkout and run npm install in clients/ts before installing it as a file dependency.';
 
 function sources(directory) {
   return readdirSync(join(root, directory), { withFileTypes: true }).flatMap((entry) => {
