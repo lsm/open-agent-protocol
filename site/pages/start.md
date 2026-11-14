@@ -16,4 +16,4 @@ The README examples, command inventory, decision index, operation count and hand
 
 ## Hosting this documentation
 
-This site uses GitHub Pages under `/open-agent-protocol/`. A repository administrator must choose **Settings → Pages → Build and deployment → Source: GitHub Actions** and permit the `github-pages` environment deployment if approval is required. The workflow can then be dispatched after merge. Domain, repository and DNS settings are outside this change.
+This site uses GitHub Pages under `/oxap/`. A repository administrator must choose **Settings → Pages → Build and deployment → Source: GitHub Actions** and permit the `github-pages` environment deployment if approval is required. The workflow can then be dispatched after merge. Domain, repository and DNS settings are outside this change.

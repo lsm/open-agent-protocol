@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const root = path.dirname(site)
 const out = path.join(site, '.content')
-const base = '/open-agent-protocol/'
+const base = '/oxap/'
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
 const blob = `https://github.com/lsm/oxap/blob/${revision}/`
 const audit = JSON.parse(await readFile(path.join(site, 'conflicts.json'), 'utf8'))

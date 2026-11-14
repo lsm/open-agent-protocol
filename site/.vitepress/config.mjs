@@ -5,7 +5,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 export default withMermaid(defineConfig({
   title: 'OXAP',
   description: 'One protocol across agent sessions, tools, and model inference.',
-  base: '/open-agent-protocol/',
+  base: '/oxap/',
   srcDir: '.content',
   cleanUrls: false,
   lastUpdated: false,
