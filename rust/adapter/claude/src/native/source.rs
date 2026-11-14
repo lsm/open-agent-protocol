@@ -52,6 +52,10 @@ pub(super) fn decode<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
     with_source(text, from_text)
 }
 
+pub(super) fn decode_object<T: DeserializeOwned + Default>(text: &str) -> serde_json::Result<T> {
+    with_source(text, |text| object(serde_json::from_str(text)?))
+}
+
 pub(super) fn decode_slice<T: DeserializeOwned + Default>(
     text: &str,
 ) -> serde_json::Result<Vec<T>> {

@@ -10,7 +10,11 @@ use source::{raw, slice, structure, structures};
 pub use decode::{
     decode_control_request, decode_observation, ControlRequest, Invalid, Observation,
 };
-pub use write::{new_user_turn, validate_turn_uuid};
+pub use write::{
+    decode_interrupt_result, deny_tool, hook_continue, initialize_request, interrupt_request,
+    mcp_response, new_user_turn, permission_allow, permission_deny, validate_turn_uuid,
+    InterruptResult,
+};
 
 pub type Raw = Option<Box<RawValue>>;
 
