@@ -353,3 +353,35 @@ func TestAPackagePresentInBothTreesIsNotARemovalEvenWhenItIsNotPublic(t *testing
 		t.Fatalf("removed %v against the directories, want none", removed)
 	}
 }
+
+func writeModule(t *testing.T, module, source string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+module+"\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(root, "go", "protocol")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "protocol.go"), []byte("package protocol\n\n"+source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestAModuleRenameStillComparesEachPackageAgainstTheBase(t *testing.T) {
+	base := writeModule(t, "example.com/old", "func Kept() {}\n\nfunc Dropped() {}\n")
+	head := writeModule(t, "example.com/new", "func Kept() {}\n")
+	var out strings.Builder
+	err := check(head, base, "", &out)
+	if err == nil || !strings.Contains(err.Error(), "changes go/protocol incompatibly") {
+		t.Fatalf("err = %v, want the dropped function reported as an unrecorded break in go/protocol", err)
+	}
+	if err := check(head, base, "## Breaking changes\n\n- `go/protocol` drops Dropped\n", &out); err != nil {
+		t.Fatalf("err = %v, want the recorded break to pass", err)
+	}
+	if !strings.Contains(out.String(), "PASS compatibility: recorded incompatible change in go/protocol") {
+		t.Fatalf("output = %q, want the recorded change in go/protocol", out.String())
+	}
+}
